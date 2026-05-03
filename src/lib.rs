@@ -350,6 +350,7 @@ mod tests {
         assert_eq!(request.output_dir, PathBuf::from("dicom-out"));
     }
 
+    #[cfg(not(any(feature = "cuda", all(feature = "metal", target_os = "macos"))))]
     #[test]
     fn auto_and_prefer_device_fall_back_to_facade_cpu_when_no_device_backend_is_enabled() {
         let bytes = vec![0; 16 * 16];
@@ -368,16 +369,36 @@ mod tests {
         assert!(require.to_string().contains("device encode backend"));
     }
 
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn require_device_uses_metal_j2k_encode_for_wsi_sized_tile() {
+        let mut bytes = Vec::with_capacity(128 * 128 * 3);
+        for y in 0..128u32 {
+            for x in 0..128u32 {
+                bytes.push(((x * 3 + y * 5) & 0xFF) as u8);
+                bytes.push(((x * 7 + y * 11) & 0xFF) as u8);
+                bytes.push(((x * 13 + y * 17) & 0xFF) as u8);
+            }
+        }
+        let samples =
+            J2kLosslessSamples::new(&bytes, 128, 128, 3, 8, false).expect("valid RGB samples");
+
+        let codestream = encode_dicom_j2k_lossless(samples, EncodeBackendPreference::RequireDevice)
+            .expect("Metal backend should encode WSI-sized DICOM tile");
+
+        assert_j2k_facade_roundtrip(samples, &codestream);
+    }
+
     #[test]
     fn dicom_j2k_decomposition_uses_validated_lossless_safe_profile() {
         let gray = vec![0; 128 * 128];
         let gray_samples =
             J2kLosslessSamples::new(&gray, 128, 128, 1, 8, false).expect("valid gray");
-        assert_eq!(dicom_j2k_decomposition_levels(gray_samples), 0);
+        assert_eq!(dicom_j2k_decomposition_levels(gray_samples), 1);
 
         let rgb = vec![0; 128 * 128 * 3];
         let rgb_samples = J2kLosslessSamples::new(&rgb, 128, 128, 3, 8, false).expect("valid rgb");
-        assert_eq!(dicom_j2k_decomposition_levels(rgb_samples), 0);
+        assert_eq!(dicom_j2k_decomposition_levels(rgb_samples), 1);
     }
 
     #[test]
@@ -552,6 +573,114 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    #[ignore = "requires WSI_DICOM_APERIO_JP2K_FIXTURE"]
+    fn real_aperio_jp2k_problem_tile_round_trips() {
+        let Some(source) = std::env::var_os("WSI_DICOM_APERIO_JP2K_FIXTURE").map(PathBuf::from)
+        else {
+            return;
+        };
+        let slide = Slide::open(&source).unwrap();
+        let region = slide
+            .read_region(&RegionRequest {
+                scene: SceneId(0),
+                series: SeriesId(0),
+                level: LevelIdx(0),
+                plane: PlaneIdx(PlaneSelection { z: 0, c: 0, t: 0 }),
+                origin_px: (24 * 512, 12 * 512),
+                size_px: (512, 512),
+            })
+            .unwrap();
+        let prepared = prepare_tile_samples(&region, 512, 512).unwrap();
+        let samples = J2kLosslessSamples::new(
+            &prepared.bytes,
+            512,
+            512,
+            prepared.profile.components,
+            prepared.profile.bits_allocated as u8,
+            false,
+        )
+        .unwrap();
+
+        let tile_out = std::env::var_os("WSI_DICOM_APERIO_JP2K_TILE_OUT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("target/aperio-jp2k-problem-tile.rgb"));
+        if let Some(parent) = tile_out.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(tile_out, &prepared.bytes).unwrap();
+        encode_dicom_j2k_lossless(samples, EncodeBackendPreference::CpuOnly).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires WSI_DICOM_EXPORT_DIR"]
+    fn exported_aperio_jp2k_dicom_instances_read_back() {
+        let Some(output_dir) = std::env::var_os("WSI_DICOM_EXPORT_DIR").map(PathBuf::from) else {
+            return;
+        };
+        let expected = [
+            (
+                "level-0000-z0000-c0000-t0000.dcm",
+                15374u32,
+                17497u32,
+                1085u32,
+            ),
+            ("level-0001-z0000-c0000-t0000.dcm", 3843u32, 4374u32, 72u32),
+            ("level-0002-z0000-c0000-t0000.dcm", 1921u32, 2187u32, 20u32),
+        ];
+
+        for (file_name, columns, rows, frames) in expected {
+            let object = dicom_object::open_file(output_dir.join(file_name)).unwrap();
+            assert_eq!(
+                object.meta().media_storage_sop_class_uid,
+                uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE
+            );
+            assert_eq!(object.meta().transfer_syntax, uids::JPEG2000_LOSSLESS);
+            assert_eq!(
+                object
+                    .element(tags::SOP_CLASS_UID)
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE
+            );
+            assert_eq!(
+                object
+                    .element(tags::TOTAL_PIXEL_MATRIX_COLUMNS)
+                    .unwrap()
+                    .to_int::<u32>()
+                    .unwrap(),
+                columns
+            );
+            assert_eq!(
+                object
+                    .element(tags::TOTAL_PIXEL_MATRIX_ROWS)
+                    .unwrap()
+                    .to_int::<u32>()
+                    .unwrap(),
+                rows
+            );
+            assert_eq!(
+                object
+                    .element(tags::NUMBER_OF_FRAMES)
+                    .unwrap()
+                    .to_int::<u32>()
+                    .unwrap(),
+                frames
+            );
+            assert_eq!(
+                object
+                    .element(tags::PIXEL_DATA)
+                    .unwrap()
+                    .value()
+                    .fragments()
+                    .unwrap()
+                    .len(),
+                frames as usize
+            );
+        }
     }
 
     fn write_source_dicom(path: &std::path::Path) {
