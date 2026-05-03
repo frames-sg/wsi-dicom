@@ -30,6 +30,8 @@ enum Command {
         backend: BackendArg,
         #[arg(long, default_value_t = 512)]
         tile_size: u32,
+        #[arg(long, value_enum, default_value_t = TransferSyntaxArg::Jpeg2000Lossless)]
+        transfer_syntax: TransferSyntaxArg,
     },
 }
 
@@ -52,6 +54,23 @@ impl BackendArg {
     }
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum TransferSyntaxArg {
+    Jpeg2000Lossless,
+    Htj2kLossless,
+    Htj2kLosslessRpcl,
+}
+
+impl TransferSyntaxArg {
+    fn into_transfer_syntax(self) -> TransferSyntax {
+        match self {
+            Self::Jpeg2000Lossless => TransferSyntax::Jpeg2000Lossless,
+            Self::Htj2kLossless => TransferSyntax::Htj2kLossless,
+            Self::Htj2kLosslessRpcl => TransferSyntax::Htj2kLosslessRpcl,
+        }
+    }
+}
+
 fn main() {
     if let Err(err) = run() {
         eprintln!("{err}");
@@ -68,6 +87,7 @@ fn run() -> Result<(), WsiDicomError> {
             research_placeholder,
             backend,
             tile_size,
+            transfer_syntax,
         } => {
             let metadata = load_metadata_source(metadata, research_placeholder)?;
             let report = export_dicom(DicomExportRequest {
@@ -75,15 +95,20 @@ fn run() -> Result<(), WsiDicomError> {
                 output_dir: out,
                 options: DicomExportOptions {
                     tile_size,
-                    transfer_syntax: TransferSyntax::Jpeg2000Lossless,
+                    transfer_syntax: transfer_syntax.into_transfer_syntax(),
                     encode_backend: backend.into_preference(),
                 },
                 metadata,
             })?;
             println!(
-                "wrote {} DICOM instance(s) to {}",
+                "wrote {} DICOM instance(s) to {}; frames total={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={}",
                 report.instances.len(),
-                report.output_dir.display()
+                report.output_dir.display(),
+                report.metrics.total_frames,
+                report.metrics.cpu_input_frames,
+                report.metrics.gpu_input_decode_frames,
+                report.metrics.gpu_encode_frames,
+                report.metrics.gpu_validation_frames
             );
             Ok(())
         }
