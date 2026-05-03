@@ -4,7 +4,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use dicom_object::FileMetaTableBuilder;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use signinum_core::PixelFormat as SigninumPixelFormat;
 use signinum_j2k::J2kLosslessSamples;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use statumen::{DeviceTile, TileLayout, TileOutputPreference, TilePixels, TileRequest};
 use statumen::{LevelIdx, PlaneIdx, PlaneSelection, RegionRequest, SceneId, SeriesId, Slide};
 
 mod encode;
@@ -19,8 +23,10 @@ pub use error::WsiDicomError;
 pub use metadata::{DicomMetadata, MetadataSource};
 pub use options::{DicomExportOptions, EncodeBackendPreference, TransferSyntax};
 
-use encode::DicomJ2kEncoder;
-use tile::{optical_path_groups, prepare_tile_samples};
+use encode::{DicomJ2kEncoder, EncodedDicomJ2kFrame};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use tile::pixel_profile_from_device_format;
+use tile::{optical_path_groups, prepare_tile_samples, PixelProfile};
 use uid::{deterministic_instance_path, uid_from_seed};
 use writer::build_dicom_object;
 
@@ -59,6 +65,7 @@ impl DicomExportRequest {
 pub struct DicomExportReport {
     pub output_dir: PathBuf,
     pub instances: Vec<DicomInstanceReport>,
+    pub metrics: DicomExportMetrics,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,14 +79,60 @@ pub struct DicomInstanceReport {
     pub c: u32,
     pub t: u32,
     pub frame_count: u32,
+    pub metrics: DicomExportMetrics,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DicomExportMetrics {
+    pub total_frames: u64,
+    pub cpu_input_frames: u64,
+    pub gpu_input_decode_frames: u64,
+    pub gpu_encode_frames: u64,
+    pub gpu_validation_frames: u64,
+}
+
+impl DicomExportMetrics {
+    fn add_assign(&mut self, other: Self) {
+        self.total_frames = self.total_frames.saturating_add(other.total_frames);
+        self.cpu_input_frames = self.cpu_input_frames.saturating_add(other.cpu_input_frames);
+        self.gpu_input_decode_frames = self
+            .gpu_input_decode_frames
+            .saturating_add(other.gpu_input_decode_frames);
+        self.gpu_encode_frames = self
+            .gpu_encode_frames
+            .saturating_add(other.gpu_encode_frames);
+        self.gpu_validation_frames = self
+            .gpu_validation_frames
+            .saturating_add(other.gpu_validation_frames);
+    }
+
+    fn record_cpu_input(&mut self) {
+        self.total_frames = self.total_frames.saturating_add(1);
+        self.cpu_input_frames = self.cpu_input_frames.saturating_add(1);
+    }
+
+    fn record_gpu_input(&mut self) {
+        self.total_frames = self.total_frames.saturating_add(1);
+        self.gpu_input_decode_frames = self.gpu_input_decode_frames.saturating_add(1);
+    }
+
+    fn record_encoded_frame(&mut self, encoded: &encode::EncodedDicomJ2kFrame) {
+        if encoded.used_device_encode {
+            self.gpu_encode_frames = self.gpu_encode_frames.saturating_add(1);
+        }
+        if encoded.used_device_validation {
+            self.gpu_validation_frames = self.gpu_validation_frames.saturating_add(1);
+        }
+    }
 }
 
 /// Export a statumen-readable WSI into DICOM VL Whole Slide Microscopy files.
 pub fn export_dicom(request: DicomExportRequest) -> Result<DicomExportReport, WsiDicomError> {
     request.validate()?;
-    if request.options.transfer_syntax != TransferSyntax::Jpeg2000Lossless {
+    if !request.options.transfer_syntax.is_lossless_j2k_family() {
         return Err(WsiDicomError::Unsupported {
-            reason: "only JPEG 2000 Lossless transfer syntax is implemented".into(),
+            reason: "only JPEG 2000 Lossless and HTJ2K Lossless transfer syntaxes are implemented"
+                .into(),
         });
     }
     let metadata = request.metadata.resolve()?;
@@ -98,6 +151,7 @@ pub fn export_dicom(request: DicomExportRequest) -> Result<DicomExportReport, Ws
         .clone()
         .unwrap_or_else(|| uid_from_seed(&format!("study:{}", request.source_path.display())));
     let mut instances = Vec::new();
+    let mut metrics = DicomExportMetrics::default();
 
     for (scene_idx, scene) in slide.dataset().scenes.iter().enumerate() {
         for (series_idx, series) in scene.series.iter().enumerate() {
@@ -119,6 +173,7 @@ pub fn export_dicom(request: DicomExportRequest) -> Result<DicomExportReport, Ws
                                 t,
                                 level,
                             )?;
+                            metrics.add_assign(report.metrics);
                             instances.push(report);
                         }
                     }
@@ -130,6 +185,7 @@ pub fn export_dicom(request: DicomExportRequest) -> Result<DicomExportReport, Ws
     Ok(DicomExportReport {
         output_dir: request.output_dir,
         instances,
+        metrics,
     })
 }
 
@@ -182,48 +238,86 @@ fn export_instance(
     let mut lengths = Vec::with_capacity(frame_count as usize);
     let mut offset = 0_u64;
     let mut pixel_profile = None;
-    let mut j2k_encoder = DicomJ2kEncoder::new(request.options.encode_backend);
+    let mut j2k_encoder = DicomJ2kEncoder::new(
+        request.options.encode_backend,
+        request.options.transfer_syntax,
+    );
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    let mut metal_input = MetalInputTileReader::new(request.options.encode_backend);
+    let mut metrics = DicomExportMetrics::default();
 
     for row in 0..tiles_down {
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        let mut metal_row = try_encode_metal_input_tile_run(
+            slide,
+            &mut metal_input,
+            &mut j2k_encoder,
+            level,
+            scene_idx,
+            series_idx,
+            level_idx,
+            z,
+            c,
+            t,
+            row,
+            0,
+            tiles_across,
+            matrix_columns,
+            matrix_rows,
+            tile_size,
+        )?;
+
         for col in 0..tiles_across {
             let x = col * u64::from(tile_size);
             let y = row * u64::from(tile_size);
             let width = (matrix_columns - x).min(u64::from(tile_size)) as u32;
             let height = (matrix_rows - y).min(u64::from(tile_size)) as u32;
-            let region = slide
-                .read_region(&RegionRequest {
-                    scene: SceneId(scene_idx),
-                    series: SeriesId(series_idx),
-                    level: LevelIdx(level_idx),
-                    plane: PlaneIdx(PlaneSelection { z, c, t }),
-                    origin_px: (x as i64, y as i64),
-                    size_px: (width, height),
-                })
-                .map_err(|source| WsiDicomError::SlideRead {
-                    message: source.to_string(),
-                })?;
-            let prepared = prepare_tile_samples(&region, tile_size, tile_size)?;
+
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            let metal_encoded = metal_row[col as usize].take();
+            #[cfg(not(all(feature = "metal", target_os = "macos")))]
+            let metal_encoded: Option<(EncodedDicomJ2kFrame, PixelProfile)> = None;
+
+            let (encoded, profile, used_gpu_input) = match metal_encoded {
+                Some((encoded, profile)) => (Ok(encoded), profile, true),
+                None => {
+                    let (encoded, profile) = encode_cpu_input_tile(
+                        slide,
+                        &mut j2k_encoder,
+                        scene_idx,
+                        series_idx,
+                        level_idx,
+                        z,
+                        c,
+                        t,
+                        row,
+                        col,
+                        x,
+                        y,
+                        width,
+                        height,
+                        tile_size,
+                    )?;
+                    (encoded, profile, false)
+                }
+            };
+            if used_gpu_input {
+                metrics.record_gpu_input();
+            } else {
+                metrics.record_cpu_input();
+            }
+
             if let Some(existing) = pixel_profile {
-                if existing != prepared.profile {
+                if existing != profile {
                     return Err(WsiDicomError::UnsupportedPixelData {
                         reason: "pixel profile changed across frames".into(),
                     });
                 }
             } else {
-                pixel_profile = Some(prepared.profile);
+                pixel_profile = Some(profile);
             }
-            let samples = J2kLosslessSamples::new(
-                &prepared.bytes,
-                tile_size,
-                tile_size,
-                prepared.profile.components,
-                prepared.profile.bits_allocated as u8,
-                false,
-            )
-            .map_err(|source| WsiDicomError::Encode {
-                message: source.to_string(),
-            })?;
-            let encoded = j2k_encoder.encode(samples).map_err(|err| match err {
+
+            let encoded = encoded.map_err(|err| match err {
                 WsiDicomError::Encode { message } => WsiDicomError::FrameEncode {
                     level: level_idx,
                     row,
@@ -232,14 +326,16 @@ fn export_instance(
                 },
                 other => other,
             })?;
+            metrics.record_encoded_frame(&encoded);
+            let codestream = encoded.codestream;
             offsets.push(offset);
-            lengths.push(encoded.len() as u64);
+            lengths.push(codestream.len() as u64);
             offset = offset
-                .checked_add(encoded.len() as u64 + 8)
+                .checked_add(codestream.len() as u64 + 8)
                 .ok_or_else(|| WsiDicomError::Unsupported {
                     reason: "extended offset table overflow".into(),
                 })?;
-            fragments.push(even_len(encoded));
+            fragments.push(even_len(codestream));
         }
     }
 
@@ -289,7 +385,1011 @@ fn export_instance(
         c,
         t,
         frame_count,
+        metrics,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_cpu_input_tile(
+    slide: &Slide,
+    j2k_encoder: &mut DicomJ2kEncoder,
+    scene_idx: usize,
+    series_idx: usize,
+    level_idx: u32,
+    z: u32,
+    c: u32,
+    t: u32,
+    _row: u64,
+    _col: u64,
+    x: u64,
+    y: u64,
+    width: u32,
+    height: u32,
+    tile_size: u32,
+) -> Result<(Result<EncodedDicomJ2kFrame, WsiDicomError>, PixelProfile), WsiDicomError> {
+    let region = slide
+        .read_region(&RegionRequest {
+            scene: SceneId(scene_idx),
+            series: SeriesId(series_idx),
+            level: LevelIdx(level_idx),
+            plane: PlaneIdx(PlaneSelection { z, c, t }),
+            origin_px: (x as i64, y as i64),
+            size_px: (width, height),
+        })
+        .map_err(|source| WsiDicomError::SlideRead {
+            message: source.to_string(),
+        })?;
+    let prepared = prepare_tile_samples(&region, tile_size, tile_size)?;
+    let samples = J2kLosslessSamples::new(
+        &prepared.bytes,
+        tile_size,
+        tile_size,
+        prepared.profile.components,
+        prepared.profile.bits_allocated as u8,
+        false,
+    )
+    .map_err(|source| WsiDicomError::Encode {
+        message: source.to_string(),
+    })?;
+    Ok((j2k_encoder.encode(samples), prepared.profile))
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+struct MetalInputTileReader {
+    preference: EncodeBackendPreference,
+    device: Option<metal::Device>,
+    sessions: Option<statumen::output::metal::MetalBackendSessions>,
+    strip_composer: Option<MetalStripComposer>,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl MetalInputTileReader {
+    fn new(preference: EncodeBackendPreference) -> Self {
+        Self {
+            preference,
+            device: None,
+            sessions: None,
+            strip_composer: None,
+        }
+    }
+
+    fn enabled(&self) -> bool {
+        self.preference != EncodeBackendPreference::CpuOnly
+    }
+
+    fn sessions(&mut self) -> Result<statumen::output::metal::MetalBackendSessions, WsiDicomError> {
+        if self.sessions.is_none() {
+            let device =
+                metal::Device::system_default().ok_or_else(|| WsiDicomError::Unsupported {
+                    reason: "Metal is unavailable for WSI input tile decode".into(),
+                })?;
+            self.device = Some(device.clone());
+            self.sessions = Some(statumen::output::metal::MetalBackendSessions::new(
+                signinum_jpeg_metal::MetalBackendSession::new(device.clone()),
+                signinum_j2k_metal::MetalBackendSession::new(device),
+            ));
+        }
+        Ok(self
+            .sessions
+            .as_ref()
+            .expect("Metal input sessions initialized")
+            .clone())
+    }
+
+    fn strip_composer(&mut self) -> Result<&MetalStripComposer, WsiDicomError> {
+        if self.strip_composer.is_none() {
+            let _ = self.sessions()?;
+            let device = self
+                .device
+                .as_ref()
+                .expect("Metal input device initialized")
+                .clone();
+            self.strip_composer = Some(MetalStripComposer::new(device)?);
+        }
+        Ok(self
+            .strip_composer
+            .as_ref()
+            .expect("Metal strip composer initialized"))
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+struct PackedMetalStrips {
+    buffer: metal::Buffer,
+    first_col: i64,
+    first_row: i64,
+    tiles_across: u32,
+    tile_width: u32,
+    tile_height: u32,
+    slot_stride: usize,
+    tile_slot_bytes: usize,
+    format: SigninumPixelFormat,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+struct MetalStripComposer {
+    device: metal::Device,
+    queue: metal::CommandQueue,
+    pipeline: metal::ComputePipelineState,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl MetalStripComposer {
+    fn new(device: metal::Device) -> Result<Self, WsiDicomError> {
+        let options = metal::CompileOptions::new();
+        let library = device
+            .new_library_with_source(WSI_COMPOSE_STRIPS_METAL, &options)
+            .map_err(|message| WsiDicomError::Encode {
+                message: format!("Metal strip compose shader failed to compile: {message}"),
+            })?;
+        let function = library
+            .get_function("wsi_compose_strips", None)
+            .map_err(|message| WsiDicomError::Encode {
+                message: format!("Metal strip compose function unavailable: {message}"),
+            })?;
+        let pipeline = device
+            .new_compute_pipeline_state_with_function(&function)
+            .map_err(|message| WsiDicomError::Encode {
+                message: format!("Metal strip compose pipeline unavailable: {message}"),
+            })?;
+        let queue = device.new_command_queue();
+        Ok(Self {
+            device,
+            queue,
+            pipeline,
+        })
+    }
+
+    fn pack_tiles(
+        &self,
+        tiles: &[statumen::output::metal::MetalDeviceTile],
+        layout: WholeLevelStripLayout,
+        first_col: i64,
+        first_row: i64,
+        tiles_across: usize,
+    ) -> Result<PackedMetalStrips, WsiDicomError> {
+        let first = tiles.first().ok_or_else(|| WsiDicomError::Unsupported {
+            reason: "Metal WholeLevel composition requires at least one source tile".into(),
+        })?;
+        let format = first.format;
+        let bytes_per_pixel = format.bytes_per_pixel();
+        let slot_stride = (layout.width as usize)
+            .checked_mul(bytes_per_pixel)
+            .ok_or_else(|| WsiDicomError::Unsupported {
+                reason: "Metal WholeLevel source slot stride overflow".into(),
+            })?;
+        let tile_height_usize =
+            usize::try_from(layout.height).map_err(|_| WsiDicomError::Unsupported {
+                reason: "Metal WholeLevel source tile height exceeds platform addressable memory"
+                    .into(),
+            })?;
+        let tile_slot_bytes = slot_stride.checked_mul(tile_height_usize).ok_or_else(|| {
+            WsiDicomError::Unsupported {
+                reason: "Metal WholeLevel source tile slot byte length overflow".into(),
+            }
+        })?;
+        let total_bytes =
+            tile_slot_bytes
+                .checked_mul(tiles.len())
+                .ok_or_else(|| WsiDicomError::Unsupported {
+                    reason: "Metal packed WholeLevel tile byte length overflow".into(),
+                })?;
+        let tiles_across_u32 =
+            u32::try_from(tiles_across).map_err(|_| WsiDicomError::Unsupported {
+                reason: "Metal WholeLevel source tile columns exceed u32".into(),
+            })?;
+        if tiles_across == 0 || !tiles.len().is_multiple_of(tiles_across) {
+            return Err(WsiDicomError::Unsupported {
+                reason: "Metal WholeLevel source tile grid is not rectangular".into(),
+            });
+        }
+        let total_bytes_u64 =
+            u64::try_from(total_bytes).map_err(|_| WsiDicomError::Unsupported {
+                reason: "Metal packed WholeLevel tile byte length exceeds u64".into(),
+            })?;
+        let packed = self.device.new_buffer(
+            total_bytes_u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let command_buffer = self.queue.new_command_buffer();
+        let blit = command_buffer.new_blit_command_encoder();
+
+        for (idx, tile) in tiles.iter().enumerate() {
+            if tile.format != format {
+                return Err(WsiDicomError::Unsupported {
+                    reason: "Metal WholeLevel composition requires uniform source tile format"
+                        .into(),
+                });
+            }
+            if tile.width == 0
+                || tile.height == 0
+                || tile.width > layout.width
+                || tile.height > layout.height
+            {
+                return Err(WsiDicomError::Unsupported {
+                    reason: format!(
+                        "Metal WholeLevel source tile geometry exceeds virtual tile: got {}x{}, expected <= {}x{}",
+                        tile.width, tile.height, layout.width, layout.height
+                    ),
+                });
+            }
+            let row_bytes = (tile.width as usize)
+                .checked_mul(bytes_per_pixel)
+                .ok_or_else(|| WsiDicomError::Unsupported {
+                    reason: "Metal WholeLevel source tile row byte length overflow".into(),
+                })?;
+            if tile.pitch_bytes < row_bytes {
+                return Err(WsiDicomError::Unsupported {
+                    reason: "Metal WholeLevel source tile pitch is smaller than row bytes".into(),
+                });
+            }
+            let statumen::output::metal::MetalDeviceStorage::Buffer {
+                buffer,
+                byte_offset,
+            } = &tile.storage;
+            let slot_offset =
+                idx.checked_mul(tile_slot_bytes)
+                    .ok_or_else(|| WsiDicomError::Unsupported {
+                        reason: "Metal packed WholeLevel destination offset overflow".into(),
+                    })?;
+            for source_row in 0..tile.height as usize {
+                let source_offset = byte_offset
+                    .checked_add(source_row.checked_mul(tile.pitch_bytes).ok_or_else(|| {
+                        WsiDicomError::Unsupported {
+                            reason: "Metal WholeLevel source row offset overflow".into(),
+                        }
+                    })?)
+                    .ok_or_else(|| WsiDicomError::Unsupported {
+                        reason: "Metal WholeLevel source row offset overflow".into(),
+                    })?;
+                let destination_offset = slot_offset
+                    .checked_add(source_row.checked_mul(slot_stride).ok_or_else(|| {
+                        WsiDicomError::Unsupported {
+                            reason: "Metal WholeLevel destination row offset overflow".into(),
+                        }
+                    })?)
+                    .ok_or_else(|| WsiDicomError::Unsupported {
+                        reason: "Metal WholeLevel destination row offset overflow".into(),
+                    })?;
+                blit.copy_from_buffer(
+                    buffer,
+                    u64::try_from(source_offset).map_err(|_| WsiDicomError::Unsupported {
+                        reason: "Metal WholeLevel source row offset exceeds u64".into(),
+                    })?,
+                    &packed,
+                    u64::try_from(destination_offset).map_err(|_| WsiDicomError::Unsupported {
+                        reason: "Metal WholeLevel destination row offset exceeds u64".into(),
+                    })?,
+                    u64::try_from(row_bytes).map_err(|_| WsiDicomError::Unsupported {
+                        reason: "Metal WholeLevel source row byte length exceeds u64".into(),
+                    })?,
+                );
+            }
+        }
+
+        blit.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(PackedMetalStrips {
+            buffer: packed,
+            first_col,
+            first_row,
+            tiles_across: tiles_across_u32,
+            tile_width: layout.width,
+            tile_height: layout.height,
+            slot_stride,
+            tile_slot_bytes,
+            format,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compose_tile(
+        &self,
+        packed: &PackedMetalStrips,
+        src_origin_x: u32,
+        src_origin_y: u32,
+        valid_width: u32,
+        valid_height: u32,
+        output_width: u32,
+        output_height: u32,
+    ) -> Result<statumen::output::metal::MetalDeviceTile, WsiDicomError> {
+        let first_col =
+            u32::try_from(packed.first_col).map_err(|_| WsiDicomError::Unsupported {
+                reason: "Metal WholeLevel first source tile column exceeds u32".into(),
+            })?;
+        let first_row =
+            u32::try_from(packed.first_row).map_err(|_| WsiDicomError::Unsupported {
+                reason: "Metal WholeLevel first source tile row exceeds u32".into(),
+            })?;
+        let bytes_per_pixel = packed.format.bytes_per_pixel();
+        let dst_stride = (output_width as usize)
+            .checked_mul(bytes_per_pixel)
+            .ok_or_else(|| WsiDicomError::Unsupported {
+                reason: "Metal composed tile stride overflow".into(),
+            })?;
+        let dst_bytes = dst_stride
+            .checked_mul(output_height as usize)
+            .ok_or_else(|| WsiDicomError::Unsupported {
+                reason: "Metal composed tile byte length overflow".into(),
+            })?;
+        let dst_bytes_u64 = u64::try_from(dst_bytes).map_err(|_| WsiDicomError::Unsupported {
+            reason: "Metal composed tile byte length exceeds u64".into(),
+        })?;
+        let dst_buffer = self
+            .device
+            .new_buffer(dst_bytes_u64, metal::MTLResourceOptions::StorageModeShared);
+        let params = MetalComposeStripsParams {
+            src_origin_x,
+            src_origin_y,
+            valid_width,
+            valid_height,
+            output_width,
+            output_height,
+            bytes_per_pixel: u32::try_from(bytes_per_pixel).map_err(|_| {
+                WsiDicomError::Unsupported {
+                    reason: "Metal composed tile bytes-per-pixel exceeds u32".into(),
+                }
+            })?,
+            src_tile_width: packed.tile_width,
+            src_tile_height: packed.tile_height,
+            src_slot_stride: u32::try_from(packed.slot_stride).map_err(|_| {
+                WsiDicomError::Unsupported {
+                    reason: "Metal WholeLevel source slot stride exceeds u32".into(),
+                }
+            })?,
+            src_tile_slot_bytes: u32::try_from(packed.tile_slot_bytes).map_err(|_| {
+                WsiDicomError::Unsupported {
+                    reason: "Metal WholeLevel source tile slot byte length exceeds u32".into(),
+                }
+            })?,
+            src_first_col: first_col,
+            src_first_row: first_row,
+            src_tiles_across: packed.tiles_across,
+            dst_stride: u32::try_from(dst_stride).map_err(|_| WsiDicomError::Unsupported {
+                reason: "Metal composed tile pitch exceeds u32".into(),
+            })?,
+        };
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.pipeline);
+        encoder.set_buffer(0, Some(&packed.buffer), 0);
+        encoder.set_buffer(1, Some(&dst_buffer), 0);
+        encoder.set_bytes(
+            2,
+            core::mem::size_of::<MetalComposeStripsParams>() as u64,
+            (&raw const params).cast(),
+        );
+        let width = self.pipeline.thread_execution_width().max(1);
+        let max_threads = self.pipeline.max_total_threads_per_threadgroup().max(width);
+        let height = (max_threads / width).max(1);
+        encoder.dispatch_threads(
+            metal::MTLSize {
+                width: u64::from(output_width),
+                height: u64::from(output_height),
+                depth: 1,
+            },
+            metal::MTLSize {
+                width,
+                height,
+                depth: 1,
+            },
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(statumen::output::metal::MetalDeviceTile {
+            width: valid_width,
+            height: valid_height,
+            pitch_bytes: dst_stride,
+            format: packed.format,
+            storage: statumen::output::metal::MetalDeviceStorage::Buffer {
+                buffer: dst_buffer,
+                byte_offset: 0,
+            },
+        })
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MetalComposeStripsParams {
+    src_origin_x: u32,
+    src_origin_y: u32,
+    valid_width: u32,
+    valid_height: u32,
+    output_width: u32,
+    output_height: u32,
+    bytes_per_pixel: u32,
+    src_tile_width: u32,
+    src_tile_height: u32,
+    src_slot_stride: u32,
+    src_tile_slot_bytes: u32,
+    src_first_col: u32,
+    src_first_row: u32,
+    src_tiles_across: u32,
+    dst_stride: u32,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+const WSI_COMPOSE_STRIPS_METAL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct MetalComposeStripsParams {
+    uint src_origin_x;
+    uint src_origin_y;
+    uint valid_width;
+    uint valid_height;
+    uint output_width;
+    uint output_height;
+    uint bytes_per_pixel;
+    uint src_tile_width;
+    uint src_tile_height;
+    uint src_slot_stride;
+    uint src_tile_slot_bytes;
+    uint src_first_col;
+    uint src_first_row;
+    uint src_tiles_across;
+    uint dst_stride;
+};
+
+kernel void wsi_compose_strips(
+    device const uchar *src [[buffer(0)]],
+    device uchar *dst [[buffer(1)]],
+    constant MetalComposeStripsParams &params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.output_width || gid.y >= params.output_height) {
+        return;
+    }
+
+    const uint dst_idx = gid.y * params.dst_stride + gid.x * params.bytes_per_pixel;
+    const bool inside = gid.x < params.valid_width && gid.y < params.valid_height;
+    if (!inside) {
+        for (uint byte_idx = 0u; byte_idx < params.bytes_per_pixel; ++byte_idx) {
+            dst[dst_idx + byte_idx] = uchar(0);
+        }
+        return;
+    }
+
+    const uint global_x = params.src_origin_x + gid.x;
+    const uint global_y = params.src_origin_y + gid.y;
+    const uint source_col = global_x / params.src_tile_width;
+    const uint source_row = global_y / params.src_tile_height;
+    const uint in_tile_x = global_x - source_col * params.src_tile_width;
+    const uint in_tile_y = global_y - source_row * params.src_tile_height;
+    const uint packed_col = source_col - params.src_first_col;
+    const uint packed_row = source_row - params.src_first_row;
+    const uint tile_idx = packed_row * params.src_tiles_across + packed_col;
+    const uint src_idx = tile_idx * params.src_tile_slot_bytes
+        + in_tile_y * params.src_slot_stride
+        + in_tile_x * params.bytes_per_pixel;
+    for (uint byte_idx = 0u; byte_idx < params.bytes_per_pixel; ++byte_idx) {
+        dst[dst_idx + byte_idx] = src[src_idx + byte_idx];
+    }
+}
+"#;
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
+fn try_encode_metal_input_tile_run(
+    slide: &Slide,
+    metal_input: &mut MetalInputTileReader,
+    j2k_encoder: &mut DicomJ2kEncoder,
+    level: &statumen::Level,
+    scene_idx: usize,
+    series_idx: usize,
+    level_idx: u32,
+    z: u32,
+    c: u32,
+    t: u32,
+    row: u64,
+    start_col: u64,
+    tile_count: u64,
+    matrix_columns: u64,
+    matrix_rows: u64,
+    tile_size: u32,
+) -> Result<Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>>, WsiDicomError> {
+    let tile_count = usize::try_from(tile_count).map_err(|_| WsiDicomError::Unsupported {
+        reason: "tile batch size exceeds platform addressable memory".into(),
+    })?;
+
+    if !metal_input.enabled() {
+        return Ok(empty_metal_tile_run(tile_count));
+    }
+
+    if output_tile_maps_to_statumen_tile(level, tile_size) {
+        return try_encode_metal_aligned_tile_run(
+            slide,
+            metal_input,
+            j2k_encoder,
+            level,
+            scene_idx,
+            series_idx,
+            level_idx,
+            z,
+            c,
+            t,
+            row,
+            start_col,
+            tile_count,
+            matrix_columns,
+            matrix_rows,
+            tile_size,
+        );
+    }
+
+    if let Some(strip_layout) = whole_level_strip_layout(level) {
+        return try_encode_metal_whole_level_strip_run(
+            slide,
+            metal_input,
+            j2k_encoder,
+            strip_layout,
+            scene_idx,
+            series_idx,
+            level_idx,
+            z,
+            c,
+            t,
+            row,
+            start_col,
+            tile_count,
+            matrix_columns,
+            matrix_rows,
+            tile_size,
+        );
+    }
+
+    if metal_input.preference == EncodeBackendPreference::RequireDevice {
+        return Err(WsiDicomError::Unsupported {
+            reason:
+                "requested Metal input tile decode requires a DICOM tile grid that can be sourced from aligned statumen tiles or WholeLevel strip tiles"
+                    .into(),
+        });
+    }
+    Ok(empty_metal_tile_run(tile_count))
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
+fn try_encode_metal_aligned_tile_run(
+    slide: &Slide,
+    metal_input: &mut MetalInputTileReader,
+    j2k_encoder: &mut DicomJ2kEncoder,
+    level: &statumen::Level,
+    scene_idx: usize,
+    series_idx: usize,
+    level_idx: u32,
+    z: u32,
+    c: u32,
+    t: u32,
+    row: u64,
+    start_col: u64,
+    tile_count: usize,
+    matrix_columns: u64,
+    matrix_rows: u64,
+    tile_size: u32,
+) -> Result<Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>>, WsiDicomError> {
+    if !output_tile_maps_to_statumen_tile(level, tile_size) {
+        if metal_input.preference == EncodeBackendPreference::RequireDevice {
+            return Err(WsiDicomError::Unsupported {
+                reason:
+                    "requested Metal input tile decode requires the DICOM tile grid to align with statumen source tiles"
+                        .into(),
+            });
+        }
+        return Ok(empty_metal_tile_run(tile_count));
+    }
+
+    let row_i64 = i64::try_from(row).map_err(|_| WsiDicomError::Unsupported {
+        reason: "tile row exceeds i64".into(),
+    })?;
+    let start_col_i64 = i64::try_from(start_col).map_err(|_| WsiDicomError::Unsupported {
+        reason: "tile column exceeds i64".into(),
+    })?;
+    let mut requests = Vec::with_capacity(tile_count);
+    for offset in 0..tile_count {
+        let col = start_col_i64
+            .checked_add(
+                i64::try_from(offset).map_err(|_| WsiDicomError::Unsupported {
+                    reason: "tile batch offset exceeds i64".into(),
+                })?,
+            )
+            .ok_or_else(|| WsiDicomError::Unsupported {
+                reason: "tile column overflow".into(),
+            })?;
+        requests.push(TileRequest {
+            scene: scene_idx,
+            series: series_idx,
+            level: level_idx,
+            plane: PlaneSelection { z, c, t },
+            col,
+            row: row_i64,
+        });
+    }
+
+    let pixels = match slide.read_tiles(
+        &requests,
+        TileOutputPreference::prefer_device_auto_with_metal(metal_input.sessions()?),
+    ) {
+        Ok(pixels) => pixels,
+        Err(err) if metal_input.preference == EncodeBackendPreference::RequireDevice => {
+            return Err(WsiDicomError::SlideRead {
+                message: format!("Metal input tile batch decode failed: {err}"),
+            });
+        }
+        Err(_) => return Ok(empty_metal_tile_run(tile_count)),
+    };
+
+    if pixels.len() != tile_count {
+        if metal_input.preference == EncodeBackendPreference::RequireDevice {
+            return Err(WsiDicomError::SlideRead {
+                message: format!(
+                    "Metal input tile batch returned {} tile(s), expected {}",
+                    pixels.len(),
+                    tile_count
+                ),
+            });
+        }
+        return Ok(empty_metal_tile_run(tile_count));
+    }
+
+    let mut encoded = Vec::with_capacity(tile_count);
+    for (offset, pixels) in pixels.into_iter().enumerate() {
+        let col = start_col
+            .checked_add(
+                u64::try_from(offset).map_err(|_| WsiDicomError::Unsupported {
+                    reason: "tile batch offset exceeds u64".into(),
+                })?,
+            )
+            .ok_or_else(|| WsiDicomError::Unsupported {
+                reason: "tile column overflow".into(),
+            })?;
+        let x =
+            col.checked_mul(u64::from(tile_size))
+                .ok_or_else(|| WsiDicomError::Unsupported {
+                    reason: "tile x offset overflow".into(),
+                })?;
+        let y =
+            row.checked_mul(u64::from(tile_size))
+                .ok_or_else(|| WsiDicomError::Unsupported {
+                    reason: "tile y offset overflow".into(),
+                })?;
+        let width = (matrix_columns - x).min(u64::from(tile_size)) as u32;
+        let height = (matrix_rows - y).min(u64::from(tile_size)) as u32;
+
+        let TilePixels::Device(DeviceTile::Metal(tile)) = pixels else {
+            if metal_input.preference == EncodeBackendPreference::RequireDevice {
+                return Err(WsiDicomError::Unsupported {
+                    reason:
+                        "requested Metal input tile decode returned CPU pixels; set STATUMEN_JPEG_DEVICE_DECODE=1 or STATUMEN_JP2K_DEVICE_DECODE=1 for compressed WSI tiles"
+                            .into(),
+                });
+            }
+            encoded.push(None);
+            continue;
+        };
+
+        if tile.width != width || tile.height != height {
+            if metal_input.preference == EncodeBackendPreference::RequireDevice {
+                return Err(WsiDicomError::Unsupported {
+                    reason: format!(
+                        "Metal input tile geometry changed: expected {}x{}, got {}x{}",
+                        width, height, tile.width, tile.height
+                    ),
+                });
+            }
+            encoded.push(None);
+            continue;
+        }
+
+        let profile = pixel_profile_from_device_format(tile.format)?;
+        match j2k_encoder.encode_metal_tile(&tile, tile_size, tile_size)? {
+            Some(codestream) => encoded.push(Some((codestream, profile))),
+            None if metal_input.preference == EncodeBackendPreference::RequireDevice => {
+                return Err(WsiDicomError::Unsupported {
+                    reason:
+                        "requested JPEG 2000 Metal tile encode did not dispatch all required stages"
+                            .into(),
+                });
+            }
+            None => encoded.push(None),
+        }
+    }
+
+    Ok(encoded)
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[derive(Debug, Clone, Copy)]
+struct WholeLevelStripLayout {
+    width: u32,
+    height: u32,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
+fn try_encode_metal_whole_level_strip_run(
+    slide: &Slide,
+    metal_input: &mut MetalInputTileReader,
+    j2k_encoder: &mut DicomJ2kEncoder,
+    strip_layout: WholeLevelStripLayout,
+    scene_idx: usize,
+    series_idx: usize,
+    level_idx: u32,
+    z: u32,
+    c: u32,
+    t: u32,
+    row: u64,
+    start_col: u64,
+    tile_count: usize,
+    matrix_columns: u64,
+    matrix_rows: u64,
+    tile_size: u32,
+) -> Result<Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>>, WsiDicomError> {
+    let preference = metal_input.preference;
+    let tile_size_u64 = u64::from(tile_size);
+    let x_start =
+        start_col
+            .checked_mul(tile_size_u64)
+            .ok_or_else(|| WsiDicomError::Unsupported {
+                reason: "tile x offset overflow".into(),
+            })?;
+    let y = row
+        .checked_mul(tile_size_u64)
+        .ok_or_else(|| WsiDicomError::Unsupported {
+            reason: "tile y offset overflow".into(),
+        })?;
+    let requested_batch_width = u64::try_from(tile_count)
+        .map_err(|_| WsiDicomError::Unsupported {
+            reason: "tile batch size exceeds u64".into(),
+        })?
+        .checked_mul(tile_size_u64)
+        .ok_or_else(|| WsiDicomError::Unsupported {
+            reason: "tile batch width overflow".into(),
+        })?;
+    let batch_width = matrix_columns
+        .saturating_sub(x_start)
+        .min(requested_batch_width);
+    let valid_height = (matrix_rows - y).min(tile_size_u64) as u32;
+    let source_tile_width = u64::from(strip_layout.width);
+    let source_tile_height = u64::from(strip_layout.height);
+    let first_source_col = x_start / source_tile_width;
+    let first_source_row = y / source_tile_height;
+    let source_col_count = x_start
+        .checked_add(batch_width)
+        .ok_or_else(|| WsiDicomError::Unsupported {
+            reason: "source tile x end overflow".into(),
+        })?
+        .div_ceil(source_tile_width)
+        .saturating_sub(first_source_col);
+    let source_row_count = y
+        .checked_add(u64::from(valid_height))
+        .ok_or_else(|| WsiDicomError::Unsupported {
+            reason: "source tile y end overflow".into(),
+        })?
+        .div_ceil(source_tile_height)
+        .saturating_sub(first_source_row);
+    let first_source_col_i64 =
+        i64::try_from(first_source_col).map_err(|_| WsiDicomError::Unsupported {
+            reason: "source tile column exceeds i64".into(),
+        })?;
+    let first_source_row_i64 =
+        i64::try_from(first_source_row).map_err(|_| WsiDicomError::Unsupported {
+            reason: "source tile row exceeds i64".into(),
+        })?;
+    let source_col_count_usize =
+        usize::try_from(source_col_count).map_err(|_| WsiDicomError::Unsupported {
+            reason: "source tile column count exceeds platform addressable memory".into(),
+        })?;
+    let source_row_count_usize =
+        usize::try_from(source_row_count).map_err(|_| WsiDicomError::Unsupported {
+            reason: "source tile row count exceeds platform addressable memory".into(),
+        })?;
+    let source_tile_count = source_col_count_usize
+        .checked_mul(source_row_count_usize)
+        .ok_or_else(|| WsiDicomError::Unsupported {
+            reason: "source tile batch size overflow".into(),
+        })?;
+    let mut requests = Vec::with_capacity(source_tile_count);
+    for source_row_offset in 0..source_row_count_usize {
+        let source_row = first_source_row_i64
+            .checked_add(i64::try_from(source_row_offset).map_err(|_| {
+                WsiDicomError::Unsupported {
+                    reason: "source tile row offset exceeds i64".into(),
+                }
+            })?)
+            .ok_or_else(|| WsiDicomError::Unsupported {
+                reason: "source tile row overflow".into(),
+            })?;
+        for source_col_offset in 0..source_col_count_usize {
+            let source_col = first_source_col_i64
+                .checked_add(i64::try_from(source_col_offset).map_err(|_| {
+                    WsiDicomError::Unsupported {
+                        reason: "source tile column offset exceeds i64".into(),
+                    }
+                })?)
+                .ok_or_else(|| WsiDicomError::Unsupported {
+                    reason: "source tile column overflow".into(),
+                })?;
+            requests.push(TileRequest {
+                scene: scene_idx,
+                series: series_idx,
+                level: level_idx,
+                plane: PlaneSelection { z, c, t },
+                col: source_col,
+                row: source_row,
+            });
+        }
+    }
+
+    if requests.is_empty() {
+        if preference == EncodeBackendPreference::RequireDevice {
+            return Err(WsiDicomError::Unsupported {
+                reason: "Metal WholeLevel tile source batch is empty".into(),
+            });
+        }
+        return Ok(empty_metal_tile_run(tile_count));
+    }
+
+    let pixels = match slide.read_tiles(
+        &requests,
+        TileOutputPreference::prefer_device_auto_with_metal(metal_input.sessions()?),
+    ) {
+        Ok(pixels) => pixels,
+        Err(err) if preference == EncodeBackendPreference::RequireDevice => {
+            return Err(WsiDicomError::SlideRead {
+                message: format!("Metal WholeLevel tile batch decode failed: {err}"),
+            });
+        }
+        Err(_) => return Ok(empty_metal_tile_run(tile_count)),
+    };
+    if pixels.len() != source_tile_count {
+        if preference == EncodeBackendPreference::RequireDevice {
+            return Err(WsiDicomError::SlideRead {
+                message: format!(
+                    "Metal WholeLevel tile batch returned {} tile(s), expected {}",
+                    pixels.len(),
+                    source_tile_count
+                ),
+            });
+        }
+        return Ok(empty_metal_tile_run(tile_count));
+    }
+
+    let mut source_tiles = Vec::with_capacity(source_tile_count);
+    for pixels in pixels {
+        let TilePixels::Device(DeviceTile::Metal(tile)) = pixels else {
+            if preference == EncodeBackendPreference::RequireDevice {
+                return Err(WsiDicomError::Unsupported {
+                    reason:
+                        "requested Metal WholeLevel tile decode returned CPU pixels; set STATUMEN_JPEG_DEVICE_DECODE=1 or STATUMEN_JP2K_DEVICE_DECODE=1 for compressed WSI tiles"
+                            .into(),
+                });
+            }
+            return Ok(empty_metal_tile_run(tile_count));
+        };
+        if tile.width == 0
+            || tile.height == 0
+            || tile.width > strip_layout.width
+            || tile.height > strip_layout.height
+        {
+            if preference == EncodeBackendPreference::RequireDevice {
+                return Err(WsiDicomError::Unsupported {
+                    reason: format!(
+                        "Metal WholeLevel tile geometry changed: expected <= {}x{}, got {}x{}",
+                        strip_layout.width, strip_layout.height, tile.width, tile.height
+                    ),
+                });
+            }
+            return Ok(empty_metal_tile_run(tile_count));
+        }
+        source_tiles.push(tile);
+    }
+
+    let composer = metal_input.strip_composer()?;
+    let packed = composer.pack_tiles(
+        &source_tiles,
+        strip_layout,
+        first_source_col_i64,
+        first_source_row_i64,
+        source_col_count_usize,
+    )?;
+    let profile = pixel_profile_from_device_format(packed.format)?;
+    let mut encoded = Vec::with_capacity(tile_count);
+    for offset in 0..tile_count {
+        let col = start_col
+            .checked_add(
+                u64::try_from(offset).map_err(|_| WsiDicomError::Unsupported {
+                    reason: "tile batch offset exceeds u64".into(),
+                })?,
+            )
+            .ok_or_else(|| WsiDicomError::Unsupported {
+                reason: "tile column overflow".into(),
+            })?;
+        let x = col
+            .checked_mul(tile_size_u64)
+            .ok_or_else(|| WsiDicomError::Unsupported {
+                reason: "tile x offset overflow".into(),
+            })?;
+        let valid_width = (matrix_columns - x).min(tile_size_u64) as u32;
+        let src_origin_x = u32::try_from(x).map_err(|_| WsiDicomError::Unsupported {
+            reason: "Metal WholeLevel tile source x offset exceeds u32".into(),
+        })?;
+        let src_origin_y = u32::try_from(y).map_err(|_| WsiDicomError::Unsupported {
+            reason: "Metal WholeLevel tile source y offset exceeds u32".into(),
+        })?;
+        let composed = composer.compose_tile(
+            &packed,
+            src_origin_x,
+            src_origin_y,
+            valid_width,
+            valid_height,
+            tile_size,
+            tile_size,
+        )?;
+        match j2k_encoder.encode_metal_tile(&composed, tile_size, tile_size)? {
+            Some(codestream) => encoded.push(Some((codestream, profile))),
+            None if preference == EncodeBackendPreference::RequireDevice => {
+                return Err(WsiDicomError::Unsupported {
+                    reason:
+                        "requested JPEG 2000 Metal tile encode did not dispatch all required stages"
+                            .into(),
+                });
+            }
+            None => encoded.push(None),
+        }
+    }
+
+    Ok(encoded)
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn empty_metal_tile_run(tile_count: usize) -> Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>> {
+    (0..tile_count).map(|_| None).collect()
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn whole_level_strip_layout(level: &statumen::Level) -> Option<WholeLevelStripLayout> {
+    let TileLayout::WholeLevel {
+        virtual_tile_width,
+        virtual_tile_height,
+        ..
+    } = level.tile_layout
+    else {
+        return None;
+    };
+    if virtual_tile_width == 0 || virtual_tile_height == 0 {
+        return None;
+    }
+    Some(WholeLevelStripLayout {
+        width: virtual_tile_width,
+        height: virtual_tile_height,
+    })
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn output_tile_maps_to_statumen_tile(level: &statumen::Level, tile_size: u32) -> bool {
+    matches!(
+        level.tile_layout,
+        TileLayout::Regular {
+            tile_width,
+            tile_height,
+            ..
+        } if tile_width == tile_size && tile_height == tile_size
+    ) || matches!(
+        level.tile_layout,
+        TileLayout::WholeLevel {
+            virtual_tile_width,
+            virtual_tile_height,
+            ..
+        } if virtual_tile_width == tile_size && virtual_tile_height == tile_size
+    )
 }
 
 fn even_len(mut bytes: Vec<u8>) -> Vec<u8> {
@@ -304,7 +1404,9 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::encode::{dicom_j2k_decomposition_levels, encode_dicom_j2k_lossless};
+    use crate::encode::{
+        dicom_j2k_decomposition_levels, encode_dicom_j2k_lossless, encode_dicom_lossless,
+    };
     use dicom_core::{DataElement, PrimitiveValue, VR};
     use dicom_dictionary_std::{tags, uids};
     use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
@@ -316,6 +1418,22 @@ mod tests {
         assert_eq!(options.tile_size, 512);
         assert_eq!(options.transfer_syntax.uid(), "1.2.840.10008.1.2.4.90");
         assert_eq!(options.encode_backend, EncodeBackendPreference::Auto);
+    }
+
+    #[test]
+    fn transfer_syntax_uids_include_htj2k_lossless_profiles() {
+        assert_eq!(
+            TransferSyntax::Jpeg2000Lossless.uid(),
+            "1.2.840.10008.1.2.4.90"
+        );
+        assert_eq!(
+            TransferSyntax::Htj2kLossless.uid(),
+            "1.2.840.10008.1.2.4.201"
+        );
+        assert_eq!(
+            TransferSyntax::Htj2kLosslessRpcl.uid(),
+            "1.2.840.10008.1.2.4.202"
+        );
     }
 
     #[test]
@@ -409,6 +1527,43 @@ mod tests {
         let codestream =
             encode_dicom_j2k_lossless(samples, EncodeBackendPreference::CpuOnly).unwrap();
 
+        assert_j2k_facade_roundtrip(samples, &codestream);
+    }
+
+    #[test]
+    fn dicom_htj2k_cpu_encode_round_trips_gray8_tile() {
+        let bytes: Vec<u8> = (0..64).map(|value| ((value * 7) & 0xFF) as u8).collect();
+        let samples = J2kLosslessSamples::new(&bytes, 8, 8, 1, 8, false).expect("valid samples");
+
+        let codestream = crate::encode::encode_dicom_lossless(
+            samples,
+            TransferSyntax::Htj2kLossless,
+            EncodeBackendPreference::CpuOnly,
+        )
+        .unwrap();
+
+        assert!(codestream.windows(2).any(|window| window == [0xFF, 0x50]));
+        assert_j2k_facade_roundtrip(samples, &codestream);
+    }
+
+    #[test]
+    fn dicom_htj2k_rpcl_encode_writes_tlm_marker() {
+        let bytes: Vec<u8> = (0..64).map(|value| ((value * 11) & 0xFF) as u8).collect();
+        let samples = J2kLosslessSamples::new(&bytes, 8, 8, 1, 8, false).expect("valid samples");
+
+        let codestream = crate::encode::encode_dicom_lossless(
+            samples,
+            TransferSyntax::Htj2kLosslessRpcl,
+            EncodeBackendPreference::CpuOnly,
+        )
+        .unwrap();
+
+        let cod_offset = codestream
+            .windows(2)
+            .position(|window| window == [0xFF, 0x52])
+            .expect("COD marker");
+        assert_eq!(codestream[cod_offset + 5], 0x02);
+        assert!(codestream.windows(2).any(|window| window == [0xFF, 0x55]));
         assert_j2k_facade_roundtrip(samples, &codestream);
     }
 
@@ -508,6 +1663,12 @@ mod tests {
 
         assert_eq!(report.instances.len(), 1);
         assert_eq!(report.instances[0].frame_count, 2);
+        assert_eq!(report.instances[0].metrics.total_frames, 2);
+        assert_eq!(report.instances[0].metrics.cpu_input_frames, 2);
+        assert_eq!(report.instances[0].metrics.gpu_input_decode_frames, 0);
+        assert_eq!(report.metrics.total_frames, 2);
+        assert_eq!(report.metrics.cpu_input_frames, 2);
+        assert_eq!(report.metrics.gpu_input_decode_frames, 0);
         assert_eq!(
             report.instances[0].transfer_syntax_uid,
             TransferSyntax::Jpeg2000Lossless.uid()
@@ -573,6 +1734,203 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn export_dicom_writes_htj2k_lossless_vl_wsi_instances() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.dcm");
+        let out = tmp.path().join("out");
+        write_source_dicom(&source);
+
+        let report = export_dicom(DicomExportRequest {
+            source_path: source,
+            output_dir: out.clone(),
+            options: DicomExportOptions {
+                tile_size: 2,
+                transfer_syntax: TransferSyntax::Htj2kLossless,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+            },
+            metadata: MetadataSource::ResearchPlaceholder,
+        })
+        .unwrap();
+
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.metrics.total_frames, 2);
+        assert_eq!(report.metrics.cpu_input_frames, 2);
+        assert_eq!(report.metrics.gpu_input_decode_frames, 0);
+        assert_eq!(report.metrics.gpu_encode_frames, 0);
+        assert_eq!(report.metrics.gpu_validation_frames, 0);
+        assert_eq!(
+            report.instances[0].transfer_syntax_uid,
+            TransferSyntax::Htj2kLossless.uid()
+        );
+
+        let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+        assert_eq!(
+            object.meta().transfer_syntax.trim_end_matches('\0'),
+            TransferSyntax::Htj2kLossless.uid()
+        );
+        assert_eq!(
+            object
+                .element(tags::PIXEL_DATA)
+                .unwrap()
+                .value()
+                .fragments()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    #[ignore = "requires WSI_DICOM_NDPI_FIXTURE"]
+    fn ndpi_fixture_exports_all_lossless_j2k_transfer_syntaxes_and_tile_sizes() {
+        let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
+            return;
+        };
+        let slide = Slide::open(&source).unwrap();
+        let level = &slide.dataset().scenes[0].series[0].levels[0];
+        let (matrix_columns, matrix_rows) = level.dimensions;
+        assert!(matrix_columns > 0);
+        assert!(matrix_rows > 0);
+
+        for tile_size in [512, 1024, 2048] {
+            let tile_size_u64 = u64::from(tile_size);
+            let x = ((matrix_columns - 1) / tile_size_u64) * tile_size_u64;
+            let y = ((matrix_rows - 1) / tile_size_u64) * tile_size_u64;
+            let width = (matrix_columns - x).min(tile_size_u64) as u32;
+            let height = (matrix_rows - y).min(tile_size_u64) as u32;
+            let region = slide
+                .read_region(&RegionRequest {
+                    scene: SceneId(0),
+                    series: SeriesId(0),
+                    level: LevelIdx(0),
+                    plane: PlaneIdx(PlaneSelection { z: 0, c: 0, t: 0 }),
+                    origin_px: (x as i64, y as i64),
+                    size_px: (width, height),
+                })
+                .unwrap();
+            let prepared = prepare_tile_samples(&region, tile_size, tile_size).unwrap();
+            let samples = J2kLosslessSamples::new(
+                &prepared.bytes,
+                tile_size,
+                tile_size,
+                prepared.profile.components,
+                prepared.profile.bits_allocated as u8,
+                false,
+            )
+            .unwrap();
+
+            for transfer_syntax in [
+                TransferSyntax::Jpeg2000Lossless,
+                TransferSyntax::Htj2kLossless,
+                TransferSyntax::Htj2kLosslessRpcl,
+            ] {
+                let codestream = encode_dicom_lossless(
+                    samples,
+                    transfer_syntax,
+                    EncodeBackendPreference::RequireDevice,
+                )
+                .unwrap();
+                assert_transfer_syntax_codestream(transfer_syntax, &codestream);
+                assert_j2k_facade_roundtrip(samples, &codestream);
+            }
+        }
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    #[ignore = "requires WSI_DICOM_METAL_INPUT_FIXTURE"]
+    fn fixture_first_mappable_tiles_use_batched_statumen_metal_input_decode_and_metal_encode() {
+        let Some(source) = std::env::var_os("WSI_DICOM_METAL_INPUT_FIXTURE").map(PathBuf::from)
+        else {
+            return;
+        };
+        std::env::set_var("STATUMEN_JPEG_DEVICE_DECODE", "1");
+        std::env::set_var("STATUMEN_JP2K_DEVICE_DECODE", "1");
+
+        let slide = Slide::open(&source).unwrap();
+        let level = &slide.dataset().scenes[0].series[0].levels[0];
+        let tile_size = match level.tile_layout {
+            TileLayout::Regular {
+                tile_width,
+                tile_height,
+                ..
+            } => {
+                assert_eq!(tile_width, tile_height);
+                tile_width
+            }
+            TileLayout::WholeLevel {
+                virtual_tile_width,
+                virtual_tile_height,
+                ..
+            } if virtual_tile_width == virtual_tile_height => virtual_tile_width,
+            TileLayout::WholeLevel { .. } => 512,
+            _ => {
+                panic!("fixture first level must use a mappable Regular or WholeLevel tile layout")
+            }
+        };
+        let tiles_across = level.dimensions.0.div_ceil(u64::from(tile_size));
+        let tile_count = tiles_across.min(2);
+        assert!(tile_count > 0);
+
+        let mut metal_input = MetalInputTileReader::new(EncodeBackendPreference::RequireDevice);
+        let mut encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::RequireDevice,
+            TransferSyntax::Jpeg2000Lossless,
+        );
+        let encoded = try_encode_metal_input_tile_run(
+            &slide,
+            &mut metal_input,
+            &mut encoder,
+            level,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            tile_count,
+            level.dimensions.0,
+            level.dimensions.1,
+            tile_size,
+        )
+        .unwrap();
+
+        assert_eq!(encoded.len(), tile_count as usize);
+        for frame in encoded {
+            let frame = frame.expect("fixture tile should decode and encode on Metal");
+            assert!(frame.0.used_device_encode);
+            assert!(frame.0.used_device_validation);
+            assert_transfer_syntax_codestream(
+                TransferSyntax::Jpeg2000Lossless,
+                &frame.0.codestream,
+            );
+        }
+    }
+
+    fn assert_transfer_syntax_codestream(transfer_syntax: TransferSyntax, codestream: &[u8]) {
+        match transfer_syntax {
+            TransferSyntax::Jpeg2000Lossless => {}
+            TransferSyntax::Htj2kLossless => {
+                assert!(codestream.windows(2).any(|window| window == [0xFF, 0x50]));
+            }
+            TransferSyntax::Htj2kLosslessRpcl => {
+                let cod_offset = codestream
+                    .windows(2)
+                    .position(|window| window == [0xFF, 0x52])
+                    .expect("COD marker");
+                assert_eq!(codestream[cod_offset + 5], 0x02);
+                assert!(codestream.windows(2).any(|window| window == [0xFF, 0x50]));
+                assert!(codestream.windows(2).any(|window| window == [0xFF, 0x55]));
+            }
+            TransferSyntax::JpegBaseline8Bit | TransferSyntax::ExplicitVrLittleEndian => {
+                panic!("non-JPEG 2000 transfer syntax in lossless J2K fixture test");
+            }
+        }
     }
 
     #[test]

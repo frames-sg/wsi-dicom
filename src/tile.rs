@@ -46,6 +46,42 @@ pub(crate) fn prepare_tile_samples(
     })
 }
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(crate) fn pixel_profile_from_device_format(
+    format: signinum_j2k::PixelFormat,
+) -> Result<PixelProfile, WsiDicomError> {
+    match format {
+        signinum_j2k::PixelFormat::Gray8 => Ok(PixelProfile {
+            components: 1,
+            bits_allocated: 8,
+            photometric_interpretation: "MONOCHROME2",
+        }),
+        signinum_j2k::PixelFormat::Rgb8 => Ok(PixelProfile {
+            components: 3,
+            bits_allocated: 8,
+            photometric_interpretation: "RGB",
+        }),
+        signinum_j2k::PixelFormat::Gray16 => Ok(PixelProfile {
+            components: 1,
+            bits_allocated: 16,
+            photometric_interpretation: "MONOCHROME2",
+        }),
+        signinum_j2k::PixelFormat::Rgb16 => Ok(PixelProfile {
+            components: 3,
+            bits_allocated: 16,
+            photometric_interpretation: "RGB",
+        }),
+        signinum_j2k::PixelFormat::Rgba8 | signinum_j2k::PixelFormat::Rgba16 => {
+            Err(WsiDicomError::UnsupportedPixelData {
+                reason: "Metal RGBA tiles require an explicit alpha composite policy".into(),
+            })
+        }
+        _ => Err(WsiDicomError::UnsupportedPixelData {
+            reason: "unsupported Metal tile pixel format".into(),
+        }),
+    }
+}
+
 fn pixel_profile(tile: &CpuTile) -> Result<PixelProfile, WsiDicomError> {
     let bits_allocated = match tile.data.sample_type() {
         SampleType::Uint8 => 8,
