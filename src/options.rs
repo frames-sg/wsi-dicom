@@ -27,6 +27,8 @@ impl EncodeBackendPreference {
 pub enum TransferSyntax {
     JpegBaseline8Bit,
     Jpeg2000Lossless,
+    Htj2kLossless,
+    Htj2kLosslessRpcl,
     ExplicitVrLittleEndian,
 }
 
@@ -35,8 +37,17 @@ impl TransferSyntax {
         match self {
             Self::JpegBaseline8Bit => "1.2.840.10008.1.2.4.50",
             Self::Jpeg2000Lossless => "1.2.840.10008.1.2.4.90",
+            Self::Htj2kLossless => "1.2.840.10008.1.2.4.201",
+            Self::Htj2kLosslessRpcl => "1.2.840.10008.1.2.4.202",
             Self::ExplicitVrLittleEndian => "1.2.840.10008.1.2.1",
         }
+    }
+
+    pub(crate) fn is_lossless_j2k_family(self) -> bool {
+        matches!(
+            self,
+            Self::Jpeg2000Lossless | Self::Htj2kLossless | Self::Htj2kLosslessRpcl
+        )
     }
 }
 

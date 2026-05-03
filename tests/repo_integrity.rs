@@ -33,6 +33,7 @@ fn lockfile_has_no_duplicate_signinum_package_sources() {
         "signinum-j2k-metal",
         "signinum-j2k-native",
         "signinum-jpeg",
+        "signinum-jpeg-metal",
         "signinum-tilecodec",
     ] {
         let count = lockfile
@@ -48,6 +49,23 @@ fn lockfile_has_no_duplicate_signinum_package_sources() {
         duplicates.is_empty(),
         "Cargo.lock must not contain duplicate signinum package identities:\n{}",
         duplicates.join("\n")
+    );
+}
+
+#[test]
+fn metal_feature_enables_statumen_metal_decode_plumbing() {
+    let manifest = fs::read_to_string(crate_root().join("Cargo.toml")).expect("read Cargo.toml");
+    assert!(
+        manifest.contains("\"statumen/metal\""),
+        "wsi-dicom's metal feature must enable statumen/metal for input decode plumbing"
+    );
+    assert!(
+        manifest.contains("\"dep:signinum-jpeg-metal\""),
+        "wsi-dicom's metal feature must include signinum-jpeg-metal so statumen can decode JPEG WSI tiles on Metal"
+    );
+    assert!(
+        manifest.contains("\"dep:metal\""),
+        "wsi-dicom's metal feature must include metal so JPEG and J2K decode sessions share one device"
     );
 }
 
