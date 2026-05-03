@@ -1180,6 +1180,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "signinum-jpeg-metal"
+version = "0.2.0"
+dependencies = [
+ "metal",
+ "signinum-core",
+ "signinum-jpeg",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "signinum-tilecodec"
 version = "1.0.0"
 dependencies = [
@@ -1245,6 +1255,7 @@ dependencies = [
  "flate2",
  "image",
  "lru",
+ "metal",
  "pkg-config",
  "quick-xml",
  "rayon",
@@ -1253,7 +1264,9 @@ dependencies = [
  "sha2",
  "signinum-core",
  "signinum-j2k",
+ "signinum-j2k-metal",
  "signinum-jpeg",
+ "signinum-jpeg-metal",
  "signinum-tilecodec",
  "tempfile",
  "thiserror 2.0.18",
@@ -1691,12 +1704,15 @@ dependencies = [
  "dicom-core",
  "dicom-dictionary-std",
  "dicom-object",
+ "metal",
  "serde",
  "serde_json",
  "sha2",
+ "signinum-core",
  "signinum-j2k",
  "signinum-j2k-cuda",
  "signinum-j2k-metal",
+ "signinum-jpeg-metal",
  "statumen",
  "tempfile",
  "thiserror 2.0.18",
