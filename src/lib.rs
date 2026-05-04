@@ -1,15 +1,21 @@
 #![forbid(unsafe_code)]
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use dicom_object::FileMetaTableBuilder;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use signinum_core::PixelFormat as SigninumPixelFormat;
 use signinum_j2k::J2kLosslessSamples;
+use statumen::{
+    Compression, EncodedTilePhotometricInterpretation, LevelIdx, PlaneIdx, PlaneSelection,
+    RawCompressedTile, RegionRequest, SceneId, SeriesId, Slide, TileLayout, TileRequest,
+};
 #[cfg(all(feature = "metal", target_os = "macos"))]
-use statumen::{DeviceTile, TileLayout, TileOutputPreference, TilePixels, TileRequest};
-use statumen::{LevelIdx, PlaneIdx, PlaneSelection, RegionRequest, SceneId, SeriesId, Slide};
+use statumen::{DeviceTile, TileOutputPreference, TilePixels};
 
 mod encode;
 mod error;
@@ -28,7 +34,10 @@ use encode::{DicomJ2kEncoder, EncodedDicomJ2kFrame};
 use tile::pixel_profile_from_device_format;
 use tile::{optical_path_groups, prepare_tile_samples, PixelProfile};
 use uid::{deterministic_instance_path, uid_from_seed};
-use writer::build_dicom_object;
+use writer::{
+    build_dicom_object, write_dicom_object_with_spooled_pixel_data, LossyCompressionMetadata,
+    PixelDataSpool,
+};
 
 pub(crate) const VL_WSI_SOP_CLASS_UID: &str = "1.2.840.10008.5.1.4.1.1.77.1.6";
 
@@ -89,6 +98,11 @@ pub struct DicomExportMetrics {
     pub gpu_input_decode_frames: u64,
     pub gpu_encode_frames: u64,
     pub gpu_validation_frames: u64,
+    pub input_decode_micros: u128,
+    pub compose_micros: u128,
+    pub encode_micros: u128,
+    pub validation_micros: u128,
+    pub write_micros: u128,
 }
 
 impl DicomExportMetrics {
@@ -104,6 +118,15 @@ impl DicomExportMetrics {
         self.gpu_validation_frames = self
             .gpu_validation_frames
             .saturating_add(other.gpu_validation_frames);
+        self.input_decode_micros = self
+            .input_decode_micros
+            .saturating_add(other.input_decode_micros);
+        self.compose_micros = self.compose_micros.saturating_add(other.compose_micros);
+        self.encode_micros = self.encode_micros.saturating_add(other.encode_micros);
+        self.validation_micros = self
+            .validation_micros
+            .saturating_add(other.validation_micros);
+        self.write_micros = self.write_micros.saturating_add(other.write_micros);
     }
 
     fn record_cpu_input(&mut self) {
@@ -116,6 +139,10 @@ impl DicomExportMetrics {
         self.gpu_input_decode_frames = self.gpu_input_decode_frames.saturating_add(1);
     }
 
+    fn record_passthrough_frame(&mut self) {
+        self.total_frames = self.total_frames.saturating_add(1);
+    }
+
     fn record_encoded_frame(&mut self, encoded: &encode::EncodedDicomJ2kFrame) {
         if encoded.used_device_encode {
             self.gpu_encode_frames = self.gpu_encode_frames.saturating_add(1);
@@ -123,15 +150,56 @@ impl DicomExportMetrics {
         if encoded.used_device_validation {
             self.gpu_validation_frames = self.gpu_validation_frames.saturating_add(1);
         }
+        self.record_encode_duration(encoded.encode_duration);
+        self.record_validation_duration(encoded.validation_duration);
+    }
+
+    fn record_input_decode_duration(&mut self, duration: Duration) {
+        self.input_decode_micros = self
+            .input_decode_micros
+            .saturating_add(duration_as_reported_micros(duration));
+    }
+
+    fn record_compose_duration(&mut self, duration: Duration) {
+        self.compose_micros = self
+            .compose_micros
+            .saturating_add(duration_as_reported_micros(duration));
+    }
+
+    fn record_encode_duration(&mut self, duration: Duration) {
+        self.encode_micros = self
+            .encode_micros
+            .saturating_add(duration_as_reported_micros(duration));
+    }
+
+    fn record_validation_duration(&mut self, duration: Duration) {
+        self.validation_micros = self
+            .validation_micros
+            .saturating_add(duration_as_reported_micros(duration));
+    }
+
+    fn record_write_duration(&mut self, duration: Duration) {
+        self.write_micros = self
+            .write_micros
+            .saturating_add(duration_as_reported_micros(duration));
+    }
+}
+
+fn duration_as_reported_micros(duration: Duration) -> u128 {
+    match duration.as_micros() {
+        0 if duration > Duration::ZERO => 1,
+        micros => micros,
     }
 }
 
 /// Export a statumen-readable WSI into DICOM VL Whole Slide Microscopy files.
 pub fn export_dicom(request: DicomExportRequest) -> Result<DicomExportReport, WsiDicomError> {
     request.validate()?;
-    if !request.options.transfer_syntax.is_lossless_j2k_family() {
+    if request.options.transfer_syntax != TransferSyntax::JpegBaseline8Bit
+        && !request.options.transfer_syntax.is_lossless_j2k_family()
+    {
         return Err(WsiDicomError::Unsupported {
-            reason: "only JPEG 2000 Lossless and HTJ2K Lossless transfer syntaxes are implemented"
+            reason: "only JPEG Baseline passthrough, JPEG 2000 Lossless, and HTJ2K Lossless transfer syntaxes are implemented"
                 .into(),
         });
     }
@@ -160,19 +228,37 @@ pub fn export_dicom(request: DicomExportRequest) -> Result<DicomExportReport, Ws
                     for t in 0..series.axes.t {
                         let channel_groups = optical_path_groups(series.axes.c);
                         for c in channel_groups {
-                            let report = export_instance(
-                                &slide,
-                                &request,
-                                &metadata,
-                                &study_uid,
-                                scene_idx,
-                                series_idx,
-                                level_idx as u32,
-                                z,
-                                c,
-                                t,
-                                level,
-                            )?;
+                            let report = if request.options.transfer_syntax
+                                == TransferSyntax::JpegBaseline8Bit
+                            {
+                                export_jpeg_passthrough_instance(
+                                    &slide,
+                                    &request,
+                                    &metadata,
+                                    &study_uid,
+                                    scene_idx,
+                                    series_idx,
+                                    level_idx as u32,
+                                    z,
+                                    c,
+                                    t,
+                                    level,
+                                )?
+                            } else {
+                                export_instance(
+                                    &slide,
+                                    &request,
+                                    &metadata,
+                                    &study_uid,
+                                    scene_idx,
+                                    series_idx,
+                                    level_idx as u32,
+                                    z,
+                                    c,
+                                    t,
+                                    level,
+                                )?
+                            };
                             metrics.add_assign(report.metrics);
                             instances.push(report);
                         }
@@ -233,10 +319,9 @@ fn export_instance(
         c
     ));
 
-    let mut fragments = Vec::with_capacity(frame_count as usize);
-    let mut offsets = Vec::with_capacity(frame_count as usize);
-    let mut lengths = Vec::with_capacity(frame_count as usize);
-    let mut offset = 0_u64;
+    let path = deterministic_instance_path(&request.output_dir, level_idx, z, c, t);
+    let spool_path = path.with_extension("pixeldata.tmp");
+    let mut pixel_spool = PixelDataSpool::create(spool_path, frame_count as usize)?;
     let mut pixel_profile = None;
     let mut j2k_encoder = DicomJ2kEncoder::new(
         request.options.encode_backend,
@@ -266,6 +351,11 @@ fn export_instance(
             matrix_rows,
             tile_size,
         )?;
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        {
+            metrics.record_input_decode_duration(metal_row.input_decode_duration);
+            metrics.record_compose_duration(metal_row.compose_duration);
+        }
 
         for col in 0..tiles_across {
             let x = col * u64::from(tile_size);
@@ -274,30 +364,33 @@ fn export_instance(
             let height = (matrix_rows - y).min(u64::from(tile_size)) as u32;
 
             #[cfg(all(feature = "metal", target_os = "macos"))]
-            let metal_encoded = metal_row[col as usize].take();
+            let metal_encoded = metal_row.tiles[col as usize].take();
             #[cfg(not(all(feature = "metal", target_os = "macos")))]
             let metal_encoded: Option<(EncodedDicomJ2kFrame, PixelProfile)> = None;
 
             let (encoded, profile, used_gpu_input) = match metal_encoded {
                 Some((encoded, profile)) => (Ok(encoded), profile, true),
                 None => {
-                    let (encoded, profile) = encode_cpu_input_tile(
-                        slide,
-                        &mut j2k_encoder,
-                        scene_idx,
-                        series_idx,
-                        level_idx,
-                        z,
-                        c,
-                        t,
-                        row,
-                        col,
-                        x,
-                        y,
-                        width,
-                        height,
-                        tile_size,
-                    )?;
+                    let (encoded, profile, input_decode_duration, compose_duration) =
+                        encode_cpu_input_tile(
+                            slide,
+                            &mut j2k_encoder,
+                            scene_idx,
+                            series_idx,
+                            level_idx,
+                            z,
+                            c,
+                            t,
+                            row,
+                            col,
+                            x,
+                            y,
+                            width,
+                            height,
+                            tile_size,
+                        )?;
+                    metrics.record_input_decode_duration(input_decode_duration);
+                    metrics.record_compose_duration(compose_duration);
                     (encoded, profile, false)
                 }
             };
@@ -327,22 +420,13 @@ fn export_instance(
                 other => other,
             })?;
             metrics.record_encoded_frame(&encoded);
-            let codestream = encoded.codestream;
-            offsets.push(offset);
-            lengths.push(codestream.len() as u64);
-            offset = offset
-                .checked_add(codestream.len() as u64 + 8)
-                .ok_or_else(|| WsiDicomError::Unsupported {
-                    reason: "extended offset table overflow".into(),
-                })?;
-            fragments.push(even_len(codestream));
+            pixel_spool.push_frame(&encoded.codestream)?;
         }
     }
 
     let profile = pixel_profile.ok_or_else(|| WsiDicomError::Unsupported {
         reason: "slide level produced no frames".into(),
     })?;
-    let path = deterministic_instance_path(&request.output_dir, level_idx, z, c, t);
     let object = build_dicom_object(
         metadata,
         study_uid,
@@ -354,26 +438,21 @@ fn export_instance(
         matrix_rows,
         frame_count,
         profile,
-        fragments,
-        offsets,
-        lengths,
+        pixel_spool.offsets(),
+        pixel_spool.lengths(),
+        None,
     )?;
-    object
-        .with_meta(
-            FileMetaTableBuilder::new()
-                .media_storage_sop_class_uid(VL_WSI_SOP_CLASS_UID)
-                .media_storage_sop_instance_uid(&sop_instance_uid)
-                .transfer_syntax(request.options.transfer_syntax.uid()),
-        )
-        .map_err(|err| WsiDicomError::DicomWrite {
-            path: path.clone(),
-            message: err.to_string(),
-        })?
-        .write_to_file(&path)
-        .map_err(|err| WsiDicomError::DicomWrite {
-            path: path.clone(),
-            message: err.to_string(),
-        })?;
+    let write_started = Instant::now();
+    write_dicom_object_with_spooled_pixel_data(
+        &path,
+        object,
+        FileMetaTableBuilder::new()
+            .media_storage_sop_class_uid(VL_WSI_SOP_CLASS_UID)
+            .media_storage_sop_instance_uid(&sop_instance_uid)
+            .transfer_syntax(request.options.transfer_syntax.uid()),
+        &mut pixel_spool,
+    )?;
+    metrics.record_write_duration(write_started.elapsed());
 
     Ok(DicomInstanceReport {
         path,
@@ -387,6 +466,226 @@ fn export_instance(
         frame_count,
         metrics,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn export_jpeg_passthrough_instance(
+    slide: &Slide,
+    request: &DicomExportRequest,
+    metadata: &DicomMetadata,
+    study_uid: &str,
+    scene_idx: usize,
+    series_idx: usize,
+    level_idx: u32,
+    z: u32,
+    c: u32,
+    t: u32,
+    level: &statumen::Level,
+) -> Result<DicomInstanceReport, WsiDicomError> {
+    let tile_size = request.options.tile_size;
+    let (matrix_columns, matrix_rows) = level.dimensions;
+    let (tiles_across, tiles_down) = jpeg_passthrough_tile_grid(level, tile_size)?;
+    let frame_count = tiles_across
+        .checked_mul(tiles_down)
+        .and_then(|count| u32::try_from(count).ok())
+        .ok_or_else(|| WsiDicomError::Unsupported {
+            reason: "frame count exceeds u32".into(),
+        })?;
+
+    let series_uid = uid_from_seed(&format!(
+        "series:{}:{}:{}:{}:{}:{}",
+        request.source_path.display(),
+        scene_idx,
+        series_idx,
+        z,
+        c,
+        t
+    ));
+    let sop_instance_uid = uid_from_seed(&format!(
+        "instance:{}:{}:{}:{}:{}:{}",
+        request.source_path.display(),
+        scene_idx,
+        series_idx,
+        level_idx,
+        z,
+        c
+    ));
+
+    let path = deterministic_instance_path(&request.output_dir, level_idx, z, c, t);
+    let spool_path = path.with_extension("pixeldata.tmp");
+    let mut pixel_spool = PixelDataSpool::create(spool_path, frame_count as usize)?;
+    let mut pixel_profile = None;
+    let mut metrics = DicomExportMetrics::default();
+    let mut compressed_bytes = 0u64;
+    let mut uncompressed_bytes = 0u64;
+
+    for row in 0..tiles_down {
+        for col in 0..tiles_across {
+            let raw = slide
+                .read_raw_compressed_tile(&TileRequest {
+                    scene: scene_idx,
+                    series: series_idx,
+                    level: level_idx,
+                    plane: PlaneSelection { z, c, t },
+                    col: col as i64,
+                    row: row as i64,
+                })
+                .map_err(|err| WsiDicomError::Unsupported {
+                    reason: format!(
+                        "JPEG passthrough unavailable at level {level_idx}, tile row {row}, tile column {col}: {err}"
+                    ),
+                })?;
+            if raw.width != tile_size || raw.height != tile_size {
+                return Err(WsiDicomError::Unsupported {
+                    reason: format!(
+                        "JPEG passthrough requires source JPEG frame dimensions {}x{}, got {}x{} at level {}, tile row {}, tile column {}",
+                        tile_size, tile_size, raw.width, raw.height, level_idx, row, col
+                    ),
+                });
+            }
+            let profile = pixel_profile_from_raw_jpeg_tile(&raw)?;
+            if let Some(existing) = pixel_profile {
+                if existing != profile {
+                    return Err(WsiDicomError::UnsupportedPixelData {
+                        reason: "JPEG passthrough pixel profile changed across frames".into(),
+                    });
+                }
+            } else {
+                pixel_profile = Some(profile);
+            }
+            compressed_bytes =
+                compressed_bytes.saturating_add(u64::try_from(raw.data.len()).unwrap_or(u64::MAX));
+            uncompressed_bytes = uncompressed_bytes.saturating_add(uncompressed_frame_bytes(&raw)?);
+            pixel_spool.push_frame(&raw.data)?;
+            metrics.record_passthrough_frame();
+        }
+    }
+
+    let profile = pixel_profile.ok_or_else(|| WsiDicomError::Unsupported {
+        reason: "slide level produced no frames".into(),
+    })?;
+    let object = build_dicom_object(
+        metadata,
+        study_uid,
+        &series_uid,
+        &sop_instance_uid,
+        level_idx,
+        tile_size,
+        matrix_columns,
+        matrix_rows,
+        frame_count,
+        profile,
+        pixel_spool.offsets(),
+        pixel_spool.lengths(),
+        Some(LossyCompressionMetadata {
+            method: "ISO_10918_1",
+            ratio: (compressed_bytes > 0)
+                .then_some(uncompressed_bytes as f64 / compressed_bytes as f64),
+        }),
+    )?;
+    let write_started = Instant::now();
+    write_dicom_object_with_spooled_pixel_data(
+        &path,
+        object,
+        FileMetaTableBuilder::new()
+            .media_storage_sop_class_uid(VL_WSI_SOP_CLASS_UID)
+            .media_storage_sop_instance_uid(&sop_instance_uid)
+            .transfer_syntax(request.options.transfer_syntax.uid()),
+        &mut pixel_spool,
+    )?;
+    metrics.record_write_duration(write_started.elapsed());
+
+    Ok(DicomInstanceReport {
+        path,
+        sop_instance_uid,
+        series_instance_uid: series_uid,
+        transfer_syntax_uid: request.options.transfer_syntax.uid(),
+        level: level_idx,
+        z,
+        c,
+        t,
+        frame_count,
+        metrics,
+    })
+}
+
+fn jpeg_passthrough_tile_grid(
+    level: &statumen::Level,
+    tile_size: u32,
+) -> Result<(u64, u64), WsiDicomError> {
+    match level.tile_layout {
+        TileLayout::Regular {
+            tile_width,
+            tile_height,
+            tiles_across,
+            tiles_down,
+        } if tile_width == tile_size && tile_height == tile_size => Ok((tiles_across, tiles_down)),
+        TileLayout::Regular {
+            tile_width,
+            tile_height,
+            ..
+        } => Err(WsiDicomError::Unsupported {
+            reason: format!(
+                "JPEG passthrough requires source tile size to match requested DICOM tile size {tile_size}, got {tile_width}x{tile_height}"
+            ),
+        }),
+        TileLayout::WholeLevel { .. } => Err(WsiDicomError::Unsupported {
+            reason:
+                "JPEG passthrough is not available for whole-level JPEG layouts such as NDPI"
+                    .into(),
+        }),
+        TileLayout::Irregular { .. } => Err(WsiDicomError::Unsupported {
+            reason: "JPEG passthrough is not available for irregular tile layouts".into(),
+        }),
+    }
+}
+
+fn pixel_profile_from_raw_jpeg_tile(
+    raw: &RawCompressedTile,
+) -> Result<PixelProfile, WsiDicomError> {
+    if raw.compression != Compression::Jpeg {
+        return Err(WsiDicomError::Unsupported {
+            reason: format!(
+                "JPEG passthrough requires JPEG compression, got {:?}",
+                raw.compression
+            ),
+        });
+    }
+    if raw.bits_allocated != 8 {
+        return Err(WsiDicomError::UnsupportedPixelData {
+            reason: format!(
+                "JPEG passthrough requires 8-bit samples, got {}",
+                raw.bits_allocated
+            ),
+        });
+    }
+    let photometric_interpretation = match raw.photometric_interpretation {
+        EncodedTilePhotometricInterpretation::Monochrome2 => "MONOCHROME2",
+        EncodedTilePhotometricInterpretation::Rgb => "RGB",
+        EncodedTilePhotometricInterpretation::YbrFull422 => "YBR_FULL_422",
+    };
+    let components =
+        u8::try_from(raw.samples_per_pixel).map_err(|_| WsiDicomError::UnsupportedPixelData {
+            reason: format!(
+                "JPEG passthrough component count exceeds u8: {}",
+                raw.samples_per_pixel
+            ),
+        })?;
+    Ok(PixelProfile {
+        components,
+        bits_allocated: raw.bits_allocated,
+        photometric_interpretation,
+    })
+}
+
+fn uncompressed_frame_bytes(raw: &RawCompressedTile) -> Result<u64, WsiDicomError> {
+    u64::from(raw.width)
+        .checked_mul(u64::from(raw.height))
+        .and_then(|pixels| pixels.checked_mul(u64::from(raw.samples_per_pixel)))
+        .and_then(|samples| samples.checked_mul(u64::from(raw.bits_allocated / 8)))
+        .ok_or_else(|| WsiDicomError::Unsupported {
+            reason: "JPEG passthrough uncompressed frame byte count overflow".into(),
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -406,7 +705,16 @@ fn encode_cpu_input_tile(
     width: u32,
     height: u32,
     tile_size: u32,
-) -> Result<(Result<EncodedDicomJ2kFrame, WsiDicomError>, PixelProfile), WsiDicomError> {
+) -> Result<
+    (
+        Result<EncodedDicomJ2kFrame, WsiDicomError>,
+        PixelProfile,
+        Duration,
+        Duration,
+    ),
+    WsiDicomError,
+> {
+    let input_decode_started = Instant::now();
     let region = slide
         .read_region(&RegionRequest {
             scene: SceneId(scene_idx),
@@ -419,7 +727,10 @@ fn encode_cpu_input_tile(
         .map_err(|source| WsiDicomError::SlideRead {
             message: source.to_string(),
         })?;
+    let input_decode_duration = input_decode_started.elapsed();
+    let compose_started = Instant::now();
     let prepared = prepare_tile_samples(&region, tile_size, tile_size)?;
+    let compose_duration = compose_started.elapsed();
     let samples = J2kLosslessSamples::new(
         &prepared.bytes,
         tile_size,
@@ -431,7 +742,19 @@ fn encode_cpu_input_tile(
     .map_err(|source| WsiDicomError::Encode {
         message: source.to_string(),
     })?;
-    Ok((j2k_encoder.encode(samples), prepared.profile))
+    Ok((
+        j2k_encoder.encode(samples),
+        prepared.profile,
+        input_decode_duration,
+        compose_duration,
+    ))
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+struct MetalEncodedTileRun {
+    tiles: Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>>,
+    input_decode_duration: Duration,
+    compose_duration: Duration,
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -440,6 +763,7 @@ struct MetalInputTileReader {
     device: Option<metal::Device>,
     sessions: Option<statumen::output::metal::MetalBackendSessions>,
     strip_composer: Option<MetalStripComposer>,
+    whole_level_cache: MetalSourceTileCache,
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -450,6 +774,7 @@ impl MetalInputTileReader {
             device: None,
             sessions: None,
             strip_composer: None,
+            whole_level_cache: MetalSourceTileCache::default(),
         }
     }
 
@@ -490,6 +815,68 @@ impl MetalInputTileReader {
             .strip_composer
             .as_ref()
             .expect("Metal strip composer initialized"))
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+const METAL_WHOLE_LEVEL_SOURCE_TILE_CACHE_CAPACITY: usize = 512;
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct MetalSourceTileKey {
+    scene: usize,
+    series: usize,
+    level: u32,
+    z: u32,
+    c: u32,
+    t: u32,
+    col: i64,
+    row: i64,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+struct MetalSourceTileCache {
+    capacity: usize,
+    entries: HashMap<MetalSourceTileKey, statumen::output::metal::MetalDeviceTile>,
+    order: VecDeque<MetalSourceTileKey>,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl Default for MetalSourceTileCache {
+    fn default() -> Self {
+        Self {
+            capacity: METAL_WHOLE_LEVEL_SOURCE_TILE_CACHE_CAPACITY,
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl MetalSourceTileCache {
+    fn get(&mut self, key: MetalSourceTileKey) -> Option<statumen::output::metal::MetalDeviceTile> {
+        let tile = self.entries.get(&key)?.clone();
+        self.touch(key);
+        Some(tile)
+    }
+
+    fn insert(&mut self, key: MetalSourceTileKey, tile: statumen::output::metal::MetalDeviceTile) {
+        if self.capacity == 0 {
+            return;
+        }
+        self.entries.insert(key, tile);
+        self.touch(key);
+        while self.entries.len() > self.capacity {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+    }
+
+    fn touch(&mut self, key: MetalSourceTileKey) {
+        self.order.retain(|existing| existing != &key);
+        self.order.push_back(key);
     }
 }
 
@@ -782,8 +1169,8 @@ impl MetalStripComposer {
         command_buffer.wait_until_completed();
 
         Ok(statumen::output::metal::MetalDeviceTile {
-            width: valid_width,
-            height: valid_height,
+            width: output_width,
+            height: output_height,
             pitch_bytes: dst_stride,
             format: packed.format,
             storage: statumen::output::metal::MetalDeviceStorage::Buffer {
@@ -894,7 +1281,7 @@ fn try_encode_metal_input_tile_run(
     matrix_columns: u64,
     matrix_rows: u64,
     tile_size: u32,
-) -> Result<Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>>, WsiDicomError> {
+) -> Result<MetalEncodedTileRun, WsiDicomError> {
     let tile_count = usize::try_from(tile_count).map_err(|_| WsiDicomError::Unsupported {
         reason: "tile batch size exceeds platform addressable memory".into(),
     })?;
@@ -974,7 +1361,7 @@ fn try_encode_metal_aligned_tile_run(
     matrix_columns: u64,
     matrix_rows: u64,
     tile_size: u32,
-) -> Result<Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>>, WsiDicomError> {
+) -> Result<MetalEncodedTileRun, WsiDicomError> {
     if !output_tile_maps_to_statumen_tile(level, tile_size) {
         if metal_input.preference == EncodeBackendPreference::RequireDevice {
             return Err(WsiDicomError::Unsupported {
@@ -1013,6 +1400,7 @@ fn try_encode_metal_aligned_tile_run(
         });
     }
 
+    let input_decode_started = Instant::now();
     let pixels = match slide.read_tiles(
         &requests,
         TileOutputPreference::prefer_device_auto_with_metal(metal_input.sessions()?),
@@ -1025,6 +1413,7 @@ fn try_encode_metal_aligned_tile_run(
         }
         Err(_) => return Ok(empty_metal_tile_run(tile_count)),
     };
+    let input_decode_duration = input_decode_started.elapsed();
 
     if pixels.len() != tile_count {
         if metal_input.preference == EncodeBackendPreference::RequireDevice {
@@ -1039,7 +1428,7 @@ fn try_encode_metal_aligned_tile_run(
         return Ok(empty_metal_tile_run(tile_count));
     }
 
-    let mut encoded = Vec::with_capacity(tile_count);
+    let mut tile_entries = Vec::with_capacity(tile_count);
     for (offset, pixels) in pixels.into_iter().enumerate() {
         let col = start_col
             .checked_add(
@@ -1071,7 +1460,7 @@ fn try_encode_metal_aligned_tile_run(
                             .into(),
                 });
             }
-            encoded.push(None);
+            tile_entries.push(None);
             continue;
         };
 
@@ -1084,12 +1473,31 @@ fn try_encode_metal_aligned_tile_run(
                     ),
                 });
             }
-            encoded.push(None);
+            tile_entries.push(None);
             continue;
         }
 
         let profile = pixel_profile_from_device_format(tile.format)?;
-        match j2k_encoder.encode_metal_tile(&tile, tile_size, tile_size)? {
+        tile_entries.push(Some((tile, profile)));
+    }
+
+    let batch_tiles: Vec<_> = tile_entries
+        .iter()
+        .filter_map(|entry| entry.as_ref().map(|(tile, _)| tile.clone()))
+        .collect();
+    let mut batch_encoded = j2k_encoder
+        .encode_metal_tiles(&batch_tiles, tile_size, tile_size)?
+        .into_iter();
+    let mut encoded = Vec::with_capacity(tile_count);
+    for entry in tile_entries {
+        let Some((_tile, profile)) = entry else {
+            encoded.push(None);
+            continue;
+        };
+        match batch_encoded
+            .next()
+            .expect("Metal batch encode result count matches input tile count")
+        {
             Some(codestream) => encoded.push(Some((codestream, profile))),
             None if metal_input.preference == EncodeBackendPreference::RequireDevice => {
                 return Err(WsiDicomError::Unsupported {
@@ -1102,7 +1510,11 @@ fn try_encode_metal_aligned_tile_run(
         }
     }
 
-    Ok(encoded)
+    Ok(MetalEncodedTileRun {
+        tiles: encoded,
+        input_decode_duration,
+        compose_duration: Duration::ZERO,
+    })
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -1131,7 +1543,7 @@ fn try_encode_metal_whole_level_strip_run(
     matrix_columns: u64,
     matrix_rows: u64,
     tile_size: u32,
-) -> Result<Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>>, WsiDicomError> {
+) -> Result<MetalEncodedTileRun, WsiDicomError> {
     let preference = metal_input.preference;
     let tile_size_u64 = u64::from(tile_size);
     let x_start =
@@ -1196,7 +1608,7 @@ fn try_encode_metal_whole_level_strip_run(
         .ok_or_else(|| WsiDicomError::Unsupported {
             reason: "source tile batch size overflow".into(),
         })?;
-    let mut requests = Vec::with_capacity(source_tile_count);
+    let mut source_keys = Vec::with_capacity(source_tile_count);
     for source_row_offset in 0..source_row_count_usize {
         let source_row = first_source_row_i64
             .checked_add(i64::try_from(source_row_offset).map_err(|_| {
@@ -1217,18 +1629,20 @@ fn try_encode_metal_whole_level_strip_run(
                 .ok_or_else(|| WsiDicomError::Unsupported {
                     reason: "source tile column overflow".into(),
                 })?;
-            requests.push(TileRequest {
+            source_keys.push(MetalSourceTileKey {
                 scene: scene_idx,
                 series: series_idx,
                 level: level_idx,
-                plane: PlaneSelection { z, c, t },
+                z,
+                c,
+                t,
                 col: source_col,
                 row: source_row,
             });
         }
     }
 
-    if requests.is_empty() {
+    if source_keys.is_empty() {
         if preference == EncodeBackendPreference::RequireDevice {
             return Err(WsiDicomError::Unsupported {
                 reason: "Metal WholeLevel tile source batch is empty".into(),
@@ -1237,61 +1651,103 @@ fn try_encode_metal_whole_level_strip_run(
         return Ok(empty_metal_tile_run(tile_count));
     }
 
-    let pixels = match slide.read_tiles(
-        &requests,
-        TileOutputPreference::prefer_device_auto_with_metal(metal_input.sessions()?),
-    ) {
-        Ok(pixels) => pixels,
-        Err(err) if preference == EncodeBackendPreference::RequireDevice => {
-            return Err(WsiDicomError::SlideRead {
-                message: format!("Metal WholeLevel tile batch decode failed: {err}"),
+    let mut source_tiles = vec![None; source_tile_count];
+    let mut missing_requests = Vec::new();
+    let mut missing_keys = Vec::new();
+    let mut missing_indices = Vec::new();
+    for (index, key) in source_keys.iter().copied().enumerate() {
+        if let Some(tile) = metal_input.whole_level_cache.get(key) {
+            source_tiles[index] = Some(tile);
+        } else {
+            missing_requests.push(TileRequest {
+                scene: key.scene,
+                series: key.series,
+                level: key.level,
+                plane: PlaneSelection {
+                    z: key.z,
+                    c: key.c,
+                    t: key.t,
+                },
+                col: key.col,
+                row: key.row,
             });
+            missing_keys.push(key);
+            missing_indices.push(index);
         }
-        Err(_) => return Ok(empty_metal_tile_run(tile_count)),
-    };
-    if pixels.len() != source_tile_count {
-        if preference == EncodeBackendPreference::RequireDevice {
-            return Err(WsiDicomError::SlideRead {
-                message: format!(
-                    "Metal WholeLevel tile batch returned {} tile(s), expected {}",
-                    pixels.len(),
-                    source_tile_count
-                ),
-            });
-        }
-        return Ok(empty_metal_tile_run(tile_count));
     }
 
-    let mut source_tiles = Vec::with_capacity(source_tile_count);
-    for pixels in pixels {
-        let TilePixels::Device(DeviceTile::Metal(tile)) = pixels else {
-            if preference == EncodeBackendPreference::RequireDevice {
-                return Err(WsiDicomError::Unsupported {
-                    reason:
-                        "requested Metal WholeLevel tile decode returned CPU pixels; set STATUMEN_JPEG_DEVICE_DECODE=1 or STATUMEN_JP2K_DEVICE_DECODE=1 for compressed WSI tiles"
-                            .into(),
+    let mut input_decode_duration = Duration::ZERO;
+    if !missing_requests.is_empty() {
+        let input_decode_started = Instant::now();
+        let pixels = match slide.read_tiles(
+            &missing_requests,
+            TileOutputPreference::prefer_device_auto_with_metal(metal_input.sessions()?),
+        ) {
+            Ok(pixels) => pixels,
+            Err(err) if preference == EncodeBackendPreference::RequireDevice => {
+                return Err(WsiDicomError::SlideRead {
+                    message: format!("Metal WholeLevel tile batch decode failed: {err}"),
                 });
             }
-            return Ok(empty_metal_tile_run(tile_count));
+            Err(_) => return Ok(empty_metal_tile_run(tile_count)),
         };
-        if tile.width == 0
-            || tile.height == 0
-            || tile.width > strip_layout.width
-            || tile.height > strip_layout.height
-        {
+        input_decode_duration = input_decode_started.elapsed();
+        if pixels.len() != missing_requests.len() {
             if preference == EncodeBackendPreference::RequireDevice {
-                return Err(WsiDicomError::Unsupported {
-                    reason: format!(
-                        "Metal WholeLevel tile geometry changed: expected <= {}x{}, got {}x{}",
-                        strip_layout.width, strip_layout.height, tile.width, tile.height
+                return Err(WsiDicomError::SlideRead {
+                    message: format!(
+                        "Metal WholeLevel tile batch returned {} tile(s), expected {}",
+                        pixels.len(),
+                        missing_requests.len()
                     ),
                 });
             }
             return Ok(empty_metal_tile_run(tile_count));
         }
-        source_tiles.push(tile);
+        for ((index, key), pixels) in missing_indices
+            .into_iter()
+            .zip(missing_keys.into_iter())
+            .zip(pixels.into_iter())
+        {
+            let TilePixels::Device(DeviceTile::Metal(tile)) = pixels else {
+                if preference == EncodeBackendPreference::RequireDevice {
+                    return Err(WsiDicomError::Unsupported {
+                        reason:
+                            "requested Metal WholeLevel tile decode returned CPU pixels; set STATUMEN_JPEG_DEVICE_DECODE=1 or STATUMEN_JP2K_DEVICE_DECODE=1 for compressed WSI tiles"
+                                .into(),
+                    });
+                }
+                return Ok(empty_metal_tile_run(tile_count));
+            };
+            if tile.width == 0
+                || tile.height == 0
+                || tile.width > strip_layout.width
+                || tile.height > strip_layout.height
+            {
+                if preference == EncodeBackendPreference::RequireDevice {
+                    return Err(WsiDicomError::Unsupported {
+                        reason: format!(
+                            "Metal WholeLevel tile geometry changed: expected <= {}x{}, got {}x{}",
+                            strip_layout.width, strip_layout.height, tile.width, tile.height
+                        ),
+                    });
+                }
+                return Ok(empty_metal_tile_run(tile_count));
+            }
+            metal_input.whole_level_cache.insert(key, tile.clone());
+            source_tiles[index] = Some(tile);
+        }
     }
+    let source_tiles: Vec<_> = source_tiles
+        .into_iter()
+        .map(|tile| {
+            tile.ok_or_else(|| WsiDicomError::Unsupported {
+                reason: "Metal WholeLevel source tile cache returned incomplete row window".into(),
+            })
+        })
+        .collect::<Result<_, _>>()?;
 
+    let compose_started = Instant::now();
     let composer = metal_input.strip_composer()?;
     let packed = composer.pack_tiles(
         &source_tiles,
@@ -1301,7 +1757,7 @@ fn try_encode_metal_whole_level_strip_run(
         source_col_count_usize,
     )?;
     let profile = pixel_profile_from_device_format(packed.format)?;
-    let mut encoded = Vec::with_capacity(tile_count);
+    let mut composed_tiles = Vec::with_capacity(tile_count);
     for offset in 0..tile_count {
         let col = start_col
             .checked_add(
@@ -1333,7 +1789,13 @@ fn try_encode_metal_whole_level_strip_run(
             tile_size,
             tile_size,
         )?;
-        match j2k_encoder.encode_metal_tile(&composed, tile_size, tile_size)? {
+        composed_tiles.push(composed);
+    }
+    let compose_duration = compose_started.elapsed();
+
+    let mut encoded = Vec::with_capacity(tile_count);
+    for frame in j2k_encoder.encode_metal_tiles(&composed_tiles, tile_size, tile_size)? {
+        match frame {
             Some(codestream) => encoded.push(Some((codestream, profile))),
             None if preference == EncodeBackendPreference::RequireDevice => {
                 return Err(WsiDicomError::Unsupported {
@@ -1346,12 +1808,20 @@ fn try_encode_metal_whole_level_strip_run(
         }
     }
 
-    Ok(encoded)
+    Ok(MetalEncodedTileRun {
+        tiles: encoded,
+        input_decode_duration,
+        compose_duration,
+    })
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-fn empty_metal_tile_run(tile_count: usize) -> Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>> {
-    (0..tile_count).map(|_| None).collect()
+fn empty_metal_tile_run(tile_count: usize) -> MetalEncodedTileRun {
+    MetalEncodedTileRun {
+        tiles: (0..tile_count).map(|_| None).collect(),
+        input_decode_duration: Duration::ZERO,
+        compose_duration: Duration::ZERO,
+    }
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -1392,15 +1862,9 @@ fn output_tile_maps_to_statumen_tile(level: &statumen::Level, tile_size: u32) ->
     )
 }
 
-fn even_len(mut bytes: Vec<u8>) -> Vec<u8> {
-    if !bytes.len().is_multiple_of(2) {
-        bytes.push(0);
-    }
-    bytes
-}
-
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
     use std::path::PathBuf;
 
     use super::*;
@@ -1410,6 +1874,7 @@ mod tests {
     use dicom_core::{DataElement, PrimitiveValue, VR};
     use dicom_dictionary_std::{tags, uids};
     use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
+    use jpeg_encoder::{ColorType as JpegColorType, Encoder as JpegEncoder};
 
     #[test]
     fn default_options_use_jpeg2000_lossless_and_auto_backend() {
@@ -1669,6 +2134,15 @@ mod tests {
         assert_eq!(report.metrics.total_frames, 2);
         assert_eq!(report.metrics.cpu_input_frames, 2);
         assert_eq!(report.metrics.gpu_input_decode_frames, 0);
+        assert!(report.metrics.input_decode_micros > 0);
+        assert!(report.metrics.encode_micros > 0);
+        assert!(report.metrics.write_micros > 0);
+        assert!(report.metrics.compose_micros > 0);
+        if report.metrics.gpu_validation_frames == 0 {
+            assert_eq!(report.metrics.validation_micros, 0);
+        } else {
+            assert!(report.metrics.validation_micros > 0);
+        }
         assert_eq!(
             report.instances[0].transfer_syntax_uid,
             TransferSyntax::Jpeg2000Lossless.uid()
@@ -1781,6 +2255,99 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn export_dicom_passthrough_writes_jpeg_baseline_vl_wsi_instance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jpeg = encode_test_jpeg(8, 8, [160, 20, 40]);
+        let source = tmp.path().join("source.svs");
+        write_tiled_jpeg_tiff(&source, 8, 8, 8, 8, std::slice::from_ref(&jpeg));
+        let out = tmp.path().join("out");
+
+        let report = export_dicom(DicomExportRequest {
+            source_path: source,
+            output_dir: out,
+            options: DicomExportOptions {
+                tile_size: 8,
+                transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+                encode_backend: EncodeBackendPreference::RequireDevice,
+            },
+            metadata: MetadataSource::ResearchPlaceholder,
+        })
+        .unwrap();
+
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].frame_count, 1);
+        assert_eq!(report.metrics.total_frames, 1);
+        assert_eq!(report.metrics.cpu_input_frames, 0);
+        assert_eq!(report.metrics.gpu_input_decode_frames, 0);
+        assert_eq!(report.metrics.gpu_encode_frames, 0);
+        assert_eq!(
+            report.instances[0].transfer_syntax_uid,
+            TransferSyntax::JpegBaseline8Bit.uid()
+        );
+
+        let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+        assert_eq!(
+            object.meta().transfer_syntax.trim_end_matches('\0'),
+            TransferSyntax::JpegBaseline8Bit.uid()
+        );
+        assert_eq!(
+            object
+                .element(tags::LOSSY_IMAGE_COMPRESSION)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .as_ref(),
+            "01"
+        );
+        assert_eq!(
+            object
+                .element(tags::LOSSY_IMAGE_COMPRESSION_METHOD)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .as_ref(),
+            "ISO_10918_1"
+        );
+        assert!(
+            object
+                .element(tags::LOSSY_IMAGE_COMPRESSION_RATIO)
+                .unwrap()
+                .to_float32()
+                .unwrap()
+                > 0.0
+        );
+        let fragments = object
+            .element(tags::PIXEL_DATA)
+            .unwrap()
+            .value()
+            .fragments()
+            .unwrap();
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0], jpeg);
+    }
+
+    #[test]
+    fn export_dicom_jpeg_baseline_fails_clearly_for_non_passthrough_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.dcm");
+        write_source_dicom(&source);
+
+        let err = export_dicom(DicomExportRequest {
+            source_path: source,
+            output_dir: tmp.path().join("out"),
+            options: DicomExportOptions {
+                tile_size: 2,
+                transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+                encode_backend: EncodeBackendPreference::Auto,
+            },
+            metadata: MetadataSource::ResearchPlaceholder,
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("JPEG passthrough"), "got: {err}");
     }
 
     #[test]
@@ -1900,8 +2467,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(encoded.len(), tile_count as usize);
-        for frame in encoded {
+        assert_eq!(encoded.tiles.len(), tile_count as usize);
+        assert!(encoded.input_decode_duration > Duration::ZERO);
+        for frame in encoded.tiles {
             let frame = frame.expect("fixture tile should decode and encode on Metal");
             assert!(frame.0.used_device_encode);
             assert!(frame.0.used_device_validation);
@@ -2140,5 +2708,111 @@ mod tests {
             .unwrap()
             .write_to_file(path)
             .unwrap();
+    }
+
+    fn encode_test_jpeg(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
+        let pixels = vec![rgb; (width * height) as usize]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        let mut encoded = Vec::new();
+        JpegEncoder::new(&mut encoded, 90)
+            .encode(
+                &pixels,
+                width.try_into().unwrap(),
+                height.try_into().unwrap(),
+                JpegColorType::Rgb,
+            )
+            .unwrap();
+        encoded
+    }
+
+    fn write_tiled_jpeg_tiff(
+        path: &std::path::Path,
+        width: u32,
+        height: u32,
+        tile_width: u32,
+        tile_height: u32,
+        tiles: &[Vec<u8>],
+    ) {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"II");
+        buf.extend_from_slice(&42u16.to_le_bytes());
+        let first_ifd_pos = buf.len();
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut tile_offsets = Vec::with_capacity(tiles.len());
+        let mut tile_byte_counts = Vec::with_capacity(tiles.len());
+        for tile in tiles {
+            tile_offsets.push(buf.len() as u32);
+            tile_byte_counts.push(tile.len() as u32);
+            buf.extend_from_slice(tile);
+        }
+
+        let tile_offsets_array_offset = buf.len() as u32;
+        for value in &tile_offsets {
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+        let tile_byte_counts_array_offset = buf.len() as u32;
+        for value in &tile_byte_counts {
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let ifd_offset = buf.len() as u32;
+        buf[first_ifd_pos..first_ifd_pos + 4].copy_from_slice(&ifd_offset.to_le_bytes());
+        let mut tags = vec![
+            tiff_tag(256, 4, 1, width.to_le_bytes()),
+            tiff_tag(257, 4, 1, height.to_le_bytes()),
+            tiff_tag(258, 3, 1, tiff_short_value(8)),
+            tiff_tag(259, 3, 1, tiff_short_value(7)),
+            tiff_tag(262, 3, 1, tiff_short_value(6)),
+            tiff_tag(277, 3, 1, tiff_short_value(3)),
+            tiff_tag(322, 4, 1, tile_width.to_le_bytes()),
+            tiff_tag(323, 4, 1, tile_height.to_le_bytes()),
+            tiff_tag(
+                324,
+                4,
+                tile_offsets.len() as u32,
+                if tile_offsets.len() == 1 {
+                    tile_offsets[0].to_le_bytes()
+                } else {
+                    tile_offsets_array_offset.to_le_bytes()
+                },
+            ),
+            tiff_tag(
+                325,
+                4,
+                tile_byte_counts.len() as u32,
+                if tile_byte_counts.len() == 1 {
+                    tile_byte_counts[0].to_le_bytes()
+                } else {
+                    tile_byte_counts_array_offset.to_le_bytes()
+                },
+            ),
+        ];
+        tags.sort_by_key(|tag| tag.0);
+
+        buf.extend_from_slice(&(tags.len() as u16).to_le_bytes());
+        for (tag, typ, count, value) in tags {
+            buf.extend_from_slice(&tag.to_le_bytes());
+            buf.extend_from_slice(&typ.to_le_bytes());
+            buf.extend_from_slice(&count.to_le_bytes());
+            buf.extend_from_slice(&value);
+        }
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut file = std::fs::File::create(path).unwrap();
+        file.write_all(&buf).unwrap();
+        file.flush().unwrap();
+    }
+
+    fn tiff_short_value(value: u16) -> [u8; 4] {
+        let mut bytes = [0u8; 4];
+        bytes[..2].copy_from_slice(&value.to_le_bytes());
+        bytes
+    }
+
+    fn tiff_tag(tag: u16, typ: u16, count: u32, value: [u8; 4]) -> (u16, u16, u32, [u8; 4]) {
+        (tag, typ, count, value)
     }
 }

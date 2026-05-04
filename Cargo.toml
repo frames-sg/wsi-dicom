@@ -37,6 +37,7 @@ metal = ["dep:metal", "dep:signinum-j2k-metal", "dep:signinum-jpeg-metal", "stat
 vendored-codecs = []
 
 [dev-dependencies]
+jpeg-encoder = "0.6"
 tempfile = "3"
 
 [patch.crates-io]

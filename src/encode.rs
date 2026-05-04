@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use signinum_j2k::{
     encode_j2k_lossless, encode_j2k_lossless_with_accelerator, BackendKind, J2kBlockCodingMode,
     J2kEncodeStageAccelerator, J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples,
@@ -21,6 +23,8 @@ pub(crate) struct EncodedDicomJ2kFrame {
     pub(crate) codestream: Vec<u8>,
     pub(crate) used_device_encode: bool,
     pub(crate) used_device_validation: bool,
+    pub(crate) encode_duration: Duration,
+    pub(crate) validation_duration: Duration,
 }
 
 impl DicomJ2kEncoder {
@@ -81,6 +85,7 @@ impl DicomJ2kEncoder {
     ) -> Result<Option<EncodedDicomJ2kFrame>, WsiDicomError> {
         let session = self.ensure_metal_session()?.clone();
         let accelerator = self.metal.get_or_insert_with(Default::default);
+        let encode_started = Instant::now();
         let encoded = encode_j2k_lossless_with_device_accelerator(
             samples,
             self.transfer_syntax,
@@ -88,18 +93,24 @@ impl DicomJ2kEncoder {
             accelerator,
             J2kEncodeValidation::External,
         )?;
+        let encode_duration = encode_started.elapsed();
+        let mut validation_duration = Duration::ZERO;
         if let Some(codestream) = &encoded {
+            let validation_started = Instant::now();
             signinum_j2k_metal::validate_lossless_roundtrip_on_metal_with_session(
                 samples, codestream, &session,
             )
             .map_err(|err| WsiDicomError::Encode {
                 message: format!("JPEG 2000 Metal validation failed: {err}"),
             })?;
+            validation_duration = validation_started.elapsed();
         }
         Ok(encoded.map(|codestream| EncodedDicomJ2kFrame {
             codestream,
             used_device_encode: true,
             used_device_validation: true,
+            encode_duration,
+            validation_duration,
         }))
     }
 
@@ -117,6 +128,7 @@ impl DicomJ2kEncoder {
         samples: J2kLosslessSamples<'_>,
     ) -> Result<Option<EncodedDicomJ2kFrame>, WsiDicomError> {
         let accelerator = self.cuda.get_or_insert_with(Default::default);
+        let started = Instant::now();
         let encoded = encode_j2k_lossless_with_device_accelerator(
             samples,
             self.transfer_syntax,
@@ -124,10 +136,13 @@ impl DicomJ2kEncoder {
             accelerator,
             J2kEncodeValidation::CpuRoundTrip,
         )?;
+        let encode_duration = started.elapsed();
         Ok(encoded.map(|codestream| EncodedDicomJ2kFrame {
             codestream,
             used_device_encode: true,
             used_device_validation: false,
+            encode_duration,
+            validation_duration: Duration::ZERO,
         }))
     }
 
@@ -140,46 +155,79 @@ impl DicomJ2kEncoder {
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    pub(crate) fn encode_metal_tile(
+    pub(crate) fn encode_metal_tiles(
         &mut self,
-        tile: &statumen::output::metal::MetalDeviceTile,
+        tiles: &[statumen::output::metal::MetalDeviceTile],
         output_width: u32,
         output_height: u32,
-    ) -> Result<Option<EncodedDicomJ2kFrame>, WsiDicomError> {
+    ) -> Result<Vec<Option<EncodedDicomJ2kFrame>>, WsiDicomError> {
         if self.preference == EncodeBackendPreference::CpuOnly {
-            return Ok(None);
+            return Ok((0..tiles.len()).map(|_| None).collect());
         }
 
         let session = self.ensure_metal_session()?.clone();
-        let statumen::output::metal::MetalDeviceStorage::Buffer {
-            buffer,
-            byte_offset,
-        } = &tile.storage;
-        let encoded = signinum_j2k_metal::encode_lossless_from_metal_buffer(
-            signinum_j2k_metal::MetalLosslessEncodeTile {
-                buffer,
-                byte_offset: *byte_offset,
-                width: tile.width,
-                height: tile.height,
-                pitch_bytes: tile.pitch_bytes,
-                output_width,
-                output_height,
-                format: tile.format,
-            },
-            &lossless_encode_options(self.transfer_syntax, EncodeBackendPreference::PreferDevice)?,
-            &session,
-        )
-        .map_err(|err| WsiDicomError::Encode {
-            message: format!("JPEG 2000 Metal tile encode failed: {err}"),
-        })?;
+        let options =
+            lossless_encode_options(self.transfer_syntax, EncodeBackendPreference::PreferDevice)?;
+        let mut encoded = Vec::with_capacity(tiles.len());
+        let mut start = 0usize;
+        while start < tiles.len() {
+            let padded =
+                metal_tile_is_padded_contiguous(&tiles[start], output_width, output_height);
+            let mut end = start + 1;
+            while end < tiles.len()
+                && metal_tile_is_padded_contiguous(&tiles[end], output_width, output_height)
+                    == padded
+            {
+                end += 1;
+            }
+            let mut requests = Vec::with_capacity(end - start);
+            for tile in &tiles[start..end] {
+                let statumen::output::metal::MetalDeviceStorage::Buffer {
+                    buffer,
+                    byte_offset,
+                } = &tile.storage;
+                requests.push(signinum_j2k_metal::MetalLosslessEncodeTile {
+                    buffer,
+                    byte_offset: *byte_offset,
+                    width: tile.width,
+                    height: tile.height,
+                    pitch_bytes: tile.pitch_bytes,
+                    output_width,
+                    output_height,
+                    format: tile.format,
+                });
+            }
+            let outcomes = if padded {
+                signinum_j2k_metal::encode_lossless_from_padded_metal_buffers_with_report(
+                    &requests, &options, &session,
+                )
+            } else {
+                signinum_j2k_metal::encode_lossless_from_metal_buffers_with_report(
+                    &requests, &options, &session,
+                )
+            }
+            .map_err(|err| WsiDicomError::Encode {
+                message: format!("JPEG 2000 Metal tile batch encode failed: {err}"),
+            })?;
 
-        Ok(
-            (encoded.backend == BackendKind::Metal).then_some(EncodedDicomJ2kFrame {
-                codestream: encoded.codestream,
-                used_device_encode: true,
-                used_device_validation: true,
-            }),
-        )
+            for outcome in outcomes {
+                encoded.push(
+                    (outcome.encoded.backend == BackendKind::Metal).then_some(
+                        EncodedDicomJ2kFrame {
+                            codestream: outcome.encoded.codestream,
+                            used_device_encode: true,
+                            used_device_validation: true,
+                            encode_duration: outcome
+                                .encode_duration
+                                .saturating_add(outcome.input_copy_duration),
+                            validation_duration: outcome.validation_duration,
+                        },
+                    ),
+                );
+            }
+            start = end;
+        }
+        Ok(encoded)
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -225,18 +273,35 @@ fn encode_lossless_cpu(
     samples: J2kLosslessSamples<'_>,
     transfer_syntax: TransferSyntax,
 ) -> Result<EncodedDicomJ2kFrame, WsiDicomError> {
+    let started = Instant::now();
     encode_j2k_lossless(
         samples,
         &lossless_encode_options(transfer_syntax, EncodeBackendPreference::CpuOnly)?,
     )
-    .map(|encoded| EncodedDicomJ2kFrame {
-        codestream: encoded.codestream,
-        used_device_encode: false,
-        used_device_validation: false,
+    .map(|encoded| {
+        let encode_duration = started.elapsed();
+        EncodedDicomJ2kFrame {
+            codestream: encoded.codestream,
+            used_device_encode: false,
+            used_device_validation: false,
+            encode_duration,
+            validation_duration: Duration::ZERO,
+        }
     })
     .map_err(|source| WsiDicomError::Encode {
         message: source.to_string(),
     })
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn metal_tile_is_padded_contiguous(
+    tile: &statumen::output::metal::MetalDeviceTile,
+    output_width: u32,
+    output_height: u32,
+) -> bool {
+    tile.width == output_width
+        && tile.height == output_height
+        && tile.pitch_bytes == (output_width as usize).saturating_mul(tile.format.bytes_per_pixel())
 }
 
 #[cfg_attr(
