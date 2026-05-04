@@ -44,6 +44,7 @@ metal = [
 vendored-codecs = []
 
 [dev-dependencies]
+jpeg-encoder = "0.6"
 tempfile = "3"
 
 [patch.crates-io]
