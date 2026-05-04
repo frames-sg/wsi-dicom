@@ -1,7 +1,10 @@
 #![forbid(unsafe_code)]
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use dicom_object::FileMetaTableBuilder;
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -28,7 +31,7 @@ use encode::{DicomJ2kEncoder, EncodedDicomJ2kFrame};
 use tile::pixel_profile_from_device_format;
 use tile::{optical_path_groups, prepare_tile_samples, PixelProfile};
 use uid::{deterministic_instance_path, uid_from_seed};
-use writer::build_dicom_object;
+use writer::{build_dicom_object, write_dicom_object_with_spooled_pixel_data, PixelDataSpool};
 
 pub(crate) const VL_WSI_SOP_CLASS_UID: &str = "1.2.840.10008.5.1.4.1.1.77.1.6";
 
@@ -89,6 +92,11 @@ pub struct DicomExportMetrics {
     pub gpu_input_decode_frames: u64,
     pub gpu_encode_frames: u64,
     pub gpu_validation_frames: u64,
+    pub input_decode_micros: u128,
+    pub compose_micros: u128,
+    pub encode_micros: u128,
+    pub validation_micros: u128,
+    pub write_micros: u128,
 }
 
 impl DicomExportMetrics {
@@ -104,6 +112,15 @@ impl DicomExportMetrics {
         self.gpu_validation_frames = self
             .gpu_validation_frames
             .saturating_add(other.gpu_validation_frames);
+        self.input_decode_micros = self
+            .input_decode_micros
+            .saturating_add(other.input_decode_micros);
+        self.compose_micros = self.compose_micros.saturating_add(other.compose_micros);
+        self.encode_micros = self.encode_micros.saturating_add(other.encode_micros);
+        self.validation_micros = self
+            .validation_micros
+            .saturating_add(other.validation_micros);
+        self.write_micros = self.write_micros.saturating_add(other.write_micros);
     }
 
     fn record_cpu_input(&mut self) {
@@ -123,6 +140,45 @@ impl DicomExportMetrics {
         if encoded.used_device_validation {
             self.gpu_validation_frames = self.gpu_validation_frames.saturating_add(1);
         }
+        self.record_encode_duration(encoded.encode_duration);
+        self.record_validation_duration(encoded.validation_duration);
+    }
+
+    fn record_input_decode_duration(&mut self, duration: Duration) {
+        self.input_decode_micros = self
+            .input_decode_micros
+            .saturating_add(duration_as_reported_micros(duration));
+    }
+
+    fn record_compose_duration(&mut self, duration: Duration) {
+        self.compose_micros = self
+            .compose_micros
+            .saturating_add(duration_as_reported_micros(duration));
+    }
+
+    fn record_encode_duration(&mut self, duration: Duration) {
+        self.encode_micros = self
+            .encode_micros
+            .saturating_add(duration_as_reported_micros(duration));
+    }
+
+    fn record_validation_duration(&mut self, duration: Duration) {
+        self.validation_micros = self
+            .validation_micros
+            .saturating_add(duration_as_reported_micros(duration));
+    }
+
+    fn record_write_duration(&mut self, duration: Duration) {
+        self.write_micros = self
+            .write_micros
+            .saturating_add(duration_as_reported_micros(duration));
+    }
+}
+
+fn duration_as_reported_micros(duration: Duration) -> u128 {
+    match duration.as_micros() {
+        0 if duration > Duration::ZERO => 1,
+        micros => micros,
     }
 }
 
@@ -233,10 +289,9 @@ fn export_instance(
         c
     ));
 
-    let mut fragments = Vec::with_capacity(frame_count as usize);
-    let mut offsets = Vec::with_capacity(frame_count as usize);
-    let mut lengths = Vec::with_capacity(frame_count as usize);
-    let mut offset = 0_u64;
+    let path = deterministic_instance_path(&request.output_dir, level_idx, z, c, t);
+    let spool_path = path.with_extension("pixeldata.tmp");
+    let mut pixel_spool = PixelDataSpool::create(spool_path, frame_count as usize)?;
     let mut pixel_profile = None;
     let mut j2k_encoder = DicomJ2kEncoder::new(
         request.options.encode_backend,
@@ -266,6 +321,11 @@ fn export_instance(
             matrix_rows,
             tile_size,
         )?;
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        {
+            metrics.record_input_decode_duration(metal_row.input_decode_duration);
+            metrics.record_compose_duration(metal_row.compose_duration);
+        }
 
         for col in 0..tiles_across {
             let x = col * u64::from(tile_size);
@@ -274,30 +334,33 @@ fn export_instance(
             let height = (matrix_rows - y).min(u64::from(tile_size)) as u32;
 
             #[cfg(all(feature = "metal", target_os = "macos"))]
-            let metal_encoded = metal_row[col as usize].take();
+            let metal_encoded = metal_row.tiles[col as usize].take();
             #[cfg(not(all(feature = "metal", target_os = "macos")))]
             let metal_encoded: Option<(EncodedDicomJ2kFrame, PixelProfile)> = None;
 
             let (encoded, profile, used_gpu_input) = match metal_encoded {
                 Some((encoded, profile)) => (Ok(encoded), profile, true),
                 None => {
-                    let (encoded, profile) = encode_cpu_input_tile(
-                        slide,
-                        &mut j2k_encoder,
-                        scene_idx,
-                        series_idx,
-                        level_idx,
-                        z,
-                        c,
-                        t,
-                        row,
-                        col,
-                        x,
-                        y,
-                        width,
-                        height,
-                        tile_size,
-                    )?;
+                    let (encoded, profile, input_decode_duration, compose_duration) =
+                        encode_cpu_input_tile(
+                            slide,
+                            &mut j2k_encoder,
+                            scene_idx,
+                            series_idx,
+                            level_idx,
+                            z,
+                            c,
+                            t,
+                            row,
+                            col,
+                            x,
+                            y,
+                            width,
+                            height,
+                            tile_size,
+                        )?;
+                    metrics.record_input_decode_duration(input_decode_duration);
+                    metrics.record_compose_duration(compose_duration);
                     (encoded, profile, false)
                 }
             };
@@ -327,22 +390,13 @@ fn export_instance(
                 other => other,
             })?;
             metrics.record_encoded_frame(&encoded);
-            let codestream = encoded.codestream;
-            offsets.push(offset);
-            lengths.push(codestream.len() as u64);
-            offset = offset
-                .checked_add(codestream.len() as u64 + 8)
-                .ok_or_else(|| WsiDicomError::Unsupported {
-                    reason: "extended offset table overflow".into(),
-                })?;
-            fragments.push(even_len(codestream));
+            pixel_spool.push_frame(&encoded.codestream)?;
         }
     }
 
     let profile = pixel_profile.ok_or_else(|| WsiDicomError::Unsupported {
         reason: "slide level produced no frames".into(),
     })?;
-    let path = deterministic_instance_path(&request.output_dir, level_idx, z, c, t);
     let object = build_dicom_object(
         metadata,
         study_uid,
@@ -354,26 +408,20 @@ fn export_instance(
         matrix_rows,
         frame_count,
         profile,
-        fragments,
-        offsets,
-        lengths,
+        pixel_spool.offsets(),
+        pixel_spool.lengths(),
     )?;
-    object
-        .with_meta(
-            FileMetaTableBuilder::new()
-                .media_storage_sop_class_uid(VL_WSI_SOP_CLASS_UID)
-                .media_storage_sop_instance_uid(&sop_instance_uid)
-                .transfer_syntax(request.options.transfer_syntax.uid()),
-        )
-        .map_err(|err| WsiDicomError::DicomWrite {
-            path: path.clone(),
-            message: err.to_string(),
-        })?
-        .write_to_file(&path)
-        .map_err(|err| WsiDicomError::DicomWrite {
-            path: path.clone(),
-            message: err.to_string(),
-        })?;
+    let write_started = Instant::now();
+    write_dicom_object_with_spooled_pixel_data(
+        &path,
+        object,
+        FileMetaTableBuilder::new()
+            .media_storage_sop_class_uid(VL_WSI_SOP_CLASS_UID)
+            .media_storage_sop_instance_uid(&sop_instance_uid)
+            .transfer_syntax(request.options.transfer_syntax.uid()),
+        &mut pixel_spool,
+    )?;
+    metrics.record_write_duration(write_started.elapsed());
 
     Ok(DicomInstanceReport {
         path,
@@ -406,7 +454,16 @@ fn encode_cpu_input_tile(
     width: u32,
     height: u32,
     tile_size: u32,
-) -> Result<(Result<EncodedDicomJ2kFrame, WsiDicomError>, PixelProfile), WsiDicomError> {
+) -> Result<
+    (
+        Result<EncodedDicomJ2kFrame, WsiDicomError>,
+        PixelProfile,
+        Duration,
+        Duration,
+    ),
+    WsiDicomError,
+> {
+    let input_decode_started = Instant::now();
     let region = slide
         .read_region(&RegionRequest {
             scene: SceneId(scene_idx),
@@ -419,7 +476,10 @@ fn encode_cpu_input_tile(
         .map_err(|source| WsiDicomError::SlideRead {
             message: source.to_string(),
         })?;
+    let input_decode_duration = input_decode_started.elapsed();
+    let compose_started = Instant::now();
     let prepared = prepare_tile_samples(&region, tile_size, tile_size)?;
+    let compose_duration = compose_started.elapsed();
     let samples = J2kLosslessSamples::new(
         &prepared.bytes,
         tile_size,
@@ -431,7 +491,19 @@ fn encode_cpu_input_tile(
     .map_err(|source| WsiDicomError::Encode {
         message: source.to_string(),
     })?;
-    Ok((j2k_encoder.encode(samples), prepared.profile))
+    Ok((
+        j2k_encoder.encode(samples),
+        prepared.profile,
+        input_decode_duration,
+        compose_duration,
+    ))
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+struct MetalEncodedTileRun {
+    tiles: Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>>,
+    input_decode_duration: Duration,
+    compose_duration: Duration,
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -440,6 +512,7 @@ struct MetalInputTileReader {
     device: Option<metal::Device>,
     sessions: Option<statumen::output::metal::MetalBackendSessions>,
     strip_composer: Option<MetalStripComposer>,
+    whole_level_cache: MetalSourceTileCache,
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -450,6 +523,7 @@ impl MetalInputTileReader {
             device: None,
             sessions: None,
             strip_composer: None,
+            whole_level_cache: MetalSourceTileCache::default(),
         }
     }
 
@@ -490,6 +564,68 @@ impl MetalInputTileReader {
             .strip_composer
             .as_ref()
             .expect("Metal strip composer initialized"))
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+const METAL_WHOLE_LEVEL_SOURCE_TILE_CACHE_CAPACITY: usize = 512;
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct MetalSourceTileKey {
+    scene: usize,
+    series: usize,
+    level: u32,
+    z: u32,
+    c: u32,
+    t: u32,
+    col: i64,
+    row: i64,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+struct MetalSourceTileCache {
+    capacity: usize,
+    entries: HashMap<MetalSourceTileKey, statumen::output::metal::MetalDeviceTile>,
+    order: VecDeque<MetalSourceTileKey>,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl Default for MetalSourceTileCache {
+    fn default() -> Self {
+        Self {
+            capacity: METAL_WHOLE_LEVEL_SOURCE_TILE_CACHE_CAPACITY,
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl MetalSourceTileCache {
+    fn get(&mut self, key: MetalSourceTileKey) -> Option<statumen::output::metal::MetalDeviceTile> {
+        let tile = self.entries.get(&key)?.clone();
+        self.touch(key);
+        Some(tile)
+    }
+
+    fn insert(&mut self, key: MetalSourceTileKey, tile: statumen::output::metal::MetalDeviceTile) {
+        if self.capacity == 0 {
+            return;
+        }
+        self.entries.insert(key, tile);
+        self.touch(key);
+        while self.entries.len() > self.capacity {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+    }
+
+    fn touch(&mut self, key: MetalSourceTileKey) {
+        self.order.retain(|existing| existing != &key);
+        self.order.push_back(key);
     }
 }
 
@@ -782,8 +918,8 @@ impl MetalStripComposer {
         command_buffer.wait_until_completed();
 
         Ok(statumen::output::metal::MetalDeviceTile {
-            width: valid_width,
-            height: valid_height,
+            width: output_width,
+            height: output_height,
             pitch_bytes: dst_stride,
             format: packed.format,
             storage: statumen::output::metal::MetalDeviceStorage::Buffer {
@@ -894,7 +1030,7 @@ fn try_encode_metal_input_tile_run(
     matrix_columns: u64,
     matrix_rows: u64,
     tile_size: u32,
-) -> Result<Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>>, WsiDicomError> {
+) -> Result<MetalEncodedTileRun, WsiDicomError> {
     let tile_count = usize::try_from(tile_count).map_err(|_| WsiDicomError::Unsupported {
         reason: "tile batch size exceeds platform addressable memory".into(),
     })?;
@@ -974,7 +1110,7 @@ fn try_encode_metal_aligned_tile_run(
     matrix_columns: u64,
     matrix_rows: u64,
     tile_size: u32,
-) -> Result<Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>>, WsiDicomError> {
+) -> Result<MetalEncodedTileRun, WsiDicomError> {
     if !output_tile_maps_to_statumen_tile(level, tile_size) {
         if metal_input.preference == EncodeBackendPreference::RequireDevice {
             return Err(WsiDicomError::Unsupported {
@@ -1013,6 +1149,7 @@ fn try_encode_metal_aligned_tile_run(
         });
     }
 
+    let input_decode_started = Instant::now();
     let pixels = match slide.read_tiles(
         &requests,
         TileOutputPreference::prefer_device_auto_with_metal(metal_input.sessions()?),
@@ -1025,6 +1162,7 @@ fn try_encode_metal_aligned_tile_run(
         }
         Err(_) => return Ok(empty_metal_tile_run(tile_count)),
     };
+    let input_decode_duration = input_decode_started.elapsed();
 
     if pixels.len() != tile_count {
         if metal_input.preference == EncodeBackendPreference::RequireDevice {
@@ -1039,7 +1177,7 @@ fn try_encode_metal_aligned_tile_run(
         return Ok(empty_metal_tile_run(tile_count));
     }
 
-    let mut encoded = Vec::with_capacity(tile_count);
+    let mut tile_entries = Vec::with_capacity(tile_count);
     for (offset, pixels) in pixels.into_iter().enumerate() {
         let col = start_col
             .checked_add(
@@ -1071,7 +1209,7 @@ fn try_encode_metal_aligned_tile_run(
                             .into(),
                 });
             }
-            encoded.push(None);
+            tile_entries.push(None);
             continue;
         };
 
@@ -1084,12 +1222,31 @@ fn try_encode_metal_aligned_tile_run(
                     ),
                 });
             }
-            encoded.push(None);
+            tile_entries.push(None);
             continue;
         }
 
         let profile = pixel_profile_from_device_format(tile.format)?;
-        match j2k_encoder.encode_metal_tile(&tile, tile_size, tile_size)? {
+        tile_entries.push(Some((tile, profile)));
+    }
+
+    let batch_tiles: Vec<_> = tile_entries
+        .iter()
+        .filter_map(|entry| entry.as_ref().map(|(tile, _)| tile.clone()))
+        .collect();
+    let mut batch_encoded = j2k_encoder
+        .encode_metal_tiles(&batch_tiles, tile_size, tile_size)?
+        .into_iter();
+    let mut encoded = Vec::with_capacity(tile_count);
+    for entry in tile_entries {
+        let Some((_tile, profile)) = entry else {
+            encoded.push(None);
+            continue;
+        };
+        match batch_encoded
+            .next()
+            .expect("Metal batch encode result count matches input tile count")
+        {
             Some(codestream) => encoded.push(Some((codestream, profile))),
             None if metal_input.preference == EncodeBackendPreference::RequireDevice => {
                 return Err(WsiDicomError::Unsupported {
@@ -1102,7 +1259,11 @@ fn try_encode_metal_aligned_tile_run(
         }
     }
 
-    Ok(encoded)
+    Ok(MetalEncodedTileRun {
+        tiles: encoded,
+        input_decode_duration,
+        compose_duration: Duration::ZERO,
+    })
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -1131,7 +1292,7 @@ fn try_encode_metal_whole_level_strip_run(
     matrix_columns: u64,
     matrix_rows: u64,
     tile_size: u32,
-) -> Result<Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>>, WsiDicomError> {
+) -> Result<MetalEncodedTileRun, WsiDicomError> {
     let preference = metal_input.preference;
     let tile_size_u64 = u64::from(tile_size);
     let x_start =
@@ -1196,7 +1357,7 @@ fn try_encode_metal_whole_level_strip_run(
         .ok_or_else(|| WsiDicomError::Unsupported {
             reason: "source tile batch size overflow".into(),
         })?;
-    let mut requests = Vec::with_capacity(source_tile_count);
+    let mut source_keys = Vec::with_capacity(source_tile_count);
     for source_row_offset in 0..source_row_count_usize {
         let source_row = first_source_row_i64
             .checked_add(i64::try_from(source_row_offset).map_err(|_| {
@@ -1217,18 +1378,20 @@ fn try_encode_metal_whole_level_strip_run(
                 .ok_or_else(|| WsiDicomError::Unsupported {
                     reason: "source tile column overflow".into(),
                 })?;
-            requests.push(TileRequest {
+            source_keys.push(MetalSourceTileKey {
                 scene: scene_idx,
                 series: series_idx,
                 level: level_idx,
-                plane: PlaneSelection { z, c, t },
+                z,
+                c,
+                t,
                 col: source_col,
                 row: source_row,
             });
         }
     }
 
-    if requests.is_empty() {
+    if source_keys.is_empty() {
         if preference == EncodeBackendPreference::RequireDevice {
             return Err(WsiDicomError::Unsupported {
                 reason: "Metal WholeLevel tile source batch is empty".into(),
@@ -1237,61 +1400,103 @@ fn try_encode_metal_whole_level_strip_run(
         return Ok(empty_metal_tile_run(tile_count));
     }
 
-    let pixels = match slide.read_tiles(
-        &requests,
-        TileOutputPreference::prefer_device_auto_with_metal(metal_input.sessions()?),
-    ) {
-        Ok(pixels) => pixels,
-        Err(err) if preference == EncodeBackendPreference::RequireDevice => {
-            return Err(WsiDicomError::SlideRead {
-                message: format!("Metal WholeLevel tile batch decode failed: {err}"),
+    let mut source_tiles = vec![None; source_tile_count];
+    let mut missing_requests = Vec::new();
+    let mut missing_keys = Vec::new();
+    let mut missing_indices = Vec::new();
+    for (index, key) in source_keys.iter().copied().enumerate() {
+        if let Some(tile) = metal_input.whole_level_cache.get(key) {
+            source_tiles[index] = Some(tile);
+        } else {
+            missing_requests.push(TileRequest {
+                scene: key.scene,
+                series: key.series,
+                level: key.level,
+                plane: PlaneSelection {
+                    z: key.z,
+                    c: key.c,
+                    t: key.t,
+                },
+                col: key.col,
+                row: key.row,
             });
+            missing_keys.push(key);
+            missing_indices.push(index);
         }
-        Err(_) => return Ok(empty_metal_tile_run(tile_count)),
-    };
-    if pixels.len() != source_tile_count {
-        if preference == EncodeBackendPreference::RequireDevice {
-            return Err(WsiDicomError::SlideRead {
-                message: format!(
-                    "Metal WholeLevel tile batch returned {} tile(s), expected {}",
-                    pixels.len(),
-                    source_tile_count
-                ),
-            });
-        }
-        return Ok(empty_metal_tile_run(tile_count));
     }
 
-    let mut source_tiles = Vec::with_capacity(source_tile_count);
-    for pixels in pixels {
-        let TilePixels::Device(DeviceTile::Metal(tile)) = pixels else {
-            if preference == EncodeBackendPreference::RequireDevice {
-                return Err(WsiDicomError::Unsupported {
-                    reason:
-                        "requested Metal WholeLevel tile decode returned CPU pixels; set STATUMEN_JPEG_DEVICE_DECODE=1 or STATUMEN_JP2K_DEVICE_DECODE=1 for compressed WSI tiles"
-                            .into(),
+    let mut input_decode_duration = Duration::ZERO;
+    if !missing_requests.is_empty() {
+        let input_decode_started = Instant::now();
+        let pixels = match slide.read_tiles(
+            &missing_requests,
+            TileOutputPreference::prefer_device_auto_with_metal(metal_input.sessions()?),
+        ) {
+            Ok(pixels) => pixels,
+            Err(err) if preference == EncodeBackendPreference::RequireDevice => {
+                return Err(WsiDicomError::SlideRead {
+                    message: format!("Metal WholeLevel tile batch decode failed: {err}"),
                 });
             }
-            return Ok(empty_metal_tile_run(tile_count));
+            Err(_) => return Ok(empty_metal_tile_run(tile_count)),
         };
-        if tile.width == 0
-            || tile.height == 0
-            || tile.width > strip_layout.width
-            || tile.height > strip_layout.height
-        {
+        input_decode_duration = input_decode_started.elapsed();
+        if pixels.len() != missing_requests.len() {
             if preference == EncodeBackendPreference::RequireDevice {
-                return Err(WsiDicomError::Unsupported {
-                    reason: format!(
-                        "Metal WholeLevel tile geometry changed: expected <= {}x{}, got {}x{}",
-                        strip_layout.width, strip_layout.height, tile.width, tile.height
+                return Err(WsiDicomError::SlideRead {
+                    message: format!(
+                        "Metal WholeLevel tile batch returned {} tile(s), expected {}",
+                        pixels.len(),
+                        missing_requests.len()
                     ),
                 });
             }
             return Ok(empty_metal_tile_run(tile_count));
         }
-        source_tiles.push(tile);
+        for ((index, key), pixels) in missing_indices
+            .into_iter()
+            .zip(missing_keys.into_iter())
+            .zip(pixels.into_iter())
+        {
+            let TilePixels::Device(DeviceTile::Metal(tile)) = pixels else {
+                if preference == EncodeBackendPreference::RequireDevice {
+                    return Err(WsiDicomError::Unsupported {
+                        reason:
+                            "requested Metal WholeLevel tile decode returned CPU pixels; set STATUMEN_JPEG_DEVICE_DECODE=1 or STATUMEN_JP2K_DEVICE_DECODE=1 for compressed WSI tiles"
+                                .into(),
+                    });
+                }
+                return Ok(empty_metal_tile_run(tile_count));
+            };
+            if tile.width == 0
+                || tile.height == 0
+                || tile.width > strip_layout.width
+                || tile.height > strip_layout.height
+            {
+                if preference == EncodeBackendPreference::RequireDevice {
+                    return Err(WsiDicomError::Unsupported {
+                        reason: format!(
+                            "Metal WholeLevel tile geometry changed: expected <= {}x{}, got {}x{}",
+                            strip_layout.width, strip_layout.height, tile.width, tile.height
+                        ),
+                    });
+                }
+                return Ok(empty_metal_tile_run(tile_count));
+            }
+            metal_input.whole_level_cache.insert(key, tile.clone());
+            source_tiles[index] = Some(tile);
+        }
     }
+    let source_tiles: Vec<_> = source_tiles
+        .into_iter()
+        .map(|tile| {
+            tile.ok_or_else(|| WsiDicomError::Unsupported {
+                reason: "Metal WholeLevel source tile cache returned incomplete row window".into(),
+            })
+        })
+        .collect::<Result<_, _>>()?;
 
+    let compose_started = Instant::now();
     let composer = metal_input.strip_composer()?;
     let packed = composer.pack_tiles(
         &source_tiles,
@@ -1301,7 +1506,7 @@ fn try_encode_metal_whole_level_strip_run(
         source_col_count_usize,
     )?;
     let profile = pixel_profile_from_device_format(packed.format)?;
-    let mut encoded = Vec::with_capacity(tile_count);
+    let mut composed_tiles = Vec::with_capacity(tile_count);
     for offset in 0..tile_count {
         let col = start_col
             .checked_add(
@@ -1333,7 +1538,13 @@ fn try_encode_metal_whole_level_strip_run(
             tile_size,
             tile_size,
         )?;
-        match j2k_encoder.encode_metal_tile(&composed, tile_size, tile_size)? {
+        composed_tiles.push(composed);
+    }
+    let compose_duration = compose_started.elapsed();
+
+    let mut encoded = Vec::with_capacity(tile_count);
+    for frame in j2k_encoder.encode_metal_tiles(&composed_tiles, tile_size, tile_size)? {
+        match frame {
             Some(codestream) => encoded.push(Some((codestream, profile))),
             None if preference == EncodeBackendPreference::RequireDevice => {
                 return Err(WsiDicomError::Unsupported {
@@ -1346,12 +1557,20 @@ fn try_encode_metal_whole_level_strip_run(
         }
     }
 
-    Ok(encoded)
+    Ok(MetalEncodedTileRun {
+        tiles: encoded,
+        input_decode_duration,
+        compose_duration,
+    })
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-fn empty_metal_tile_run(tile_count: usize) -> Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>> {
-    (0..tile_count).map(|_| None).collect()
+fn empty_metal_tile_run(tile_count: usize) -> MetalEncodedTileRun {
+    MetalEncodedTileRun {
+        tiles: (0..tile_count).map(|_| None).collect(),
+        input_decode_duration: Duration::ZERO,
+        compose_duration: Duration::ZERO,
+    }
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -1390,13 +1609,6 @@ fn output_tile_maps_to_statumen_tile(level: &statumen::Level, tile_size: u32) ->
             ..
         } if virtual_tile_width == tile_size && virtual_tile_height == tile_size
     )
-}
-
-fn even_len(mut bytes: Vec<u8>) -> Vec<u8> {
-    if !bytes.len().is_multiple_of(2) {
-        bytes.push(0);
-    }
-    bytes
 }
 
 #[cfg(test)]
@@ -1669,6 +1881,15 @@ mod tests {
         assert_eq!(report.metrics.total_frames, 2);
         assert_eq!(report.metrics.cpu_input_frames, 2);
         assert_eq!(report.metrics.gpu_input_decode_frames, 0);
+        assert!(report.metrics.input_decode_micros > 0);
+        assert!(report.metrics.encode_micros > 0);
+        assert!(report.metrics.write_micros > 0);
+        assert!(report.metrics.compose_micros > 0);
+        if report.metrics.gpu_validation_frames == 0 {
+            assert_eq!(report.metrics.validation_micros, 0);
+        } else {
+            assert!(report.metrics.validation_micros > 0);
+        }
         assert_eq!(
             report.instances[0].transfer_syntax_uid,
             TransferSyntax::Jpeg2000Lossless.uid()
@@ -1900,8 +2121,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(encoded.len(), tile_count as usize);
-        for frame in encoded {
+        assert_eq!(encoded.tiles.len(), tile_count as usize);
+        assert!(encoded.input_decode_duration > Duration::ZERO);
+        for frame in encoded.tiles {
             let frame = frame.expect("fixture tile should decode and encode on Metal");
             assert!(frame.0.used_device_encode);
             assert!(frame.0.used_device_validation);
