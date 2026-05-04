@@ -756,6 +756,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "jpeg-encoder"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b454d911ac55068f53495488d8ccd0646eaa540c033a28ee15b07838afafb01f"
+
+[[package]]
 name = "js-sys"
 version = "0.3.97"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1704,6 +1710,7 @@ dependencies = [
  "dicom-core",
  "dicom-dictionary-std",
  "dicom-object",
+ "jpeg-encoder",
  "metal",
  "objc",
  "serde",
