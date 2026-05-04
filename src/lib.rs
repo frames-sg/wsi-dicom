@@ -10,9 +10,12 @@ use dicom_object::FileMetaTableBuilder;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use signinum_core::PixelFormat as SigninumPixelFormat;
 use signinum_j2k::J2kLosslessSamples;
+use statumen::{
+    Compression, EncodedTilePhotometricInterpretation, LevelIdx, PlaneIdx, PlaneSelection,
+    RawCompressedTile, RegionRequest, SceneId, SeriesId, Slide, TileLayout, TileRequest,
+};
 #[cfg(all(feature = "metal", target_os = "macos"))]
-use statumen::{DeviceTile, TileLayout, TileOutputPreference, TilePixels, TileRequest};
-use statumen::{LevelIdx, PlaneIdx, PlaneSelection, RegionRequest, SceneId, SeriesId, Slide};
+use statumen::{DeviceTile, TileOutputPreference, TilePixels};
 
 mod encode;
 mod error;
@@ -31,7 +34,10 @@ use encode::{DicomJ2kEncoder, EncodedDicomJ2kFrame};
 use tile::pixel_profile_from_device_format;
 use tile::{optical_path_groups, prepare_tile_samples, PixelProfile};
 use uid::{deterministic_instance_path, uid_from_seed};
-use writer::{build_dicom_object, write_dicom_object_with_spooled_pixel_data, PixelDataSpool};
+use writer::{
+    build_dicom_object, write_dicom_object_with_spooled_pixel_data, LossyCompressionMetadata,
+    PixelDataSpool,
+};
 
 pub(crate) const VL_WSI_SOP_CLASS_UID: &str = "1.2.840.10008.5.1.4.1.1.77.1.6";
 
@@ -133,6 +139,10 @@ impl DicomExportMetrics {
         self.gpu_input_decode_frames = self.gpu_input_decode_frames.saturating_add(1);
     }
 
+    fn record_passthrough_frame(&mut self) {
+        self.total_frames = self.total_frames.saturating_add(1);
+    }
+
     fn record_encoded_frame(&mut self, encoded: &encode::EncodedDicomJ2kFrame) {
         if encoded.used_device_encode {
             self.gpu_encode_frames = self.gpu_encode_frames.saturating_add(1);
@@ -185,9 +195,11 @@ fn duration_as_reported_micros(duration: Duration) -> u128 {
 /// Export a statumen-readable WSI into DICOM VL Whole Slide Microscopy files.
 pub fn export_dicom(request: DicomExportRequest) -> Result<DicomExportReport, WsiDicomError> {
     request.validate()?;
-    if !request.options.transfer_syntax.is_lossless_j2k_family() {
+    if request.options.transfer_syntax != TransferSyntax::JpegBaseline8Bit
+        && !request.options.transfer_syntax.is_lossless_j2k_family()
+    {
         return Err(WsiDicomError::Unsupported {
-            reason: "only JPEG 2000 Lossless and HTJ2K Lossless transfer syntaxes are implemented"
+            reason: "only JPEG Baseline passthrough, JPEG 2000 Lossless, and HTJ2K Lossless transfer syntaxes are implemented"
                 .into(),
         });
     }
@@ -216,19 +228,37 @@ pub fn export_dicom(request: DicomExportRequest) -> Result<DicomExportReport, Ws
                     for t in 0..series.axes.t {
                         let channel_groups = optical_path_groups(series.axes.c);
                         for c in channel_groups {
-                            let report = export_instance(
-                                &slide,
-                                &request,
-                                &metadata,
-                                &study_uid,
-                                scene_idx,
-                                series_idx,
-                                level_idx as u32,
-                                z,
-                                c,
-                                t,
-                                level,
-                            )?;
+                            let report = if request.options.transfer_syntax
+                                == TransferSyntax::JpegBaseline8Bit
+                            {
+                                export_jpeg_passthrough_instance(
+                                    &slide,
+                                    &request,
+                                    &metadata,
+                                    &study_uid,
+                                    scene_idx,
+                                    series_idx,
+                                    level_idx as u32,
+                                    z,
+                                    c,
+                                    t,
+                                    level,
+                                )?
+                            } else {
+                                export_instance(
+                                    &slide,
+                                    &request,
+                                    &metadata,
+                                    &study_uid,
+                                    scene_idx,
+                                    series_idx,
+                                    level_idx as u32,
+                                    z,
+                                    c,
+                                    t,
+                                    level,
+                                )?
+                            };
                             metrics.add_assign(report.metrics);
                             instances.push(report);
                         }
@@ -410,6 +440,7 @@ fn export_instance(
         profile,
         pixel_spool.offsets(),
         pixel_spool.lengths(),
+        None,
     )?;
     let write_started = Instant::now();
     write_dicom_object_with_spooled_pixel_data(
@@ -435,6 +466,226 @@ fn export_instance(
         frame_count,
         metrics,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn export_jpeg_passthrough_instance(
+    slide: &Slide,
+    request: &DicomExportRequest,
+    metadata: &DicomMetadata,
+    study_uid: &str,
+    scene_idx: usize,
+    series_idx: usize,
+    level_idx: u32,
+    z: u32,
+    c: u32,
+    t: u32,
+    level: &statumen::Level,
+) -> Result<DicomInstanceReport, WsiDicomError> {
+    let tile_size = request.options.tile_size;
+    let (matrix_columns, matrix_rows) = level.dimensions;
+    let (tiles_across, tiles_down) = jpeg_passthrough_tile_grid(level, tile_size)?;
+    let frame_count = tiles_across
+        .checked_mul(tiles_down)
+        .and_then(|count| u32::try_from(count).ok())
+        .ok_or_else(|| WsiDicomError::Unsupported {
+            reason: "frame count exceeds u32".into(),
+        })?;
+
+    let series_uid = uid_from_seed(&format!(
+        "series:{}:{}:{}:{}:{}:{}",
+        request.source_path.display(),
+        scene_idx,
+        series_idx,
+        z,
+        c,
+        t
+    ));
+    let sop_instance_uid = uid_from_seed(&format!(
+        "instance:{}:{}:{}:{}:{}:{}",
+        request.source_path.display(),
+        scene_idx,
+        series_idx,
+        level_idx,
+        z,
+        c
+    ));
+
+    let path = deterministic_instance_path(&request.output_dir, level_idx, z, c, t);
+    let spool_path = path.with_extension("pixeldata.tmp");
+    let mut pixel_spool = PixelDataSpool::create(spool_path, frame_count as usize)?;
+    let mut pixel_profile = None;
+    let mut metrics = DicomExportMetrics::default();
+    let mut compressed_bytes = 0u64;
+    let mut uncompressed_bytes = 0u64;
+
+    for row in 0..tiles_down {
+        for col in 0..tiles_across {
+            let raw = slide
+                .read_raw_compressed_tile(&TileRequest {
+                    scene: scene_idx,
+                    series: series_idx,
+                    level: level_idx,
+                    plane: PlaneSelection { z, c, t },
+                    col: col as i64,
+                    row: row as i64,
+                })
+                .map_err(|err| WsiDicomError::Unsupported {
+                    reason: format!(
+                        "JPEG passthrough unavailable at level {level_idx}, tile row {row}, tile column {col}: {err}"
+                    ),
+                })?;
+            if raw.width != tile_size || raw.height != tile_size {
+                return Err(WsiDicomError::Unsupported {
+                    reason: format!(
+                        "JPEG passthrough requires source JPEG frame dimensions {}x{}, got {}x{} at level {}, tile row {}, tile column {}",
+                        tile_size, tile_size, raw.width, raw.height, level_idx, row, col
+                    ),
+                });
+            }
+            let profile = pixel_profile_from_raw_jpeg_tile(&raw)?;
+            if let Some(existing) = pixel_profile {
+                if existing != profile {
+                    return Err(WsiDicomError::UnsupportedPixelData {
+                        reason: "JPEG passthrough pixel profile changed across frames".into(),
+                    });
+                }
+            } else {
+                pixel_profile = Some(profile);
+            }
+            compressed_bytes =
+                compressed_bytes.saturating_add(u64::try_from(raw.data.len()).unwrap_or(u64::MAX));
+            uncompressed_bytes = uncompressed_bytes.saturating_add(uncompressed_frame_bytes(&raw)?);
+            pixel_spool.push_frame(&raw.data)?;
+            metrics.record_passthrough_frame();
+        }
+    }
+
+    let profile = pixel_profile.ok_or_else(|| WsiDicomError::Unsupported {
+        reason: "slide level produced no frames".into(),
+    })?;
+    let object = build_dicom_object(
+        metadata,
+        study_uid,
+        &series_uid,
+        &sop_instance_uid,
+        level_idx,
+        tile_size,
+        matrix_columns,
+        matrix_rows,
+        frame_count,
+        profile,
+        pixel_spool.offsets(),
+        pixel_spool.lengths(),
+        Some(LossyCompressionMetadata {
+            method: "ISO_10918_1",
+            ratio: (compressed_bytes > 0)
+                .then_some(uncompressed_bytes as f64 / compressed_bytes as f64),
+        }),
+    )?;
+    let write_started = Instant::now();
+    write_dicom_object_with_spooled_pixel_data(
+        &path,
+        object,
+        FileMetaTableBuilder::new()
+            .media_storage_sop_class_uid(VL_WSI_SOP_CLASS_UID)
+            .media_storage_sop_instance_uid(&sop_instance_uid)
+            .transfer_syntax(request.options.transfer_syntax.uid()),
+        &mut pixel_spool,
+    )?;
+    metrics.record_write_duration(write_started.elapsed());
+
+    Ok(DicomInstanceReport {
+        path,
+        sop_instance_uid,
+        series_instance_uid: series_uid,
+        transfer_syntax_uid: request.options.transfer_syntax.uid(),
+        level: level_idx,
+        z,
+        c,
+        t,
+        frame_count,
+        metrics,
+    })
+}
+
+fn jpeg_passthrough_tile_grid(
+    level: &statumen::Level,
+    tile_size: u32,
+) -> Result<(u64, u64), WsiDicomError> {
+    match level.tile_layout {
+        TileLayout::Regular {
+            tile_width,
+            tile_height,
+            tiles_across,
+            tiles_down,
+        } if tile_width == tile_size && tile_height == tile_size => Ok((tiles_across, tiles_down)),
+        TileLayout::Regular {
+            tile_width,
+            tile_height,
+            ..
+        } => Err(WsiDicomError::Unsupported {
+            reason: format!(
+                "JPEG passthrough requires source tile size to match requested DICOM tile size {tile_size}, got {tile_width}x{tile_height}"
+            ),
+        }),
+        TileLayout::WholeLevel { .. } => Err(WsiDicomError::Unsupported {
+            reason:
+                "JPEG passthrough is not available for whole-level JPEG layouts such as NDPI"
+                    .into(),
+        }),
+        TileLayout::Irregular { .. } => Err(WsiDicomError::Unsupported {
+            reason: "JPEG passthrough is not available for irregular tile layouts".into(),
+        }),
+    }
+}
+
+fn pixel_profile_from_raw_jpeg_tile(
+    raw: &RawCompressedTile,
+) -> Result<PixelProfile, WsiDicomError> {
+    if raw.compression != Compression::Jpeg {
+        return Err(WsiDicomError::Unsupported {
+            reason: format!(
+                "JPEG passthrough requires JPEG compression, got {:?}",
+                raw.compression
+            ),
+        });
+    }
+    if raw.bits_allocated != 8 {
+        return Err(WsiDicomError::UnsupportedPixelData {
+            reason: format!(
+                "JPEG passthrough requires 8-bit samples, got {}",
+                raw.bits_allocated
+            ),
+        });
+    }
+    let photometric_interpretation = match raw.photometric_interpretation {
+        EncodedTilePhotometricInterpretation::Monochrome2 => "MONOCHROME2",
+        EncodedTilePhotometricInterpretation::Rgb => "RGB",
+        EncodedTilePhotometricInterpretation::YbrFull422 => "YBR_FULL_422",
+    };
+    let components =
+        u8::try_from(raw.samples_per_pixel).map_err(|_| WsiDicomError::UnsupportedPixelData {
+            reason: format!(
+                "JPEG passthrough component count exceeds u8: {}",
+                raw.samples_per_pixel
+            ),
+        })?;
+    Ok(PixelProfile {
+        components,
+        bits_allocated: raw.bits_allocated,
+        photometric_interpretation,
+    })
+}
+
+fn uncompressed_frame_bytes(raw: &RawCompressedTile) -> Result<u64, WsiDicomError> {
+    u64::from(raw.width)
+        .checked_mul(u64::from(raw.height))
+        .and_then(|pixels| pixels.checked_mul(u64::from(raw.samples_per_pixel)))
+        .and_then(|samples| samples.checked_mul(u64::from(raw.bits_allocated / 8)))
+        .ok_or_else(|| WsiDicomError::Unsupported {
+            reason: "JPEG passthrough uncompressed frame byte count overflow".into(),
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1613,6 +1864,7 @@ fn output_tile_maps_to_statumen_tile(level: &statumen::Level, tile_size: u32) ->
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
     use std::path::PathBuf;
 
     use super::*;
@@ -1622,6 +1874,7 @@ mod tests {
     use dicom_core::{DataElement, PrimitiveValue, VR};
     use dicom_dictionary_std::{tags, uids};
     use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
+    use jpeg_encoder::{ColorType as JpegColorType, Encoder as JpegEncoder};
 
     #[test]
     fn default_options_use_jpeg2000_lossless_and_auto_backend() {
@@ -2005,6 +2258,99 @@ mod tests {
     }
 
     #[test]
+    fn export_dicom_passthrough_writes_jpeg_baseline_vl_wsi_instance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jpeg = encode_test_jpeg(8, 8, [160, 20, 40]);
+        let source = tmp.path().join("source.svs");
+        write_tiled_jpeg_tiff(&source, 8, 8, 8, 8, std::slice::from_ref(&jpeg));
+        let out = tmp.path().join("out");
+
+        let report = export_dicom(DicomExportRequest {
+            source_path: source,
+            output_dir: out,
+            options: DicomExportOptions {
+                tile_size: 8,
+                transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+                encode_backend: EncodeBackendPreference::RequireDevice,
+            },
+            metadata: MetadataSource::ResearchPlaceholder,
+        })
+        .unwrap();
+
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].frame_count, 1);
+        assert_eq!(report.metrics.total_frames, 1);
+        assert_eq!(report.metrics.cpu_input_frames, 0);
+        assert_eq!(report.metrics.gpu_input_decode_frames, 0);
+        assert_eq!(report.metrics.gpu_encode_frames, 0);
+        assert_eq!(
+            report.instances[0].transfer_syntax_uid,
+            TransferSyntax::JpegBaseline8Bit.uid()
+        );
+
+        let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+        assert_eq!(
+            object.meta().transfer_syntax.trim_end_matches('\0'),
+            TransferSyntax::JpegBaseline8Bit.uid()
+        );
+        assert_eq!(
+            object
+                .element(tags::LOSSY_IMAGE_COMPRESSION)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .as_ref(),
+            "01"
+        );
+        assert_eq!(
+            object
+                .element(tags::LOSSY_IMAGE_COMPRESSION_METHOD)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .as_ref(),
+            "ISO_10918_1"
+        );
+        assert!(
+            object
+                .element(tags::LOSSY_IMAGE_COMPRESSION_RATIO)
+                .unwrap()
+                .to_float32()
+                .unwrap()
+                > 0.0
+        );
+        let fragments = object
+            .element(tags::PIXEL_DATA)
+            .unwrap()
+            .value()
+            .fragments()
+            .unwrap();
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0], jpeg);
+    }
+
+    #[test]
+    fn export_dicom_jpeg_baseline_fails_clearly_for_non_passthrough_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.dcm");
+        write_source_dicom(&source);
+
+        let err = export_dicom(DicomExportRequest {
+            source_path: source,
+            output_dir: tmp.path().join("out"),
+            options: DicomExportOptions {
+                tile_size: 2,
+                transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+                encode_backend: EncodeBackendPreference::Auto,
+            },
+            metadata: MetadataSource::ResearchPlaceholder,
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("JPEG passthrough"), "got: {err}");
+    }
+
+    #[test]
     #[ignore = "requires WSI_DICOM_NDPI_FIXTURE"]
     fn ndpi_fixture_exports_all_lossless_j2k_transfer_syntaxes_and_tile_sizes() {
         let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
@@ -2362,5 +2708,111 @@ mod tests {
             .unwrap()
             .write_to_file(path)
             .unwrap();
+    }
+
+    fn encode_test_jpeg(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
+        let pixels = vec![rgb; (width * height) as usize]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        let mut encoded = Vec::new();
+        JpegEncoder::new(&mut encoded, 90)
+            .encode(
+                &pixels,
+                width.try_into().unwrap(),
+                height.try_into().unwrap(),
+                JpegColorType::Rgb,
+            )
+            .unwrap();
+        encoded
+    }
+
+    fn write_tiled_jpeg_tiff(
+        path: &std::path::Path,
+        width: u32,
+        height: u32,
+        tile_width: u32,
+        tile_height: u32,
+        tiles: &[Vec<u8>],
+    ) {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"II");
+        buf.extend_from_slice(&42u16.to_le_bytes());
+        let first_ifd_pos = buf.len();
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut tile_offsets = Vec::with_capacity(tiles.len());
+        let mut tile_byte_counts = Vec::with_capacity(tiles.len());
+        for tile in tiles {
+            tile_offsets.push(buf.len() as u32);
+            tile_byte_counts.push(tile.len() as u32);
+            buf.extend_from_slice(tile);
+        }
+
+        let tile_offsets_array_offset = buf.len() as u32;
+        for value in &tile_offsets {
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+        let tile_byte_counts_array_offset = buf.len() as u32;
+        for value in &tile_byte_counts {
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let ifd_offset = buf.len() as u32;
+        buf[first_ifd_pos..first_ifd_pos + 4].copy_from_slice(&ifd_offset.to_le_bytes());
+        let mut tags = vec![
+            tiff_tag(256, 4, 1, width.to_le_bytes()),
+            tiff_tag(257, 4, 1, height.to_le_bytes()),
+            tiff_tag(258, 3, 1, tiff_short_value(8)),
+            tiff_tag(259, 3, 1, tiff_short_value(7)),
+            tiff_tag(262, 3, 1, tiff_short_value(6)),
+            tiff_tag(277, 3, 1, tiff_short_value(3)),
+            tiff_tag(322, 4, 1, tile_width.to_le_bytes()),
+            tiff_tag(323, 4, 1, tile_height.to_le_bytes()),
+            tiff_tag(
+                324,
+                4,
+                tile_offsets.len() as u32,
+                if tile_offsets.len() == 1 {
+                    tile_offsets[0].to_le_bytes()
+                } else {
+                    tile_offsets_array_offset.to_le_bytes()
+                },
+            ),
+            tiff_tag(
+                325,
+                4,
+                tile_byte_counts.len() as u32,
+                if tile_byte_counts.len() == 1 {
+                    tile_byte_counts[0].to_le_bytes()
+                } else {
+                    tile_byte_counts_array_offset.to_le_bytes()
+                },
+            ),
+        ];
+        tags.sort_by_key(|tag| tag.0);
+
+        buf.extend_from_slice(&(tags.len() as u16).to_le_bytes());
+        for (tag, typ, count, value) in tags {
+            buf.extend_from_slice(&tag.to_le_bytes());
+            buf.extend_from_slice(&typ.to_le_bytes());
+            buf.extend_from_slice(&count.to_le_bytes());
+            buf.extend_from_slice(&value);
+        }
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut file = std::fs::File::create(path).unwrap();
+        file.write_all(&buf).unwrap();
+        file.flush().unwrap();
+    }
+
+    fn tiff_short_value(value: u16) -> [u8; 4] {
+        let mut bytes = [0u8; 4];
+        bytes[..2].copy_from_slice(&value.to_le_bytes());
+        bytes
+    }
+
+    fn tiff_tag(tag: u16, typ: u16, count: u32, value: [u8; 4]) -> (u16, u16, u32, [u8; 4]) {
+        (tag, typ, count, value)
     }
 }

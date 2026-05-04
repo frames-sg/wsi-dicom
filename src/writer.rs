@@ -10,6 +10,11 @@ use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 use crate::tile::PixelProfile;
 use crate::{DicomMetadata, WsiDicomError, VL_WSI_SOP_CLASS_UID};
 
+pub(crate) struct LossyCompressionMetadata {
+    pub(crate) method: &'static str,
+    pub(crate) ratio: Option<f64>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_dicom_object(
     metadata: &DicomMetadata,
@@ -24,6 +29,7 @@ pub(crate) fn build_dicom_object(
     profile: PixelProfile,
     offsets: Vec<u64>,
     lengths: Vec<u64>,
+    lossy_compression: Option<LossyCompressionMetadata>,
 ) -> Result<InMemDicomObject, WsiDicomError> {
     let mut object = InMemDicomObject::new_empty();
     put_str(
@@ -113,6 +119,24 @@ pub(crate) fn build_dicom_object(
     put_u16(&mut object, tags::BITS_STORED, profile.bits_allocated);
     put_u16(&mut object, tags::HIGH_BIT, profile.bits_allocated - 1);
     put_u16(&mut object, tags::PIXEL_REPRESENTATION, 0);
+    if let Some(lossy) = lossy_compression {
+        put_str(&mut object, tags::LOSSY_IMAGE_COMPRESSION, VR::CS, "01");
+        if let Some(ratio) = lossy.ratio {
+            let ratio = format!("{ratio:.3}");
+            put_str(
+                &mut object,
+                tags::LOSSY_IMAGE_COMPRESSION_RATIO,
+                VR::DS,
+                &ratio,
+            );
+        }
+        put_str(
+            &mut object,
+            tags::LOSSY_IMAGE_COMPRESSION_METHOD,
+            VR::CS,
+            lossy.method,
+        );
+    }
     put_str(
         &mut object,
         tags::DIMENSION_ORGANIZATION_TYPE,
