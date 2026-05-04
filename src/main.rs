@@ -101,18 +101,27 @@ fn run() -> Result<(), WsiDicomError> {
                 metadata,
             })?;
             println!(
-                "wrote {} DICOM instance(s) to {}; frames total={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={}",
+                "wrote {} DICOM instance(s) to {}; frames total={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} write_ms={:.3}",
                 report.instances.len(),
                 report.output_dir.display(),
                 report.metrics.total_frames,
                 report.metrics.cpu_input_frames,
                 report.metrics.gpu_input_decode_frames,
                 report.metrics.gpu_encode_frames,
-                report.metrics.gpu_validation_frames
+                report.metrics.gpu_validation_frames,
+                micros_to_ms(report.metrics.input_decode_micros),
+                micros_to_ms(report.metrics.compose_micros),
+                micros_to_ms(report.metrics.encode_micros),
+                micros_to_ms(report.metrics.validation_micros),
+                micros_to_ms(report.metrics.write_micros),
             );
             Ok(())
         }
     }
+}
+
+fn micros_to_ms(micros: u128) -> f64 {
+    micros as f64 / 1_000.0
 }
 
 fn load_metadata_source(
