@@ -1705,6 +1705,7 @@ dependencies = [
  "dicom-dictionary-std",
  "dicom-object",
  "metal",
+ "objc",
  "serde",
  "serde_json",
  "sha2",
