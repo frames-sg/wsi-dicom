@@ -28,12 +28,19 @@ thiserror = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = { version = "0.31", optional = true }
+objc = { version = "0.2", optional = true }
 
 [features]
 default = []
 gpu = ["cuda", "metal"]
 cuda = ["dep:signinum-j2k-cuda"]
-metal = ["dep:metal", "dep:signinum-j2k-metal", "dep:signinum-jpeg-metal", "statumen/metal"]
+metal = [
+    "dep:metal",
+    "dep:objc",
+    "dep:signinum-j2k-metal",
+    "dep:signinum-jpeg-metal",
+    "statumen/metal",
+]
 vendored-codecs = []
 
 [dev-dependencies]

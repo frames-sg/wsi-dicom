@@ -182,6 +182,22 @@ fn duration_as_reported_micros(duration: Duration) -> u128 {
     }
 }
 
+fn pyramid_label(scene_idx: usize, series_idx: usize, z: u32, c: u32, t: u32) -> String {
+    format!("WSI pyramid s{scene_idx} ser{series_idx} z{z} c{c} t{t}")
+}
+
+fn level_pixel_spacing_mm(slide: &Slide, level: &statumen::Level) -> Option<(f64, f64)> {
+    let (mpp_x, mpp_y) = slide.dataset().properties.mpp()?;
+    let downsample = level.downsample;
+    if !(mpp_x.is_finite() && mpp_y.is_finite() && downsample.is_finite()) {
+        return None;
+    }
+    if mpp_x <= 0.0 || mpp_y <= 0.0 || downsample <= 0.0 {
+        return None;
+    }
+    Some((mpp_y * downsample / 1000.0, mpp_x * downsample / 1000.0))
+}
+
 /// Export a statumen-readable WSI into DICOM VL Whole Slide Microscopy files.
 pub fn export_dicom(request: DicomExportRequest) -> Result<DicomExportReport, WsiDicomError> {
     request.validate()?;
@@ -216,11 +232,13 @@ pub fn export_dicom(request: DicomExportRequest) -> Result<DicomExportReport, Ws
                     for t in 0..series.axes.t {
                         let channel_groups = optical_path_groups(series.axes.c);
                         for c in channel_groups {
+                            let instance_number = instances.len() as u32 + 1;
                             let report = export_instance(
                                 &slide,
                                 &request,
                                 &metadata,
                                 &study_uid,
+                                instance_number,
                                 scene_idx,
                                 series_idx,
                                 level_idx as u32,
@@ -251,6 +269,7 @@ fn export_instance(
     request: &DicomExportRequest,
     metadata: &DicomMetadata,
     study_uid: &str,
+    instance_number: u32,
     scene_idx: usize,
     series_idx: usize,
     level_idx: u32,
@@ -288,6 +307,32 @@ fn export_instance(
         z,
         c
     ));
+    let frame_of_reference_uid = uid_from_seed(&format!(
+        "frame-of-reference:{}:{}:{}",
+        request.source_path.display(),
+        scene_idx,
+        series_idx
+    ));
+    let pyramid_uid = uid_from_seed(&format!(
+        "pyramid:{}:{}:{}:{}:{}:{}",
+        request.source_path.display(),
+        scene_idx,
+        series_idx,
+        z,
+        c,
+        t
+    ));
+    let dimension_organization_uid = uid_from_seed(&format!(
+        "dimension-organization:{}:{}:{}:{}:{}:{}",
+        request.source_path.display(),
+        scene_idx,
+        series_idx,
+        z,
+        c,
+        t
+    ));
+    let pyramid_label = pyramid_label(scene_idx, series_idx, z, c, t);
+    let pixel_spacing_mm = level_pixel_spacing_mm(slide, level);
 
     let path = deterministic_instance_path(&request.output_dir, level_idx, z, c, t);
     let spool_path = path.with_extension("pixeldata.tmp");
@@ -402,12 +447,19 @@ fn export_instance(
         study_uid,
         &series_uid,
         &sop_instance_uid,
+        &frame_of_reference_uid,
+        &pyramid_uid,
+        &dimension_organization_uid,
+        &pyramid_label,
+        (series_idx + 1) as u32,
+        instance_number,
         level_idx,
         tile_size,
         matrix_columns,
         matrix_rows,
         frame_count,
         profile,
+        pixel_spacing_mm,
         pixel_spool.offsets(),
         pixel_spool.lengths(),
     )?;
@@ -1031,64 +1083,68 @@ fn try_encode_metal_input_tile_run(
     matrix_rows: u64,
     tile_size: u32,
 ) -> Result<MetalEncodedTileRun, WsiDicomError> {
-    let tile_count = usize::try_from(tile_count).map_err(|_| WsiDicomError::Unsupported {
-        reason: "tile batch size exceeds platform addressable memory".into(),
-    })?;
+    // Long NDPI exports create thousands of autoreleased Metal/ObjC temporaries.
+    // Drain them per run so later rows do not encode zero-filled composed buffers.
+    objc::rc::autoreleasepool(|| {
+        let tile_count = usize::try_from(tile_count).map_err(|_| WsiDicomError::Unsupported {
+            reason: "tile batch size exceeds platform addressable memory".into(),
+        })?;
 
-    if !metal_input.enabled() {
-        return Ok(empty_metal_tile_run(tile_count));
-    }
+        if !metal_input.enabled() {
+            return Ok(empty_metal_tile_run(tile_count));
+        }
 
-    if output_tile_maps_to_statumen_tile(level, tile_size) {
-        return try_encode_metal_aligned_tile_run(
-            slide,
-            metal_input,
-            j2k_encoder,
-            level,
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-            row,
-            start_col,
-            tile_count,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
-        );
-    }
+        if output_tile_maps_to_statumen_tile(level, tile_size) {
+            return try_encode_metal_aligned_tile_run(
+                slide,
+                metal_input,
+                j2k_encoder,
+                level,
+                scene_idx,
+                series_idx,
+                level_idx,
+                z,
+                c,
+                t,
+                row,
+                start_col,
+                tile_count,
+                matrix_columns,
+                matrix_rows,
+                tile_size,
+            );
+        }
 
-    if let Some(strip_layout) = whole_level_strip_layout(level) {
-        return try_encode_metal_whole_level_strip_run(
-            slide,
-            metal_input,
-            j2k_encoder,
-            strip_layout,
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-            row,
-            start_col,
-            tile_count,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
-        );
-    }
+        if let Some(strip_layout) = whole_level_strip_layout(level) {
+            return try_encode_metal_whole_level_strip_run(
+                slide,
+                metal_input,
+                j2k_encoder,
+                strip_layout,
+                scene_idx,
+                series_idx,
+                level_idx,
+                z,
+                c,
+                t,
+                row,
+                start_col,
+                tile_count,
+                matrix_columns,
+                matrix_rows,
+                tile_size,
+            );
+        }
 
-    if metal_input.preference == EncodeBackendPreference::RequireDevice {
-        return Err(WsiDicomError::Unsupported {
-            reason:
-                "requested Metal input tile decode requires a DICOM tile grid that can be sourced from aligned statumen tiles or WholeLevel strip tiles"
-                    .into(),
-        });
-    }
-    Ok(empty_metal_tile_run(tile_count))
+        if metal_input.preference == EncodeBackendPreference::RequireDevice {
+            return Err(WsiDicomError::Unsupported {
+                reason:
+                    "requested Metal input tile decode requires a DICOM tile grid that can be sourced from aligned statumen tiles or WholeLevel strip tiles"
+                        .into(),
+            });
+        }
+        Ok(empty_metal_tile_run(tile_count))
+    })
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -1919,6 +1975,13 @@ mod tests {
                 .as_ref(),
             "TILED_FULL"
         );
+        assert!(object.element(tags::PYRAMID_UID).is_ok());
+        assert_eq!(object.element(tags::PYRAMID_UID).unwrap().vr(), VR::UI);
+        assert_eq!(object.element(tags::PYRAMID_LABEL).unwrap().vr(), VR::LO);
+        assert_eq!(
+            object.element(tags::FRAME_OF_REFERENCE_UID).unwrap().vr(),
+            VR::UI
+        );
         assert_eq!(
             object
                 .element(tags::NUMBER_OF_FRAMES)
@@ -1942,6 +2005,30 @@ mod tests {
                 .to_int::<u32>()
                 .unwrap(),
             2
+        );
+        assert_eq!(object.element(tags::SERIES_NUMBER).unwrap().vr(), VR::IS);
+        assert_eq!(object.element(tags::INSTANCE_NUMBER).unwrap().vr(), VR::IS);
+        assert_eq!(
+            object
+                .element(tags::ACQUISITION_DATE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .as_ref(),
+            "19700101"
+        );
+        assert_eq!(
+            object
+                .element(tags::ACQUISITION_TIME)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .as_ref(),
+            "000000"
+        );
+        assert_eq!(
+            object.element(tags::NUMBER_OF_OPTICAL_PATHS).unwrap().vr(),
+            VR::UL
         );
         assert!(object.element(tags::EXTENDED_OFFSET_TABLE).is_ok());
         assert!(object.element(tags::EXTENDED_OFFSET_TABLE_LENGTHS).is_ok());
@@ -2002,6 +2089,106 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn export_dicom_tags_sibling_levels_as_one_pyramid_series() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source_dir = tmp.path().join("source");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source_level0 = source_dir.join("level0.dcm");
+        let source_level1 = source_dir.join("level1.dcm");
+        let out = tmp.path().join("out");
+        write_source_dicom_with_dimensions(&source_level0, "1.2.826.0.1.3680043.10.999.11", 4, 4);
+        write_source_dicom_with_dimensions(&source_level1, "1.2.826.0.1.3680043.10.999.12", 2, 2);
+
+        let report = export_dicom(DicomExportRequest {
+            source_path: source_level0,
+            output_dir: out,
+            options: DicomExportOptions {
+                tile_size: 2,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                ..DicomExportOptions::default()
+            },
+            metadata: MetadataSource::ResearchPlaceholder,
+        })
+        .unwrap();
+
+        assert_eq!(report.instances.len(), 2);
+
+        let level0 = dicom_object::open_file(&report.instances[0].path).unwrap();
+        let level1 = dicom_object::open_file(&report.instances[1].path).unwrap();
+        let series_uid = level0
+            .element(tags::SERIES_INSTANCE_UID)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            level1
+                .element(tags::SERIES_INSTANCE_UID)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            series_uid
+        );
+        let pyramid_uid = level0.element(tags::PYRAMID_UID).unwrap().to_str().unwrap();
+        assert_eq!(
+            level1.element(tags::PYRAMID_UID).unwrap().to_str().unwrap(),
+            pyramid_uid
+        );
+        let frame_of_reference_uid = level0
+            .element(tags::FRAME_OF_REFERENCE_UID)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            level1
+                .element(tags::FRAME_OF_REFERENCE_UID)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            frame_of_reference_uid
+        );
+        assert_eq!(
+            level0
+                .element(tags::IMAGE_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .as_ref(),
+            "ORIGINAL\\PRIMARY\\VOLUME\\NONE"
+        );
+        assert_eq!(
+            level1
+                .element(tags::IMAGE_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .as_ref(),
+            "DERIVED\\PRIMARY\\VOLUME\\RESAMPLED"
+        );
+        assert_eq!(
+            level0
+                .element(tags::INSTANCE_NUMBER)
+                .unwrap()
+                .to_int::<u32>()
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            level1
+                .element(tags::INSTANCE_NUMBER)
+                .unwrap()
+                .to_int::<u32>()
+                .unwrap(),
+            2
+        );
+
+        let slide = Slide::open(&report.instances[0].path).unwrap();
+        let levels = &slide.dataset().scenes[0].series[0].levels;
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[0].dimensions, (4, 4));
+        assert_eq!(levels[1].dimensions, (2, 2));
     }
 
     #[test]
@@ -2263,7 +2450,158 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn decode_j2k_frame_for_test(
+        codestream: &[u8],
+        width: u32,
+        height: u32,
+        components: u8,
+        bits_allocated: u16,
+    ) -> Vec<u8> {
+        let fmt = match (components, bits_allocated) {
+            (1, 8) => signinum_j2k::PixelFormat::Gray8,
+            (3, 8) => signinum_j2k::PixelFormat::Rgb8,
+            (1, 16) => signinum_j2k::PixelFormat::Gray16,
+            (3, 16) => signinum_j2k::PixelFormat::Rgb16,
+            other => panic!("unsupported frame profile: {other:?}"),
+        };
+        let bytes_per_sample = if bits_allocated <= 8 { 1usize } else { 2usize };
+        let stride = width as usize * components as usize * bytes_per_sample;
+        let mut decoder = signinum_j2k::J2kDecoder::new(codestream).unwrap_or_else(|err| {
+            if codestream.last() == Some(&0) {
+                signinum_j2k::J2kDecoder::new(&codestream[..codestream.len() - 1])
+                    .unwrap_or_else(|_| panic!("parse frame: {err}"))
+            } else {
+                panic!("parse frame: {err}");
+            }
+        });
+        let mut decoded = vec![0; stride * height as usize];
+        decoder.decode_into(&mut decoded, stride, fmt).unwrap();
+        decoded
+    }
+
+    #[test]
+    #[ignore = "requires WSI_DICOM_NDPI_FIXTURE and Metal device decode"]
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn ndpi_whole_level_metal_rows_do_not_turn_black_after_reused_encoder_state() {
+        let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
+            return;
+        };
+        std::env::set_var("STATUMEN_JPEG_DEVICE_DECODE", "1");
+        let slide = Slide::open(&source).unwrap();
+        let level = &slide.dataset().scenes[0].series[0].levels[0];
+        let (matrix_columns, matrix_rows) = level.dimensions;
+        let tile_size = 512u32;
+        let tiles_across = matrix_columns.div_ceil(u64::from(tile_size));
+        let target_row = 12u64.min(matrix_rows.div_ceil(u64::from(tile_size)).saturating_sub(1));
+        let target_col = 0u64;
+        let mut metal_input = MetalInputTileReader::new(EncodeBackendPreference::RequireDevice);
+        let mut j2k_encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::RequireDevice,
+            TransferSyntax::Htj2kLossless,
+        );
+
+        let mut target = None;
+        for row in 0..=target_row {
+            let mut metal_row = try_encode_metal_input_tile_run(
+                &slide,
+                &mut metal_input,
+                &mut j2k_encoder,
+                level,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                row,
+                0,
+                tiles_across,
+                matrix_columns,
+                matrix_rows,
+                tile_size,
+            )
+            .unwrap();
+            if row == target_row {
+                target = metal_row.tiles[target_col as usize].take();
+            }
+        }
+        let (encoded, profile) =
+            target.expect("fixture frame should encode through Metal input path");
+        assert_eq!(profile.components, 3);
+        assert!(encoded.used_device_encode);
+        assert!(encoded.used_device_validation);
+
+        let x = target_col * u64::from(tile_size);
+        let y = target_row * u64::from(tile_size);
+        let valid_width = (matrix_columns - x).min(u64::from(tile_size)) as u32;
+        let valid_height = (matrix_rows - y).min(u64::from(tile_size)) as u32;
+        let cpu_region = slide
+            .read_region(&RegionRequest {
+                scene: SceneId(0),
+                series: SeriesId(0),
+                level: LevelIdx(0),
+                plane: PlaneIdx(PlaneSelection { z: 0, c: 0, t: 0 }),
+                origin_px: (x as i64, y as i64),
+                size_px: (valid_width, valid_height),
+            })
+            .unwrap();
+        let expected = prepare_tile_samples(&cpu_region, tile_size, tile_size).unwrap();
+        let actual = decode_j2k_frame_for_test(
+            &encoded.codestream,
+            tile_size,
+            tile_size,
+            profile.components,
+            profile.bits_allocated,
+        );
+
+        if actual != expected.bytes {
+            let actual_nonzero = actual.iter().filter(|value| **value != 0).count();
+            let expected_nonzero = expected.bytes.iter().filter(|value| **value != 0).count();
+            panic!(
+                "Metal WholeLevel frame mismatch at row {target_row}, col {target_col}: actual_nonzero={actual_nonzero}, expected_nonzero={expected_nonzero}, total={}",
+                actual.len()
+            );
+        }
+    }
+
     fn write_source_dicom(path: &std::path::Path) {
+        write_source_dicom_with_pixels(
+            path,
+            "1.2.826.0.1.3680043.10.999.1",
+            3,
+            2,
+            vec![
+                255u8, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0, 0, 255, 255, 255, 0, 255,
+            ],
+        );
+    }
+
+    fn write_source_dicom_with_dimensions(
+        path: &std::path::Path,
+        sop_instance_uid: &str,
+        width: u32,
+        height: u32,
+    ) {
+        let mut pixels = Vec::with_capacity((width as usize) * (height as usize) * 3);
+        for y in 0..height {
+            for x in 0..width {
+                pixels.push((x * 37 + y * 11) as u8);
+                pixels.push((x * 17 + y * 29) as u8);
+                pixels.push((x * 7 + y * 43) as u8);
+            }
+        }
+        write_source_dicom_with_pixels(path, sop_instance_uid, width, height, pixels);
+    }
+
+    fn write_source_dicom_with_pixels(
+        path: &std::path::Path,
+        sop_instance_uid: &str,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    ) {
+        assert_eq!(pixels.len(), (width as usize) * (height as usize) * 3);
         let mut object = InMemDicomObject::new_empty();
         object.put(DataElement::new(
             tags::SOP_CLASS_UID,
@@ -2273,7 +2611,7 @@ mod tests {
         object.put(DataElement::new(
             tags::SOP_INSTANCE_UID,
             VR::UI,
-            "1.2.826.0.1.3680043.10.999.1",
+            sop_instance_uid,
         ));
         object.put(DataElement::new(
             tags::SERIES_INSTANCE_UID,
@@ -2288,22 +2626,27 @@ mod tests {
         object.put(DataElement::new(
             tags::ROWS,
             VR::US,
-            PrimitiveValue::from(2u16),
+            PrimitiveValue::from(height as u16),
         ));
         object.put(DataElement::new(
             tags::COLUMNS,
             VR::US,
-            PrimitiveValue::from(3u16),
+            PrimitiveValue::from(width as u16),
         ));
         object.put(DataElement::new(
             tags::TOTAL_PIXEL_MATRIX_ROWS,
             VR::UL,
-            PrimitiveValue::from(2u32),
+            PrimitiveValue::from(height),
         ));
         object.put(DataElement::new(
             tags::TOTAL_PIXEL_MATRIX_COLUMNS,
             VR::UL,
-            PrimitiveValue::from(3u32),
+            PrimitiveValue::from(width),
+        ));
+        object.put(DataElement::new(
+            tags::PIXEL_SPACING,
+            VR::DS,
+            "0.0005\\0.0005",
         ));
         object.put(DataElement::new(
             tags::NUMBER_OF_FRAMES,
@@ -2348,15 +2691,13 @@ mod tests {
         object.put(DataElement::new(
             tags::PIXEL_DATA,
             VR::OB,
-            PrimitiveValue::from(vec![
-                255u8, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0, 0, 255, 255, 255, 0, 255,
-            ]),
+            PrimitiveValue::from(pixels),
         ));
         object
             .with_meta(
                 FileMetaTableBuilder::new()
                     .media_storage_sop_class_uid(uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE)
-                    .media_storage_sop_instance_uid("1.2.826.0.1.3680043.10.999.1")
+                    .media_storage_sop_instance_uid(sop_instance_uid)
                     .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN),
             )
             .unwrap()
