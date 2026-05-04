@@ -56,6 +56,7 @@ impl BackendArg {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum TransferSyntaxArg {
+    JpegBaseline8Bit,
     Jpeg2000Lossless,
     Htj2kLossless,
     Htj2kLosslessRpcl,
@@ -64,6 +65,7 @@ enum TransferSyntaxArg {
 impl TransferSyntaxArg {
     fn into_transfer_syntax(self) -> TransferSyntax {
         match self {
+            Self::JpegBaseline8Bit => TransferSyntax::JpegBaseline8Bit,
             Self::Jpeg2000Lossless => TransferSyntax::Jpeg2000Lossless,
             Self::Htj2kLossless => TransferSyntax::Htj2kLossless,
             Self::Htj2kLosslessRpcl => TransferSyntax::Htj2kLosslessRpcl,
