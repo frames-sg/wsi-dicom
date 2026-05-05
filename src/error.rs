@@ -37,4 +37,6 @@ pub enum WsiDicomError {
         path: PathBuf,
         source: serde_json::Error,
     },
+    #[error("JSON serialization failed: {message}")]
+    JsonSerialize { message: String },
 }
