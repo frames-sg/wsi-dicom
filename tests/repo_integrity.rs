@@ -53,6 +53,22 @@ fn lockfile_has_no_duplicate_signinum_package_sources() {
 }
 
 #[test]
+fn jpeg_dependencies_are_limited_to_signinum_crates() {
+    let manifest = fs::read_to_string(crate_root().join("Cargo.toml")).expect("read Cargo.toml");
+    let lockfile = fs::read_to_string(crate_root().join("Cargo.lock")).expect("read Cargo.lock");
+    for dependency in ["jpeg-encoder", "turbojpeg", "mozjpeg", "zune-jpeg"] {
+        assert!(
+            !manifest.contains(dependency),
+            "wsi-dicom must use signinum JPEG APIs, not direct {dependency} dependencies"
+        );
+        assert!(
+            !lockfile.contains(&format!("name = \"{dependency}\"")),
+            "Cargo.lock includes non-signinum JPEG dependency {dependency}"
+        );
+    }
+}
+
+#[test]
 fn metal_feature_enables_statumen_metal_decode_plumbing() {
     let manifest = fs::read_to_string(crate_root().join("Cargo.toml")).expect("read Cargo.toml");
     assert!(
