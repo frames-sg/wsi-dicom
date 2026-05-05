@@ -3,16 +3,32 @@ use serde::{Deserialize, Serialize};
 use crate::WsiDicomError;
 
 /// Metadata accepted by the DICOM writer after strict JSON or FHIR mapping.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DicomMetadata {
     pub patient_name: Option<String>,
     pub patient_id: Option<String>,
+    pub patient_birth_date: Option<String>,
+    pub patient_sex: Option<String>,
     pub accession_number: Option<String>,
     pub study_instance_uid: Option<String>,
     pub study_id: Option<String>,
+    pub study_date: Option<String>,
+    pub study_time: Option<String>,
     pub study_description: Option<String>,
+    pub referring_physician_name: Option<String>,
+    pub laterality: Option<String>,
+    pub manufacturer: Option<String>,
+    pub manufacturer_model_name: Option<String>,
+    pub device_serial_number: Option<String>,
+    pub software_versions: Option<String>,
+    pub content_date: Option<String>,
+    pub content_time: Option<String>,
+    pub acquisition_date_time: Option<String>,
+    pub container_identifier: Option<String>,
     pub specimen_identifier: Option<String>,
     pub specimen_description: Option<String>,
+    pub imaged_volume_depth_mm: Option<f64>,
+    pub focus_method: Option<String>,
 }
 
 impl DicomMetadata {
@@ -20,11 +36,27 @@ impl DicomMetadata {
         Self {
             patient_name: Some("RESEARCH^PLACEHOLDER".into()),
             patient_id: Some("RESEARCH".into()),
+            patient_birth_date: Some(String::new()),
+            patient_sex: Some(String::new()),
             accession_number: Some("RESEARCH".into()),
             study_id: Some("1".into()),
+            study_date: Some("19700101".into()),
+            study_time: Some("000000".into()),
             study_description: Some("Research placeholder WSI export".into()),
+            referring_physician_name: Some(String::new()),
+            laterality: Some(String::new()),
+            manufacturer: Some("wsi-dicom".into()),
+            manufacturer_model_name: Some("wsi-dicom".into()),
+            device_serial_number: Some("RESEARCH".into()),
+            software_versions: Some(env!("CARGO_PKG_VERSION").into()),
+            content_date: Some("19700101".into()),
+            content_time: Some("000000".into()),
+            acquisition_date_time: Some("19700101000000".into()),
+            container_identifier: Some("RESEARCH-CONTAINER".into()),
             specimen_identifier: Some("RESEARCH-SPECIMEN".into()),
             specimen_description: Some("Research placeholder specimen".into()),
+            imaged_volume_depth_mm: Some(0.001),
+            focus_method: Some("AUTO".into()),
             study_instance_uid: None,
         }
     }
@@ -66,7 +98,7 @@ impl DicomMetadata {
 /// Source of metadata for the DICOM export request.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetadataSource {
-    Strict(DicomMetadata),
+    Strict(Box<DicomMetadata>),
     ResearchPlaceholder,
     FhirR4Bundle(serde_json::Value),
 }
@@ -76,7 +108,7 @@ impl MetadataSource {
         match self {
             Self::Strict(metadata) => {
                 metadata.validate_strict()?;
-                Ok(metadata.clone())
+                Ok(metadata.as_ref().clone())
             }
             Self::ResearchPlaceholder => Ok(DicomMetadata::research_placeholder()),
             Self::FhirR4Bundle(bundle) => DicomMetadata::from_fhir_r4_bundle(bundle),
@@ -112,12 +144,25 @@ fn map_fhir_patient(resource: &serde_json::Value, metadata: &mut DicomMetadata) 
         .and_then(serde_json::Value::as_array)
         .and_then(|names| names.first())
         .and_then(fhir_human_name_to_pn);
+    metadata.patient_birth_date =
+        json_string(resource, "/birthDate").map(|date| date.replace('-', ""));
+    metadata.patient_sex =
+        json_string(resource, "/gender").and_then(|gender| match gender.as_str() {
+            "male" => Some("M".to_string()),
+            "female" => Some("F".to_string()),
+            "other" => Some("O".to_string()),
+            "unknown" => Some("U".to_string()),
+            _ => None,
+        });
 }
 
 fn map_fhir_specimen(resource: &serde_json::Value, metadata: &mut DicomMetadata) {
     metadata.specimen_identifier = json_string(resource, "/accessionIdentifier/value")
         .or_else(|| first_identifier(resource))
         .or_else(|| json_string(resource, "/id"));
+    if metadata.container_identifier.is_none() {
+        metadata.container_identifier = metadata.specimen_identifier.clone();
+    }
     metadata.specimen_description = json_string(resource, "/type/text");
 }
 

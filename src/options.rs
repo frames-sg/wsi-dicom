@@ -22,10 +22,32 @@ impl EncodeBackendPreference {
     }
 }
 
+/// Runtime validation policy for newly encoded compressed frame bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CodecValidation {
+    Disabled,
+    RoundTrip,
+}
+
+impl CodecValidation {
+    pub(crate) fn to_j2k_validation(self) -> signinum_j2k::J2kEncodeValidation {
+        match self {
+            Self::Disabled => signinum_j2k::J2kEncodeValidation::External,
+            Self::RoundTrip => signinum_j2k::J2kEncodeValidation::CpuRoundTrip,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn enabled(self) -> bool {
+        self == Self::RoundTrip
+    }
+}
+
 /// DICOM transfer syntax choices for exported VL Whole Slide Microscopy files.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TransferSyntax {
     JpegBaseline8Bit,
+    Jpeg2000,
     Jpeg2000Lossless,
     Htj2kLossless,
     Htj2kLosslessRpcl,
@@ -36,6 +58,7 @@ impl TransferSyntax {
     pub fn uid(self) -> &'static str {
         match self {
             Self::JpegBaseline8Bit => "1.2.840.10008.1.2.4.50",
+            Self::Jpeg2000 => "1.2.840.10008.1.2.4.91",
             Self::Jpeg2000Lossless => "1.2.840.10008.1.2.4.90",
             Self::Htj2kLossless => "1.2.840.10008.1.2.4.201",
             Self::Htj2kLosslessRpcl => "1.2.840.10008.1.2.4.202",
@@ -43,11 +66,22 @@ impl TransferSyntax {
         }
     }
 
+    pub(crate) fn is_j2k_family(self) -> bool {
+        matches!(
+            self,
+            Self::Jpeg2000 | Self::Jpeg2000Lossless | Self::Htj2kLossless | Self::Htj2kLosslessRpcl
+        )
+    }
+
     pub(crate) fn is_lossless_j2k_family(self) -> bool {
         matches!(
             self,
             Self::Jpeg2000Lossless | Self::Htj2kLossless | Self::Htj2kLosslessRpcl
         )
+    }
+
+    pub(crate) fn is_jpeg2000_passthrough_only(self) -> bool {
+        self == Self::Jpeg2000
     }
 }
 
@@ -57,6 +91,8 @@ pub struct DicomExportOptions {
     pub tile_size: u32,
     pub transfer_syntax: TransferSyntax,
     pub encode_backend: EncodeBackendPreference,
+    pub codec_validation: CodecValidation,
+    pub source_device_decode: bool,
 }
 
 impl Default for DicomExportOptions {
@@ -65,6 +101,8 @@ impl Default for DicomExportOptions {
             tile_size: 512,
             transfer_syntax: TransferSyntax::Jpeg2000Lossless,
             encode_backend: EncodeBackendPreference::Auto,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: false,
         }
     }
 }
