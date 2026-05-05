@@ -6,11 +6,12 @@ use signinum_j2k::{
     J2kProgressionOrder, ReversibleTransform,
 };
 
-use crate::{EncodeBackendPreference, TransferSyntax, WsiDicomError};
+use crate::{CodecValidation, EncodeBackendPreference, TransferSyntax, WsiDicomError};
 
 pub(crate) struct DicomJ2kEncoder {
     preference: EncodeBackendPreference,
     transfer_syntax: TransferSyntax,
+    codec_validation: CodecValidation,
     #[cfg(all(feature = "metal", target_os = "macos"))]
     metal: Option<signinum_j2k_metal::MetalEncodeStageAccelerator>,
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -20,21 +21,65 @@ pub(crate) struct DicomJ2kEncoder {
 }
 
 pub(crate) struct EncodedDicomJ2kFrame {
-    pub(crate) codestream: Vec<u8>,
+    codestream: EncodedDicomJ2kCodestream,
     pub(crate) used_device_encode: bool,
     pub(crate) used_device_validation: bool,
     pub(crate) encode_duration: Duration,
+    pub(crate) device_gpu_duration: Option<Duration>,
     pub(crate) validation_duration: Duration,
+}
+
+pub(crate) enum EncodedDicomJ2kCodestream {
+    Host(Vec<u8>),
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    Metal(signinum_j2k_metal::MetalEncodedJ2k),
+}
+
+impl EncodedDicomJ2kFrame {
+    pub(crate) fn codestream_bytes(&self) -> Result<&[u8], WsiDicomError> {
+        match &self.codestream {
+            EncodedDicomJ2kCodestream::Host(bytes) => Ok(bytes),
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            EncodedDicomJ2kCodestream::Metal(encoded) => {
+                encoded
+                    .codestream_bytes()
+                    .map_err(|err| WsiDicomError::Encode {
+                        message: format!("JPEG 2000 Metal encoded buffer read failed: {err}"),
+                    })
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_codestream(self) -> Result<Vec<u8>, WsiDicomError> {
+        match self.codestream {
+            EncodedDicomJ2kCodestream::Host(bytes) => Ok(bytes),
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            EncodedDicomJ2kCodestream::Metal(encoded) => Ok(encoded
+                .codestream_bytes()
+                .map_err(|err| WsiDicomError::Encode {
+                    message: format!("JPEG 2000 Metal encoded buffer read failed: {err}"),
+                })?
+                .to_vec()),
+        }
+    }
+
+    #[cfg(all(test, feature = "metal", target_os = "macos"))]
+    pub(crate) fn codestream_is_metal_buffer_backed(&self) -> bool {
+        matches!(self.codestream, EncodedDicomJ2kCodestream::Metal(_))
+    }
 }
 
 impl DicomJ2kEncoder {
     pub(crate) fn new(
         preference: EncodeBackendPreference,
         transfer_syntax: TransferSyntax,
+        codec_validation: CodecValidation,
     ) -> Self {
         Self {
             preference,
             transfer_syntax,
+            codec_validation,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             metal: None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -44,12 +89,39 @@ impl DicomJ2kEncoder {
         }
     }
 
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub(crate) fn cpu_only_peer(&self) -> Self {
+        self.peer_with_preference(EncodeBackendPreference::CpuOnly)
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub(crate) fn require_device_peer(&self) -> Self {
+        self.peer_with_preference(EncodeBackendPreference::RequireDevice)
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn peer_with_preference(&self, preference: EncodeBackendPreference) -> Self {
+        Self::new(preference, self.transfer_syntax, self.codec_validation)
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub(crate) fn force_cpu_only_for_auto(&mut self) {
+        if self.preference == EncodeBackendPreference::Auto {
+            self.preference = EncodeBackendPreference::CpuOnly;
+        }
+    }
+
+    #[cfg(all(test, feature = "metal", target_os = "macos"))]
+    pub(crate) fn preference(&self) -> EncodeBackendPreference {
+        self.preference
+    }
+
     pub(crate) fn encode(
         &mut self,
         samples: J2kLosslessSamples<'_>,
     ) -> Result<EncodedDicomJ2kFrame, WsiDicomError> {
         if self.preference == EncodeBackendPreference::CpuOnly {
-            return encode_lossless_cpu(samples, self.transfer_syntax);
+            return encode_lossless_cpu(samples, self.transfer_syntax, self.codec_validation);
         }
 
         match self.try_device(samples)? {
@@ -61,7 +133,7 @@ impl DicomJ2kEncoder {
                             .into(),
                 })
             }
-            None => encode_lossless_cpu(samples, self.transfer_syntax),
+            None => encode_lossless_cpu(samples, self.transfer_syntax, self.codec_validation),
         }
     }
 
@@ -95,21 +167,24 @@ impl DicomJ2kEncoder {
         )?;
         let encode_duration = encode_started.elapsed();
         let mut validation_duration = Duration::ZERO;
-        if let Some(codestream) = &encoded {
-            let validation_started = Instant::now();
-            signinum_j2k_metal::validate_lossless_roundtrip_on_metal_with_session(
-                samples, codestream, &session,
-            )
-            .map_err(|err| WsiDicomError::Encode {
-                message: format!("JPEG 2000 Metal validation failed: {err}"),
-            })?;
-            validation_duration = validation_started.elapsed();
+        if self.codec_validation.enabled() {
+            if let Some(codestream) = &encoded {
+                let validation_started = Instant::now();
+                signinum_j2k_metal::validate_lossless_roundtrip_on_metal_with_session(
+                    samples, codestream, &session,
+                )
+                .map_err(|err| WsiDicomError::Encode {
+                    message: format!("JPEG 2000 Metal validation failed: {err}"),
+                })?;
+                validation_duration = validation_started.elapsed();
+            }
         }
         Ok(encoded.map(|codestream| EncodedDicomJ2kFrame {
-            codestream,
+            codestream: EncodedDicomJ2kCodestream::Host(codestream),
             used_device_encode: true,
-            used_device_validation: true,
+            used_device_validation: self.codec_validation.enabled(),
             encode_duration,
+            device_gpu_duration: None,
             validation_duration,
         }))
     }
@@ -134,14 +209,15 @@ impl DicomJ2kEncoder {
             self.transfer_syntax,
             BackendKind::Cuda,
             accelerator,
-            J2kEncodeValidation::CpuRoundTrip,
+            self.codec_validation.to_j2k_validation(),
         )?;
         let encode_duration = started.elapsed();
         Ok(encoded.map(|codestream| EncodedDicomJ2kFrame {
-            codestream,
+            codestream: EncodedDicomJ2kCodestream::Host(codestream),
             used_device_encode: true,
             used_device_validation: false,
             encode_duration,
+            device_gpu_duration: None,
             validation_duration: Duration::ZERO,
         }))
     }
@@ -166,8 +242,11 @@ impl DicomJ2kEncoder {
         }
 
         let session = self.ensure_metal_session()?.clone();
-        let options =
-            lossless_encode_options(self.transfer_syntax, EncodeBackendPreference::PreferDevice)?;
+        let options = lossless_encode_options(
+            self.transfer_syntax,
+            EncodeBackendPreference::PreferDevice,
+            self.codec_validation,
+        )?;
         let mut encoded = Vec::with_capacity(tiles.len());
         let mut start = 0usize;
         while start < tiles.len() {
@@ -197,33 +276,66 @@ impl DicomJ2kEncoder {
                     format: tile.format,
                 });
             }
-            let outcomes = if padded {
-                signinum_j2k_metal::encode_lossless_from_padded_metal_buffers_with_report(
-                    &requests, &options, &session,
-                )
-            } else {
-                signinum_j2k_metal::encode_lossless_from_metal_buffers_with_report(
-                    &requests, &options, &session,
-                )
-            }
-            .map_err(|err| WsiDicomError::Encode {
-                message: format!("JPEG 2000 Metal tile batch encode failed: {err}"),
-            })?;
+            if padded {
+                let outcomes = match signinum_j2k_metal::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
+                    &requests,
+                    &options,
+                    &session,
+                ) {
+                    Ok(outcomes) => outcomes,
+                    Err(_) if self.preference != EncodeBackendPreference::RequireDevice => {
+                        encoded.extend((start..end).map(|_| None));
+                        start = end;
+                        continue;
+                    }
+                    Err(err) => {
+                        return Err(WsiDicomError::Encode {
+                            message: format!("JPEG 2000 Metal tile batch encode failed: {err}"),
+                        });
+                    }
+                };
 
-            for outcome in outcomes {
-                encoded.push(
-                    (outcome.encoded.backend == BackendKind::Metal).then_some(
-                        EncodedDicomJ2kFrame {
-                            codestream: outcome.encoded.codestream,
-                            used_device_encode: true,
-                            used_device_validation: true,
-                            encode_duration: outcome
-                                .encode_duration
-                                .saturating_add(outcome.input_copy_duration),
-                            validation_duration: outcome.validation_duration,
-                        },
-                    ),
-                );
+                for outcome in outcomes {
+                    encoded.push(Some(EncodedDicomJ2kFrame {
+                        codestream: EncodedDicomJ2kCodestream::Metal(outcome.encoded),
+                        used_device_encode: true,
+                        used_device_validation: self.codec_validation.enabled(),
+                        encode_duration: outcome
+                            .encode_duration
+                            .saturating_add(outcome.input_copy_duration),
+                        device_gpu_duration: outcome.gpu_duration,
+                        validation_duration: outcome.validation_duration,
+                    }));
+                }
+            } else {
+                let outcomes = match signinum_j2k_metal::encode_lossless_from_metal_buffers_to_metal_with_report(
+                    &requests, &options, &session,
+                ) {
+                    Ok(outcomes) => outcomes,
+                    Err(_) if self.preference != EncodeBackendPreference::RequireDevice => {
+                        encoded.extend((start..end).map(|_| None));
+                        start = end;
+                        continue;
+                    }
+                    Err(err) => {
+                        return Err(WsiDicomError::Encode {
+                            message: format!("JPEG 2000 Metal tile batch encode failed: {err}"),
+                        });
+                    }
+                };
+
+                for outcome in outcomes {
+                    encoded.push(Some(EncodedDicomJ2kFrame {
+                        codestream: EncodedDicomJ2kCodestream::Metal(outcome.encoded),
+                        used_device_encode: true,
+                        used_device_validation: self.codec_validation.enabled(),
+                        encode_duration: outcome
+                            .encode_duration
+                            .saturating_add(outcome.input_copy_duration),
+                        device_gpu_duration: outcome.gpu_duration,
+                        validation_duration: outcome.validation_duration,
+                    }));
+                }
             }
             start = end;
         }
@@ -255,7 +367,12 @@ pub(crate) fn encode_dicom_j2k_lossless(
     samples: J2kLosslessSamples<'_>,
     preference: EncodeBackendPreference,
 ) -> Result<Vec<u8>, WsiDicomError> {
-    encode_dicom_lossless(samples, TransferSyntax::Jpeg2000Lossless, preference)
+    encode_dicom_lossless(
+        samples,
+        TransferSyntax::Jpeg2000Lossless,
+        preference,
+        CodecValidation::RoundTrip,
+    )
 }
 
 #[cfg(test)]
@@ -263,28 +380,35 @@ pub(crate) fn encode_dicom_lossless(
     samples: J2kLosslessSamples<'_>,
     transfer_syntax: TransferSyntax,
     preference: EncodeBackendPreference,
+    codec_validation: CodecValidation,
 ) -> Result<Vec<u8>, WsiDicomError> {
-    DicomJ2kEncoder::new(preference, transfer_syntax)
+    DicomJ2kEncoder::new(preference, transfer_syntax, codec_validation)
         .encode(samples)
-        .map(|encoded| encoded.codestream)
+        .and_then(EncodedDicomJ2kFrame::into_codestream)
 }
 
 fn encode_lossless_cpu(
     samples: J2kLosslessSamples<'_>,
     transfer_syntax: TransferSyntax,
+    codec_validation: CodecValidation,
 ) -> Result<EncodedDicomJ2kFrame, WsiDicomError> {
     let started = Instant::now();
     encode_j2k_lossless(
         samples,
-        &lossless_encode_options(transfer_syntax, EncodeBackendPreference::CpuOnly)?,
+        &lossless_encode_options(
+            transfer_syntax,
+            EncodeBackendPreference::CpuOnly,
+            codec_validation,
+        )?,
     )
     .map(|encoded| {
         let encode_duration = started.elapsed();
         EncodedDicomJ2kFrame {
-            codestream: encoded.codestream,
+            codestream: EncodedDicomJ2kCodestream::Host(encoded.codestream),
             used_device_encode: false,
             used_device_validation: false,
             encode_duration,
+            device_gpu_duration: None,
             validation_duration: Duration::ZERO,
         }
     })
@@ -294,7 +418,7 @@ fn encode_lossless_cpu(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-fn metal_tile_is_padded_contiguous(
+pub(crate) fn metal_tile_is_padded_contiguous(
     tile: &statumen::output::metal::MetalDeviceTile,
     output_width: u32,
     output_height: u32,
@@ -319,7 +443,11 @@ fn encode_j2k_lossless_with_device_accelerator(
         samples,
         &J2kLosslessEncodeOptions {
             validation,
-            ..lossless_encode_options(transfer_syntax, EncodeBackendPreference::PreferDevice)?
+            ..lossless_encode_options(
+                transfer_syntax,
+                EncodeBackendPreference::PreferDevice,
+                CodecValidation::RoundTrip,
+            )?
         },
         backend,
         accelerator,
@@ -333,6 +461,7 @@ fn encode_j2k_lossless_with_device_accelerator(
 fn lossless_encode_options(
     transfer_syntax: TransferSyntax,
     backend: EncodeBackendPreference,
+    codec_validation: CodecValidation,
 ) -> Result<J2kLosslessEncodeOptions, WsiDicomError> {
     let (block_coding_mode, progression) = match transfer_syntax {
         TransferSyntax::Jpeg2000Lossless => {
@@ -346,7 +475,9 @@ fn lossless_encode_options(
             J2kBlockCodingMode::HighThroughput,
             J2kProgressionOrder::Rpcl,
         ),
-        TransferSyntax::JpegBaseline8Bit | TransferSyntax::ExplicitVrLittleEndian => {
+        TransferSyntax::JpegBaseline8Bit
+        | TransferSyntax::Jpeg2000
+        | TransferSyntax::ExplicitVrLittleEndian => {
             return Err(WsiDicomError::Unsupported {
                 reason: "transfer syntax is not implemented for lossless JPEG 2000 export".into(),
             });
@@ -357,12 +488,428 @@ fn lossless_encode_options(
         backend: backend.to_signinum(),
         block_coding_mode,
         progression,
+        max_decomposition_levels: Some(1),
         reversible_transform: ReversibleTransform::Rct53,
-        validation: J2kEncodeValidation::CpuRoundTrip,
+        validation: codec_validation.to_j2k_validation(),
     })
 }
 
 #[cfg(test)]
 pub(crate) fn dicom_j2k_decomposition_levels(samples: J2kLosslessSamples<'_>) -> u8 {
     signinum_j2k::j2k_lossless_decomposition_levels(samples)
+}
+
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+mod tests {
+    use super::DicomJ2kEncoder;
+    use crate::{CodecValidation, EncodeBackendPreference, TransferSyntax};
+    use signinum_core::PixelFormat;
+    use statumen::output::metal::{MetalDeviceStorage, MetalDeviceTile};
+
+    #[test]
+    fn auto_j2k_encoder_can_be_demoted_after_cpu_input_probe_wins() {
+        let mut encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::Auto,
+            TransferSyntax::Htj2kLosslessRpcl,
+            CodecValidation::Disabled,
+        );
+
+        let cpu_peer = encoder.cpu_only_peer();
+        assert_eq!(cpu_peer.preference(), EncodeBackendPreference::CpuOnly);
+
+        encoder.force_cpu_only_for_auto();
+        assert_eq!(encoder.preference(), EncodeBackendPreference::CpuOnly);
+
+        let mut preferred = DicomJ2kEncoder::new(
+            EncodeBackendPreference::PreferDevice,
+            TransferSyntax::Htj2kLosslessRpcl,
+            CodecValidation::Disabled,
+        );
+        preferred.force_cpu_only_for_auto();
+        assert_eq!(
+            preferred.preference(),
+            EncodeBackendPreference::PreferDevice
+        );
+    }
+
+    #[test]
+    fn metal_tile_encode_returns_buffer_backed_codestream_for_padded_tiles() {
+        let pixels: Vec<u8> = (0..8 * 8 * 3)
+            .map(|idx| ((idx * 29) & 0xFF) as u8)
+            .collect();
+        let session =
+            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let buffer = session.device().new_buffer_with_data(
+            pixels.as_ptr().cast(),
+            pixels.len() as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let tile = MetalDeviceTile {
+            width: 8,
+            height: 8,
+            pitch_bytes: 8 * 3,
+            format: PixelFormat::Rgb8,
+            storage: MetalDeviceStorage::Buffer {
+                buffer,
+                byte_offset: 0,
+            },
+        };
+        let mut encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::RequireDevice,
+            TransferSyntax::Jpeg2000Lossless,
+            CodecValidation::RoundTrip,
+        );
+
+        let encoded = encoder
+            .encode_metal_tiles(&[tile], 8, 8)
+            .expect("Metal DICOM tile encode");
+        let frame = encoded
+            .into_iter()
+            .next()
+            .expect("one frame")
+            .expect("Metal frame");
+
+        assert!(frame.codestream_is_metal_buffer_backed());
+        let codestream = frame.codestream_bytes().expect("codestream bytes");
+        assert!(codestream.starts_with(&[0xFF, 0x4F]));
+        let mut decoded = vec![0u8; pixels.len()];
+        signinum_j2k::J2kDecoder::new(codestream)
+            .expect("parse J2K")
+            .decode_into(&mut decoded, 8 * 3, PixelFormat::Rgb8)
+            .expect("decode J2K");
+        assert_eq!(decoded, pixels);
+    }
+
+    #[test]
+    fn metal_tile_encode_returns_buffer_backed_codestream_for_edge_tiles() {
+        let pixels: Vec<u8> = (0..7 * 5 * 3)
+            .map(|idx| ((idx * 31) & 0xFF) as u8)
+            .collect();
+        let session =
+            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let buffer = session.device().new_buffer_with_data(
+            pixels.as_ptr().cast(),
+            pixels.len() as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let tile = MetalDeviceTile {
+            width: 7,
+            height: 5,
+            pitch_bytes: 7 * 3,
+            format: PixelFormat::Rgb8,
+            storage: MetalDeviceStorage::Buffer {
+                buffer,
+                byte_offset: 0,
+            },
+        };
+        let mut encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::RequireDevice,
+            TransferSyntax::Jpeg2000Lossless,
+            CodecValidation::RoundTrip,
+        );
+
+        let encoded = encoder
+            .encode_metal_tiles(&[tile], 8, 8)
+            .expect("Metal DICOM edge tile encode");
+        let frame = encoded
+            .into_iter()
+            .next()
+            .expect("one frame")
+            .expect("Metal frame");
+
+        assert!(frame.codestream_is_metal_buffer_backed());
+        let codestream = frame.codestream_bytes().expect("codestream bytes");
+        assert!(codestream.starts_with(&[0xFF, 0x4F]));
+        let mut decoded = vec![0u8; 8 * 8 * 3];
+        signinum_j2k::J2kDecoder::new(codestream)
+            .expect("parse J2K")
+            .decode_into(&mut decoded, 8 * 3, PixelFormat::Rgb8)
+            .expect("decode J2K");
+        for y in 0..8usize {
+            for x in 0..8usize {
+                let dst = (y * 8 + x) * 3;
+                if x < 7 && y < 5 {
+                    let src = (y * 7 + x) * 3;
+                    assert_eq!(&decoded[dst..dst + 3], &pixels[src..src + 3]);
+                } else {
+                    assert_eq!(&decoded[dst..dst + 3], &[0, 0, 0]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn metal_tile_encode_returns_buffer_backed_codestream_for_htj2k_tiles() {
+        let pixels: Vec<u8> = (0..8 * 8).map(|idx| ((idx * 37) & 0xFF) as u8).collect();
+        let session =
+            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let buffer = session.device().new_buffer_with_data(
+            pixels.as_ptr().cast(),
+            pixels.len() as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let tile = MetalDeviceTile {
+            width: 8,
+            height: 8,
+            pitch_bytes: 8,
+            format: PixelFormat::Gray8,
+            storage: MetalDeviceStorage::Buffer {
+                buffer,
+                byte_offset: 0,
+            },
+        };
+        let mut encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::RequireDevice,
+            TransferSyntax::Htj2kLossless,
+            CodecValidation::RoundTrip,
+        );
+
+        let encoded = encoder
+            .encode_metal_tiles(&[tile], 8, 8)
+            .expect("Metal DICOM HTJ2K tile encode");
+        let frame = encoded
+            .into_iter()
+            .next()
+            .expect("one frame")
+            .expect("Metal frame");
+
+        assert!(frame.codestream_is_metal_buffer_backed());
+        let codestream = frame.codestream_bytes().expect("codestream bytes");
+        assert!(codestream.windows(2).any(|window| window == [0xFF, 0x50]));
+        let cod_marker = codestream
+            .windows(2)
+            .position(|window| window == [0xFF, 0x52])
+            .expect("COD marker");
+        assert_eq!(codestream[cod_marker + 12], 0x40);
+        let mut decoded = vec![0u8; pixels.len()];
+        signinum_j2k::J2kDecoder::new(codestream)
+            .expect("parse HTJ2K")
+            .decode_into(&mut decoded, 8, PixelFormat::Gray8)
+            .expect("decode HTJ2K");
+        assert_eq!(decoded, pixels);
+    }
+
+    #[test]
+    fn metal_tile_encode_returns_buffer_backed_codestream_for_wsi_sized_htj2k_rpcl_tiles() {
+        let pixels: Vec<u8> = (0..256 * 256 * 3)
+            .map(|idx| ((idx * 41) & 0xFF) as u8)
+            .collect();
+        let session =
+            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let buffer = session.device().new_buffer_with_data(
+            pixels.as_ptr().cast(),
+            pixels.len() as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let tile = MetalDeviceTile {
+            width: 256,
+            height: 256,
+            pitch_bytes: 256 * 3,
+            format: PixelFormat::Rgb8,
+            storage: MetalDeviceStorage::Buffer {
+                buffer,
+                byte_offset: 0,
+            },
+        };
+        let mut encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::RequireDevice,
+            TransferSyntax::Htj2kLosslessRpcl,
+            CodecValidation::RoundTrip,
+        );
+
+        let encoded = encoder
+            .encode_metal_tiles(&[tile], 256, 256)
+            .expect("Metal DICOM HTJ2K RPCL tile encode");
+        let frame = encoded
+            .into_iter()
+            .next()
+            .expect("one frame")
+            .expect("Metal frame");
+
+        assert!(frame.codestream_is_metal_buffer_backed());
+        let codestream = frame.codestream_bytes().expect("codestream bytes");
+        assert!(codestream.windows(2).any(|window| window == [0xFF, 0x50]));
+        let cod_marker = codestream
+            .windows(2)
+            .position(|window| window == [0xFF, 0x52])
+            .expect("COD marker");
+        assert_eq!(codestream[cod_marker + 5], 0x02);
+        assert_eq!(codestream[cod_marker + 12], 0x40);
+        let mut decoded = vec![0u8; pixels.len()];
+        signinum_j2k::J2kDecoder::new(codestream)
+            .expect("parse HTJ2K")
+            .decode_into(&mut decoded, 256 * 3, PixelFormat::Rgb8)
+            .expect("decode HTJ2K");
+        assert_eq!(decoded, pixels);
+    }
+
+    #[test]
+    fn metal_edge_rgb8_htj2k_rpcl_codestream_decodes_with_reference_codec_when_available() {
+        let Some(grk_decompress) = find_command_for_test("grk_decompress") else {
+            eprintln!("skipping resident Metal HTJ2K edge parity smoke: grk_decompress not found");
+            return;
+        };
+        let pixels: Vec<u8> = (0..7 * 5 * 3)
+            .map(|idx| ((idx * 43 + 17) & 0xFF) as u8)
+            .collect();
+        let session =
+            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let buffer = session.device().new_buffer_with_data(
+            pixels.as_ptr().cast(),
+            pixels.len() as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let tile = MetalDeviceTile {
+            width: 7,
+            height: 5,
+            pitch_bytes: 7 * 3,
+            format: PixelFormat::Rgb8,
+            storage: MetalDeviceStorage::Buffer {
+                buffer,
+                byte_offset: 0,
+            },
+        };
+        let mut encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::RequireDevice,
+            TransferSyntax::Htj2kLosslessRpcl,
+            CodecValidation::RoundTrip,
+        );
+
+        let encoded = encoder
+            .encode_metal_tiles(&[tile], 8, 8)
+            .expect("resident Metal DICOM HTJ2K RPCL edge tile encode");
+        let frame = encoded
+            .into_iter()
+            .next()
+            .expect("one frame")
+            .expect("Metal frame");
+
+        assert!(frame.codestream_is_metal_buffer_backed());
+        let codestream = frame.codestream_bytes().expect("codestream bytes");
+        assert!(codestream.windows(2).any(|window| window == [0xFF, 0x50]));
+        let cod_marker = codestream
+            .windows(2)
+            .position(|window| window == [0xFF, 0x52])
+            .expect("COD marker");
+        assert_eq!(codestream[cod_marker + 5], 0x02);
+        assert_eq!(codestream[cod_marker + 12], 0x40);
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codestream_path = tmp.path().join("edge-rgb8.j2k");
+        let ppm_path = tmp.path().join("edge-rgb8.ppm");
+        std::fs::write(&codestream_path, codestream).expect("write codestream");
+        let status = std::process::Command::new(grk_decompress)
+            .args(["-i"])
+            .arg(&codestream_path)
+            .args(["-o"])
+            .arg(&ppm_path)
+            .status()
+            .expect("run grk_decompress");
+        assert!(status.success(), "grk_decompress failed with {status}");
+
+        let (width, height, decoded) = read_binary_ppm_for_test(&ppm_path);
+        assert_eq!((width, height), (8, 8));
+        for y in 0..8usize {
+            for x in 0..8usize {
+                let dst = (y * 8 + x) * 3;
+                if x < 7 && y < 5 {
+                    let src = (y * 7 + x) * 3;
+                    assert_eq!(&decoded[dst..dst + 3], &pixels[src..src + 3]);
+                } else {
+                    assert_eq!(&decoded[dst..dst + 3], &[0, 0, 0]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prefer_device_metal_tile_encode_returns_buffer_backed_codestream_for_wsi_sized_htj2k_rpcl_tiles(
+    ) {
+        let pixels: Vec<u8> = (0..256 * 256 * 3)
+            .map(|idx| ((idx * 41) & 0xFF) as u8)
+            .collect();
+        let session =
+            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let buffer = session.device().new_buffer_with_data(
+            pixels.as_ptr().cast(),
+            pixels.len() as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let tile = MetalDeviceTile {
+            width: 256,
+            height: 256,
+            pitch_bytes: 256 * 3,
+            format: PixelFormat::Rgb8,
+            storage: MetalDeviceStorage::Buffer {
+                buffer,
+                byte_offset: 0,
+            },
+        };
+        let mut encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::PreferDevice,
+            TransferSyntax::Htj2kLosslessRpcl,
+            CodecValidation::RoundTrip,
+        );
+
+        let encoded = encoder
+            .encode_metal_tiles(&[tile], 256, 256)
+            .expect("PreferDevice Metal DICOM HTJ2K RPCL tile encode");
+
+        assert_eq!(encoded.len(), 1);
+        assert!(encoded[0]
+            .as_ref()
+            .expect("Metal frame")
+            .codestream_is_metal_buffer_backed());
+    }
+
+    fn find_command_for_test(name: &str) -> Option<String> {
+        std::env::var_os("PATH").and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|path| path.join(name))
+                .find(|path| path.is_file())
+                .map(|path| path.to_string_lossy().into_owned())
+        })
+    }
+
+    fn read_binary_ppm_for_test(path: &std::path::Path) -> (usize, usize, Vec<u8>) {
+        let bytes = std::fs::read(path).expect("read PPM");
+        let mut cursor = 0usize;
+        let magic = next_ppm_token_for_test(&bytes, &mut cursor);
+        assert_eq!(magic, "P6");
+        let width: usize = next_ppm_token_for_test(&bytes, &mut cursor)
+            .parse()
+            .expect("PPM width");
+        let height: usize = next_ppm_token_for_test(&bytes, &mut cursor)
+            .parse()
+            .expect("PPM height");
+        let maxval = next_ppm_token_for_test(&bytes, &mut cursor);
+        assert_eq!(maxval, "255");
+        if cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        let pixels = bytes[cursor..].to_vec();
+        assert_eq!(pixels.len(), width * height * 3);
+        (width, height, pixels)
+    }
+
+    fn next_ppm_token_for_test(bytes: &[u8], cursor: &mut usize) -> String {
+        loop {
+            while *cursor < bytes.len() && bytes[*cursor].is_ascii_whitespace() {
+                *cursor += 1;
+            }
+            if *cursor >= bytes.len() || bytes[*cursor] != b'#' {
+                break;
+            }
+            while *cursor < bytes.len() && bytes[*cursor] != b'\n' {
+                *cursor += 1;
+            }
+        }
+        let start = *cursor;
+        while *cursor < bytes.len() && !bytes[*cursor].is_ascii_whitespace() {
+            *cursor += 1;
+        }
+        std::str::from_utf8(&bytes[start..*cursor])
+            .expect("PPM token is UTF-8")
+            .to_string()
+    }
 }
