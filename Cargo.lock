@@ -1127,8 +1127,8 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "signinum-core"
-version = "1.0.0"
-source = "git+https://github.com/jcwal1516/signinum.git?rev=5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36#5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36"
+version = "1.0.1"
+source = "git+https://github.com/jcwal1516/signinum.git?rev=bc31845f83f71f21675da6c1dc75efde317a9a17#bc31845f83f71f21675da6c1dc75efde317a9a17"
 dependencies = [
  "thiserror 2.0.18",
 ]
@@ -1136,7 +1136,7 @@ dependencies = [
 [[package]]
 name = "signinum-cuda-runtime"
 version = "0.3.0"
-source = "git+https://github.com/jcwal1516/signinum.git?rev=5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36#5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36"
+source = "git+https://github.com/jcwal1516/signinum.git?rev=bc31845f83f71f21675da6c1dc75efde317a9a17#bc31845f83f71f21675da6c1dc75efde317a9a17"
 dependencies = [
  "libloading",
  "thiserror 2.0.18",
@@ -1144,8 +1144,8 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k"
-version = "1.1.0"
-source = "git+https://github.com/jcwal1516/signinum.git?rev=5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36#5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36"
+version = "1.1.1"
+source = "git+https://github.com/jcwal1516/signinum.git?rev=bc31845f83f71f21675da6c1dc75efde317a9a17#bc31845f83f71f21675da6c1dc75efde317a9a17"
 dependencies = [
  "signinum-core",
  "signinum-j2k-native",
@@ -1154,8 +1154,8 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k-cuda"
-version = "0.3.0"
-source = "git+https://github.com/jcwal1516/signinum.git?rev=5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36#5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36"
+version = "0.3.1"
+source = "git+https://github.com/jcwal1516/signinum.git?rev=bc31845f83f71f21675da6c1dc75efde317a9a17#bc31845f83f71f21675da6c1dc75efde317a9a17"
 dependencies = [
  "signinum-core",
  "signinum-cuda-runtime",
@@ -1166,8 +1166,8 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k-metal"
-version = "0.3.0"
-source = "git+https://github.com/jcwal1516/signinum.git?rev=5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36#5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36"
+version = "0.3.1"
+source = "git+https://github.com/jcwal1516/signinum.git?rev=bc31845f83f71f21675da6c1dc75efde317a9a17#bc31845f83f71f21675da6c1dc75efde317a9a17"
 dependencies = [
  "metal",
  "signinum-core",
@@ -1178,8 +1178,8 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k-native"
-version = "0.3.0"
-source = "git+https://github.com/jcwal1516/signinum.git?rev=5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36#5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36"
+version = "0.3.1"
+source = "git+https://github.com/jcwal1516/signinum.git?rev=bc31845f83f71f21675da6c1dc75efde317a9a17#bc31845f83f71f21675da6c1dc75efde317a9a17"
 dependencies = [
  "fearless_simd",
  "libm",
@@ -1187,8 +1187,8 @@ dependencies = [
 
 [[package]]
 name = "signinum-jpeg"
-version = "1.0.0"
-source = "git+https://github.com/jcwal1516/signinum.git?rev=5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36#5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36"
+version = "1.0.1"
+source = "git+https://github.com/jcwal1516/signinum.git?rev=bc31845f83f71f21675da6c1dc75efde317a9a17#bc31845f83f71f21675da6c1dc75efde317a9a17"
 dependencies = [
  "memchr",
  "signinum-core",
@@ -1197,8 +1197,8 @@ dependencies = [
 
 [[package]]
 name = "signinum-jpeg-metal"
-version = "0.2.0"
-source = "git+https://github.com/jcwal1516/signinum.git?rev=5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36#5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36"
+version = "0.2.1"
+source = "git+https://github.com/jcwal1516/signinum.git?rev=bc31845f83f71f21675da6c1dc75efde317a9a17#bc31845f83f71f21675da6c1dc75efde317a9a17"
 dependencies = [
  "metal",
  "signinum-core",
@@ -1208,8 +1208,8 @@ dependencies = [
 
 [[package]]
 name = "signinum-tilecodec"
-version = "1.0.0"
-source = "git+https://github.com/jcwal1516/signinum.git?rev=5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36#5be6a3caec2f6c9f653dbb0e0cc18deba1c9bc36"
+version = "1.0.1"
+source = "git+https://github.com/jcwal1516/signinum.git?rev=bc31845f83f71f21675da6c1dc75efde317a9a17#bc31845f83f71f21675da6c1dc75efde317a9a17"
 dependencies = [
  "flate2",
  "signinum-core",
@@ -1260,7 +1260,7 @@ dependencies = [
 [[package]]
 name = "statumen"
 version = "0.1.2"
-source = "git+https://github.com/jcwal1516/statumen.git?rev=eee07d136e42059252b950904840c1aef603d974#eee07d136e42059252b950904840c1aef603d974"
+source = "git+https://github.com/jcwal1516/statumen.git?rev=ce38e489cae6df237e3a7a5b73fc36f127c8bf2c#ce38e489cae6df237e3a7a5b73fc36f127c8bf2c"
 dependencies = [
  "base64",
  "byteorder",
