@@ -25,7 +25,7 @@ signinum-j2k-cuda = { version = "=0.3.1", optional = true, features = ["cuda-run
 signinum-j2k-metal = { version = "=0.3.1", optional = true }
 signinum-jpeg = "=1.0.1"
 signinum-jpeg-metal = { version = "=0.2.1", optional = true }
-statumen = { git = "https://github.com/jcwal1516/statumen.git", rev = "ce38e489cae6df237e3a7a5b73fc36f127c8bf2c", version = "=0.1.2" }
+statumen = "=0.1.2"
 thiserror = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -47,14 +47,3 @@ vendored-codecs = []
 
 [dev-dependencies]
 tempfile = "3"
-
-[patch.crates-io]
-signinum-core = { git = "https://github.com/jcwal1516/signinum.git", rev = "bc31845f83f71f21675da6c1dc75efde317a9a17" }
-signinum-cuda-runtime = { git = "https://github.com/jcwal1516/signinum.git", rev = "bc31845f83f71f21675da6c1dc75efde317a9a17" }
-signinum-j2k = { git = "https://github.com/jcwal1516/signinum.git", rev = "bc31845f83f71f21675da6c1dc75efde317a9a17" }
-signinum-j2k-cuda = { git = "https://github.com/jcwal1516/signinum.git", rev = "bc31845f83f71f21675da6c1dc75efde317a9a17" }
-signinum-j2k-metal = { git = "https://github.com/jcwal1516/signinum.git", rev = "bc31845f83f71f21675da6c1dc75efde317a9a17" }
-signinum-j2k-native = { git = "https://github.com/jcwal1516/signinum.git", rev = "bc31845f83f71f21675da6c1dc75efde317a9a17" }
-signinum-jpeg = { git = "https://github.com/jcwal1516/signinum.git", rev = "bc31845f83f71f21675da6c1dc75efde317a9a17" }
-signinum-jpeg-metal = { git = "https://github.com/jcwal1516/signinum.git", rev = "bc31845f83f71f21675da6c1dc75efde317a9a17" }
-signinum-tilecodec = { git = "https://github.com/jcwal1516/signinum.git", rev = "bc31845f83f71f21675da6c1dc75efde317a9a17" }
