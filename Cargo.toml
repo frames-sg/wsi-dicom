@@ -1,6 +1,6 @@
 [package]
 name = "wsi-dicom"
-version = "0.1.0"
+version = "0.1.3"
 edition = "2021"
 license = "Apache-2.0"
 description = "DICOM whole-slide export layer for statumen datasets"
@@ -24,8 +24,8 @@ signinum-j2k = "=1.1.1"
 signinum-j2k-cuda = { version = "=0.3.1", optional = true, features = ["cuda-runtime"] }
 signinum-j2k-metal = { version = "=0.3.1", optional = true }
 signinum-jpeg = "=1.0.1"
-signinum-jpeg-metal = { version = "=0.2.1", optional = true }
-statumen = "=0.1.2"
+signinum-jpeg-metal = { version = "=0.2.2", optional = true }
+statumen = "=0.1.5"
 thiserror = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
