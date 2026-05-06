@@ -4272,10 +4272,14 @@ impl MetalInputTileReader {
 
     fn source_tile_output_preference(&mut self) -> Result<TileOutputPreference, WsiDicomError> {
         let sessions = self.sessions()?;
-        Ok(if self.source_device_decode {
-            TileOutputPreference::prefer_device_auto_with_metal_and_compressed_decode(sessions)
-        } else {
-            TileOutputPreference::prefer_device_auto_with_metal(sessions)
+        Ok(match (self.preference, self.source_device_decode) {
+            (EncodeBackendPreference::RequireDevice, true) => {
+                TileOutputPreference::require_device_auto_with_metal_and_compressed_decode(sessions)
+            }
+            (_, true) => {
+                TileOutputPreference::prefer_device_auto_with_metal_and_compressed_decode(sessions)
+            }
+            _ => TileOutputPreference::prefer_device_auto_with_metal(sessions),
         })
     }
 
@@ -8918,6 +8922,19 @@ mod tests {
                 panic!("non-JPEG 2000 transfer syntax in lossless J2K fixture test");
             }
         }
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn require_device_source_tile_preference_rejects_cpu_decode_fallback() {
+        let mut metal_input =
+            MetalInputTileReader::new(EncodeBackendPreference::RequireDevice, true);
+        let Ok(output) = metal_input.source_tile_output_preference() else {
+            return;
+        };
+
+        assert!(output.requires_device());
+        assert!(output.compressed_device_decode_enabled());
     }
 
     #[test]
