@@ -5112,6 +5112,14 @@ struct MetalStripComposer {
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
+fn metal_profile_stages_enabled() -> bool {
+    matches!(
+        std::env::var("SIGNINUM_J2K_METAL_PROFILE_STAGES"),
+        Ok(value) if value == "1"
+    )
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
 impl MetalStripComposer {
     fn new(device: metal::Device) -> Result<Self, WsiDicomError> {
         let options = metal::CompileOptions::new();
@@ -5190,7 +5198,13 @@ impl MetalStripComposer {
             metal::MTLResourceOptions::StorageModeShared,
         );
         let command_buffer = self.queue.new_command_buffer();
+        if metal_profile_stages_enabled() {
+            command_buffer.set_label("wsi-dicom input tile pack");
+        }
         let blit = command_buffer.new_blit_command_encoder();
+        if metal_profile_stages_enabled() {
+            blit.set_label("WSI input tile pack");
+        }
 
         for (idx, tile) in tiles.iter().enumerate() {
             if tile.format != format {
@@ -5385,7 +5399,13 @@ impl MetalStripComposer {
         }
 
         let command_buffer = self.queue.new_command_buffer();
+        if metal_profile_stages_enabled() {
+            command_buffer.set_label("wsi-dicom compose tiles");
+        }
         let encoder = command_buffer.new_compute_command_encoder();
+        if metal_profile_stages_enabled() {
+            encoder.set_label("WSI compose tiles");
+        }
         encoder.set_compute_pipeline_state(&self.pipeline);
         encoder.set_buffer(0, Some(&packed.buffer), 0);
         let width = self.pipeline.thread_execution_width().max(1);
