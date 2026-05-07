@@ -93,16 +93,20 @@ pub struct DicomExportOptions {
     pub encode_backend: EncodeBackendPreference,
     pub codec_validation: CodecValidation,
     pub source_device_decode: bool,
+    pub gpu_encode_inflight_tiles: Option<usize>,
+    pub gpu_encode_memory_mib: Option<u64>,
 }
 
 impl Default for DicomExportOptions {
     fn default() -> Self {
         Self {
             tile_size: 512,
-            transfer_syntax: TransferSyntax::Jpeg2000Lossless,
+            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
             encode_backend: EncodeBackendPreference::Auto,
             codec_validation: CodecValidation::Disabled,
             source_device_decode: false,
+            gpu_encode_inflight_tiles: None,
+            gpu_encode_memory_mib: None,
         }
     }
 }
@@ -113,6 +117,24 @@ impl DicomExportOptions {
             return Err(WsiDicomError::InvalidOptions {
                 reason: "tile_size must be greater than zero".into(),
             });
+        }
+        if self.gpu_encode_inflight_tiles == Some(0) {
+            return Err(WsiDicomError::InvalidOptions {
+                reason: "gpu_encode_inflight_tiles must be greater than zero when provided".into(),
+            });
+        }
+        if self.gpu_encode_memory_mib == Some(0) {
+            return Err(WsiDicomError::InvalidOptions {
+                reason: "gpu_encode_memory_mib must be greater than zero when provided".into(),
+            });
+        }
+        if let Some(memory_mib) = self.gpu_encode_memory_mib {
+            let _ = usize::try_from(memory_mib)
+                .ok()
+                .and_then(|mib| mib.checked_mul(1024 * 1024))
+                .ok_or_else(|| WsiDicomError::InvalidOptions {
+                    reason: "gpu_encode_memory_mib exceeds platform addressable memory".into(),
+                })?;
         }
         Ok(())
     }
