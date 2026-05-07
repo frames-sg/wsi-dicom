@@ -8,6 +8,8 @@
 
 **Tech Stack:** Rust, `metal-rs`, `signinum-jpeg-metal`, `statumen`, `wsi-dicom`, `signinum-j2k-metal`.
 
+**Result record:** See `docs/superpowers/results/2026-05-07-metal-htj2k-benchmark-results.md`.
+
 ---
 
 ### Task 1: Baseline Before Changes
@@ -233,4 +235,3 @@ Use the exact benchmark command set from Task 1.
 - [ ] **Step 2: Decision gate**
 
 If `input_decode_micros` is now small and wall time is dominated by `gpu_encode_hardware_micros`, stop here and execute the HTJ2K SIMD Tier-1 plan. If wall time still shows decode/encode wait boundaries, create a separate fusion plan for command-buffer/fence dependency plumbing.
-

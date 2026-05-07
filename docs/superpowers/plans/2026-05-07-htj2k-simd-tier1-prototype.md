@@ -8,6 +8,8 @@
 
 **Tech Stack:** Rust, `metal-rs`, Metal Shading Language, `signinum-j2k-metal`, `signinum-j2k-native` parity checks.
 
+**Result record:** See `docs/superpowers/results/2026-05-07-metal-htj2k-benchmark-results.md`.
+
 ---
 
 ### Task 1: Baseline and Hotspot Confirmation
@@ -255,4 +257,3 @@ Compare wall time and `gpu_encode_hardware_micros`.
 - [ ] **Step 3: Decision gate**
 
 If the prototype does not reduce `gpu_encode_hardware_micros`, keep it disabled and move to packetization profiling. If it reduces hardware time, expand supported block shapes and remove the env gate after full parity coverage.
-
