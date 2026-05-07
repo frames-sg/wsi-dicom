@@ -1259,8 +1259,6 @@ dependencies = [
 [[package]]
 name = "statumen"
 version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a18a544b25499477c862fd6fd742650c2b5a447505a7671ad535513e53b492ba"
 dependencies = [
  "base64",
  "byteorder",

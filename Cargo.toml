@@ -50,6 +50,7 @@ vendored-codecs = []
 tempfile = "3"
 
 [patch.crates-io]
+statumen = { path = "../statumen" }
 signinum-core = { path = "../signinum/crates/signinum-core" }
 signinum-j2k = { path = "../signinum/crates/signinum-j2k" }
 signinum-j2k-metal = { path = "../signinum/crates/signinum-j2k-metal" }
