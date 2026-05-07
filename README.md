@@ -125,6 +125,10 @@ state.
 
 Supported compressed export transfer syntaxes:
 
+The `convert` CLI and `DicomExportOptions::default()` default to
+`htj2k-lossless-rpcl`; pass `--transfer-syntax` to choose a different export
+syntax explicitly.
+
 | CLI value | UID | Description |
 | --- | --- | --- |
 | `jpeg2000` | `1.2.840.10008.1.2.4.91` | General JPEG 2000 passthrough-only; uses native square source tile geometry when available and preserves compatible source codestreams without decode/encode |
