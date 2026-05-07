@@ -12,6 +12,8 @@ pub(crate) struct DicomJ2kEncoder {
     preference: EncodeBackendPreference,
     transfer_syntax: TransferSyntax,
     codec_validation: CodecValidation,
+    gpu_encode_inflight_tiles: Option<usize>,
+    gpu_encode_memory_mib: Option<u64>,
     #[cfg(all(feature = "metal", target_os = "macos"))]
     metal: Option<signinum_j2k_metal::MetalEncodeStageAccelerator>,
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -33,6 +35,43 @@ pub(crate) enum EncodedDicomJ2kCodestream {
     Host(Vec<u8>),
     #[cfg(all(feature = "metal", target_os = "macos"))]
     Metal(signinum_j2k_metal::MetalEncodedJ2k),
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct DicomJ2kGpuEncodeBatchStats {
+    pub(crate) configured_inflight_tiles: Option<usize>,
+    pub(crate) effective_inflight_tiles: usize,
+    pub(crate) max_observed_inflight_tiles: usize,
+    pub(crate) configured_memory_mib: Option<u64>,
+    pub(crate) effective_memory_mib: u64,
+    pub(crate) encode_wall_duration: Duration,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl DicomJ2kGpuEncodeBatchStats {
+    fn add_assign(&mut self, other: Self) {
+        self.configured_inflight_tiles = self
+            .configured_inflight_tiles
+            .max(other.configured_inflight_tiles);
+        self.effective_inflight_tiles = self
+            .effective_inflight_tiles
+            .max(other.effective_inflight_tiles);
+        self.max_observed_inflight_tiles = self
+            .max_observed_inflight_tiles
+            .max(other.max_observed_inflight_tiles);
+        self.configured_memory_mib = self.configured_memory_mib.max(other.configured_memory_mib);
+        self.effective_memory_mib = self.effective_memory_mib.max(other.effective_memory_mib);
+        self.encode_wall_duration = self
+            .encode_wall_duration
+            .saturating_add(other.encode_wall_duration);
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(crate) struct EncodedDicomJ2kMetalTileBatch {
+    pub(crate) frames: Vec<Option<EncodedDicomJ2kFrame>>,
+    pub(crate) gpu_encode_stats: DicomJ2kGpuEncodeBatchStats,
 }
 
 impl EncodedDicomJ2kFrame {
@@ -80,6 +119,8 @@ impl DicomJ2kEncoder {
             preference,
             transfer_syntax,
             codec_validation,
+            gpu_encode_inflight_tiles: None,
+            gpu_encode_memory_mib: None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             metal: None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -87,6 +128,16 @@ impl DicomJ2kEncoder {
             #[cfg(feature = "cuda")]
             cuda: None,
         }
+    }
+
+    pub(crate) fn with_gpu_encode_tuning(
+        mut self,
+        gpu_encode_inflight_tiles: Option<usize>,
+        gpu_encode_memory_mib: Option<u64>,
+    ) -> Self {
+        self.gpu_encode_inflight_tiles = gpu_encode_inflight_tiles;
+        self.gpu_encode_memory_mib = gpu_encode_memory_mib;
+        self
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -102,6 +153,7 @@ impl DicomJ2kEncoder {
     #[cfg(all(feature = "metal", target_os = "macos"))]
     fn peer_with_preference(&self, preference: EncodeBackendPreference) -> Self {
         Self::new(preference, self.transfer_syntax, self.codec_validation)
+            .with_gpu_encode_tuning(self.gpu_encode_inflight_tiles, self.gpu_encode_memory_mib)
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -135,6 +187,12 @@ impl DicomJ2kEncoder {
             }
             None => encode_lossless_cpu(samples, self.transfer_syntax, self.codec_validation),
         }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn cpu_batch_settings(&self) -> Option<(TransferSyntax, CodecValidation)> {
+        (self.preference == EncodeBackendPreference::CpuOnly)
+            .then_some((self.transfer_syntax, self.codec_validation))
     }
 
     fn try_device(
@@ -236,9 +294,12 @@ impl DicomJ2kEncoder {
         tiles: &[statumen::output::metal::MetalDeviceTile],
         output_width: u32,
         output_height: u32,
-    ) -> Result<Vec<Option<EncodedDicomJ2kFrame>>, WsiDicomError> {
+    ) -> Result<EncodedDicomJ2kMetalTileBatch, WsiDicomError> {
         if self.preference == EncodeBackendPreference::CpuOnly {
-            return Ok((0..tiles.len()).map(|_| None).collect());
+            return Ok(EncodedDicomJ2kMetalTileBatch {
+                frames: (0..tiles.len()).map(|_| None).collect(),
+                gpu_encode_stats: DicomJ2kGpuEncodeBatchStats::default(),
+            });
         }
 
         let session = self.ensure_metal_session()?.clone();
@@ -248,6 +309,7 @@ impl DicomJ2kEncoder {
             self.codec_validation,
         )?;
         let mut encoded = Vec::with_capacity(tiles.len());
+        let mut gpu_encode_stats = DicomJ2kGpuEncodeBatchStats::default();
         let mut start = 0usize;
         while start < tiles.len() {
             let padded =
@@ -276,13 +338,21 @@ impl DicomJ2kEncoder {
                     format: tile.format,
                 });
             }
+            let config = signinum_j2k_metal::MetalLosslessEncodeConfig {
+                gpu_encode_inflight_tiles: self.gpu_encode_inflight_tiles,
+                gpu_encode_memory_budget_bytes: self
+                    .gpu_encode_memory_mib
+                    .and_then(|mib| usize::try_from(mib).ok())
+                    .and_then(|mib| mib.checked_mul(1024 * 1024)),
+            };
             if padded {
-                let outcomes = match signinum_j2k_metal::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
+                let batch = match signinum_j2k_metal::encode_lossless_from_padded_metal_buffers_to_metal_batch(
                     &requests,
                     &options,
                     &session,
+                    config,
                 ) {
-                    Ok(outcomes) => outcomes,
+                    Ok(batch) => batch,
                     Err(_) if self.preference != EncodeBackendPreference::RequireDevice => {
                         encoded.extend((start..end).map(|_| None));
                         start = end;
@@ -294,8 +364,12 @@ impl DicomJ2kEncoder {
                         });
                     }
                 };
+                gpu_encode_stats.add_assign(dicom_gpu_encode_stats_from_metal(
+                    batch.stats,
+                    self.gpu_encode_memory_mib,
+                ));
 
-                for outcome in outcomes {
+                for outcome in batch.outcomes {
                     encoded.push(Some(EncodedDicomJ2kFrame {
                         codestream: EncodedDicomJ2kCodestream::Metal(outcome.encoded),
                         used_device_encode: true,
@@ -308,23 +382,28 @@ impl DicomJ2kEncoder {
                     }));
                 }
             } else {
-                let outcomes = match signinum_j2k_metal::encode_lossless_from_metal_buffers_to_metal_with_report(
-                    &requests, &options, &session,
-                ) {
-                    Ok(outcomes) => outcomes,
-                    Err(_) if self.preference != EncodeBackendPreference::RequireDevice => {
-                        encoded.extend((start..end).map(|_| None));
-                        start = end;
-                        continue;
-                    }
-                    Err(err) => {
-                        return Err(WsiDicomError::Encode {
-                            message: format!("JPEG 2000 Metal tile batch encode failed: {err}"),
-                        });
-                    }
-                };
+                let batch =
+                    match signinum_j2k_metal::encode_lossless_from_metal_buffers_to_metal_batch(
+                        &requests, &options, &session, config,
+                    ) {
+                        Ok(batch) => batch,
+                        Err(_) if self.preference != EncodeBackendPreference::RequireDevice => {
+                            encoded.extend((start..end).map(|_| None));
+                            start = end;
+                            continue;
+                        }
+                        Err(err) => {
+                            return Err(WsiDicomError::Encode {
+                                message: format!("JPEG 2000 Metal tile batch encode failed: {err}"),
+                            });
+                        }
+                    };
+                gpu_encode_stats.add_assign(dicom_gpu_encode_stats_from_metal(
+                    batch.stats,
+                    self.gpu_encode_memory_mib,
+                ));
 
-                for outcome in outcomes {
+                for outcome in batch.outcomes {
                     encoded.push(Some(EncodedDicomJ2kFrame {
                         codestream: EncodedDicomJ2kCodestream::Metal(outcome.encoded),
                         used_device_encode: true,
@@ -339,7 +418,10 @@ impl DicomJ2kEncoder {
             }
             start = end;
         }
-        Ok(encoded)
+        Ok(EncodedDicomJ2kMetalTileBatch {
+            frames: encoded,
+            gpu_encode_stats,
+        })
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -360,6 +442,27 @@ impl DicomJ2kEncoder {
             .as_ref()
             .expect("Metal session is initialized"))
     }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn dicom_gpu_encode_stats_from_metal(
+    stats: signinum_j2k_metal::MetalLosslessEncodeBatchStats,
+    configured_memory_mib: Option<u64>,
+) -> DicomJ2kGpuEncodeBatchStats {
+    DicomJ2kGpuEncodeBatchStats {
+        configured_inflight_tiles: stats.configured_inflight_tiles,
+        effective_inflight_tiles: stats.effective_inflight_tiles,
+        max_observed_inflight_tiles: stats.max_observed_inflight_tiles,
+        configured_memory_mib,
+        effective_memory_mib: bytes_to_mib_ceil(stats.effective_memory_budget_bytes),
+        encode_wall_duration: stats.encode_wall_duration,
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn bytes_to_mib_ceil(bytes: usize) -> u64 {
+    let mib = 1024usize * 1024;
+    bytes.div_ceil(mib) as u64
 }
 
 #[cfg(test)]
@@ -387,7 +490,7 @@ pub(crate) fn encode_dicom_lossless(
         .and_then(EncodedDicomJ2kFrame::into_codestream)
 }
 
-fn encode_lossless_cpu(
+pub(crate) fn encode_lossless_cpu(
     samples: J2kLosslessSamples<'_>,
     transfer_syntax: TransferSyntax,
     codec_validation: CodecValidation,
@@ -562,7 +665,8 @@ mod tests {
 
         let encoded = encoder
             .encode_metal_tiles(&[tile], 8, 8)
-            .expect("Metal DICOM tile encode");
+            .expect("Metal DICOM tile encode")
+            .frames;
         let frame = encoded
             .into_iter()
             .next()
@@ -610,7 +714,8 @@ mod tests {
 
         let encoded = encoder
             .encode_metal_tiles(&[tile], 8, 8)
-            .expect("Metal DICOM edge tile encode");
+            .expect("Metal DICOM edge tile encode")
+            .frames;
         let frame = encoded
             .into_iter()
             .next()
@@ -666,7 +771,8 @@ mod tests {
 
         let encoded = encoder
             .encode_metal_tiles(&[tile], 8, 8)
-            .expect("Metal DICOM HTJ2K tile encode");
+            .expect("Metal DICOM HTJ2K tile encode")
+            .frames;
         let frame = encoded
             .into_iter()
             .next()
@@ -719,7 +825,8 @@ mod tests {
 
         let encoded = encoder
             .encode_metal_tiles(&[tile], 256, 256)
-            .expect("Metal DICOM HTJ2K RPCL tile encode");
+            .expect("Metal DICOM HTJ2K RPCL tile encode")
+            .frames;
         let frame = encoded
             .into_iter()
             .next()
@@ -777,7 +884,8 @@ mod tests {
 
         let encoded = encoder
             .encode_metal_tiles(&[tile], 8, 8)
-            .expect("resident Metal DICOM HTJ2K RPCL edge tile encode");
+            .expect("resident Metal DICOM HTJ2K RPCL edge tile encode")
+            .frames;
         let frame = encoded
             .into_iter()
             .next()
@@ -853,7 +961,8 @@ mod tests {
 
         let encoded = encoder
             .encode_metal_tiles(&[tile], 256, 256)
-            .expect("PreferDevice Metal DICOM HTJ2K RPCL tile encode");
+            .expect("PreferDevice Metal DICOM HTJ2K RPCL tile encode")
+            .frames;
 
         assert_eq!(encoded.len(), 1);
         assert!(encoded[0]

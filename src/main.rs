@@ -2,11 +2,11 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use wsi_dicom::{
     export_dicom, profile_dicom_route_corpus_coverage, profile_dicom_route_coverage,
-    profile_dicom_routes, CodecValidation, DicomExportOptions, DicomExportReport,
-    DicomExportRequest, DicomMetadata, DicomRouteCorpusCoverageProgress,
+    profile_dicom_routes, CodecValidation, DicomExportMetrics, DicomExportOptions,
+    DicomExportReport, DicomExportRequest, DicomMetadata, DicomRouteCorpusCoverageProgress,
     DicomRouteCorpusCoverageReport, DicomRouteCorpusCoverageRequest, DicomRouteCoverageProgress,
     DicomRouteCoverageReport, DicomRouteCoverageRequest, DicomRouteProfileReport,
     DicomRouteProfileRequest, EncodeBackendPreference, MetadataSource, TransferSyntax,
@@ -35,12 +35,14 @@ enum Command {
         backend: BackendArg,
         #[arg(long, default_value_t = 512)]
         tile_size: u32,
-        #[arg(long, value_enum, default_value_t = TransferSyntaxArg::Jpeg2000Lossless)]
+        #[arg(long, value_enum, default_value_t = TransferSyntaxArg::Htj2kLosslessRpcl)]
         transfer_syntax: TransferSyntaxArg,
         #[arg(long, value_enum, default_value_t = CodecValidationArg::Disabled)]
         codec_validation: CodecValidationArg,
         #[arg(long)]
         source_device_decode: bool,
+        #[command(flatten)]
+        gpu_encode: GpuEncodeArgs,
         #[arg(long)]
         level: Option<u32>,
         #[arg(long)]
@@ -62,6 +64,8 @@ enum Command {
         max_frames: u64,
         #[arg(long)]
         source_device_decode: bool,
+        #[command(flatten)]
+        gpu_encode: GpuEncodeArgs,
         #[arg(long)]
         json: bool,
     },
@@ -85,6 +89,8 @@ enum Command {
         max_level_ms: Option<u64>,
         #[arg(long)]
         source_device_decode: bool,
+        #[command(flatten)]
+        gpu_encode: GpuEncodeArgs,
         #[arg(long)]
         json: bool,
     },
@@ -108,6 +114,8 @@ enum Command {
         max_level_ms: Option<u64>,
         #[arg(long)]
         source_device_decode: bool,
+        #[command(flatten)]
+        gpu_encode: GpuEncodeArgs,
         #[arg(long)]
         json: bool,
     },
@@ -129,6 +137,8 @@ enum Command {
         codec_validation: CodecValidationArg,
         #[arg(long)]
         source_device_decode: bool,
+        #[command(flatten)]
+        gpu_encode: GpuEncodeArgs,
         #[arg(long)]
         level: Option<u32>,
         #[arg(long, default_value_t = 5)]
@@ -162,9 +172,26 @@ enum Command {
         interval_ms: u64,
         #[arg(long)]
         source_device_decode: bool,
+        #[command(flatten)]
+        gpu_encode: GpuEncodeArgs,
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, Default, Args)]
+struct GpuEncodeArgs {
+    #[arg(long)]
+    gpu_encode_inflight_tiles: Option<usize>,
+    #[arg(long)]
+    gpu_encode_memory_mib: Option<u64>,
+}
+
+impl GpuEncodeArgs {
+    fn into_options_fields(self, options: &mut DicomExportOptions) {
+        options.gpu_encode_inflight_tiles = self.gpu_encode_inflight_tiles;
+        options.gpu_encode_memory_mib = self.gpu_encode_memory_mib;
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -241,6 +268,7 @@ fn run() -> Result<(), WsiDicomError> {
             transfer_syntax,
             codec_validation,
             source_device_decode,
+            gpu_encode,
             level,
             json,
         } => {
@@ -248,13 +276,14 @@ fn run() -> Result<(), WsiDicomError> {
             let report = export_dicom(DicomExportRequest {
                 source_path: source,
                 output_dir: out,
-                options: DicomExportOptions {
+                options: dicom_export_options(
                     tile_size,
-                    transfer_syntax: transfer_syntax.into_transfer_syntax(),
-                    encode_backend: backend.into_preference(),
-                    codec_validation: codec_validation.into_codec_validation(),
+                    transfer_syntax,
+                    backend,
+                    codec_validation,
                     source_device_decode,
-                },
+                    gpu_encode,
+                ),
                 metadata,
                 level_filter: level,
             })?;
@@ -274,17 +303,19 @@ fn run() -> Result<(), WsiDicomError> {
             level,
             max_frames,
             source_device_decode,
+            gpu_encode,
             json,
         } => {
             let report = profile_dicom_routes(DicomRouteProfileRequest {
                 source_path: source,
-                options: DicomExportOptions {
+                options: dicom_export_options(
                     tile_size,
-                    transfer_syntax: transfer_syntax.into_transfer_syntax(),
-                    encode_backend: backend.into_preference(),
-                    codec_validation: codec_validation.into_codec_validation(),
+                    transfer_syntax,
+                    backend,
+                    codec_validation,
                     source_device_decode,
-                },
+                    gpu_encode,
+                ),
                 level,
                 max_frames,
             })?;
@@ -306,6 +337,7 @@ fn run() -> Result<(), WsiDicomError> {
             max_levels,
             max_level_ms,
             source_device_decode,
+            gpu_encode,
             json,
         } => {
             let max_frames_per_level =
@@ -313,13 +345,14 @@ fn run() -> Result<(), WsiDicomError> {
             let max_level_elapsed = max_level_elapsed_from_ms(max_level_ms)?;
             let report = profile_dicom_route_coverage(DicomRouteCoverageRequest {
                 source_path: source,
-                options: DicomExportOptions {
+                options: dicom_export_options(
                     tile_size,
-                    transfer_syntax: transfer_syntax.into_transfer_syntax(),
-                    encode_backend: backend.into_preference(),
-                    codec_validation: codec_validation.into_codec_validation(),
+                    transfer_syntax,
+                    backend,
+                    codec_validation,
                     source_device_decode,
-                },
+                    gpu_encode,
+                ),
                 max_frames_per_level,
                 max_levels,
                 max_level_elapsed,
@@ -343,6 +376,7 @@ fn run() -> Result<(), WsiDicomError> {
             max_levels,
             max_level_ms,
             source_device_decode,
+            gpu_encode,
             json,
         } => {
             let max_frames_per_level =
@@ -350,13 +384,14 @@ fn run() -> Result<(), WsiDicomError> {
             let max_level_elapsed = max_level_elapsed_from_ms(max_level_ms)?;
             let report = profile_dicom_route_corpus_coverage(DicomRouteCorpusCoverageRequest {
                 source_root: root,
-                options: DicomExportOptions {
+                options: dicom_export_options(
                     tile_size,
-                    transfer_syntax: transfer_syntax.into_transfer_syntax(),
-                    encode_backend: backend.into_preference(),
-                    codec_validation: codec_validation.into_codec_validation(),
+                    transfer_syntax,
+                    backend,
+                    codec_validation,
                     source_device_decode,
-                },
+                    gpu_encode,
+                ),
                 max_frames_per_level,
                 max_levels,
                 max_level_elapsed,
@@ -379,6 +414,7 @@ fn run() -> Result<(), WsiDicomError> {
             transfer_syntax,
             codec_validation,
             source_device_decode,
+            gpu_encode,
             level,
             iterations,
             interval_ms,
@@ -390,13 +426,14 @@ fn run() -> Result<(), WsiDicomError> {
                 });
             }
             let metadata = load_metadata_source(metadata, research_placeholder)?;
-            let options = DicomExportOptions {
+            let options = dicom_export_options(
                 tile_size,
-                transfer_syntax: transfer_syntax.into_transfer_syntax(),
-                encode_backend: backend.into_preference(),
-                codec_validation: codec_validation.into_codec_validation(),
+                transfer_syntax,
+                backend,
+                codec_validation,
                 source_device_decode,
-            };
+                gpu_encode,
+            );
             for iteration in 1..=iterations {
                 let output_dir = out.join(format!("iteration-{iteration:04}"));
                 let started = std::time::Instant::now();
@@ -455,6 +492,7 @@ fn run() -> Result<(), WsiDicomError> {
             iterations,
             interval_ms,
             source_device_decode,
+            gpu_encode,
             json,
         } => {
             if iterations == 0 {
@@ -462,13 +500,14 @@ fn run() -> Result<(), WsiDicomError> {
                     reason: "sustain requires iterations > 0".into(),
                 });
             }
-            let options = DicomExportOptions {
+            let options = dicom_export_options(
                 tile_size,
-                transfer_syntax: transfer_syntax.into_transfer_syntax(),
-                encode_backend: backend.into_preference(),
-                codec_validation: codec_validation.into_codec_validation(),
+                transfer_syntax,
+                backend,
+                codec_validation,
                 source_device_decode,
-            };
+                gpu_encode,
+            );
             let max_frames_per_level =
                 effective_max_frames_per_level(max_frames_per_level, full_frame_coverage);
             let max_level_elapsed = max_level_elapsed_from_ms(max_level_ms)?;
@@ -565,6 +604,26 @@ fn max_level_elapsed_from_ms(max_level_ms: Option<u64>) -> Result<Option<Duratio
     }
 }
 
+fn dicom_export_options(
+    tile_size: u32,
+    transfer_syntax: TransferSyntaxArg,
+    backend: BackendArg,
+    codec_validation: CodecValidationArg,
+    source_device_decode: bool,
+    gpu_encode: GpuEncodeArgs,
+) -> DicomExportOptions {
+    let mut options = DicomExportOptions {
+        tile_size,
+        transfer_syntax: transfer_syntax.into_transfer_syntax(),
+        encode_backend: backend.into_preference(),
+        codec_validation: codec_validation.into_codec_validation(),
+        source_device_decode,
+        ..DicomExportOptions::default()
+    };
+    gpu_encode.into_options_fields(&mut options);
+    options
+}
+
 fn format_requested_frames_per_level(max_frames_per_level: u64) -> String {
     if max_frames_per_level == u64::MAX {
         "all".into()
@@ -582,7 +641,7 @@ fn format_report_summary_with_memory(report: &DicomExportReport, rss_bytes: Opti
     let route_passthrough = metrics.route_passthrough_frames();
     let route_unclassified = metrics.route_unclassified_frames();
     format!(
-        "wrote {} DICOM instance(s) to {}; frames total={} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} write_ms={:.3} rss_mb={}",
+        "wrote {} DICOM instance(s) to {}; frames total={} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} {} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} write_ms={:.3} rss_mb={}",
         report.instances.len(),
         report.output_dir.display(),
         metrics.total_frames,
@@ -609,6 +668,7 @@ fn format_report_summary_with_memory(report: &DicomExportReport, rss_bytes: Opti
         metrics.gpu_input_decode_batches,
         metrics.gpu_compose_batches,
         metrics.gpu_encode_batches,
+        format_gpu_encode_metrics(metrics),
         micros_to_ms(metrics.gpu_dispatch_micros),
         micros_to_ms(metrics.gpu_encode_hardware_micros),
         micros_to_ms(metrics.gpu_encode_dispatch_overhead_micros),
@@ -635,6 +695,19 @@ fn micros_to_ms(micros: u128) -> f64 {
     micros as f64 / 1_000.0
 }
 
+fn format_gpu_encode_metrics(metrics: DicomExportMetrics) -> String {
+    format!(
+        "gpu_encode_configured_inflight_tiles={} gpu_encode_effective_inflight_tiles={} gpu_encode_max_observed_inflight_tiles={} gpu_encode_configured_memory_mib={} gpu_encode_effective_memory_mib={} gpu_encode_wall_ms={:.3} gpu_encode_effective_parallelism={:.3}",
+        metrics.gpu_encode_configured_inflight_tiles,
+        metrics.gpu_encode_effective_inflight_tiles,
+        metrics.gpu_encode_max_observed_inflight_tiles,
+        metrics.gpu_encode_configured_memory_mib,
+        metrics.gpu_encode_effective_memory_mib,
+        micros_to_ms(metrics.gpu_encode_wall_micros),
+        metrics.gpu_encode_effective_parallelism(),
+    )
+}
+
 fn format_profile_summary(report: &DicomRouteProfileReport) -> String {
     format_profile_summary_with_memory(report, process_resident_memory_bytes())
 }
@@ -647,7 +720,7 @@ fn format_profile_summary_with_memory(
     let route_passthrough = metrics.route_passthrough_frames();
     let route_unclassified = metrics.route_unclassified_frames();
     format!(
-        "profiled {} level={} transfer_syntax={} requested_frames={} available_frames={} sampled_frames_pct={:.4} frames total={} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} final_byte_ms={:.3} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} elapsed_ms={:.3} rss_mb={}",
+        "profiled {} level={} transfer_syntax={} requested_frames={} available_frames={} sampled_frames_pct={:.4} frames total={} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} {} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} final_byte_ms={:.3} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} elapsed_ms={:.3} rss_mb={}",
         report.source_path.display(),
         report.level,
         report.transfer_syntax_uid,
@@ -678,6 +751,7 @@ fn format_profile_summary_with_memory(
         metrics.gpu_input_decode_batches,
         metrics.gpu_compose_batches,
         metrics.gpu_encode_batches,
+        format_gpu_encode_metrics(metrics),
         micros_to_ms(metrics.gpu_dispatch_micros),
         micros_to_ms(metrics.gpu_encode_hardware_micros),
         micros_to_ms(metrics.gpu_encode_dispatch_overhead_micros),
@@ -713,7 +787,7 @@ fn format_coverage_summary_with_memory(
     let route_passthrough = metrics.route_passthrough_frames();
     let route_unclassified = metrics.route_unclassified_frames();
     format!(
-        "covered {} levels={} transfer_syntax={} requested_frames_per_level={} available_frames={} sampled_frames_pct={:.4} complete_frame_coverage={} frames total={} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} final_byte_ms={:.3} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} elapsed_ms={:.3} rss_mb={}",
+        "covered {} levels={} transfer_syntax={} requested_frames_per_level={} available_frames={} sampled_frames_pct={:.4} complete_frame_coverage={} frames total={} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} {} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} final_byte_ms={:.3} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} elapsed_ms={:.3} rss_mb={}",
         report.source_path.display(),
         report.levels.len(),
         report.transfer_syntax_uid,
@@ -745,6 +819,7 @@ fn format_coverage_summary_with_memory(
         metrics.gpu_input_decode_batches,
         metrics.gpu_compose_batches,
         metrics.gpu_encode_batches,
+        format_gpu_encode_metrics(metrics),
         micros_to_ms(metrics.gpu_dispatch_micros),
         micros_to_ms(metrics.gpu_encode_hardware_micros),
         micros_to_ms(metrics.gpu_encode_dispatch_overhead_micros),
@@ -780,7 +855,7 @@ fn format_corpus_coverage_summary_with_memory(
     let route_passthrough = metrics.route_passthrough_frames();
     let route_unclassified = metrics.route_unclassified_frames();
     format!(
-        "covered_corpus {} sources_considered={} sources_profiled={} failures={} transfer_syntax={} requested_frames_per_level={} available_frames={} sampled_frames_pct={:.4} complete_frame_coverage={} frames total={} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} final_byte_ms={:.3} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} elapsed_ms={:.3} rss_mb={}",
+        "covered_corpus {} sources_considered={} sources_profiled={} failures={} transfer_syntax={} requested_frames_per_level={} available_frames={} sampled_frames_pct={:.4} complete_frame_coverage={} frames total={} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} {} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} final_byte_ms={:.3} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} elapsed_ms={:.3} rss_mb={}",
         report.source_root.display(),
         report.sources_considered,
         report.reports.len(),
@@ -814,6 +889,7 @@ fn format_corpus_coverage_summary_with_memory(
         metrics.gpu_input_decode_batches,
         metrics.gpu_compose_batches,
         metrics.gpu_encode_batches,
+        format_gpu_encode_metrics(metrics),
         micros_to_ms(metrics.gpu_dispatch_micros),
         micros_to_ms(metrics.gpu_encode_hardware_micros),
         micros_to_ms(metrics.gpu_encode_dispatch_overhead_micros),
@@ -862,7 +938,7 @@ fn format_sustain_export_iteration_summary(
         .map(escape_summary_value)
         .unwrap_or_else(|| "unknown".into());
     format!(
-        "sustain_iteration={}/{} mode=convert output={} instances={} frames={} frames_per_sec={:.2} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} final_byte_ms={:.3} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} elapsed_ms={:.3} rss_mb={} thermal=\"{}\" memory_pressure=\"{}\"",
+        "sustain_iteration={}/{} mode=convert output={} instances={} frames={} frames_per_sec={:.2} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} {} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} final_byte_ms={:.3} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} elapsed_ms={:.3} rss_mb={} thermal=\"{}\" memory_pressure=\"{}\"",
         iteration,
         iterations,
         report.output_dir.display(),
@@ -892,6 +968,7 @@ fn format_sustain_export_iteration_summary(
         metrics.gpu_input_decode_batches,
         metrics.gpu_compose_batches,
         metrics.gpu_encode_batches,
+        format_gpu_encode_metrics(metrics),
         micros_to_ms(metrics.gpu_dispatch_micros),
         micros_to_ms(metrics.gpu_encode_hardware_micros),
         micros_to_ms(metrics.gpu_encode_dispatch_overhead_micros),
@@ -941,7 +1018,7 @@ fn format_sustain_iteration_summary(
         .map(escape_summary_value)
         .unwrap_or_else(|| "unknown".into());
     format!(
-        "sustain_iteration={}/{} source={} transfer_syntax={} frames={} available_frames={} sampled_frames_pct={:.4} complete_frame_coverage={} frames_per_sec={:.2} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} final_byte_ms={:.3} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} elapsed_ms={:.3} rss_mb={} thermal=\"{}\" memory_pressure=\"{}\"",
+        "sustain_iteration={}/{} source={} transfer_syntax={} frames={} available_frames={} sampled_frames_pct={:.4} complete_frame_coverage={} frames_per_sec={:.2} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} {} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} final_byte_ms={:.3} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} elapsed_ms={:.3} rss_mb={} thermal=\"{}\" memory_pressure=\"{}\"",
         iteration,
         iterations,
         report.source_path.display(),
@@ -974,6 +1051,7 @@ fn format_sustain_iteration_summary(
         metrics.gpu_input_decode_batches,
         metrics.gpu_compose_batches,
         metrics.gpu_encode_batches,
+        format_gpu_encode_metrics(metrics),
         micros_to_ms(metrics.gpu_dispatch_micros),
         micros_to_ms(metrics.gpu_encode_hardware_micros),
         micros_to_ms(metrics.gpu_encode_dispatch_overhead_micros),
@@ -1120,7 +1198,7 @@ mod tests {
         format_coverage_summary_with_memory, format_profile_summary_with_memory,
         format_report_summary_with_memory, format_sustain_export_iteration_summary,
         format_sustain_iteration_summary, load_metadata_source, max_level_elapsed_from_ms, Cli,
-        Command,
+        Command, TransferSyntaxArg,
     };
     use clap::Parser;
     use std::path::PathBuf;
@@ -1227,6 +1305,47 @@ mod tests {
     }
 
     #[test]
+    fn cli_convert_defaults_to_htj2k_lossless_rpcl() {
+        let cli =
+            Cli::try_parse_from(["wsi-dicom", "convert", "source.svs", "--out", "out"]).unwrap();
+
+        let Command::Convert {
+            transfer_syntax, ..
+        } = cli.command
+        else {
+            panic!("expected convert command");
+        };
+
+        assert!(matches!(
+            transfer_syntax,
+            TransferSyntaxArg::Htj2kLosslessRpcl
+        ));
+    }
+
+    #[test]
+    fn cli_convert_accepts_gpu_encode_tuning_flags() {
+        let cli = Cli::try_parse_from([
+            "wsi-dicom",
+            "convert",
+            "source.svs",
+            "--out",
+            "out",
+            "--gpu-encode-inflight-tiles",
+            "8",
+            "--gpu-encode-memory-mib",
+            "4096",
+        ])
+        .unwrap();
+
+        let Command::Convert { gpu_encode, .. } = cli.command else {
+            panic!("expected convert command");
+        };
+
+        assert_eq!(gpu_encode.gpu_encode_inflight_tiles, Some(8));
+        assert_eq!(gpu_encode.gpu_encode_memory_mib, Some(4096));
+    }
+
+    #[test]
     fn cli_coverage_corpus_accepts_max_level_elapsed_limit_ms() {
         let cli = Cli::try_parse_from([
             "wsi-dicom",
@@ -1292,6 +1411,12 @@ mod tests {
                     gpu_input_decode_batches: 2,
                     gpu_compose_batches: 1,
                     gpu_encode_batches: 3,
+                    gpu_encode_configured_inflight_tiles: 8,
+                    gpu_encode_effective_inflight_tiles: 4,
+                    gpu_encode_max_observed_inflight_tiles: 4,
+                    gpu_encode_configured_memory_mib: 4096,
+                    gpu_encode_effective_memory_mib: 3277,
+                    gpu_encode_wall_micros: 5_000,
                     gpu_dispatch_micros: 6_500,
                     gpu_encode_hardware_micros: 2_000,
                     gpu_encode_dispatch_overhead_micros: 4_500,
@@ -1318,6 +1443,13 @@ mod tests {
         assert!(summary.contains("gpu_input_batches=2"));
         assert!(summary.contains("gpu_compose_batches=1"));
         assert!(summary.contains("gpu_encode_batches=3"));
+        assert!(summary.contains("gpu_encode_configured_inflight_tiles=8"));
+        assert!(summary.contains("gpu_encode_effective_inflight_tiles=4"));
+        assert!(summary.contains("gpu_encode_max_observed_inflight_tiles=4"));
+        assert!(summary.contains("gpu_encode_configured_memory_mib=4096"));
+        assert!(summary.contains("gpu_encode_effective_memory_mib=3277"));
+        assert!(summary.contains("gpu_encode_wall_ms=5.000"));
+        assert!(summary.contains("gpu_encode_effective_parallelism=0.400"));
         assert!(summary.contains("gpu_dispatch_ms=6.500"));
         assert!(summary.contains("gpu_encode_hardware_ms=2.000"));
         assert!(summary.contains("gpu_encode_dispatch_overhead_ms=4.500"));

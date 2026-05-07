@@ -9,7 +9,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use dicom_object::FileMetaTableBuilder;
-use serde::Serialize;
+use rayon::prelude::*;
+use serde::{ser::SerializeStruct, Serialize};
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use signinum_core::PixelFormat as SigninumPixelFormat;
 use signinum_core::{
@@ -478,7 +479,7 @@ pub struct DicomInstanceReport {
     pub metrics: DicomExportMetrics,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DicomExportMetrics {
     pub total_frames: u64,
     pub cpu_input_frames: u64,
@@ -514,9 +515,117 @@ pub struct DicomExportMetrics {
     pub encode_micros: u128,
     pub validation_micros: u128,
     pub gpu_dispatch_micros: u128,
+    pub gpu_encode_configured_inflight_tiles: u64,
+    pub gpu_encode_effective_inflight_tiles: u64,
+    pub gpu_encode_max_observed_inflight_tiles: u64,
+    pub gpu_encode_configured_memory_mib: u64,
+    pub gpu_encode_effective_memory_mib: u64,
+    pub gpu_encode_wall_micros: u128,
     pub gpu_encode_hardware_micros: u128,
     pub gpu_encode_dispatch_overhead_micros: u128,
     pub write_micros: u128,
+}
+
+impl Serialize for DicomExportMetrics {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("DicomExportMetrics", 43)?;
+        state.serialize_field("total_frames", &self.total_frames)?;
+        state.serialize_field("cpu_input_frames", &self.cpu_input_frames)?;
+        state.serialize_field("gpu_input_decode_frames", &self.gpu_input_decode_frames)?;
+        state.serialize_field("gpu_encode_frames", &self.gpu_encode_frames)?;
+        state.serialize_field("gpu_validation_frames", &self.gpu_validation_frames)?;
+        state.serialize_field("gray_frames", &self.gray_frames)?;
+        state.serialize_field("rgb_like_frames", &self.rgb_like_frames)?;
+        state.serialize_field("other_component_frames", &self.other_component_frames)?;
+        state.serialize_field(
+            "unknown_pixel_profile_frames",
+            &self.unknown_pixel_profile_frames,
+        )?;
+        state.serialize_field("bits8_frames", &self.bits8_frames)?;
+        state.serialize_field("bits16_frames", &self.bits16_frames)?;
+        state.serialize_field("other_bit_depth_frames", &self.other_bit_depth_frames)?;
+        state.serialize_field("gpu_transcode_frames", &self.gpu_transcode_frames)?;
+        state.serialize_field(
+            "resident_gpu_transcode_frames",
+            &self.resident_gpu_transcode_frames,
+        )?;
+        state.serialize_field(
+            "partial_gpu_transcode_frames",
+            &self.partial_gpu_transcode_frames,
+        )?;
+        state.serialize_field("gpu_input_decode_batches", &self.gpu_input_decode_batches)?;
+        state.serialize_field("gpu_compose_batches", &self.gpu_compose_batches)?;
+        state.serialize_field("gpu_encode_batches", &self.gpu_encode_batches)?;
+        state.serialize_field("auto_route_probe_frames", &self.auto_route_probe_frames)?;
+        state.serialize_field(
+            "auto_route_probe_gpu_batches",
+            &self.auto_route_probe_gpu_batches,
+        )?;
+        state.serialize_field(
+            "auto_route_probe_cpu_micros",
+            &self.auto_route_probe_cpu_micros,
+        )?;
+        state.serialize_field(
+            "auto_route_probe_gpu_micros",
+            &self.auto_route_probe_gpu_micros,
+        )?;
+        state.serialize_field(
+            "auto_route_probe_selected_gpu_input_frames",
+            &self.auto_route_probe_selected_gpu_input_frames,
+        )?;
+        state.serialize_field("cpu_fallback_frames", &self.cpu_fallback_frames)?;
+        state.serialize_field("jpeg_passthrough_frames", &self.jpeg_passthrough_frames)?;
+        state.serialize_field("j2k_passthrough_frames", &self.j2k_passthrough_frames)?;
+        state.serialize_field("jpeg_cpu_encode_frames", &self.jpeg_cpu_encode_frames)?;
+        state.serialize_field("jpeg_metal_encode_frames", &self.jpeg_metal_encode_frames)?;
+        state.serialize_field(
+            "jpeg_decode_fallback_frames",
+            &self.jpeg_decode_fallback_frames,
+        )?;
+        state.serialize_field("input_decode_micros", &self.input_decode_micros)?;
+        state.serialize_field("compose_micros", &self.compose_micros)?;
+        state.serialize_field("encode_micros", &self.encode_micros)?;
+        state.serialize_field("validation_micros", &self.validation_micros)?;
+        state.serialize_field("gpu_dispatch_micros", &self.gpu_dispatch_micros)?;
+        state.serialize_field(
+            "gpu_encode_configured_inflight_tiles",
+            &self.gpu_encode_configured_inflight_tiles,
+        )?;
+        state.serialize_field(
+            "gpu_encode_effective_inflight_tiles",
+            &self.gpu_encode_effective_inflight_tiles,
+        )?;
+        state.serialize_field(
+            "gpu_encode_max_observed_inflight_tiles",
+            &self.gpu_encode_max_observed_inflight_tiles,
+        )?;
+        state.serialize_field(
+            "gpu_encode_configured_memory_mib",
+            &self.gpu_encode_configured_memory_mib,
+        )?;
+        state.serialize_field(
+            "gpu_encode_effective_memory_mib",
+            &self.gpu_encode_effective_memory_mib,
+        )?;
+        state.serialize_field("gpu_encode_wall_micros", &self.gpu_encode_wall_micros)?;
+        state.serialize_field(
+            "gpu_encode_effective_parallelism",
+            &self.gpu_encode_effective_parallelism(),
+        )?;
+        state.serialize_field(
+            "gpu_encode_hardware_micros",
+            &self.gpu_encode_hardware_micros,
+        )?;
+        state.serialize_field(
+            "gpu_encode_dispatch_overhead_micros",
+            &self.gpu_encode_dispatch_overhead_micros,
+        )?;
+        state.serialize_field("write_micros", &self.write_micros)?;
+        state.end()
+    }
 }
 
 impl DicomExportMetrics {
@@ -619,6 +728,24 @@ impl DicomExportMetrics {
         self.gpu_dispatch_micros = self
             .gpu_dispatch_micros
             .saturating_add(other.gpu_dispatch_micros);
+        self.gpu_encode_configured_inflight_tiles = self
+            .gpu_encode_configured_inflight_tiles
+            .max(other.gpu_encode_configured_inflight_tiles);
+        self.gpu_encode_effective_inflight_tiles = self
+            .gpu_encode_effective_inflight_tiles
+            .max(other.gpu_encode_effective_inflight_tiles);
+        self.gpu_encode_max_observed_inflight_tiles = self
+            .gpu_encode_max_observed_inflight_tiles
+            .max(other.gpu_encode_max_observed_inflight_tiles);
+        self.gpu_encode_configured_memory_mib = self
+            .gpu_encode_configured_memory_mib
+            .max(other.gpu_encode_configured_memory_mib);
+        self.gpu_encode_effective_memory_mib = self
+            .gpu_encode_effective_memory_mib
+            .max(other.gpu_encode_effective_memory_mib);
+        self.gpu_encode_wall_micros = self
+            .gpu_encode_wall_micros
+            .saturating_add(other.gpu_encode_wall_micros);
         self.gpu_encode_hardware_micros = self
             .gpu_encode_hardware_micros
             .saturating_add(other.gpu_encode_hardware_micros);
@@ -693,6 +820,28 @@ impl DicomExportMetrics {
             .saturating_add(input_decode_batches);
         self.gpu_compose_batches = self.gpu_compose_batches.saturating_add(compose_batches);
         self.gpu_encode_batches = self.gpu_encode_batches.saturating_add(encode_batches);
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn record_gpu_encode_batch_stats(&mut self, stats: encode::DicomJ2kGpuEncodeBatchStats) {
+        self.gpu_encode_configured_inflight_tiles = self
+            .gpu_encode_configured_inflight_tiles
+            .max(stats.configured_inflight_tiles.unwrap_or(0) as u64);
+        self.gpu_encode_effective_inflight_tiles = self
+            .gpu_encode_effective_inflight_tiles
+            .max(stats.effective_inflight_tiles as u64);
+        self.gpu_encode_max_observed_inflight_tiles = self
+            .gpu_encode_max_observed_inflight_tiles
+            .max(stats.max_observed_inflight_tiles as u64);
+        self.gpu_encode_configured_memory_mib = self
+            .gpu_encode_configured_memory_mib
+            .max(stats.configured_memory_mib.unwrap_or(0));
+        self.gpu_encode_effective_memory_mib = self
+            .gpu_encode_effective_memory_mib
+            .max(stats.effective_memory_mib);
+        self.gpu_encode_wall_micros = self
+            .gpu_encode_wall_micros
+            .saturating_add(duration_as_reported_micros(stats.encode_wall_duration));
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -829,6 +978,14 @@ impl DicomExportMetrics {
         self.write_micros = self
             .write_micros
             .saturating_add(duration_as_reported_micros(duration));
+    }
+
+    pub fn gpu_encode_effective_parallelism(&self) -> f64 {
+        if self.gpu_encode_wall_micros == 0 {
+            0.0
+        } else {
+            self.gpu_encode_hardware_micros as f64 / self.gpu_encode_wall_micros as f64
+        }
     }
 }
 
@@ -1719,6 +1876,30 @@ struct LosslessJ2kPlannedFrame {
     passthrough: Option<J2kPassthroughFrame>,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct LosslessJ2kCpuBatchSettings {
+    transfer_syntax: TransferSyntax,
+    codec_validation: CodecValidation,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct LosslessJ2kCpuBatchFrame {
+    x: u64,
+    y: u64,
+    width: u32,
+    height: u32,
+}
+
+#[allow(dead_code)]
+struct LosslessJ2kCpuBatchOutcome {
+    encoded: Result<EncodedDicomJ2kFrame, WsiDicomError>,
+    profile: PixelProfile,
+    input_decode_duration: Duration,
+    compose_duration: Duration,
+}
+
 #[derive(Clone)]
 struct J2kPassthroughFrame {
     codestream: Vec<u8>,
@@ -1842,6 +2023,10 @@ fn profile_lossless_j2k_routes(
         options.encode_backend,
         options.transfer_syntax,
         options.codec_validation,
+    )
+    .with_gpu_encode_tuning(
+        options.gpu_encode_inflight_tiles,
+        options.gpu_encode_memory_mib,
     );
     #[cfg(all(feature = "metal", target_os = "macos"))]
     let mut metal_input = MetalInputTileReader::new_with_auto_device_decode_and_cache_key(
@@ -1952,6 +2137,7 @@ fn profile_lossless_j2k_routes(
                         probe_run.gpu_compose_batches,
                         probe_run.gpu_encode_batches,
                     );
+                    metrics.record_gpu_encode_batch_stats(probe_run.gpu_encode_stats);
                     metrics.record_auto_route_probe(
                         u64::try_from(probe_end - run_start).map_err(|_| {
                             WsiDicomError::Unsupported {
@@ -1998,6 +2184,7 @@ fn profile_lossless_j2k_routes(
                         metal_run.compose_batches,
                         metal_run.encode_batches,
                     );
+                    metrics.record_gpu_encode_batch_stats(metal_run.gpu_encode_stats);
                     for (slot, encoded) in routed_tiles[run_start..run_end]
                         .iter_mut()
                         .zip(metal_run.tiles.into_iter())
@@ -2010,6 +2197,38 @@ fn profile_lossless_j2k_routes(
                     }
                 }
                 run_start = run_end;
+            }
+            let mut cpu_batch_results: Vec<Option<LosslessJ2kCpuBatchOutcome>> =
+                (0..planned.len()).map(|_| None).collect();
+            if let Some((transfer_syntax, codec_validation)) = j2k_encoder.cpu_batch_settings() {
+                let cpu_indices = planned
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, planned_frame)| {
+                        (planned_frame.passthrough.is_none()
+                            && !options.transfer_syntax.is_jpeg2000_passthrough_only()
+                            && routed_tiles[idx].is_none())
+                        .then_some(idx)
+                    })
+                    .collect::<Vec<_>>();
+                for (idx, outcome) in encode_cpu_input_lossless_j2k_planned_batch(
+                    slide,
+                    LosslessJ2kCpuBatchSettings {
+                        transfer_syntax,
+                        codec_validation,
+                    },
+                    0,
+                    0,
+                    level_idx,
+                    0,
+                    0,
+                    0,
+                    &planned,
+                    &cpu_indices,
+                    tile_size,
+                )? {
+                    cpu_batch_results[idx] = Some(outcome);
+                }
             }
             for (idx, planned_frame) in planned.into_iter().enumerate() {
                 if let Some(passthrough) = planned_frame.passthrough {
@@ -2037,36 +2256,61 @@ fn profile_lossless_j2k_routes(
                 }
 
                 let routed_encoded = routed_tiles[idx].take();
-                let (encoded, profile, used_gpu_input) = match routed_encoded {
-                    Some(routed) => (routed.encoded, routed.profile, routed.used_gpu_input),
-                    None => {
-                        let (encoded, profile, input_decode_duration, compose_duration) =
-                            encode_cpu_input_tile(
-                                slide,
-                                &mut j2k_encoder,
-                                0,
-                                0,
-                                level_idx,
-                                0,
-                                0,
-                                0,
-                                row,
-                                planned_frame.col,
-                                planned_frame.x,
-                                planned_frame.y,
-                                planned_frame.width,
-                                planned_frame.height,
-                                tile_size,
-                            )?;
-                        metrics.record_input_decode_duration(input_decode_duration);
-                        metrics.record_compose_duration(compose_duration);
-                        (encoded, profile, false)
-                    }
-                };
+                let (encoded, profile, used_gpu_input, input_decode_duration, compose_duration) =
+                    match routed_encoded {
+                        Some(routed) => (
+                            routed.encoded,
+                            routed.profile,
+                            routed.used_gpu_input,
+                            Duration::ZERO,
+                            Duration::ZERO,
+                        ),
+                        None if cpu_batch_results[idx].is_some() => {
+                            let outcome = cpu_batch_results[idx]
+                                .take()
+                                .expect("checked CPU batch outcome presence");
+                            (
+                                outcome.encoded,
+                                outcome.profile,
+                                false,
+                                outcome.input_decode_duration,
+                                outcome.compose_duration,
+                            )
+                        }
+                        None => {
+                            let (encoded, profile, input_decode_duration, compose_duration) =
+                                encode_cpu_input_tile(
+                                    slide,
+                                    &mut j2k_encoder,
+                                    0,
+                                    0,
+                                    level_idx,
+                                    0,
+                                    0,
+                                    0,
+                                    row,
+                                    planned_frame.col,
+                                    planned_frame.x,
+                                    planned_frame.y,
+                                    planned_frame.width,
+                                    planned_frame.height,
+                                    tile_size,
+                                )?;
+                            (
+                                encoded,
+                                profile,
+                                false,
+                                input_decode_duration,
+                                compose_duration,
+                            )
+                        }
+                    };
                 if used_gpu_input {
                     metrics.record_gpu_input();
                 } else {
                     metrics.record_cpu_input();
+                    metrics.record_input_decode_duration(input_decode_duration);
+                    metrics.record_compose_duration(compose_duration);
                 }
                 metrics.record_pixel_profile(profile);
                 if let Some(existing) = pixel_profile {
@@ -2089,7 +2333,38 @@ fn profile_lossless_j2k_routes(
         }
         #[cfg(not(all(feature = "metal", target_os = "macos")))]
         {
-            for planned_frame in planned {
+            let mut cpu_batch_results: Vec<Option<LosslessJ2kCpuBatchOutcome>> =
+                (0..planned.len()).map(|_| None).collect();
+            if let Some((transfer_syntax, codec_validation)) = j2k_encoder.cpu_batch_settings() {
+                let cpu_indices = planned
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, planned_frame)| {
+                        (planned_frame.passthrough.is_none()
+                            && !options.transfer_syntax.is_jpeg2000_passthrough_only())
+                        .then_some(idx)
+                    })
+                    .collect::<Vec<_>>();
+                for (idx, outcome) in encode_cpu_input_lossless_j2k_planned_batch(
+                    slide,
+                    LosslessJ2kCpuBatchSettings {
+                        transfer_syntax,
+                        codec_validation,
+                    },
+                    0,
+                    0,
+                    level_idx,
+                    0,
+                    0,
+                    0,
+                    &planned,
+                    &cpu_indices,
+                    tile_size,
+                )? {
+                    cpu_batch_results[idx] = Some(outcome);
+                }
+            }
+            for (idx, planned_frame) in planned.into_iter().enumerate() {
                 if let Some(passthrough) = planned_frame.passthrough {
                     let profile = passthrough.profile;
                     if let Some(existing) = pixel_profile {
@@ -2115,23 +2390,32 @@ fn profile_lossless_j2k_routes(
                 }
 
                 let (encoded, profile, input_decode_duration, compose_duration) =
-                    encode_cpu_input_tile(
-                        slide,
-                        &mut j2k_encoder,
-                        0,
-                        0,
-                        level_idx,
-                        0,
-                        0,
-                        0,
-                        row,
-                        planned_frame.col,
-                        planned_frame.x,
-                        planned_frame.y,
-                        planned_frame.width,
-                        planned_frame.height,
-                        tile_size,
-                    )?;
+                    if let Some(outcome) = cpu_batch_results[idx].take() {
+                        (
+                            outcome.encoded,
+                            outcome.profile,
+                            outcome.input_decode_duration,
+                            outcome.compose_duration,
+                        )
+                    } else {
+                        encode_cpu_input_tile(
+                            slide,
+                            &mut j2k_encoder,
+                            0,
+                            0,
+                            level_idx,
+                            0,
+                            0,
+                            0,
+                            row,
+                            planned_frame.col,
+                            planned_frame.x,
+                            planned_frame.y,
+                            planned_frame.width,
+                            planned_frame.height,
+                            tile_size,
+                        )?
+                    };
                 metrics.record_input_decode_duration(input_decode_duration);
                 metrics.record_compose_duration(compose_duration);
                 metrics.record_cpu_input();
@@ -2312,10 +2596,41 @@ fn profile_jpeg_baseline_routes(
                         metal_run.encode_batches,
                     );
 
-                    for (frame, metal_encoded) in fallback_frames
+                    let mut cpu_batch_results: Vec<Option<EncodedJpegBaselineFrame>> =
+                        (0..fallback_frames.len()).map(|_| None).collect();
+                    if options.encode_backend != EncodeBackendPreference::RequireDevice {
+                        let cpu_indices = metal_run
+                            .frames
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(idx, frame)| frame.is_none().then_some(idx))
+                            .collect::<Vec<_>>();
+                        let cpu_frames = cpu_indices
+                            .iter()
+                            .map(|&idx| fallback_frames[idx])
+                            .collect::<Vec<_>>();
+                        let cpu_encoded = encode_jpeg_baseline_cpu_input_tile_batch(
+                            slide,
+                            0,
+                            0,
+                            level_idx,
+                            0,
+                            0,
+                            0,
+                            &cpu_frames,
+                            frame_columns,
+                            frame_rows,
+                        )?;
+                        for (idx, encoded) in cpu_indices.into_iter().zip(cpu_encoded) {
+                            cpu_batch_results[idx] = Some(encoded);
+                        }
+                    }
+
+                    for (idx, (_frame, metal_encoded)) in fallback_frames
                         .iter()
                         .copied()
                         .zip(metal_run.frames.iter_mut())
+                        .enumerate()
                     {
                         let (
                             encoded,
@@ -2339,21 +2654,9 @@ fn profile_jpeg_baseline_routes(
                                                 .into(),
                                     });
                             }
-                            encode_jpeg_baseline_cpu_input_tile(
-                                slide,
-                                0,
-                                0,
-                                level_idx,
-                                0,
-                                0,
-                                0,
-                                frame.x,
-                                frame.y,
-                                frame.width,
-                                frame.height,
-                                frame_columns,
-                                frame_rows,
-                            )?
+                            cpu_batch_results[idx]
+                                .take()
+                                .expect("CPU JPEG batch encoded every non-Metal frame")
                         };
                         ensure_jpeg_baseline_profile(
                             &mut pixel_profile,
@@ -2538,6 +2841,10 @@ fn export_instance(
         request.options.encode_backend,
         request.options.transfer_syntax,
         request.options.codec_validation,
+    )
+    .with_gpu_encode_tuning(
+        request.options.gpu_encode_inflight_tiles,
+        request.options.gpu_encode_memory_mib,
     );
     #[cfg(all(feature = "metal", target_os = "macos"))]
     let mut metal_input = MetalInputTileReader::new_with_auto_device_decode_and_cache_key(
@@ -2646,6 +2953,7 @@ fn export_instance(
                         probe_run.gpu_compose_batches,
                         probe_run.gpu_encode_batches,
                     );
+                    metrics.record_gpu_encode_batch_stats(probe_run.gpu_encode_stats);
                     metrics.record_auto_route_probe(
                         u64::try_from(probe_end - run_start).map_err(|_| {
                             WsiDicomError::Unsupported {
@@ -2692,6 +3000,7 @@ fn export_instance(
                         metal_run.compose_batches,
                         metal_run.encode_batches,
                     );
+                    metrics.record_gpu_encode_batch_stats(metal_run.gpu_encode_stats);
                     for (slot, encoded) in routed_tiles[run_start..run_end]
                         .iter_mut()
                         .zip(metal_run.tiles.into_iter())
@@ -2704,6 +3013,42 @@ fn export_instance(
                     }
                 }
                 run_start = run_end;
+            }
+
+            let mut cpu_batch_results: Vec<Option<LosslessJ2kCpuBatchOutcome>> =
+                (0..planned.len()).map(|_| None).collect();
+            if let Some((transfer_syntax, codec_validation)) = j2k_encoder.cpu_batch_settings() {
+                let cpu_indices = planned
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, planned_frame)| {
+                        (planned_frame.passthrough.is_none()
+                            && !request
+                                .options
+                                .transfer_syntax
+                                .is_jpeg2000_passthrough_only()
+                            && routed_tiles[idx].is_none())
+                        .then_some(idx)
+                    })
+                    .collect::<Vec<_>>();
+                for (idx, outcome) in encode_cpu_input_lossless_j2k_planned_batch(
+                    slide,
+                    LosslessJ2kCpuBatchSettings {
+                        transfer_syntax,
+                        codec_validation,
+                    },
+                    scene_idx,
+                    series_idx,
+                    level_idx,
+                    z,
+                    c,
+                    t,
+                    &planned,
+                    &cpu_indices,
+                    tile_size,
+                )? {
+                    cpu_batch_results[idx] = Some(outcome);
+                }
             }
 
             for (idx, planned_frame) in planned.into_iter().enumerate() {
@@ -2740,36 +3085,61 @@ fn export_instance(
                 }
 
                 let routed_encoded = routed_tiles[idx].take();
-                let (encoded, profile, used_gpu_input) = match routed_encoded {
-                    Some(routed) => (routed.encoded, routed.profile, routed.used_gpu_input),
-                    None => {
-                        let (encoded, profile, input_decode_duration, compose_duration) =
-                            encode_cpu_input_tile(
-                                slide,
-                                &mut j2k_encoder,
-                                scene_idx,
-                                series_idx,
-                                level_idx,
-                                z,
-                                c,
-                                t,
-                                row,
-                                planned_frame.col,
-                                planned_frame.x,
-                                planned_frame.y,
-                                planned_frame.width,
-                                planned_frame.height,
-                                tile_size,
-                            )?;
-                        metrics.record_input_decode_duration(input_decode_duration);
-                        metrics.record_compose_duration(compose_duration);
-                        (encoded, profile, false)
-                    }
-                };
+                let (encoded, profile, used_gpu_input, input_decode_duration, compose_duration) =
+                    match routed_encoded {
+                        Some(routed) => (
+                            routed.encoded,
+                            routed.profile,
+                            routed.used_gpu_input,
+                            Duration::ZERO,
+                            Duration::ZERO,
+                        ),
+                        None if cpu_batch_results[idx].is_some() => {
+                            let outcome = cpu_batch_results[idx]
+                                .take()
+                                .expect("checked CPU batch outcome presence");
+                            (
+                                outcome.encoded,
+                                outcome.profile,
+                                false,
+                                outcome.input_decode_duration,
+                                outcome.compose_duration,
+                            )
+                        }
+                        None => {
+                            let (encoded, profile, input_decode_duration, compose_duration) =
+                                encode_cpu_input_tile(
+                                    slide,
+                                    &mut j2k_encoder,
+                                    scene_idx,
+                                    series_idx,
+                                    level_idx,
+                                    z,
+                                    c,
+                                    t,
+                                    row,
+                                    planned_frame.col,
+                                    planned_frame.x,
+                                    planned_frame.y,
+                                    planned_frame.width,
+                                    planned_frame.height,
+                                    tile_size,
+                                )?;
+                            (
+                                encoded,
+                                profile,
+                                false,
+                                input_decode_duration,
+                                compose_duration,
+                            )
+                        }
+                    };
                 if used_gpu_input {
                     metrics.record_gpu_input();
                 } else {
                     metrics.record_cpu_input();
+                    metrics.record_input_decode_duration(input_decode_duration);
+                    metrics.record_compose_duration(compose_duration);
                 }
                 metrics.record_pixel_profile(profile);
 
@@ -2801,7 +3171,41 @@ fn export_instance(
         }
         #[cfg(not(all(feature = "metal", target_os = "macos")))]
         {
-            for planned_frame in planned {
+            let mut cpu_batch_results: Vec<Option<LosslessJ2kCpuBatchOutcome>> =
+                (0..planned.len()).map(|_| None).collect();
+            if let Some((transfer_syntax, codec_validation)) = j2k_encoder.cpu_batch_settings() {
+                let cpu_indices = planned
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, planned_frame)| {
+                        (planned_frame.passthrough.is_none()
+                            && !request
+                                .options
+                                .transfer_syntax
+                                .is_jpeg2000_passthrough_only())
+                        .then_some(idx)
+                    })
+                    .collect::<Vec<_>>();
+                for (idx, outcome) in encode_cpu_input_lossless_j2k_planned_batch(
+                    slide,
+                    LosslessJ2kCpuBatchSettings {
+                        transfer_syntax,
+                        codec_validation,
+                    },
+                    scene_idx,
+                    series_idx,
+                    level_idx,
+                    z,
+                    c,
+                    t,
+                    &planned,
+                    &cpu_indices,
+                    tile_size,
+                )? {
+                    cpu_batch_results[idx] = Some(outcome);
+                }
+            }
+            for (idx, planned_frame) in planned.into_iter().enumerate() {
                 if let Some(passthrough) = planned_frame.passthrough {
                     let profile = passthrough.profile;
                     if let Some(existing) = pixel_profile {
@@ -2835,23 +3239,32 @@ fn export_instance(
                 }
 
                 let (encoded, profile, input_decode_duration, compose_duration) =
-                    encode_cpu_input_tile(
-                        slide,
-                        &mut j2k_encoder,
-                        scene_idx,
-                        series_idx,
-                        level_idx,
-                        z,
-                        c,
-                        t,
-                        row,
-                        planned_frame.col,
-                        planned_frame.x,
-                        planned_frame.y,
-                        planned_frame.width,
-                        planned_frame.height,
-                        tile_size,
-                    )?;
+                    if let Some(outcome) = cpu_batch_results[idx].take() {
+                        (
+                            outcome.encoded,
+                            outcome.profile,
+                            outcome.input_decode_duration,
+                            outcome.compose_duration,
+                        )
+                    } else {
+                        encode_cpu_input_tile(
+                            slide,
+                            &mut j2k_encoder,
+                            scene_idx,
+                            series_idx,
+                            level_idx,
+                            z,
+                            c,
+                            t,
+                            row,
+                            planned_frame.col,
+                            planned_frame.x,
+                            planned_frame.y,
+                            planned_frame.width,
+                            planned_frame.height,
+                            tile_size,
+                        )?
+                    };
                 metrics.record_input_decode_duration(input_decode_duration);
                 metrics.record_compose_duration(compose_duration);
                 metrics.record_cpu_input();
@@ -3171,10 +3584,41 @@ fn export_jpeg_passthrough_instance(
                         metal_run.encode_batches,
                     );
 
-                    for (frame, metal_encoded) in fallback_frames
+                    let mut cpu_batch_results: Vec<Option<EncodedJpegBaselineFrame>> =
+                        (0..fallback_frames.len()).map(|_| None).collect();
+                    if request.options.encode_backend != EncodeBackendPreference::RequireDevice {
+                        let cpu_indices = metal_run
+                            .frames
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(idx, frame)| frame.is_none().then_some(idx))
+                            .collect::<Vec<_>>();
+                        let cpu_frames = cpu_indices
+                            .iter()
+                            .map(|&idx| fallback_frames[idx])
+                            .collect::<Vec<_>>();
+                        let cpu_encoded = encode_jpeg_baseline_cpu_input_tile_batch(
+                            slide,
+                            scene_idx,
+                            series_idx,
+                            level_idx,
+                            z,
+                            c,
+                            t,
+                            &cpu_frames,
+                            frame_columns,
+                            frame_rows,
+                        )?;
+                        for (idx, encoded) in cpu_indices.into_iter().zip(cpu_encoded) {
+                            cpu_batch_results[idx] = Some(encoded);
+                        }
+                    }
+
+                    for (idx, (_frame, metal_encoded)) in fallback_frames
                         .iter()
                         .copied()
                         .zip(metal_run.frames.iter_mut())
+                        .enumerate()
                     {
                         let (
                             encoded,
@@ -3200,21 +3644,9 @@ fn export_jpeg_passthrough_instance(
                                                 .into(),
                                     });
                             }
-                            encode_jpeg_baseline_cpu_input_tile(
-                                slide,
-                                scene_idx,
-                                series_idx,
-                                level_idx,
-                                z,
-                                c,
-                                t,
-                                frame.x,
-                                frame.y,
-                                frame.width,
-                                frame.height,
-                                frame_columns,
-                                frame_rows,
-                            )?
+                            cpu_batch_results[idx]
+                                .take()
+                                .expect("CPU JPEG batch encoded every non-Metal frame")
                         };
                         ensure_jpeg_baseline_profile(
                             &mut pixel_profile,
@@ -3646,6 +4078,41 @@ fn empty_jpeg_baseline_metal_run_for_non_metal(tile_count: usize) -> JpegBaselin
 }
 
 #[allow(clippy::too_many_arguments)]
+fn encode_jpeg_baseline_cpu_input_tile_batch(
+    slide: &Slide,
+    scene_idx: usize,
+    series_idx: usize,
+    level_idx: u32,
+    z: u32,
+    c: u32,
+    t: u32,
+    frames: &[JpegBaselineFallbackFrame],
+    frame_columns: u32,
+    frame_rows: u32,
+) -> Result<Vec<EncodedJpegBaselineFrame>, WsiDicomError> {
+    frames
+        .par_iter()
+        .map(|frame| {
+            encode_jpeg_baseline_cpu_input_tile(
+                slide,
+                scene_idx,
+                series_idx,
+                level_idx,
+                z,
+                c,
+                t,
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                frame_columns,
+                frame_rows,
+            )
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn encode_jpeg_baseline_cpu_input_tile(
     slide: &Slide,
     scene_idx: usize,
@@ -3661,6 +4128,83 @@ fn encode_jpeg_baseline_cpu_input_tile(
     frame_columns: u32,
     frame_rows: u32,
 ) -> Result<EncodedJpegBaselineFrame, WsiDicomError> {
+    let (prepared_bytes, profile, subsampling, input_decode_duration, compose_duration) =
+        prepare_jpeg_baseline_cpu_input_tile(
+            slide,
+            scene_idx,
+            series_idx,
+            level_idx,
+            z,
+            c,
+            t,
+            x,
+            y,
+            width,
+            height,
+            frame_columns,
+            frame_rows,
+        )?;
+    let samples = match profile.components {
+        1 => JpegSamples::Gray8 {
+            data: &prepared_bytes,
+            width: frame_columns,
+            height: frame_rows,
+        },
+        3 => JpegSamples::Rgb8 {
+            data: &prepared_bytes,
+            width: frame_columns,
+            height: frame_rows,
+        },
+        components => {
+            return Err(WsiDicomError::UnsupportedPixelData {
+                reason: format!("JPEG Baseline supports 1 or 3 components, got {components}"),
+            });
+        }
+    };
+    let encode_started = Instant::now();
+    let encoded = encode_jpeg_baseline(
+        samples,
+        JpegEncodeOptions {
+            quality: 90,
+            subsampling,
+            restart_interval: jpeg_baseline_cpu_restart_interval(
+                frame_columns,
+                frame_rows,
+                subsampling,
+            ),
+            backend: JpegBackend::Cpu,
+        },
+    )
+    .map_err(|source| WsiDicomError::Encode {
+        message: source.to_string(),
+    })?;
+    let encode_duration = encode_started.elapsed();
+
+    Ok((
+        encoded,
+        profile,
+        input_decode_duration,
+        compose_duration,
+        encode_duration,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_jpeg_baseline_cpu_input_tile(
+    slide: &Slide,
+    scene_idx: usize,
+    series_idx: usize,
+    level_idx: u32,
+    z: u32,
+    c: u32,
+    t: u32,
+    x: u64,
+    y: u64,
+    width: u32,
+    height: u32,
+    frame_columns: u32,
+    frame_rows: u32,
+) -> Result<(Vec<u8>, PixelProfile, JpegSubsampling, Duration, Duration), WsiDicomError> {
     let input_decode_started = Instant::now();
     let region = slide
         .read_region(&RegionRequest {
@@ -3680,46 +4224,29 @@ fn encode_jpeg_baseline_cpu_input_tile(
     let prepared = prepare_tile_samples(&region, frame_columns, frame_rows)?;
     let (profile, subsampling) = jpeg_baseline_output_profile(prepared.profile)?;
     let compose_duration = compose_started.elapsed();
-
-    let samples = match profile.components {
-        1 => JpegSamples::Gray8 {
-            data: &prepared.bytes,
-            width: frame_columns,
-            height: frame_rows,
-        },
-        3 => JpegSamples::Rgb8 {
-            data: &prepared.bytes,
-            width: frame_columns,
-            height: frame_rows,
-        },
-        components => {
-            return Err(WsiDicomError::UnsupportedPixelData {
-                reason: format!("JPEG Baseline supports 1 or 3 components, got {components}"),
-            });
-        }
-    };
-    let encode_started = Instant::now();
-    let encoded = encode_jpeg_baseline(
-        samples,
-        JpegEncodeOptions {
-            quality: 90,
-            subsampling,
-            restart_interval: None,
-            backend: JpegBackend::Cpu,
-        },
-    )
-    .map_err(|source| WsiDicomError::Encode {
-        message: source.to_string(),
-    })?;
-    let encode_duration = encode_started.elapsed();
-
     Ok((
-        encoded,
+        prepared.bytes,
         profile,
+        subsampling,
         input_decode_duration,
         compose_duration,
-        encode_duration,
     ))
+}
+
+fn jpeg_baseline_cpu_restart_interval(
+    frame_columns: u32,
+    frame_rows: u32,
+    subsampling: JpegSubsampling,
+) -> Option<u16> {
+    let (mcu_width, mcu_height) = match subsampling {
+        JpegSubsampling::Gray | JpegSubsampling::Ybr444 => (8, 8),
+        JpegSubsampling::Ybr422 => (16, 8),
+        JpegSubsampling::Ybr420 => (16, 16),
+    };
+    let mcu_count = frame_columns
+        .div_ceil(mcu_width)
+        .saturating_mul(frame_rows.div_ceil(mcu_height));
+    (mcu_count > 64).then_some(64)
 }
 
 fn jpeg_baseline_output_profile(
@@ -4072,6 +4599,133 @@ fn encode_cpu_input_tile(
     ),
     WsiDicomError,
 > {
+    let (prepared_bytes, profile, input_decode_duration, compose_duration) =
+        prepare_cpu_input_lossless_j2k_tile(
+            slide, scene_idx, series_idx, level_idx, z, c, t, x, y, width, height, tile_size,
+        )?;
+    let samples = J2kLosslessSamples::new(
+        &prepared_bytes,
+        tile_size,
+        tile_size,
+        profile.components,
+        profile.bits_allocated as u8,
+        false,
+    )
+    .map_err(|source| WsiDicomError::Encode {
+        message: source.to_string(),
+    })?;
+    Ok((
+        j2k_encoder.encode(samples),
+        profile,
+        input_decode_duration,
+        compose_duration,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
+fn encode_cpu_input_lossless_j2k_tile_batch(
+    slide: &Slide,
+    settings: LosslessJ2kCpuBatchSettings,
+    scene_idx: usize,
+    series_idx: usize,
+    level_idx: u32,
+    z: u32,
+    c: u32,
+    t: u32,
+    frames: &[LosslessJ2kCpuBatchFrame],
+    tile_size: u32,
+) -> Result<Vec<LosslessJ2kCpuBatchOutcome>, WsiDicomError> {
+    frames
+        .par_iter()
+        .map(|frame| {
+            let (prepared_bytes, profile, input_decode_duration, compose_duration) =
+                prepare_cpu_input_lossless_j2k_tile(
+                    slide,
+                    scene_idx,
+                    series_idx,
+                    level_idx,
+                    z,
+                    c,
+                    t,
+                    frame.x,
+                    frame.y,
+                    frame.width,
+                    frame.height,
+                    tile_size,
+                )?;
+            let samples = J2kLosslessSamples::new(
+                &prepared_bytes,
+                tile_size,
+                tile_size,
+                profile.components,
+                profile.bits_allocated as u8,
+                false,
+            )
+            .map_err(|source| WsiDicomError::Encode {
+                message: source.to_string(),
+            })?;
+            Ok(LosslessJ2kCpuBatchOutcome {
+                encoded: encode::encode_lossless_cpu(
+                    samples,
+                    settings.transfer_syntax,
+                    settings.codec_validation,
+                ),
+                profile,
+                input_decode_duration,
+                compose_duration,
+            })
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_cpu_input_lossless_j2k_planned_batch(
+    slide: &Slide,
+    settings: LosslessJ2kCpuBatchSettings,
+    scene_idx: usize,
+    series_idx: usize,
+    level_idx: u32,
+    z: u32,
+    c: u32,
+    t: u32,
+    planned: &[LosslessJ2kPlannedFrame],
+    indices: &[usize],
+    tile_size: u32,
+) -> Result<Vec<(usize, LosslessJ2kCpuBatchOutcome)>, WsiDicomError> {
+    let frames = indices
+        .iter()
+        .map(|&idx| {
+            let planned = &planned[idx];
+            LosslessJ2kCpuBatchFrame {
+                x: planned.x,
+                y: planned.y,
+                width: planned.width,
+                height: planned.height,
+            }
+        })
+        .collect::<Vec<_>>();
+    let outcomes = encode_cpu_input_lossless_j2k_tile_batch(
+        slide, settings, scene_idx, series_idx, level_idx, z, c, t, &frames, tile_size,
+    )?;
+    Ok(indices.iter().copied().zip(outcomes).collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_cpu_input_lossless_j2k_tile(
+    slide: &Slide,
+    scene_idx: usize,
+    series_idx: usize,
+    level_idx: u32,
+    z: u32,
+    c: u32,
+    t: u32,
+    x: u64,
+    y: u64,
+    width: u32,
+    height: u32,
+    tile_size: u32,
+) -> Result<(Vec<u8>, PixelProfile, Duration, Duration), WsiDicomError> {
     let input_decode_started = Instant::now();
     let region = slide
         .read_region(&RegionRequest {
@@ -4089,19 +4743,8 @@ fn encode_cpu_input_tile(
     let compose_started = Instant::now();
     let prepared = prepare_tile_samples(&region, tile_size, tile_size)?;
     let compose_duration = compose_started.elapsed();
-    let samples = J2kLosslessSamples::new(
-        &prepared.bytes,
-        tile_size,
-        tile_size,
-        prepared.profile.components,
-        prepared.profile.bits_allocated as u8,
-        false,
-    )
-    .map_err(|source| WsiDicomError::Encode {
-        message: source.to_string(),
-    })?;
     Ok((
-        j2k_encoder.encode(samples),
+        prepared.bytes,
         prepared.profile,
         input_decode_duration,
         compose_duration,
@@ -4116,6 +4759,7 @@ struct MetalEncodedTileRun {
     input_decode_batches: u64,
     compose_batches: u64,
     encode_batches: u64,
+    gpu_encode_stats: encode::DicomJ2kGpuEncodeBatchStats,
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -4140,6 +4784,7 @@ struct AutoMetalInputProbeRun {
     gpu_input_decode_batches: u64,
     gpu_compose_batches: u64,
     gpu_encode_batches: u64,
+    gpu_encode_stats: encode::DicomJ2kGpuEncodeBatchStats,
     probe_cpu_duration: Duration,
     probe_gpu_duration: Duration,
     probe_gpu_batches: u64,
@@ -4412,6 +5057,25 @@ struct PackedMetalStrips {
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
+#[derive(Debug, Clone, Copy)]
+struct MetalComposeTileRequest {
+    src_origin_x: u32,
+    src_origin_y: u32,
+    valid_width: u32,
+    valid_height: u32,
+    output_width: u32,
+    output_height: u32,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+struct MetalComposeTileDispatch {
+    request: MetalComposeTileRequest,
+    params: MetalComposeStripsParams,
+    dst_buffer: metal::Buffer,
+    dst_stride: usize,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
 struct MetalStripComposer {
     device: metal::Device,
     queue: metal::CommandQueue,
@@ -4589,7 +5253,7 @@ impl MetalStripComposer {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     fn compose_tile(
         &self,
         packed: &PackedMetalStrips,
@@ -4600,6 +5264,30 @@ impl MetalStripComposer {
         output_width: u32,
         output_height: u32,
     ) -> Result<statumen::output::metal::MetalDeviceTile, WsiDicomError> {
+        let mut tiles = self.compose_tiles(
+            packed,
+            &[MetalComposeTileRequest {
+                src_origin_x,
+                src_origin_y,
+                valid_width,
+                valid_height,
+                output_width,
+                output_height,
+            }],
+        )?;
+        tiles.pop().ok_or_else(|| WsiDicomError::Unsupported {
+            reason: "Metal composed tile batch unexpectedly returned no tiles".into(),
+        })
+    }
+
+    fn compose_tiles(
+        &self,
+        packed: &PackedMetalStrips,
+        requests: &[MetalComposeTileRequest],
+    ) -> Result<Vec<statumen::output::metal::MetalDeviceTile>, WsiDicomError> {
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
         let first_col =
             u32::try_from(packed.first_col).map_err(|_| WsiDicomError::Unsupported {
                 reason: "Metal WholeLevel first source tile column exceeds u32".into(),
@@ -4609,93 +5297,108 @@ impl MetalStripComposer {
                 reason: "Metal WholeLevel first source tile row exceeds u32".into(),
             })?;
         let bytes_per_pixel = packed.format.bytes_per_pixel();
-        let dst_stride = (output_width as usize)
-            .checked_mul(bytes_per_pixel)
-            .ok_or_else(|| WsiDicomError::Unsupported {
-                reason: "Metal composed tile stride overflow".into(),
+        let bytes_per_pixel_u32 =
+            u32::try_from(bytes_per_pixel).map_err(|_| WsiDicomError::Unsupported {
+                reason: "Metal composed tile bytes-per-pixel exceeds u32".into(),
             })?;
-        let dst_bytes = dst_stride
-            .checked_mul(output_height as usize)
-            .ok_or_else(|| WsiDicomError::Unsupported {
-                reason: "Metal composed tile byte length overflow".into(),
+        let src_slot_stride =
+            u32::try_from(packed.slot_stride).map_err(|_| WsiDicomError::Unsupported {
+                reason: "Metal WholeLevel source slot stride exceeds u32".into(),
             })?;
-        let dst_bytes_u64 = u64::try_from(dst_bytes).map_err(|_| WsiDicomError::Unsupported {
-            reason: "Metal composed tile byte length exceeds u64".into(),
-        })?;
-        let dst_buffer = self
-            .device
-            .new_buffer(dst_bytes_u64, metal::MTLResourceOptions::StorageModeShared);
-        let params = MetalComposeStripsParams {
-            src_origin_x,
-            src_origin_y,
-            valid_width,
-            valid_height,
-            output_width,
-            output_height,
-            bytes_per_pixel: u32::try_from(bytes_per_pixel).map_err(|_| {
-                WsiDicomError::Unsupported {
-                    reason: "Metal composed tile bytes-per-pixel exceeds u32".into(),
-                }
-            })?,
-            src_tile_width: packed.tile_width,
-            src_tile_height: packed.tile_height,
-            src_slot_stride: u32::try_from(packed.slot_stride).map_err(|_| {
-                WsiDicomError::Unsupported {
-                    reason: "Metal WholeLevel source slot stride exceeds u32".into(),
-                }
-            })?,
-            src_tile_slot_bytes: u32::try_from(packed.tile_slot_bytes).map_err(|_| {
-                WsiDicomError::Unsupported {
-                    reason: "Metal WholeLevel source tile slot byte length exceeds u32".into(),
-                }
-            })?,
-            src_first_col: first_col,
-            src_first_row: first_row,
-            src_tiles_across: packed.tiles_across,
-            dst_stride: u32::try_from(dst_stride).map_err(|_| WsiDicomError::Unsupported {
-                reason: "Metal composed tile pitch exceeds u32".into(),
-            })?,
-        };
+        let src_tile_slot_bytes =
+            u32::try_from(packed.tile_slot_bytes).map_err(|_| WsiDicomError::Unsupported {
+                reason: "Metal WholeLevel source tile slot byte length exceeds u32".into(),
+            })?;
+        let mut dispatches = Vec::with_capacity(requests.len());
+        for request in requests {
+            let dst_stride = (request.output_width as usize)
+                .checked_mul(bytes_per_pixel)
+                .ok_or_else(|| WsiDicomError::Unsupported {
+                    reason: "Metal composed tile stride overflow".into(),
+                })?;
+            let dst_bytes = dst_stride
+                .checked_mul(request.output_height as usize)
+                .ok_or_else(|| WsiDicomError::Unsupported {
+                    reason: "Metal composed tile byte length overflow".into(),
+                })?;
+            let dst_bytes_u64 =
+                u64::try_from(dst_bytes).map_err(|_| WsiDicomError::Unsupported {
+                    reason: "Metal composed tile byte length exceeds u64".into(),
+                })?;
+            let dst_buffer = self
+                .device
+                .new_buffer(dst_bytes_u64, metal::MTLResourceOptions::StorageModeShared);
+            let params = MetalComposeStripsParams {
+                src_origin_x: request.src_origin_x,
+                src_origin_y: request.src_origin_y,
+                valid_width: request.valid_width,
+                valid_height: request.valid_height,
+                output_width: request.output_width,
+                output_height: request.output_height,
+                bytes_per_pixel: bytes_per_pixel_u32,
+                src_tile_width: packed.tile_width,
+                src_tile_height: packed.tile_height,
+                src_slot_stride,
+                src_tile_slot_bytes,
+                src_first_col: first_col,
+                src_first_row: first_row,
+                src_tiles_across: packed.tiles_across,
+                dst_stride: u32::try_from(dst_stride).map_err(|_| WsiDicomError::Unsupported {
+                    reason: "Metal composed tile pitch exceeds u32".into(),
+                })?,
+            };
+            dispatches.push(MetalComposeTileDispatch {
+                request: *request,
+                params,
+                dst_buffer,
+                dst_stride,
+            });
+        }
 
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.pipeline);
         encoder.set_buffer(0, Some(&packed.buffer), 0);
-        encoder.set_buffer(1, Some(&dst_buffer), 0);
-        encoder.set_bytes(
-            2,
-            core::mem::size_of::<MetalComposeStripsParams>() as u64,
-            (&raw const params).cast(),
-        );
         let width = self.pipeline.thread_execution_width().max(1);
         let max_threads = self.pipeline.max_total_threads_per_threadgroup().max(width);
         let height = (max_threads / width).max(1);
-        encoder.dispatch_threads(
-            metal::MTLSize {
-                width: u64::from(output_width),
-                height: u64::from(output_height),
-                depth: 1,
-            },
-            metal::MTLSize {
-                width,
-                height,
-                depth: 1,
-            },
-        );
+        for dispatch in &dispatches {
+            encoder.set_buffer(1, Some(&dispatch.dst_buffer), 0);
+            encoder.set_bytes(
+                2,
+                core::mem::size_of::<MetalComposeStripsParams>() as u64,
+                (&raw const dispatch.params).cast(),
+            );
+            encoder.dispatch_threads(
+                metal::MTLSize {
+                    width: u64::from(dispatch.request.output_width),
+                    height: u64::from(dispatch.request.output_height),
+                    depth: 1,
+                },
+                metal::MTLSize {
+                    width,
+                    height,
+                    depth: 1,
+                },
+            );
+        }
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
-        Ok(statumen::output::metal::MetalDeviceTile {
-            width: output_width,
-            height: output_height,
-            pitch_bytes: dst_stride,
-            format: packed.format,
-            storage: statumen::output::metal::MetalDeviceStorage::Buffer {
-                buffer: dst_buffer,
-                byte_offset: 0,
-            },
-        })
+        Ok(dispatches
+            .into_iter()
+            .map(|dispatch| statumen::output::metal::MetalDeviceTile {
+                width: dispatch.request.output_width,
+                height: dispatch.request.output_height,
+                pitch_bytes: dispatch.dst_stride,
+                format: packed.format,
+                storage: statumen::output::metal::MetalDeviceStorage::Buffer {
+                    buffer: dispatch.dst_buffer,
+                    byte_offset: 0,
+                },
+            })
+            .collect())
     }
 }
 
@@ -5006,6 +5709,7 @@ fn probe_auto_metal_input_tile_run(
     let metal_input_decode_batches = metal_run.input_decode_batches;
     let metal_compose_batches = metal_run.compose_batches;
     let metal_encode_batches = metal_run.encode_batches;
+    let metal_gpu_encode_stats = metal_run.gpu_encode_stats;
     let cpu_input_decode_duration = cpu_run.input_decode_duration;
     let cpu_compose_duration = cpu_run.compose_duration;
     match route {
@@ -5026,6 +5730,7 @@ fn probe_auto_metal_input_tile_run(
             gpu_input_decode_batches: metal_input_decode_batches,
             gpu_compose_batches: metal_compose_batches,
             gpu_encode_batches: metal_encode_batches,
+            gpu_encode_stats: metal_gpu_encode_stats,
             probe_cpu_duration: cpu_duration,
             probe_gpu_duration: resident_gpu_duration,
             probe_gpu_batches,
@@ -5053,6 +5758,7 @@ fn probe_auto_metal_input_tile_run(
                 gpu_input_decode_batches: 0,
                 gpu_compose_batches: 0,
                 gpu_encode_batches: 0,
+                gpu_encode_stats: encode::DicomJ2kGpuEncodeBatchStats::default(),
                 probe_cpu_duration: cpu_duration,
                 probe_gpu_duration: resident_gpu_duration,
                 probe_gpu_batches,
@@ -5077,6 +5783,7 @@ fn probe_auto_metal_input_tile_run(
                 gpu_input_decode_batches: 0,
                 gpu_compose_batches: 0,
                 gpu_encode_batches: 0,
+                gpu_encode_stats: encode::DicomJ2kGpuEncodeBatchStats::default(),
                 probe_cpu_duration: cpu_duration,
                 probe_gpu_duration: resident_gpu_duration,
                 probe_gpu_batches,
@@ -5378,9 +6085,9 @@ fn try_encode_metal_aligned_tile_run(
         .filter_map(|entry| entry.as_ref().map(|(tile, _)| tile.clone()))
         .collect();
     let encode_batches = metal_j2k_encode_batch_count(&batch_tiles, tile_size, tile_size);
-    let mut batch_encoded = j2k_encoder
-        .encode_metal_tiles(&batch_tiles, tile_size, tile_size)?
-        .into_iter();
+    let batch_encoded = j2k_encoder.encode_metal_tiles(&batch_tiles, tile_size, tile_size)?;
+    let gpu_encode_stats = batch_encoded.gpu_encode_stats;
+    let mut batch_encoded = batch_encoded.frames.into_iter();
     let mut encoded = Vec::with_capacity(tile_count);
     for entry in tile_entries {
         let Some((_tile, profile)) = entry else {
@@ -5410,6 +6117,7 @@ fn try_encode_metal_aligned_tile_run(
         input_decode_batches: 1,
         compose_batches: 0,
         encode_batches,
+        gpu_encode_stats,
     })
 }
 
@@ -5653,7 +6361,10 @@ fn try_encode_metal_whole_level_strip_run(
         source_col_count_usize,
     )?;
     let profile = pixel_profile_from_device_format(packed.format)?;
-    let mut composed_tiles = Vec::with_capacity(tile_count);
+    let src_origin_y = u32::try_from(y).map_err(|_| WsiDicomError::Unsupported {
+        reason: "Metal WholeLevel tile source y offset exceeds u32".into(),
+    })?;
+    let mut compose_requests = Vec::with_capacity(tile_count);
     for offset in 0..tile_count {
         let col = start_col
             .checked_add(
@@ -5673,25 +6384,23 @@ fn try_encode_metal_whole_level_strip_run(
         let src_origin_x = u32::try_from(x).map_err(|_| WsiDicomError::Unsupported {
             reason: "Metal WholeLevel tile source x offset exceeds u32".into(),
         })?;
-        let src_origin_y = u32::try_from(y).map_err(|_| WsiDicomError::Unsupported {
-            reason: "Metal WholeLevel tile source y offset exceeds u32".into(),
-        })?;
-        let composed = composer.compose_tile(
-            &packed,
+        compose_requests.push(MetalComposeTileRequest {
             src_origin_x,
             src_origin_y,
             valid_width,
             valid_height,
-            tile_size,
-            tile_size,
-        )?;
-        composed_tiles.push(composed);
+            output_width: tile_size,
+            output_height: tile_size,
+        });
     }
+    let composed_tiles = composer.compose_tiles(&packed, &compose_requests)?;
     let compose_duration = compose_started.elapsed();
 
     let mut encoded = Vec::with_capacity(tile_count);
     let encode_batches = metal_j2k_encode_batch_count(&composed_tiles, tile_size, tile_size);
-    for frame in j2k_encoder.encode_metal_tiles(&composed_tiles, tile_size, tile_size)? {
+    let batch_encoded = j2k_encoder.encode_metal_tiles(&composed_tiles, tile_size, tile_size)?;
+    let gpu_encode_stats = batch_encoded.gpu_encode_stats;
+    for frame in batch_encoded.frames {
         match frame {
             Some(codestream) => encoded.push(Some((codestream, profile))),
             None if preference == EncodeBackendPreference::RequireDevice => {
@@ -5712,6 +6421,7 @@ fn try_encode_metal_whole_level_strip_run(
         input_decode_batches: u64::from(input_decode_duration > Duration::ZERO),
         compose_batches: 1,
         encode_batches,
+        gpu_encode_stats,
     })
 }
 
@@ -5724,6 +6434,7 @@ fn empty_metal_tile_run(tile_count: usize) -> MetalEncodedTileRun {
         input_decode_batches: 0,
         compose_batches: 0,
         encode_batches: 0,
+        gpu_encode_stats: encode::DicomJ2kGpuEncodeBatchStats::default(),
     }
 }
 
@@ -5834,14 +6545,41 @@ mod tests {
     static DEVICE_DECODE_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
-    fn default_options_use_jpeg2000_lossless_and_auto_backend() {
+    fn default_options_use_htj2k_lossless_rpcl_and_auto_backend() {
         let options = DicomExportOptions::default();
 
         assert_eq!(options.tile_size, 512);
-        assert_eq!(options.transfer_syntax.uid(), "1.2.840.10008.1.2.4.90");
+        assert_eq!(options.transfer_syntax.uid(), "1.2.840.10008.1.2.4.202");
         assert_eq!(options.encode_backend, EncodeBackendPreference::Auto);
         assert_eq!(options.codec_validation, CodecValidation::Disabled);
         assert!(!options.source_device_decode);
+        assert_eq!(options.gpu_encode_inflight_tiles, None);
+        assert_eq!(options.gpu_encode_memory_mib, None);
+    }
+
+    #[test]
+    fn options_reject_zero_gpu_encode_tuning_overrides() {
+        let err = DicomExportOptions {
+            gpu_encode_inflight_tiles: Some(0),
+            ..DicomExportOptions::default()
+        }
+        .validate()
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("gpu_encode_inflight_tiles"),
+            "unexpected error: {err}"
+        );
+
+        let err = DicomExportOptions {
+            gpu_encode_memory_mib: Some(0),
+            ..DicomExportOptions::default()
+        }
+        .validate()
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("gpu_encode_memory_mib"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -6220,6 +6958,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::RequireDevice,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -6276,6 +7015,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::RequireDevice,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: true,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -6357,6 +7097,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::RequireDevice,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: true,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -6386,6 +7127,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -6412,6 +7154,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::RequireDevice,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -6461,6 +7204,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -6487,6 +7231,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::RequireDevice,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -6734,6 +7479,7 @@ mod tests {
             output_dir: out.clone(),
             options: DicomExportOptions {
                 tile_size: 2,
+                transfer_syntax: TransferSyntax::Jpeg2000Lossless,
                 encode_backend: EncodeBackendPreference::PreferDevice,
                 ..DicomExportOptions::default()
             },
@@ -6886,6 +7632,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -6940,6 +7687,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -6975,6 +7723,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::RequireDevice,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: true,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -7015,6 +7764,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -7070,6 +7820,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -7095,6 +7846,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -7143,6 +7895,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             level: 0,
             max_frames: 1,
@@ -7176,6 +7929,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::RequireDevice,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             level: 0,
             max_frames: 2,
@@ -7214,6 +7968,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::RequireDevice,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             level: 0,
             max_frames: 2,
@@ -7242,6 +7997,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             level: 0,
             max_frames: 1,
@@ -7283,6 +8039,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             max_frames_per_level: 1,
             max_levels: None,
@@ -7326,6 +8083,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             max_frames_per_level: 1,
             max_levels: Some(1),
@@ -7351,6 +8109,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             max_frames_per_level: 1,
             max_levels: Some(1),
@@ -7393,6 +8152,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             max_frames_per_level: 1,
             max_levels: Some(1),
@@ -7436,6 +8196,12 @@ mod tests {
                 resident_gpu_transcode_frames: 6,
                 cpu_fallback_frames: 2,
                 gpu_dispatch_micros: 7_500,
+                gpu_encode_configured_inflight_tiles: 8,
+                gpu_encode_effective_inflight_tiles: 4,
+                gpu_encode_max_observed_inflight_tiles: 4,
+                gpu_encode_configured_memory_mib: 4096,
+                gpu_encode_effective_memory_mib: 3277,
+                gpu_encode_wall_micros: 5_000,
                 gpu_encode_hardware_micros: 2_500,
                 gpu_encode_dispatch_overhead_micros: 5_000,
                 ..DicomExportMetrics::default()
@@ -7449,6 +8215,16 @@ mod tests {
         assert_eq!(value["metrics"]["total_frames"], 8);
         assert_eq!(value["metrics"]["gpu_transcode_frames"], 6);
         assert_eq!(value["metrics"]["gpu_dispatch_micros"], 7_500);
+        assert_eq!(value["metrics"]["gpu_encode_configured_inflight_tiles"], 8);
+        assert_eq!(value["metrics"]["gpu_encode_effective_inflight_tiles"], 4);
+        assert_eq!(
+            value["metrics"]["gpu_encode_max_observed_inflight_tiles"],
+            4
+        );
+        assert_eq!(value["metrics"]["gpu_encode_configured_memory_mib"], 4096);
+        assert_eq!(value["metrics"]["gpu_encode_effective_memory_mib"], 3277);
+        assert_eq!(value["metrics"]["gpu_encode_wall_micros"], 5_000);
+        assert_eq!(value["metrics"]["gpu_encode_effective_parallelism"], 0.5);
         assert_eq!(value["metrics"]["gpu_encode_hardware_micros"], 2_500);
         assert_eq!(
             value["metrics"]["gpu_encode_dispatch_overhead_micros"],
@@ -7479,6 +8255,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             max_frames_per_level: 1,
             max_levels: Some(1),
@@ -7518,6 +8295,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             max_frames_per_level: 1,
             max_levels: Some(1),
@@ -7702,6 +8480,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::RequireDevice,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -7792,6 +8571,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -7870,6 +8650,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -8427,6 +9208,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -8591,6 +9373,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                ..DicomExportOptions::default()
             },
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
@@ -9160,6 +9943,302 @@ mod tests {
                 actual.len()
             );
         }
+    }
+
+    #[test]
+    #[ignore = "requires WSI_DICOM_NDPI_FIXTURE and Metal device decode"]
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn ndpi_whole_level_metal_composes_multi_tile_run_in_one_batch() {
+        let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
+            return;
+        };
+        std::env::set_var("STATUMEN_JPEG_DEVICE_DECODE", "1");
+        let slide = Slide::open(&source).unwrap();
+        let level = &slide.dataset().scenes[0].series[0].levels[0];
+        let Some(strip_layout) = whole_level_strip_layout(level) else {
+            return;
+        };
+        let (matrix_columns, matrix_rows) = level.dimensions;
+        let tile_size = 512u32;
+        let tile_count = matrix_columns.div_ceil(u64::from(tile_size)).min(3);
+        assert!(tile_count > 1);
+
+        let mut metal_input =
+            MetalInputTileReader::new(EncodeBackendPreference::RequireDevice, true);
+        let mut j2k_encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::RequireDevice,
+            TransferSyntax::Htj2kLossless,
+            CodecValidation::RoundTrip,
+        );
+
+        let encoded = try_encode_metal_whole_level_strip_run(
+            &slide,
+            &mut metal_input,
+            &mut j2k_encoder,
+            strip_layout,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            tile_count as usize,
+            matrix_columns,
+            matrix_rows,
+            tile_size,
+        )
+        .unwrap();
+
+        assert_eq!(encoded.tiles.len(), tile_count as usize);
+        assert_eq!(encoded.compose_batches, 1);
+        assert!(encoded.compose_duration > Duration::ZERO);
+        for frame in encoded.tiles {
+            let (frame, _) = frame.expect("fixture frame should encode through Metal input path");
+            assert!(frame.used_device_encode);
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn metal_strip_composer_returns_ordered_tiles_from_batched_compose() {
+        let Some(device) = metal::Device::system_default() else {
+            return;
+        };
+        let composer = MetalStripComposer::new(device.clone()).unwrap();
+        let layout = WholeLevelStripLayout {
+            width: 4,
+            height: 4,
+        };
+        let source_a = [1u8; 16];
+        let source_b = [2u8; 16];
+        let tile_a = metal_test_tile(&device, &source_a, 4, 4, SigninumPixelFormat::Gray8);
+        let tile_b = metal_test_tile(&device, &source_b, 4, 4, SigninumPixelFormat::Gray8);
+        let packed = composer
+            .pack_tiles(&[tile_a, tile_b], layout, 0, 0, 2)
+            .expect("pack test tiles");
+
+        let composed = composer
+            .compose_tiles(
+                &packed,
+                &[
+                    MetalComposeTileRequest {
+                        src_origin_x: 0,
+                        src_origin_y: 0,
+                        valid_width: 4,
+                        valid_height: 4,
+                        output_width: 4,
+                        output_height: 4,
+                    },
+                    MetalComposeTileRequest {
+                        src_origin_x: 4,
+                        src_origin_y: 0,
+                        valid_width: 4,
+                        valid_height: 4,
+                        output_width: 4,
+                        output_height: 4,
+                    },
+                ],
+            )
+            .expect("batched compose");
+
+        assert_eq!(composed.len(), 2);
+        assert_eq!(composed[0].width, 4);
+        assert_eq!(composed[1].width, 4);
+        assert_eq!(composed[0].height, 4);
+        assert_eq!(composed[1].height, 4);
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn metal_test_tile(
+        device: &metal::Device,
+        bytes: &[u8],
+        width: u32,
+        height: u32,
+        format: SigninumPixelFormat,
+    ) -> statumen::output::metal::MetalDeviceTile {
+        let buffer = device.new_buffer_with_data(
+            bytes.as_ptr().cast(),
+            bytes.len() as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        statumen::output::metal::MetalDeviceTile {
+            width,
+            height,
+            pitch_bytes: width as usize * format.bytes_per_pixel(),
+            format,
+            storage: statumen::output::metal::MetalDeviceStorage::Buffer {
+                buffer,
+                byte_offset: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn cpu_j2k_batch_matches_serial_ordered_frames() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.dcm");
+        write_source_dicom_with_dimensions(&source, "1.2.826.0.1.3680043.10.999.71", 4, 2);
+        let slide = Slide::open(&source).unwrap();
+        let frames = [
+            LosslessJ2kCpuBatchFrame {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+            LosslessJ2kCpuBatchFrame {
+                x: 2,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+        ];
+
+        let batch = encode_cpu_input_lossless_j2k_tile_batch(
+            &slide,
+            LosslessJ2kCpuBatchSettings {
+                transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+                codec_validation: CodecValidation::RoundTrip,
+            },
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            &frames,
+            2,
+        )
+        .unwrap();
+
+        let mut serial_encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::CpuOnly,
+            TransferSyntax::Htj2kLosslessRpcl,
+            CodecValidation::RoundTrip,
+        );
+        let serial = frames
+            .iter()
+            .enumerate()
+            .map(|(idx, frame)| {
+                encode_cpu_input_tile(
+                    &slide,
+                    &mut serial_encoder,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    idx as u64,
+                    frame.x,
+                    frame.y,
+                    frame.width,
+                    frame.height,
+                    2,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(batch.len(), serial.len());
+        for (batch, serial) in batch.iter().zip(serial.iter()) {
+            assert_eq!(batch.profile, serial.1);
+            assert_eq!(
+                batch.encoded.as_ref().unwrap().codestream_bytes().unwrap(),
+                serial.0.as_ref().unwrap().codestream_bytes().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn jpeg_baseline_cpu_batch_matches_serial_ordered_frames() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.dcm");
+        write_source_dicom_with_dimensions(&source, "1.2.826.0.1.3680043.10.999.72", 4, 2);
+        let slide = Slide::open(&source).unwrap();
+        let frames = [
+            JpegBaselineFallbackFrame {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+            JpegBaselineFallbackFrame {
+                x: 2,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+        ];
+
+        let batch =
+            encode_jpeg_baseline_cpu_input_tile_batch(&slide, 0, 0, 0, 0, 0, 0, &frames, 2, 2)
+                .unwrap();
+        let serial = frames
+            .iter()
+            .map(|frame| {
+                encode_jpeg_baseline_cpu_input_tile(
+                    &slide,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    frame.x,
+                    frame.y,
+                    frame.width,
+                    frame.height,
+                    2,
+                    2,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(batch.len(), serial.len());
+        for (batch, serial) in batch.iter().zip(serial.iter()) {
+            assert_eq!(batch.0.data, serial.0.data);
+            assert_eq!(batch.1, serial.1);
+        }
+    }
+
+    #[test]
+    fn jpeg_baseline_cpu_fallback_writes_restart_markers_for_large_frames() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.dcm");
+        write_source_dicom_with_dimensions(&source, "1.2.826.0.1.3680043.10.999.73", 160, 64);
+
+        let report = export_dicom(DicomExportRequest {
+            source_path: source,
+            output_dir: tmp.path().join("out"),
+            options: DicomExportOptions {
+                tile_size: 160,
+                transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                codec_validation: CodecValidation::Disabled,
+                source_device_decode: false,
+                ..DicomExportOptions::default()
+            },
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: None,
+        })
+        .unwrap();
+
+        assert_eq!(report.metrics.jpeg_cpu_encode_frames, 1);
+        let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+        let fragments = object
+            .element(tags::PIXEL_DATA)
+            .unwrap()
+            .value()
+            .fragments()
+            .unwrap();
+        let payload = dicom_fragment_jpeg_payload(&fragments[0]);
+        assert!(payload.windows(2).any(|window| window == [0xFF, 0xDD]));
+        assert!(payload.windows(2).any(|window| window == [0xFF, 0xD0]));
     }
 
     fn write_source_dicom(path: &std::path::Path) {
