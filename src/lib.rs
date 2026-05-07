@@ -2029,7 +2029,7 @@ fn profile_lossless_j2k_routes(
         options.gpu_encode_memory_mib,
     );
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    let mut metal_input = MetalInputTileReader::new_with_auto_device_decode_and_cache_key(
+    let mut metal_input = MetalInputTileReader::new_for_lossless_j2k(
         options.encode_backend,
         lossless_j2k_auto_allows_metal_input(
             options.encode_backend,
@@ -2847,7 +2847,7 @@ fn export_instance(
         request.options.gpu_encode_memory_mib,
     );
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    let mut metal_input = MetalInputTileReader::new_with_auto_device_decode_and_cache_key(
+    let mut metal_input = MetalInputTileReader::new_for_lossless_j2k(
         request.options.encode_backend,
         lossless_j2k_auto_allows_metal_input(
             request.options.encode_backend,
@@ -4803,6 +4803,7 @@ struct MetalInputTileReader {
     jpeg_encode_session: Option<signinum_jpeg_metal::MetalBackendSession>,
     strip_composer: Option<MetalStripComposer>,
     whole_level_cache: MetalSourceTileCache,
+    private_jpeg_decode: bool,
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -4822,6 +4823,24 @@ impl MetalInputTileReader {
             None,
             source_device_decode,
         )
+    }
+
+    fn new_for_lossless_j2k(
+        preference: EncodeBackendPreference,
+        auto_device_decode_allowed: bool,
+        auto_cache_key: Option<AutoMetalInputRouteCacheKey>,
+        source_device_decode: bool,
+    ) -> Self {
+        let mut reader = Self::new_with_auto_device_decode_and_cache_key(
+            preference,
+            auto_device_decode_allowed,
+            auto_cache_key,
+            source_device_decode,
+        );
+        if source_device_decode {
+            reader.enable_private_jpeg_decode();
+        }
+        reader
     }
 
     fn new_with_auto_device_decode_and_cache_key(
@@ -4856,7 +4875,12 @@ impl MetalInputTileReader {
             jpeg_encode_session: None,
             strip_composer: None,
             whole_level_cache: MetalSourceTileCache::default(),
+            private_jpeg_decode: false,
         }
+    }
+
+    fn enable_private_jpeg_decode(&mut self) {
+        self.private_jpeg_decode = true;
     }
 
     fn enabled(&self) -> bool {
@@ -4903,10 +4927,15 @@ impl MetalInputTileReader {
                     reason: "Metal is unavailable for WSI input tile decode".into(),
                 })?;
             self.device = Some(device.clone());
-            self.sessions = Some(statumen::output::metal::MetalBackendSessions::new(
+            let sessions = statumen::output::metal::MetalBackendSessions::new(
                 signinum_jpeg_metal::MetalBackendSession::new(device.clone()),
                 signinum_j2k_metal::MetalBackendSession::new(device),
-            ));
+            );
+            self.sessions = Some(if self.private_jpeg_decode {
+                sessions.with_private_jpeg_decode()
+            } else {
+                sessions
+            });
         }
         Ok(self
             .sessions
@@ -8873,6 +8902,30 @@ mod tests {
             Some(value) => std::env::set_var(STATUMEN_JP2K_DEVICE_DECODE_ENV, value),
             None => std::env::remove_var(STATUMEN_JP2K_DEVICE_DECODE_ENV),
         }
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn lossless_j2k_source_device_decode_enables_private_jpeg_handoff() {
+        let reader = MetalInputTileReader::new_for_lossless_j2k(
+            EncodeBackendPreference::PreferDevice,
+            true,
+            None,
+            true,
+        );
+        assert!(reader.private_jpeg_decode);
+
+        let reader = MetalInputTileReader::new_for_lossless_j2k(
+            EncodeBackendPreference::PreferDevice,
+            true,
+            None,
+            false,
+        );
+        assert!(!reader.private_jpeg_decode);
+
+        let jpeg_baseline_reader =
+            MetalInputTileReader::new(EncodeBackendPreference::PreferDevice, true);
+        assert!(!jpeg_baseline_reader.private_jpeg_decode);
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
