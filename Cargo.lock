@@ -1142,7 +1142,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k"
-version = "1.2.2"
+version = "1.2.3"
 dependencies = [
  "signinum-core",
  "signinum-j2k-native",
@@ -1151,7 +1151,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k-cuda"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "signinum-core",
  "signinum-cuda-runtime",
@@ -1162,7 +1162,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k-metal"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "libc",
  "metal",
@@ -1711,7 +1711,7 @@ dependencies = [
 
 [[package]]
 name = "wsi-dicom"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "clap",
  "dicom-core",
