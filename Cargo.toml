@@ -22,12 +22,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 signinum-core = "=1.0.1"
-signinum-j2k = "=1.1.2"
-signinum-j2k-cuda = { version = "=0.3.2", optional = true, features = ["cuda-runtime"] }
-signinum-j2k-metal = { version = "=0.3.2", optional = true }
-signinum-jpeg = "=1.0.2"
-signinum-jpeg-metal = { version = "=0.2.3", optional = true }
-statumen = "=0.1.6"
+signinum-j2k = "=1.2.0"
+signinum-j2k-cuda = { version = "=0.3.3", optional = true, features = ["cuda-runtime"] }
+signinum-j2k-metal = { version = "=0.3.3", optional = true }
+signinum-jpeg = "=1.1.0"
+signinum-jpeg-metal = { version = "=0.2.4", optional = true }
+statumen = "=0.2.0"
 thiserror = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
