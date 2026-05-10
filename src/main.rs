@@ -4,9 +4,10 @@ use std::{path::PathBuf, time::Duration};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use wsi_dicom::{
-    export_dicom, profile_dicom_route_corpus_coverage, profile_dicom_route_coverage,
-    profile_dicom_routes, CodecValidation, DicomExportMetrics, DicomExportOptions,
-    DicomExportReport, DicomExportRequest, DicomMetadata, DicomRouteCorpusCoverageProgress,
+    default_transfer_syntax_for_source, export_dicom, profile_dicom_route_corpus_coverage,
+    profile_dicom_route_coverage, profile_dicom_routes, CodecValidation,
+    DefaultTransferSyntaxRequest, DicomExportMetrics, DicomExportOptions, DicomExportReport,
+    DicomExportRequest, DicomMetadata, DicomRouteCorpusCoverageProgress,
     DicomRouteCorpusCoverageReport, DicomRouteCorpusCoverageRequest, DicomRouteCoverageProgress,
     DicomRouteCoverageReport, DicomRouteCoverageRequest, DicomRouteProfileReport,
     DicomRouteProfileRequest, EncodeBackendPreference, MetadataSource, TransferSyntax,
@@ -37,8 +38,8 @@ enum Command {
         tile_size: u32,
         #[arg(long, default_value_t = 90)]
         jpeg_quality: u8,
-        #[arg(long, value_enum, default_value_t = TransferSyntaxArg::Htj2kLosslessRpcl)]
-        transfer_syntax: TransferSyntaxArg,
+        #[arg(long, value_enum)]
+        transfer_syntax: Option<TransferSyntaxArg>,
         #[arg(long)]
         j2k_decomposition_levels: Option<u8>,
         #[arg(long, value_enum, default_value_t = CodecValidationArg::Disabled)]
@@ -60,8 +61,8 @@ enum Command {
         tile_size: u32,
         #[arg(long, default_value_t = 90)]
         jpeg_quality: u8,
-        #[arg(long, value_enum, default_value_t = TransferSyntaxArg::Htj2kLosslessRpcl)]
-        transfer_syntax: TransferSyntaxArg,
+        #[arg(long, value_enum)]
+        transfer_syntax: Option<TransferSyntaxArg>,
         #[arg(long)]
         j2k_decomposition_levels: Option<u8>,
         #[arg(long, value_enum, default_value_t = CodecValidationArg::Disabled)]
@@ -85,8 +86,8 @@ enum Command {
         tile_size: u32,
         #[arg(long, default_value_t = 90)]
         jpeg_quality: u8,
-        #[arg(long, value_enum, default_value_t = TransferSyntaxArg::Htj2kLosslessRpcl)]
-        transfer_syntax: TransferSyntaxArg,
+        #[arg(long, value_enum)]
+        transfer_syntax: Option<TransferSyntaxArg>,
         #[arg(long)]
         j2k_decomposition_levels: Option<u8>,
         #[arg(long, value_enum, default_value_t = CodecValidationArg::Disabled)]
@@ -114,8 +115,8 @@ enum Command {
         tile_size: u32,
         #[arg(long, default_value_t = 90)]
         jpeg_quality: u8,
-        #[arg(long, value_enum, default_value_t = TransferSyntaxArg::Htj2kLosslessRpcl)]
-        transfer_syntax: TransferSyntaxArg,
+        #[arg(long, value_enum)]
+        transfer_syntax: Option<TransferSyntaxArg>,
         #[arg(long)]
         j2k_decomposition_levels: Option<u8>,
         #[arg(long, value_enum, default_value_t = CodecValidationArg::Disabled)]
@@ -149,8 +150,8 @@ enum Command {
         tile_size: u32,
         #[arg(long, default_value_t = 90)]
         jpeg_quality: u8,
-        #[arg(long, value_enum, default_value_t = TransferSyntaxArg::Htj2kLosslessRpcl)]
-        transfer_syntax: TransferSyntaxArg,
+        #[arg(long, value_enum)]
+        transfer_syntax: Option<TransferSyntaxArg>,
         #[arg(long)]
         j2k_decomposition_levels: Option<u8>,
         #[arg(long, value_enum, default_value_t = CodecValidationArg::Disabled)]
@@ -176,8 +177,8 @@ enum Command {
         tile_size: u32,
         #[arg(long, default_value_t = 90)]
         jpeg_quality: u8,
-        #[arg(long, value_enum, default_value_t = TransferSyntaxArg::Htj2kLosslessRpcl)]
-        transfer_syntax: TransferSyntaxArg,
+        #[arg(long, value_enum)]
+        transfer_syntax: Option<TransferSyntaxArg>,
         #[arg(long)]
         j2k_decomposition_levels: Option<u8>,
         #[arg(long, value_enum, default_value_t = CodecValidationArg::Disabled)]
@@ -237,7 +238,7 @@ impl BackendArg {
     }
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum TransferSyntaxArg {
     JpegBaseline8Bit,
     Jpeg2000,
@@ -299,6 +300,8 @@ fn run() -> Result<(), WsiDicomError> {
             json,
         } => {
             let metadata = load_metadata_source(metadata, research_placeholder)?;
+            let transfer_syntax =
+                resolve_transfer_syntax(&source, tile_size, transfer_syntax, level, None)?;
             let report = export_dicom(DicomExportRequest {
                 source_path: source,
                 output_dir: out,
@@ -336,6 +339,8 @@ fn run() -> Result<(), WsiDicomError> {
             gpu_encode,
             json,
         } => {
+            let transfer_syntax =
+                resolve_transfer_syntax(&source, tile_size, transfer_syntax, Some(level), None)?;
             let report = profile_dicom_routes(DicomRouteProfileRequest {
                 source_path: source,
                 options: dicom_export_options(
@@ -377,6 +382,8 @@ fn run() -> Result<(), WsiDicomError> {
             let max_frames_per_level =
                 effective_max_frames_per_level(max_frames_per_level, full_frame_coverage);
             let max_level_elapsed = max_level_elapsed_from_ms(max_level_ms)?;
+            let transfer_syntax =
+                resolve_transfer_syntax(&source, tile_size, transfer_syntax, None, max_levels)?;
             let report = profile_dicom_route_coverage(DicomRouteCoverageRequest {
                 source_path: source,
                 options: dicom_export_options(
@@ -420,6 +427,8 @@ fn run() -> Result<(), WsiDicomError> {
             let max_frames_per_level =
                 effective_max_frames_per_level(max_frames_per_level, full_frame_coverage);
             let max_level_elapsed = max_level_elapsed_from_ms(max_level_ms)?;
+            let transfer_syntax =
+                resolve_corpus_transfer_syntax(&root, tile_size, transfer_syntax, max_levels)?;
             let report = profile_dicom_route_corpus_coverage(DicomRouteCorpusCoverageRequest {
                 source_root: root,
                 options: dicom_export_options(
@@ -468,6 +477,8 @@ fn run() -> Result<(), WsiDicomError> {
                 });
             }
             let metadata = load_metadata_source(metadata, research_placeholder)?;
+            let transfer_syntax =
+                resolve_transfer_syntax(&source, tile_size, transfer_syntax, level, None)?;
             let options = dicom_export_options(
                 tile_size,
                 jpeg_quality,
@@ -546,6 +557,8 @@ fn run() -> Result<(), WsiDicomError> {
                     reason: "sustain requires iterations > 0".into(),
                 });
             }
+            let transfer_syntax =
+                resolve_transfer_syntax(&source, tile_size, transfer_syntax, None, max_levels)?;
             let options = dicom_export_options(
                 tile_size,
                 jpeg_quality,
@@ -652,11 +665,49 @@ fn max_level_elapsed_from_ms(max_level_ms: Option<u64>) -> Result<Option<Duratio
     }
 }
 
+fn resolve_transfer_syntax(
+    source: &std::path::Path,
+    tile_size: u32,
+    transfer_syntax: Option<TransferSyntaxArg>,
+    level_filter: Option<u32>,
+    max_levels: Option<u32>,
+) -> Result<TransferSyntax, WsiDicomError> {
+    match transfer_syntax {
+        Some(transfer_syntax) => Ok(transfer_syntax.into_transfer_syntax()),
+        None => default_transfer_syntax_for_source(DefaultTransferSyntaxRequest {
+            source_path: source.to_path_buf(),
+            tile_size,
+            level_filter,
+            max_levels,
+        }),
+    }
+}
+
+fn resolve_corpus_transfer_syntax(
+    root: &std::path::Path,
+    tile_size: u32,
+    transfer_syntax: Option<TransferSyntaxArg>,
+    max_levels: Option<u32>,
+) -> Result<TransferSyntax, WsiDicomError> {
+    match transfer_syntax {
+        Some(transfer_syntax) => Ok(transfer_syntax.into_transfer_syntax()),
+        None if root.is_file() => {
+            default_transfer_syntax_for_source(DefaultTransferSyntaxRequest {
+                source_path: root.to_path_buf(),
+                tile_size,
+                level_filter: None,
+                max_levels,
+            })
+        }
+        None => Ok(TransferSyntax::Htj2kLosslessRpcl),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn dicom_export_options(
     tile_size: u32,
     jpeg_quality: u8,
-    transfer_syntax: TransferSyntaxArg,
+    transfer_syntax: TransferSyntax,
     j2k_decomposition_levels: Option<u8>,
     backend: BackendArg,
     codec_validation: CodecValidationArg,
@@ -666,7 +717,7 @@ fn dicom_export_options(
     let mut options = DicomExportOptions {
         tile_size,
         jpeg_quality,
-        transfer_syntax: transfer_syntax.into_transfer_syntax(),
+        transfer_syntax,
         j2k_decomposition_levels,
         encode_backend: backend.into_preference(),
         codec_validation: codec_validation.into_codec_validation(),
@@ -1358,7 +1409,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_convert_defaults_to_htj2k_lossless_rpcl() {
+    fn cli_convert_defers_transfer_syntax_when_omitted() {
         let cli =
             Cli::try_parse_from(["wsi-dicom", "convert", "source.svs", "--out", "out"]).unwrap();
 
@@ -1369,9 +1420,32 @@ mod tests {
             panic!("expected convert command");
         };
 
+        assert_eq!(transfer_syntax, None);
+    }
+
+    #[test]
+    fn cli_convert_preserves_explicit_htj2k_lossless_rpcl() {
+        let cli = Cli::try_parse_from([
+            "wsi-dicom",
+            "convert",
+            "source.svs",
+            "--out",
+            "out",
+            "--transfer-syntax",
+            "htj2k-lossless-rpcl",
+        ])
+        .unwrap();
+
+        let Command::Convert {
+            transfer_syntax, ..
+        } = cli.command
+        else {
+            panic!("expected convert command");
+        };
+
         assert!(matches!(
             transfer_syntax,
-            TransferSyntaxArg::Htj2kLosslessRpcl
+            Some(TransferSyntaxArg::Htj2kLosslessRpcl)
         ));
     }
 
