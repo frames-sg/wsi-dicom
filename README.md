@@ -125,10 +125,11 @@ state.
 
 Supported compressed export transfer syntaxes:
 
-When `--transfer-syntax` is omitted, the CLI inspects the selected source scope
-and prefers native compressed-frame passthrough: JPEG-backed sources use JPEG
-Baseline 8-bit when eligible, JPEG 2000-backed sources use general JPEG 2000
-when eligible, and other sources fall back to HTJ2K Lossless RPCL. Pass
+When `--transfer-syntax` is omitted for a single-source CLI command, the CLI
+inspects the selected source scope and prefers native compressed-frame
+passthrough: JPEG-backed sources use JPEG Baseline 8-bit when eligible, JPEG
+2000-backed sources use general JPEG 2000 when eligible, and other sources fall
+back to HTJ2K Lossless RPCL. Pass
 `--transfer-syntax htj2k-lossless-rpcl` to explicitly request HTJ2K re-encoding.
 The Rust API keeps `DicomExportOptions::default()` source-independent at
 HTJ2K Lossless RPCL; integrations that want the CLI default can call
