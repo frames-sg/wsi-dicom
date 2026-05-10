@@ -1,4 +1,5 @@
 /target
+.claude/
 bench/testdata/
 bench/results/
 bench/outputs/
