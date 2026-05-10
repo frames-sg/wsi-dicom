@@ -90,9 +90,11 @@ impl TransferSyntax {
 pub struct DicomExportOptions {
     pub tile_size: u32,
     pub transfer_syntax: TransferSyntax,
+    pub jpeg_quality: u8,
     pub encode_backend: EncodeBackendPreference,
     pub codec_validation: CodecValidation,
     pub source_device_decode: bool,
+    pub j2k_decomposition_levels: Option<u8>,
     pub gpu_encode_inflight_tiles: Option<usize>,
     pub gpu_encode_memory_mib: Option<u64>,
 }
@@ -102,9 +104,11 @@ impl Default for DicomExportOptions {
         Self {
             tile_size: 512,
             transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+            jpeg_quality: 90,
             encode_backend: EncodeBackendPreference::Auto,
             codec_validation: CodecValidation::Disabled,
             source_device_decode: false,
+            j2k_decomposition_levels: None,
             gpu_encode_inflight_tiles: None,
             gpu_encode_memory_mib: None,
         }
@@ -116,6 +120,11 @@ impl DicomExportOptions {
         if self.tile_size == 0 {
             return Err(WsiDicomError::InvalidOptions {
                 reason: "tile_size must be greater than zero".into(),
+            });
+        }
+        if !(1..=100).contains(&self.jpeg_quality) {
+            return Err(WsiDicomError::InvalidOptions {
+                reason: "jpeg_quality must be in the range 1..=100".into(),
             });
         }
         if self.gpu_encode_inflight_tiles == Some(0) {

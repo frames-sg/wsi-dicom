@@ -35,8 +35,12 @@ enum Command {
         backend: BackendArg,
         #[arg(long, default_value_t = 512)]
         tile_size: u32,
+        #[arg(long, default_value_t = 90)]
+        jpeg_quality: u8,
         #[arg(long, value_enum, default_value_t = TransferSyntaxArg::Htj2kLosslessRpcl)]
         transfer_syntax: TransferSyntaxArg,
+        #[arg(long)]
+        j2k_decomposition_levels: Option<u8>,
         #[arg(long, value_enum, default_value_t = CodecValidationArg::Disabled)]
         codec_validation: CodecValidationArg,
         #[arg(long)]
@@ -54,8 +58,12 @@ enum Command {
         backend: BackendArg,
         #[arg(long, default_value_t = 512)]
         tile_size: u32,
+        #[arg(long, default_value_t = 90)]
+        jpeg_quality: u8,
         #[arg(long, value_enum, default_value_t = TransferSyntaxArg::Htj2kLosslessRpcl)]
         transfer_syntax: TransferSyntaxArg,
+        #[arg(long)]
+        j2k_decomposition_levels: Option<u8>,
         #[arg(long, value_enum, default_value_t = CodecValidationArg::Disabled)]
         codec_validation: CodecValidationArg,
         #[arg(long, default_value_t = 0)]
@@ -75,8 +83,12 @@ enum Command {
         backend: BackendArg,
         #[arg(long, default_value_t = 512)]
         tile_size: u32,
+        #[arg(long, default_value_t = 90)]
+        jpeg_quality: u8,
         #[arg(long, value_enum, default_value_t = TransferSyntaxArg::Htj2kLosslessRpcl)]
         transfer_syntax: TransferSyntaxArg,
+        #[arg(long)]
+        j2k_decomposition_levels: Option<u8>,
         #[arg(long, value_enum, default_value_t = CodecValidationArg::Disabled)]
         codec_validation: CodecValidationArg,
         #[arg(long, default_value_t = 64)]
@@ -100,8 +112,12 @@ enum Command {
         backend: BackendArg,
         #[arg(long, default_value_t = 512)]
         tile_size: u32,
+        #[arg(long, default_value_t = 90)]
+        jpeg_quality: u8,
         #[arg(long, value_enum, default_value_t = TransferSyntaxArg::Htj2kLosslessRpcl)]
         transfer_syntax: TransferSyntaxArg,
+        #[arg(long)]
+        j2k_decomposition_levels: Option<u8>,
         #[arg(long, value_enum, default_value_t = CodecValidationArg::Disabled)]
         codec_validation: CodecValidationArg,
         #[arg(long, default_value_t = 64)]
@@ -131,8 +147,12 @@ enum Command {
         backend: BackendArg,
         #[arg(long, default_value_t = 512)]
         tile_size: u32,
+        #[arg(long, default_value_t = 90)]
+        jpeg_quality: u8,
         #[arg(long, value_enum, default_value_t = TransferSyntaxArg::Htj2kLosslessRpcl)]
         transfer_syntax: TransferSyntaxArg,
+        #[arg(long)]
+        j2k_decomposition_levels: Option<u8>,
         #[arg(long, value_enum, default_value_t = CodecValidationArg::Disabled)]
         codec_validation: CodecValidationArg,
         #[arg(long)]
@@ -154,8 +174,12 @@ enum Command {
         backend: BackendArg,
         #[arg(long, default_value_t = 512)]
         tile_size: u32,
+        #[arg(long, default_value_t = 90)]
+        jpeg_quality: u8,
         #[arg(long, value_enum, default_value_t = TransferSyntaxArg::Htj2kLosslessRpcl)]
         transfer_syntax: TransferSyntaxArg,
+        #[arg(long)]
+        j2k_decomposition_levels: Option<u8>,
         #[arg(long, value_enum, default_value_t = CodecValidationArg::Disabled)]
         codec_validation: CodecValidationArg,
         #[arg(long, default_value_t = 64)]
@@ -265,7 +289,9 @@ fn run() -> Result<(), WsiDicomError> {
             research_placeholder,
             backend,
             tile_size,
+            jpeg_quality,
             transfer_syntax,
+            j2k_decomposition_levels,
             codec_validation,
             source_device_decode,
             gpu_encode,
@@ -278,7 +304,9 @@ fn run() -> Result<(), WsiDicomError> {
                 output_dir: out,
                 options: dicom_export_options(
                     tile_size,
+                    jpeg_quality,
                     transfer_syntax,
+                    j2k_decomposition_levels,
                     backend,
                     codec_validation,
                     source_device_decode,
@@ -298,7 +326,9 @@ fn run() -> Result<(), WsiDicomError> {
             source,
             backend,
             tile_size,
+            jpeg_quality,
             transfer_syntax,
+            j2k_decomposition_levels,
             codec_validation,
             level,
             max_frames,
@@ -310,7 +340,9 @@ fn run() -> Result<(), WsiDicomError> {
                 source_path: source,
                 options: dicom_export_options(
                     tile_size,
+                    jpeg_quality,
                     transfer_syntax,
+                    j2k_decomposition_levels,
                     backend,
                     codec_validation,
                     source_device_decode,
@@ -330,7 +362,9 @@ fn run() -> Result<(), WsiDicomError> {
             source,
             backend,
             tile_size,
+            jpeg_quality,
             transfer_syntax,
+            j2k_decomposition_levels,
             codec_validation,
             max_frames_per_level,
             full_frame_coverage,
@@ -347,7 +381,9 @@ fn run() -> Result<(), WsiDicomError> {
                 source_path: source,
                 options: dicom_export_options(
                     tile_size,
+                    jpeg_quality,
                     transfer_syntax,
+                    j2k_decomposition_levels,
                     backend,
                     codec_validation,
                     source_device_decode,
@@ -369,7 +405,9 @@ fn run() -> Result<(), WsiDicomError> {
             root,
             backend,
             tile_size,
+            jpeg_quality,
             transfer_syntax,
+            j2k_decomposition_levels,
             codec_validation,
             max_frames_per_level,
             full_frame_coverage,
@@ -386,7 +424,9 @@ fn run() -> Result<(), WsiDicomError> {
                 source_root: root,
                 options: dicom_export_options(
                     tile_size,
+                    jpeg_quality,
                     transfer_syntax,
+                    j2k_decomposition_levels,
                     backend,
                     codec_validation,
                     source_device_decode,
@@ -411,7 +451,9 @@ fn run() -> Result<(), WsiDicomError> {
             research_placeholder,
             backend,
             tile_size,
+            jpeg_quality,
             transfer_syntax,
+            j2k_decomposition_levels,
             codec_validation,
             source_device_decode,
             gpu_encode,
@@ -428,7 +470,9 @@ fn run() -> Result<(), WsiDicomError> {
             let metadata = load_metadata_source(metadata, research_placeholder)?;
             let options = dicom_export_options(
                 tile_size,
+                jpeg_quality,
                 transfer_syntax,
+                j2k_decomposition_levels,
                 backend,
                 codec_validation,
                 source_device_decode,
@@ -483,7 +527,9 @@ fn run() -> Result<(), WsiDicomError> {
             source,
             backend,
             tile_size,
+            jpeg_quality,
             transfer_syntax,
+            j2k_decomposition_levels,
             codec_validation,
             max_frames_per_level,
             full_frame_coverage,
@@ -502,7 +548,9 @@ fn run() -> Result<(), WsiDicomError> {
             }
             let options = dicom_export_options(
                 tile_size,
+                jpeg_quality,
                 transfer_syntax,
+                j2k_decomposition_levels,
                 backend,
                 codec_validation,
                 source_device_decode,
@@ -604,9 +652,12 @@ fn max_level_elapsed_from_ms(max_level_ms: Option<u64>) -> Result<Option<Duratio
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dicom_export_options(
     tile_size: u32,
+    jpeg_quality: u8,
     transfer_syntax: TransferSyntaxArg,
+    j2k_decomposition_levels: Option<u8>,
     backend: BackendArg,
     codec_validation: CodecValidationArg,
     source_device_decode: bool,
@@ -614,7 +665,9 @@ fn dicom_export_options(
 ) -> DicomExportOptions {
     let mut options = DicomExportOptions {
         tile_size,
+        jpeg_quality,
         transfer_syntax: transfer_syntax.into_transfer_syntax(),
+        j2k_decomposition_levels,
         encode_backend: backend.into_preference(),
         codec_validation: codec_validation.into_codec_validation(),
         source_device_decode,
@@ -1343,6 +1396,123 @@ mod tests {
 
         assert_eq!(gpu_encode.gpu_encode_inflight_tiles, Some(8));
         assert_eq!(gpu_encode.gpu_encode_memory_mib, Some(4096));
+    }
+
+    #[test]
+    fn cli_convert_accepts_jpeg_quality_and_j2k_decomposition_levels() {
+        let cli = Cli::try_parse_from([
+            "wsi-dicom",
+            "convert",
+            "source.svs",
+            "--out",
+            "out",
+            "--jpeg-quality",
+            "80",
+            "--j2k-decomposition-levels",
+            "0",
+        ])
+        .unwrap();
+
+        let Command::Convert {
+            jpeg_quality,
+            j2k_decomposition_levels,
+            ..
+        } = cli.command
+        else {
+            panic!("expected convert command");
+        };
+
+        assert_eq!(jpeg_quality, 80);
+        assert_eq!(j2k_decomposition_levels, Some(0));
+    }
+
+    #[test]
+    fn cli_profile_coverage_and_sustain_accept_equivalence_flags() {
+        let profile = Cli::try_parse_from([
+            "wsi-dicom",
+            "profile",
+            "source.svs",
+            "--jpeg-quality",
+            "80",
+            "--j2k-decomposition-levels",
+            "0",
+        ])
+        .unwrap();
+        let Command::Profile {
+            jpeg_quality,
+            j2k_decomposition_levels,
+            ..
+        } = profile.command
+        else {
+            panic!("expected profile command");
+        };
+        assert_eq!(jpeg_quality, 80);
+        assert_eq!(j2k_decomposition_levels, Some(0));
+
+        let coverage = Cli::try_parse_from([
+            "wsi-dicom",
+            "coverage",
+            "source.svs",
+            "--jpeg-quality",
+            "80",
+            "--j2k-decomposition-levels",
+            "0",
+        ])
+        .unwrap();
+        let Command::Coverage {
+            jpeg_quality,
+            j2k_decomposition_levels,
+            ..
+        } = coverage.command
+        else {
+            panic!("expected coverage command");
+        };
+        assert_eq!(jpeg_quality, 80);
+        assert_eq!(j2k_decomposition_levels, Some(0));
+
+        let sustain_convert = Cli::try_parse_from([
+            "wsi-dicom",
+            "sustain-convert",
+            "source.svs",
+            "--out",
+            "out",
+            "--jpeg-quality",
+            "80",
+            "--j2k-decomposition-levels",
+            "0",
+        ])
+        .unwrap();
+        let Command::SustainConvert {
+            jpeg_quality,
+            j2k_decomposition_levels,
+            ..
+        } = sustain_convert.command
+        else {
+            panic!("expected sustain-convert command");
+        };
+        assert_eq!(jpeg_quality, 80);
+        assert_eq!(j2k_decomposition_levels, Some(0));
+
+        let sustain = Cli::try_parse_from([
+            "wsi-dicom",
+            "sustain",
+            "source.svs",
+            "--jpeg-quality",
+            "80",
+            "--j2k-decomposition-levels",
+            "0",
+        ])
+        .unwrap();
+        let Command::Sustain {
+            jpeg_quality,
+            j2k_decomposition_levels,
+            ..
+        } = sustain.command
+        else {
+            panic!("expected sustain command");
+        };
+        assert_eq!(jpeg_quality, 80);
+        assert_eq!(j2k_decomposition_levels, Some(0));
     }
 
     #[test]

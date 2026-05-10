@@ -12,6 +12,8 @@ pub(crate) struct DicomJ2kEncoder {
     preference: EncodeBackendPreference,
     transfer_syntax: TransferSyntax,
     codec_validation: CodecValidation,
+    j2k_decomposition_levels: Option<u8>,
+    reversible_transform: ReversibleTransform,
     gpu_encode_inflight_tiles: Option<usize>,
     gpu_encode_memory_mib: Option<u64>,
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -119,6 +121,8 @@ impl DicomJ2kEncoder {
             preference,
             transfer_syntax,
             codec_validation,
+            j2k_decomposition_levels: None,
+            reversible_transform: ReversibleTransform::Rct53,
             gpu_encode_inflight_tiles: None,
             gpu_encode_memory_mib: None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -140,6 +144,18 @@ impl DicomJ2kEncoder {
         self
     }
 
+    pub(crate) fn with_j2k_decomposition_levels(
+        mut self,
+        j2k_decomposition_levels: Option<u8>,
+    ) -> Self {
+        self.j2k_decomposition_levels = j2k_decomposition_levels;
+        self
+    }
+
+    pub(crate) fn set_reversible_transform(&mut self, reversible_transform: ReversibleTransform) {
+        self.reversible_transform = reversible_transform;
+    }
+
     #[cfg(all(feature = "metal", target_os = "macos"))]
     pub(crate) fn cpu_only_peer(&self) -> Self {
         self.peer_with_preference(EncodeBackendPreference::CpuOnly)
@@ -153,7 +169,15 @@ impl DicomJ2kEncoder {
     #[cfg(all(feature = "metal", target_os = "macos"))]
     fn peer_with_preference(&self, preference: EncodeBackendPreference) -> Self {
         Self::new(preference, self.transfer_syntax, self.codec_validation)
+            .with_j2k_decomposition_levels(self.j2k_decomposition_levels)
+            .with_reversible_transform(self.reversible_transform)
             .with_gpu_encode_tuning(self.gpu_encode_inflight_tiles, self.gpu_encode_memory_mib)
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn with_reversible_transform(mut self, reversible_transform: ReversibleTransform) -> Self {
+        self.reversible_transform = reversible_transform;
+        self
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -173,7 +197,13 @@ impl DicomJ2kEncoder {
         samples: J2kLosslessSamples<'_>,
     ) -> Result<EncodedDicomJ2kFrame, WsiDicomError> {
         if self.preference == EncodeBackendPreference::CpuOnly {
-            return encode_lossless_cpu(samples, self.transfer_syntax, self.codec_validation);
+            return encode_lossless_cpu(
+                samples,
+                self.transfer_syntax,
+                self.codec_validation,
+                self.j2k_decomposition_levels,
+                self.reversible_transform,
+            );
         }
 
         match self.try_device(samples)? {
@@ -185,14 +215,31 @@ impl DicomJ2kEncoder {
                             .into(),
                 })
             }
-            None => encode_lossless_cpu(samples, self.transfer_syntax, self.codec_validation),
+            None => encode_lossless_cpu(
+                samples,
+                self.transfer_syntax,
+                self.codec_validation,
+                self.j2k_decomposition_levels,
+                self.reversible_transform,
+            ),
         }
     }
 
     #[allow(dead_code)]
-    pub(crate) fn cpu_batch_settings(&self) -> Option<(TransferSyntax, CodecValidation)> {
-        (self.preference == EncodeBackendPreference::CpuOnly)
-            .then_some((self.transfer_syntax, self.codec_validation))
+    pub(crate) fn cpu_batch_settings(
+        &self,
+    ) -> Option<(
+        TransferSyntax,
+        CodecValidation,
+        Option<u8>,
+        ReversibleTransform,
+    )> {
+        (self.preference == EncodeBackendPreference::CpuOnly).then_some((
+            self.transfer_syntax,
+            self.codec_validation,
+            self.j2k_decomposition_levels,
+            self.reversible_transform,
+        ))
     }
 
     fn try_device(
@@ -222,6 +269,8 @@ impl DicomJ2kEncoder {
             BackendKind::Metal,
             accelerator,
             J2kEncodeValidation::External,
+            self.j2k_decomposition_levels,
+            self.reversible_transform,
         )?;
         let encode_duration = encode_started.elapsed();
         let mut validation_duration = Duration::ZERO;
@@ -268,6 +317,7 @@ impl DicomJ2kEncoder {
             BackendKind::Cuda,
             accelerator,
             self.codec_validation.to_j2k_validation(),
+            self.j2k_decomposition_levels,
         )?;
         let encode_duration = started.elapsed();
         Ok(encoded.map(|codestream| EncodedDicomJ2kFrame {
@@ -307,6 +357,8 @@ impl DicomJ2kEncoder {
             self.transfer_syntax,
             EncodeBackendPreference::PreferDevice,
             self.codec_validation,
+            self.j2k_decomposition_levels,
+            self.reversible_transform,
         )?;
         let mut encoded = Vec::with_capacity(tiles.len());
         let mut gpu_encode_stats = DicomJ2kGpuEncodeBatchStats::default();
@@ -494,6 +546,8 @@ pub(crate) fn encode_lossless_cpu(
     samples: J2kLosslessSamples<'_>,
     transfer_syntax: TransferSyntax,
     codec_validation: CodecValidation,
+    j2k_decomposition_levels: Option<u8>,
+    reversible_transform: ReversibleTransform,
 ) -> Result<EncodedDicomJ2kFrame, WsiDicomError> {
     let started = Instant::now();
     encode_j2k_lossless(
@@ -502,6 +556,8 @@ pub(crate) fn encode_lossless_cpu(
             transfer_syntax,
             EncodeBackendPreference::CpuOnly,
             codec_validation,
+            j2k_decomposition_levels,
+            reversible_transform,
         )?,
     )
     .map(|encoded| {
@@ -541,6 +597,8 @@ fn encode_j2k_lossless_with_device_accelerator(
     backend: BackendKind,
     accelerator: &mut impl J2kEncodeStageAccelerator,
     validation: J2kEncodeValidation,
+    j2k_decomposition_levels: Option<u8>,
+    reversible_transform: ReversibleTransform,
 ) -> Result<Option<Vec<u8>>, WsiDicomError> {
     let encoded = encode_j2k_lossless_with_accelerator(
         samples,
@@ -550,6 +608,8 @@ fn encode_j2k_lossless_with_device_accelerator(
                 transfer_syntax,
                 EncodeBackendPreference::PreferDevice,
                 CodecValidation::RoundTrip,
+                j2k_decomposition_levels,
+                reversible_transform,
             )?
         },
         backend,
@@ -565,6 +625,8 @@ fn lossless_encode_options(
     transfer_syntax: TransferSyntax,
     backend: EncodeBackendPreference,
     codec_validation: CodecValidation,
+    j2k_decomposition_levels: Option<u8>,
+    reversible_transform: ReversibleTransform,
 ) -> Result<J2kLosslessEncodeOptions, WsiDicomError> {
     let (block_coding_mode, progression) = match transfer_syntax {
         TransferSyntax::Jpeg2000Lossless => {
@@ -591,8 +653,8 @@ fn lossless_encode_options(
         backend: backend.to_signinum(),
         block_coding_mode,
         progression,
-        max_decomposition_levels: Some(1),
-        reversible_transform: ReversibleTransform::Rct53,
+        max_decomposition_levels: j2k_decomposition_levels,
+        reversible_transform,
         validation: codec_validation.to_j2k_validation(),
     })
 }

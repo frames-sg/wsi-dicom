@@ -1,1 +1,12 @@
 /target
+bench/testdata/
+bench/results/
+bench/outputs/
+__pycache__/
+*.py[cod]
+paper/
+papers/
+docs/papers/
+docs/benchmarks/paper/
+*.docx
+*.pptx

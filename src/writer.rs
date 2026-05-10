@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use dicom_core::value::DataSetSequence;
@@ -458,15 +458,8 @@ impl PixelDataSpool {
         let raw_len = u64::try_from(codestream.len()).map_err(|_| WsiDicomError::Unsupported {
             reason: "encoded frame length exceeds u64".into(),
         })?;
-        let padded_len =
-            raw_len
-                .checked_add(raw_len % 2)
-                .ok_or_else(|| WsiDicomError::Unsupported {
-                    reason: "encoded frame padded length overflow".into(),
-                })?;
-        let padded_len_u32 = u32::try_from(padded_len).map_err(|_| WsiDicomError::Unsupported {
-            reason: "encoded frame exceeds DICOM fragment item length limit".into(),
-        })?;
+        let padded_len_u32 = padded_fragment_len(raw_len)?;
+        let padded_len = u64::from(padded_len_u32);
         let spool_offset = self
             .file
             .stream_position()
@@ -519,6 +512,58 @@ impl Drop for PixelDataSpool {
     }
 }
 
+pub(crate) fn pixel_data_offsets_from_lengths(lengths: &[u64]) -> Result<Vec<u64>, WsiDicomError> {
+    let mut offsets = Vec::with_capacity(lengths.len());
+    let mut next_extended_offset = 0u64;
+    for &raw_len in lengths {
+        let padded_len = u64::from(padded_fragment_len(raw_len)?);
+        offsets.push(next_extended_offset);
+        next_extended_offset = next_extended_offset
+            .checked_add(8)
+            .and_then(|offset| offset.checked_add(padded_len))
+            .ok_or_else(|| WsiDicomError::Unsupported {
+                reason: "extended offset table overflow".into(),
+            })?;
+    }
+    Ok(offsets)
+}
+
+pub(crate) fn write_dicom_object_with_direct_pixel_data(
+    path: &Path,
+    object: InMemDicomObject,
+    meta: FileMetaTableBuilder,
+    lengths: &[u64],
+    write_frame: impl FnMut(usize, &mut dyn Write) -> io::Result<()>,
+) -> Result<(), WsiDicomError> {
+    let file = File::create(path).map_err(|source| WsiDicomError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut file = BufWriter::new(file);
+    object
+        .with_meta(meta)
+        .map_err(|err| WsiDicomError::DicomWrite {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?
+        .write_all(&mut file)
+        .map_err(|err| WsiDicomError::DicomWrite {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?;
+    write_encapsulated_pixel_data_from_frames(&mut file, lengths, write_frame).map_err(
+        |source| WsiDicomError::Io {
+            path: path.to_path_buf(),
+            source,
+        },
+    )?;
+    file.flush().map_err(|source| WsiDicomError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(())
+}
+
 pub(crate) fn write_dicom_object_with_spooled_pixel_data(
     path: &Path,
     object: InMemDicomObject,
@@ -537,10 +582,11 @@ pub(crate) fn write_dicom_object_with_spooled_pixel_data(
             source,
         })?;
 
-    let mut file = File::create(path).map_err(|source| WsiDicomError::Io {
+    let file = File::create(path).map_err(|source| WsiDicomError::Io {
         path: path.to_path_buf(),
         source,
     })?;
+    let mut file = BufWriter::new(file);
     object
         .with_meta(meta)
         .map_err(|err| WsiDicomError::DicomWrite {
@@ -564,6 +610,40 @@ pub(crate) fn write_dicom_object_with_spooled_pixel_data(
     Ok(())
 }
 
+pub(crate) fn write_encapsulated_pixel_data_from_frames(
+    output: &mut impl Write,
+    lengths: &[u64],
+    mut write_frame: impl FnMut(usize, &mut dyn Write) -> io::Result<()>,
+) -> io::Result<()> {
+    write_tag(output, 0x7FE0, 0x0010)?;
+    output.write_all(b"OB")?;
+    output.write_all(&[0, 0])?;
+    output.write_all(&u32::MAX.to_le_bytes())?;
+    write_item_header(output, 0)?;
+    for (idx, &raw_len) in lengths.iter().enumerate() {
+        let padded_len = padded_fragment_len_io(raw_len)?;
+        write_item_header(output, padded_len)?;
+        {
+            let mut limited = LimitedFragmentWriter {
+                inner: output,
+                remaining: raw_len,
+            };
+            write_frame(idx, &mut limited)?;
+            if limited.remaining != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "direct PixelData frame ended before declared length",
+                ));
+            }
+        }
+        if raw_len % 2 != 0 {
+            output.write_all(&[0])?;
+        }
+    }
+    write_tag(output, 0xFFFE, 0xE0DD)?;
+    output.write_all(&0u32.to_le_bytes())
+}
+
 pub(crate) fn write_encapsulated_pixel_data_from_spool(
     output: &mut impl Write,
     spool: &mut (impl Read + Seek),
@@ -574,8 +654,22 @@ pub(crate) fn write_encapsulated_pixel_data_from_spool(
     output.write_all(&[0, 0])?;
     output.write_all(&u32::MAX.to_le_bytes())?;
     write_item_header(output, 0)?;
+    let mut current_offset = 0u64;
     for fragment in fragments {
-        spool.seek(SeekFrom::Start(fragment.spool_offset))?;
+        if fragment.spool_offset < current_offset {
+            spool.seek(SeekFrom::Start(fragment.spool_offset))?;
+            current_offset = fragment.spool_offset;
+        } else if fragment.spool_offset > current_offset {
+            let gap = fragment.spool_offset - current_offset;
+            let skipped = std::io::copy(&mut spool.by_ref().take(gap), &mut std::io::sink())?;
+            if skipped != gap {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "spooled PixelData gap ended before next fragment",
+                ));
+            }
+            current_offset = fragment.spool_offset;
+        }
         write_item_header(output, fragment.padded_len)?;
         let mut limited = spool.by_ref().take(u64::from(fragment.padded_len));
         let copied = std::io::copy(&mut limited, output)?;
@@ -585,9 +679,64 @@ pub(crate) fn write_encapsulated_pixel_data_from_spool(
                 "spooled PixelData fragment ended before padded length",
             ));
         }
+        current_offset = current_offset
+            .checked_add(u64::from(fragment.padded_len))
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "spooled PixelData fragment offset overflow",
+                )
+            })?;
     }
     write_tag(output, 0xFFFE, 0xE0DD)?;
     output.write_all(&0u32.to_le_bytes())
+}
+
+struct LimitedFragmentWriter<'a, W: Write + ?Sized> {
+    inner: &'a mut W,
+    remaining: u64,
+}
+
+impl<W: Write + ?Sized> Write for LimitedFragmentWriter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if u64::try_from(buf.len()).unwrap_or(u64::MAX) > self.remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "direct PixelData frame exceeded declared length",
+            ));
+        }
+        let written = self.inner.write(buf)?;
+        self.remaining = self
+            .remaining
+            .checked_sub(u64::try_from(written).unwrap_or(u64::MAX))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "direct PixelData frame length accounting underflowed",
+                )
+            })?;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn padded_fragment_len(raw_len: u64) -> Result<u32, WsiDicomError> {
+    let padded_len =
+        raw_len
+            .checked_add(raw_len % 2)
+            .ok_or_else(|| WsiDicomError::Unsupported {
+                reason: "encoded frame padded length overflow".into(),
+            })?;
+    u32::try_from(padded_len).map_err(|_| WsiDicomError::Unsupported {
+        reason: "encoded frame exceeds DICOM fragment item length limit".into(),
+    })
+}
+
+fn padded_fragment_len_io(raw_len: u64) -> io::Result<u32> {
+    padded_fragment_len(raw_len).map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))
 }
 
 fn write_item_header(output: &mut impl Write, length: u32) -> std::io::Result<()> {
@@ -949,12 +1098,15 @@ fn format_ds(value: f64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_ds, write_encapsulated_pixel_data_from_spool, SpooledPixelDataFragment};
+    use super::{
+        format_ds, write_encapsulated_pixel_data_from_frames,
+        write_encapsulated_pixel_data_from_spool, SpooledPixelDataFragment,
+    };
     use crate::{tile::PixelProfile, DicomMetadata};
     use dicom_core::Tag;
     use dicom_dictionary_std::tags;
     use dicom_object::InMemDicomObject;
-    use std::io::Write;
+    use std::io::{Read, Seek, SeekFrom, Write};
 
     #[test]
     fn spooled_pixel_data_writer_appends_encapsulated_fragments_with_padding() {
@@ -988,6 +1140,63 @@ mod tests {
                 0xE0, 0x00, 0x00, 0x00, 0x00,
             ]
         );
+    }
+
+    #[test]
+    fn spooled_pixel_data_writer_reads_fragments_sequentially() {
+        let mut spool = SeekCountingReader::new(vec![1, 2, 3, 0, 4, 5]);
+        let fragments = [
+            SpooledPixelDataFragment {
+                spool_offset: 0,
+                padded_len: 4,
+            },
+            SpooledPixelDataFragment {
+                spool_offset: 4,
+                padded_len: 2,
+            },
+        ];
+        let mut out = Vec::new();
+
+        write_encapsulated_pixel_data_from_spool(&mut out, &mut spool, &fragments).unwrap();
+
+        assert_eq!(spool.seek_count, 0);
+        assert!(out.ends_with(&[0xFE, 0xFF, 0xDD, 0xE0, 0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn direct_pixel_data_writer_matches_spooled_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spool_path = tmp.path().join("frames.bin");
+        let mut spool = std::fs::File::create(&spool_path).unwrap();
+        spool.write_all(&[1, 2, 3, 0, 4, 5]).unwrap();
+        drop(spool);
+
+        let mut spool = std::fs::File::open(&spool_path).unwrap();
+        let fragments = [
+            SpooledPixelDataFragment {
+                spool_offset: 0,
+                padded_len: 4,
+            },
+            SpooledPixelDataFragment {
+                spool_offset: 4,
+                padded_len: 2,
+            },
+        ];
+        let mut spooled = Vec::new();
+        write_encapsulated_pixel_data_from_spool(&mut spooled, &mut spool, &fragments).unwrap();
+
+        let frames = [vec![1, 2, 3], vec![4, 5]];
+        let lengths = frames
+            .iter()
+            .map(|frame| frame.len() as u64)
+            .collect::<Vec<_>>();
+        let mut direct = Vec::new();
+        write_encapsulated_pixel_data_from_frames(&mut direct, &lengths, |idx, output| {
+            output.write_all(&frames[idx])
+        })
+        .unwrap();
+
+        assert_eq!(direct, spooled);
     }
 
     #[test]
@@ -1631,5 +1840,32 @@ mod tests {
                 .as_ref(),
             dimension_uid
         );
+    }
+
+    struct SeekCountingReader {
+        inner: std::io::Cursor<Vec<u8>>,
+        seek_count: usize,
+    }
+
+    impl SeekCountingReader {
+        fn new(data: Vec<u8>) -> Self {
+            Self {
+                inner: std::io::Cursor::new(data),
+                seek_count: 0,
+            }
+        }
+    }
+
+    impl Read for SeekCountingReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.inner.read(buf)
+        }
+    }
+
+    impl Seek for SeekCountingReader {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.seek_count += 1;
+            self.inner.seek(pos)
+        }
     }
 }
