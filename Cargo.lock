@@ -1142,7 +1142,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "signinum-core",
  "signinum-j2k-native",
@@ -1151,7 +1151,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k-cuda"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "signinum-core",
  "signinum-cuda-runtime",
@@ -1162,7 +1162,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k-metal"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "libc",
  "metal",
@@ -1175,7 +1175,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k-native"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "fearless_simd",
  "libm",
@@ -1184,7 +1184,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-jpeg"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "memchr",
  "rayon",
@@ -1194,7 +1194,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-jpeg-metal"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "metal",
  "signinum-core",
@@ -1711,7 +1711,7 @@ dependencies = [
 
 [[package]]
 name = "wsi-dicom"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "clap",
  "dicom-core",
