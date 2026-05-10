@@ -3,6 +3,7 @@
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use std::sync::{Mutex, OnceLock};
@@ -16,10 +17,8 @@ use signinum_core::PixelFormat as SigninumPixelFormat;
 use signinum_core::{
     Colorspace, CompressedPayloadKind, CompressedTransferSyntax, PassthroughRequirements,
 };
-use signinum_j2k::{J2kLosslessSamples, J2kView};
-use signinum_jpeg::{
-    encode_jpeg_baseline, EncodedJpeg, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
-};
+use signinum_j2k::{J2kLosslessSamples, J2kView, ReversibleTransform};
+use signinum_jpeg::{EncodedJpeg, JpegBackend, JpegSamples, JpegSubsampling};
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use signinum_jpeg_metal::{
     encode_jpeg_baseline_batch_from_metal_buffers, JpegBaselineMetalEncodeTile,
@@ -50,8 +49,8 @@ use tile::pixel_profile_from_device_format;
 use tile::{optical_path_groups, prepare_tile_samples, PixelProfile};
 use uid::{deterministic_instance_path, uid_from_seed};
 use writer::{
-    build_dicom_object, write_dicom_object_with_spooled_pixel_data, LossyCompressionMetadata,
-    PixelDataSpool,
+    build_dicom_object, pixel_data_offsets_from_lengths, write_dicom_object_with_direct_pixel_data,
+    write_dicom_object_with_spooled_pixel_data, LossyCompressionMetadata, PixelDataSpool,
 };
 
 pub(crate) const VL_WSI_SOP_CLASS_UID: &str = "1.2.840.10008.5.1.4.1.1.77.1.6";
@@ -66,6 +65,8 @@ const STATUMEN_JP2K_DEVICE_DECODE_ENV: &str = "STATUMEN_JP2K_DEVICE_DECODE";
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 const WSI_DICOM_AUTO_ROUTE_CACHE_ENV: &str = "WSI_DICOM_AUTO_ROUTE_CACHE";
+
+const DIRECT_JPEG_PASSTHROUGH_WRITE_CHUNK_FRAMES: usize = 2048;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 const LOSSLESS_J2K_AUTO_ROUTE_PROBE_MAX_FRAMES: usize = 4;
@@ -1125,6 +1126,129 @@ fn j2k_route_tile_size(
     Ok(options.tile_size)
 }
 
+fn j2k_encode_transfer_syntax(transfer_syntax: TransferSyntax) -> TransferSyntax {
+    if transfer_syntax == TransferSyntax::Jpeg2000 {
+        TransferSyntax::Jpeg2000Lossless
+    } else {
+        transfer_syntax
+    }
+}
+
+fn j2k_encode_backend(
+    transfer_syntax: TransferSyntax,
+    requested_backend: EncodeBackendPreference,
+) -> EncodeBackendPreference {
+    if transfer_syntax == TransferSyntax::Jpeg2000 {
+        EncodeBackendPreference::CpuOnly
+    } else {
+        requested_backend
+    }
+}
+
+fn j2k_edge_fallback_allowed(
+    planned: &LosslessJ2kPlannedFrame,
+    transfer_syntax: TransferSyntax,
+    tile_size: u32,
+) -> bool {
+    transfer_syntax == TransferSyntax::Jpeg2000
+        && planned.source_j2k_syntax.is_some()
+        && planned.source_j2k_dimensions == Some((planned.width, planned.height))
+        && (planned.width < tile_size || planned.height < tile_size)
+}
+
+fn j2k_non_passthrough_encode_allowed(
+    planned: &LosslessJ2kPlannedFrame,
+    transfer_syntax: TransferSyntax,
+    tile_size: u32,
+) -> bool {
+    planned.passthrough.is_none()
+        && (!transfer_syntax.is_jpeg2000_passthrough_only()
+            || j2k_edge_fallback_allowed(planned, transfer_syntax, tile_size))
+}
+
+fn j2k_fallback_profile(
+    planned: &LosslessJ2kPlannedFrame,
+    encoded_profile: PixelProfile,
+    transfer_syntax: TransferSyntax,
+) -> PixelProfile {
+    if transfer_syntax == TransferSyntax::Jpeg2000 {
+        if let Some(source_profile) = j2k_lossless_fallback_source_profile(planned, encoded_profile)
+        {
+            return source_profile;
+        }
+    }
+    let profile = encoded_profile;
+    j2k_encoded_lossless_profile(profile, transfer_syntax)
+}
+
+fn j2k_fallback_reversible_transform(
+    planned: &LosslessJ2kPlannedFrame,
+    transfer_syntax: TransferSyntax,
+) -> ReversibleTransform {
+    if transfer_syntax == TransferSyntax::Jpeg2000
+        && planned.source_j2k_profile.is_some_and(|profile| {
+            profile.components == 3 && profile.photometric_interpretation == "RGB"
+        })
+    {
+        ReversibleTransform::None53
+    } else {
+        ReversibleTransform::Rct53
+    }
+}
+
+fn j2k_lossless_fallback_source_profile(
+    planned: &LosslessJ2kPlannedFrame,
+    encoded_profile: PixelProfile,
+) -> Option<PixelProfile> {
+    planned.source_j2k_profile.filter(|source_profile| {
+        source_profile.components == encoded_profile.components
+            && source_profile.bits_allocated == encoded_profile.bits_allocated
+            && matches!(source_profile.photometric_interpretation, "RGB" | "YBR_RCT")
+    })
+}
+
+fn j2k_encoded_lossless_profile(
+    profile: PixelProfile,
+    transfer_syntax: TransferSyntax,
+) -> PixelProfile {
+    if matches!(
+        transfer_syntax,
+        TransferSyntax::Jpeg2000
+            | TransferSyntax::Jpeg2000Lossless
+            | TransferSyntax::Htj2kLossless
+            | TransferSyntax::Htj2kLosslessRpcl
+    ) && profile.components == 3
+    {
+        PixelProfile {
+            components: profile.components,
+            bits_allocated: profile.bits_allocated,
+            photometric_interpretation: "YBR_RCT",
+        }
+    } else {
+        profile
+    }
+}
+
+fn reject_lossy_j2k_lossless_fallback(
+    planned: &LosslessJ2kPlannedFrame,
+    transfer_syntax: TransferSyntax,
+    row: u64,
+) -> Result<(), WsiDicomError> {
+    if transfer_syntax == TransferSyntax::Jpeg2000Lossless
+        && planned
+            .source_j2k_syntax
+            .is_some_and(|syntax| !syntax.is_lossless())
+    {
+        return Err(WsiDicomError::Unsupported {
+            reason: format!(
+                "JPEG 2000 Lossless export cannot losslessly fall back from lossy source frame row={} col={}",
+                row, planned.col
+            ),
+        });
+    }
+    Ok(())
+}
+
 #[cfg(all(feature = "metal", target_os = "macos"))]
 fn transfer_syntax_from_uid(uid: &str) -> Option<TransferSyntax> {
     [
@@ -1200,6 +1324,40 @@ fn j2k_passthrough_frame(
         },
         transfer_syntax: passthrough_syntax,
     }))
+}
+
+fn j2k_raw_frame_syntax_and_profile(
+    raw: &RawCompressedTile,
+) -> (Option<CompressedTransferSyntax>, Option<PixelProfile>) {
+    if !matches!(
+        raw.compression,
+        Compression::Jp2kRgb | Compression::Jp2kYcbcr
+    ) {
+        return (None, None);
+    }
+    let Ok(view) = J2kView::parse(&raw.data) else {
+        return (None, None);
+    };
+    let Some(candidate) = view.passthrough_candidate() else {
+        return (None, None);
+    };
+    let syntax = candidate.transfer_syntax();
+    if raw.bits_allocated > u8::MAX as u16 || raw.samples_per_pixel > u8::MAX as u16 {
+        return (Some(syntax), None);
+    }
+    let Some(photometric_interpretation) =
+        j2k_passthrough_photometric_interpretation(raw.photometric_interpretation, view.info())
+    else {
+        return (Some(syntax), None);
+    };
+    (
+        Some(syntax),
+        Some(PixelProfile {
+            components: raw.samples_per_pixel as u8,
+            bits_allocated: raw.bits_allocated,
+            photometric_interpretation,
+        }),
+    )
 }
 
 fn j2k_passthrough_photometric_interpretation(
@@ -1873,6 +2031,9 @@ struct LosslessJ2kPlannedFrame {
     y: u64,
     width: u32,
     height: u32,
+    source_j2k_dimensions: Option<(u32, u32)>,
+    source_j2k_syntax: Option<CompressedTransferSyntax>,
+    source_j2k_profile: Option<PixelProfile>,
     passthrough: Option<J2kPassthroughFrame>,
 }
 
@@ -1881,6 +2042,8 @@ struct LosslessJ2kPlannedFrame {
 struct LosslessJ2kCpuBatchSettings {
     transfer_syntax: TransferSyntax,
     codec_validation: CodecValidation,
+    j2k_decomposition_levels: Option<u8>,
+    reversible_transform: ReversibleTransform,
 }
 
 #[allow(dead_code)]
@@ -1966,28 +2129,42 @@ fn plan_lossless_j2k_row(
                 })?;
         let width = (matrix_columns - x).min(u64::from(tile_size)) as u32;
         let height = (matrix_rows - y).min(u64::from(tile_size)) as u32;
-        let passthrough = if allow_passthrough_probe {
-            let tile_request = TileRequest {
-                scene: scene_idx,
-                series: series_idx,
-                level: level_idx,
-                plane: PlaneSelection { z, c, t },
-                col: col_i64,
-                row: row_i64,
+        let (source_j2k_dimensions, source_j2k_syntax, source_j2k_profile, passthrough) =
+            if allow_passthrough_probe {
+                let tile_request = TileRequest {
+                    scene: scene_idx,
+                    series: series_idx,
+                    level: level_idx,
+                    plane: PlaneSelection { z, c, t },
+                    col: col_i64,
+                    row: row_i64,
+                };
+                match slide.read_raw_compressed_tile(&tile_request) {
+                    Ok(raw) => {
+                        let source_j2k_dimensions = Some((raw.width, raw.height));
+                        let (source_j2k_syntax, source_j2k_profile) =
+                            j2k_raw_frame_syntax_and_profile(&raw);
+                        (
+                            source_j2k_dimensions,
+                            source_j2k_syntax,
+                            source_j2k_profile,
+                            j2k_passthrough_frame(raw, tile_size, tile_size, transfer_syntax)?,
+                        )
+                    }
+                    Err(_) => (None, None, None, None),
+                }
+            } else {
+                (None, None, None, None)
             };
-            match slide.read_raw_compressed_tile(&tile_request) {
-                Ok(raw) => j2k_passthrough_frame(raw, tile_size, tile_size, transfer_syntax)?,
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
         planned.push(LosslessJ2kPlannedFrame {
             col,
             x,
             y,
             width,
             height,
+            source_j2k_dimensions,
+            source_j2k_syntax,
+            source_j2k_profile,
             passthrough,
         });
     }
@@ -2020,10 +2197,11 @@ fn profile_lossless_j2k_routes(
             reason: "route profile frame count exceeds platform addressable memory".into(),
         })?;
     let mut j2k_encoder = DicomJ2kEncoder::new(
-        options.encode_backend,
-        options.transfer_syntax,
+        j2k_encode_backend(options.transfer_syntax, options.encode_backend),
+        j2k_encode_transfer_syntax(options.transfer_syntax),
         options.codec_validation,
     )
+    .with_j2k_decomposition_levels(options.j2k_decomposition_levels)
     .with_gpu_encode_tuning(
         options.gpu_encode_inflight_tiles,
         options.gpu_encode_memory_mib,
@@ -2200,14 +2378,24 @@ fn profile_lossless_j2k_routes(
             }
             let mut cpu_batch_results: Vec<Option<LosslessJ2kCpuBatchOutcome>> =
                 (0..planned.len()).map(|_| None).collect();
-            if let Some((transfer_syntax, codec_validation)) = j2k_encoder.cpu_batch_settings() {
+            if let Some((
+                transfer_syntax,
+                codec_validation,
+                j2k_decomposition_levels,
+                reversible_transform,
+            )) = (options.transfer_syntax != TransferSyntax::Jpeg2000)
+                .then(|| j2k_encoder.cpu_batch_settings())
+                .flatten()
+            {
                 let cpu_indices = planned
                     .iter()
                     .enumerate()
                     .filter_map(|(idx, planned_frame)| {
-                        (planned_frame.passthrough.is_none()
-                            && !options.transfer_syntax.is_jpeg2000_passthrough_only()
-                            && routed_tiles[idx].is_none())
+                        (j2k_non_passthrough_encode_allowed(
+                            planned_frame,
+                            options.transfer_syntax,
+                            tile_size,
+                        ) && routed_tiles[idx].is_none())
                         .then_some(idx)
                     })
                     .collect::<Vec<_>>();
@@ -2216,6 +2404,8 @@ fn profile_lossless_j2k_routes(
                     LosslessJ2kCpuBatchSettings {
                         transfer_syntax,
                         codec_validation,
+                        j2k_decomposition_levels,
+                        reversible_transform,
                     },
                     0,
                     0,
@@ -2231,7 +2421,12 @@ fn profile_lossless_j2k_routes(
                 }
             }
             for (idx, planned_frame) in planned.into_iter().enumerate() {
-                if let Some(passthrough) = planned_frame.passthrough {
+                let encode_allowed = j2k_non_passthrough_encode_allowed(
+                    &planned_frame,
+                    options.transfer_syntax,
+                    tile_size,
+                );
+                if let Some(passthrough) = planned_frame.passthrough.as_ref() {
                     let profile = passthrough.profile;
                     if let Some(existing) = pixel_profile {
                         if existing != profile {
@@ -2249,11 +2444,12 @@ fn profile_lossless_j2k_routes(
                     remaining = remaining.saturating_sub(1);
                     continue;
                 }
-                if options.transfer_syntax.is_jpeg2000_passthrough_only() {
+                if !encode_allowed {
                     metrics.record_j2k_passthrough_only_fallback_classification();
                     remaining = remaining.saturating_sub(1);
                     continue;
                 }
+                reject_lossy_j2k_lossless_fallback(&planned_frame, options.transfer_syntax, row)?;
 
                 let routed_encoded = routed_tiles[idx].take();
                 let (encoded, profile, used_gpu_input, input_decode_duration, compose_duration) =
@@ -2278,6 +2474,12 @@ fn profile_lossless_j2k_routes(
                             )
                         }
                         None => {
+                            j2k_encoder.set_reversible_transform(
+                                j2k_fallback_reversible_transform(
+                                    &planned_frame,
+                                    options.transfer_syntax,
+                                ),
+                            );
                             let (encoded, profile, input_decode_duration, compose_duration) =
                                 encode_cpu_input_tile(
                                     slide,
@@ -2305,6 +2507,8 @@ fn profile_lossless_j2k_routes(
                             )
                         }
                     };
+                let profile =
+                    j2k_fallback_profile(&planned_frame, profile, options.transfer_syntax);
                 if used_gpu_input {
                     metrics.record_gpu_input();
                 } else {
@@ -2335,13 +2539,24 @@ fn profile_lossless_j2k_routes(
         {
             let mut cpu_batch_results: Vec<Option<LosslessJ2kCpuBatchOutcome>> =
                 (0..planned.len()).map(|_| None).collect();
-            if let Some((transfer_syntax, codec_validation)) = j2k_encoder.cpu_batch_settings() {
+            if let Some((
+                transfer_syntax,
+                codec_validation,
+                j2k_decomposition_levels,
+                reversible_transform,
+            )) = (options.transfer_syntax != TransferSyntax::Jpeg2000)
+                .then(|| j2k_encoder.cpu_batch_settings())
+                .flatten()
+            {
                 let cpu_indices = planned
                     .iter()
                     .enumerate()
                     .filter_map(|(idx, planned_frame)| {
-                        (planned_frame.passthrough.is_none()
-                            && !options.transfer_syntax.is_jpeg2000_passthrough_only())
+                        j2k_non_passthrough_encode_allowed(
+                            planned_frame,
+                            options.transfer_syntax,
+                            tile_size,
+                        )
                         .then_some(idx)
                     })
                     .collect::<Vec<_>>();
@@ -2350,6 +2565,8 @@ fn profile_lossless_j2k_routes(
                     LosslessJ2kCpuBatchSettings {
                         transfer_syntax,
                         codec_validation,
+                        j2k_decomposition_levels,
+                        reversible_transform,
                     },
                     0,
                     0,
@@ -2365,7 +2582,12 @@ fn profile_lossless_j2k_routes(
                 }
             }
             for (idx, planned_frame) in planned.into_iter().enumerate() {
-                if let Some(passthrough) = planned_frame.passthrough {
+                let encode_allowed = j2k_non_passthrough_encode_allowed(
+                    &planned_frame,
+                    options.transfer_syntax,
+                    tile_size,
+                );
+                if let Some(passthrough) = planned_frame.passthrough.as_ref() {
                     let profile = passthrough.profile;
                     if let Some(existing) = pixel_profile {
                         if existing != profile {
@@ -2383,11 +2605,12 @@ fn profile_lossless_j2k_routes(
                     remaining = remaining.saturating_sub(1);
                     continue;
                 }
-                if options.transfer_syntax.is_jpeg2000_passthrough_only() {
+                if !encode_allowed {
                     metrics.record_j2k_passthrough_only_fallback_classification();
                     remaining = remaining.saturating_sub(1);
                     continue;
                 }
+                reject_lossy_j2k_lossless_fallback(&planned_frame, options.transfer_syntax, row)?;
 
                 let (encoded, profile, input_decode_duration, compose_duration) =
                     if let Some(outcome) = cpu_batch_results[idx].take() {
@@ -2398,6 +2621,10 @@ fn profile_lossless_j2k_routes(
                             outcome.compose_duration,
                         )
                     } else {
+                        j2k_encoder.set_reversible_transform(j2k_fallback_reversible_transform(
+                            &planned_frame,
+                            options.transfer_syntax,
+                        ));
                         encode_cpu_input_tile(
                             slide,
                             &mut j2k_encoder,
@@ -2416,6 +2643,8 @@ fn profile_lossless_j2k_routes(
                             tile_size,
                         )?
                     };
+                let profile =
+                    j2k_fallback_profile(&planned_frame, profile, options.transfer_syntax);
                 metrics.record_input_decode_duration(input_decode_duration);
                 metrics.record_compose_duration(compose_duration);
                 metrics.record_cpu_input();
@@ -2576,6 +2805,7 @@ fn profile_jpeg_baseline_routes(
                         &fallback_frames,
                         frame_columns,
                         frame_rows,
+                        options.jpeg_quality,
                     )?;
                     #[cfg(not(all(feature = "metal", target_os = "macos")))]
                     let mut metal_run =
@@ -2620,6 +2850,7 @@ fn profile_jpeg_baseline_routes(
                             &cpu_frames,
                             frame_columns,
                             frame_rows,
+                            options.jpeg_quality,
                         )?;
                         for (idx, encoded) in cpu_indices.into_iter().zip(cpu_encoded) {
                             cpu_batch_results[idx] = Some(encoded);
@@ -2838,10 +3069,14 @@ fn export_instance(
     let mut pixel_spool = PixelDataSpool::create(spool_path, frame_count as usize)?;
     let mut pixel_profile = None;
     let mut j2k_encoder = DicomJ2kEncoder::new(
-        request.options.encode_backend,
-        request.options.transfer_syntax,
+        j2k_encode_backend(
+            request.options.transfer_syntax,
+            request.options.encode_backend,
+        ),
+        j2k_encode_transfer_syntax(request.options.transfer_syntax),
         request.options.codec_validation,
     )
+    .with_j2k_decomposition_levels(request.options.j2k_decomposition_levels)
     .with_gpu_encode_tuning(
         request.options.gpu_encode_inflight_tiles,
         request.options.gpu_encode_memory_mib,
@@ -3017,17 +3252,24 @@ fn export_instance(
 
             let mut cpu_batch_results: Vec<Option<LosslessJ2kCpuBatchOutcome>> =
                 (0..planned.len()).map(|_| None).collect();
-            if let Some((transfer_syntax, codec_validation)) = j2k_encoder.cpu_batch_settings() {
+            if let Some((
+                transfer_syntax,
+                codec_validation,
+                j2k_decomposition_levels,
+                reversible_transform,
+            )) = (request.options.transfer_syntax != TransferSyntax::Jpeg2000)
+                .then(|| j2k_encoder.cpu_batch_settings())
+                .flatten()
+            {
                 let cpu_indices = planned
                     .iter()
                     .enumerate()
                     .filter_map(|(idx, planned_frame)| {
-                        (planned_frame.passthrough.is_none()
-                            && !request
-                                .options
-                                .transfer_syntax
-                                .is_jpeg2000_passthrough_only()
-                            && routed_tiles[idx].is_none())
+                        (j2k_non_passthrough_encode_allowed(
+                            planned_frame,
+                            request.options.transfer_syntax,
+                            tile_size,
+                        ) && routed_tiles[idx].is_none())
                         .then_some(idx)
                     })
                     .collect::<Vec<_>>();
@@ -3036,6 +3278,8 @@ fn export_instance(
                     LosslessJ2kCpuBatchSettings {
                         transfer_syntax,
                         codec_validation,
+                        j2k_decomposition_levels,
+                        reversible_transform,
                     },
                     scene_idx,
                     series_idx,
@@ -3052,7 +3296,12 @@ fn export_instance(
             }
 
             for (idx, planned_frame) in planned.into_iter().enumerate() {
-                if let Some(passthrough) = planned_frame.passthrough {
+                let encode_allowed = j2k_non_passthrough_encode_allowed(
+                    &planned_frame,
+                    request.options.transfer_syntax,
+                    tile_size,
+                );
+                if let Some(passthrough) = planned_frame.passthrough.as_ref() {
                     let profile = passthrough.profile;
                     if let Some(existing) = pixel_profile {
                         if existing != profile {
@@ -3071,11 +3320,7 @@ fn export_instance(
                     metrics.record_pixel_profile(profile);
                     continue;
                 }
-                if request
-                    .options
-                    .transfer_syntax
-                    .is_jpeg2000_passthrough_only()
-                {
+                if !encode_allowed {
                     return Err(WsiDicomError::Unsupported {
                         reason: format!(
                             "JPEG 2000 transfer syntax export is passthrough-only; frame row={} col={} was not eligible for compressed-frame passthrough",
@@ -3083,6 +3328,11 @@ fn export_instance(
                         ),
                     });
                 }
+                reject_lossy_j2k_lossless_fallback(
+                    &planned_frame,
+                    request.options.transfer_syntax,
+                    row,
+                )?;
 
                 let routed_encoded = routed_tiles[idx].take();
                 let (encoded, profile, used_gpu_input, input_decode_duration, compose_duration) =
@@ -3107,6 +3357,12 @@ fn export_instance(
                             )
                         }
                         None => {
+                            j2k_encoder.set_reversible_transform(
+                                j2k_fallback_reversible_transform(
+                                    &planned_frame,
+                                    request.options.transfer_syntax,
+                                ),
+                            );
                             let (encoded, profile, input_decode_duration, compose_duration) =
                                 encode_cpu_input_tile(
                                     slide,
@@ -3134,6 +3390,8 @@ fn export_instance(
                             )
                         }
                     };
+                let profile =
+                    j2k_fallback_profile(&planned_frame, profile, request.options.transfer_syntax);
                 if used_gpu_input {
                     metrics.record_gpu_input();
                 } else {
@@ -3173,16 +3431,24 @@ fn export_instance(
         {
             let mut cpu_batch_results: Vec<Option<LosslessJ2kCpuBatchOutcome>> =
                 (0..planned.len()).map(|_| None).collect();
-            if let Some((transfer_syntax, codec_validation)) = j2k_encoder.cpu_batch_settings() {
+            if let Some((
+                transfer_syntax,
+                codec_validation,
+                j2k_decomposition_levels,
+                reversible_transform,
+            )) = (request.options.transfer_syntax != TransferSyntax::Jpeg2000)
+                .then(|| j2k_encoder.cpu_batch_settings())
+                .flatten()
+            {
                 let cpu_indices = planned
                     .iter()
                     .enumerate()
                     .filter_map(|(idx, planned_frame)| {
-                        (planned_frame.passthrough.is_none()
-                            && !request
-                                .options
-                                .transfer_syntax
-                                .is_jpeg2000_passthrough_only())
+                        j2k_non_passthrough_encode_allowed(
+                            planned_frame,
+                            request.options.transfer_syntax,
+                            tile_size,
+                        )
                         .then_some(idx)
                     })
                     .collect::<Vec<_>>();
@@ -3191,6 +3457,8 @@ fn export_instance(
                     LosslessJ2kCpuBatchSettings {
                         transfer_syntax,
                         codec_validation,
+                        j2k_decomposition_levels,
+                        reversible_transform,
                     },
                     scene_idx,
                     series_idx,
@@ -3206,7 +3474,12 @@ fn export_instance(
                 }
             }
             for (idx, planned_frame) in planned.into_iter().enumerate() {
-                if let Some(passthrough) = planned_frame.passthrough {
+                let encode_allowed = j2k_non_passthrough_encode_allowed(
+                    &planned_frame,
+                    request.options.transfer_syntax,
+                    tile_size,
+                );
+                if let Some(passthrough) = planned_frame.passthrough.as_ref() {
                     let profile = passthrough.profile;
                     if let Some(existing) = pixel_profile {
                         if existing != profile {
@@ -3225,11 +3498,7 @@ fn export_instance(
                     metrics.record_pixel_profile(profile);
                     continue;
                 }
-                if request
-                    .options
-                    .transfer_syntax
-                    .is_jpeg2000_passthrough_only()
-                {
+                if !encode_allowed {
                     return Err(WsiDicomError::Unsupported {
                         reason: format!(
                             "JPEG 2000 transfer syntax export is passthrough-only; frame row={} col={} was not eligible for compressed-frame passthrough",
@@ -3237,6 +3506,11 @@ fn export_instance(
                         ),
                     });
                 }
+                reject_lossy_j2k_lossless_fallback(
+                    &planned_frame,
+                    request.options.transfer_syntax,
+                    row,
+                )?;
 
                 let (encoded, profile, input_decode_duration, compose_duration) =
                     if let Some(outcome) = cpu_batch_results[idx].take() {
@@ -3247,6 +3521,10 @@ fn export_instance(
                             outcome.compose_duration,
                         )
                     } else {
+                        j2k_encoder.set_reversible_transform(j2k_fallback_reversible_transform(
+                            &planned_frame,
+                            request.options.transfer_syntax,
+                        ));
                         encode_cpu_input_tile(
                             slide,
                             &mut j2k_encoder,
@@ -3265,6 +3543,8 @@ fn export_instance(
                             tile_size,
                         )?
                     };
+                let profile =
+                    j2k_fallback_profile(&planned_frame, profile, request.options.transfer_syntax);
                 metrics.record_input_decode_duration(input_decode_duration);
                 metrics.record_compose_duration(compose_duration);
                 metrics.record_cpu_input();
@@ -3301,6 +3581,23 @@ fn export_instance(
     let profile = pixel_profile.ok_or_else(|| WsiDicomError::Unsupported {
         reason: "slide level produced no frames".into(),
     })?;
+    let j2k_lossy_compression = if j2k_passthrough_lossy {
+        let compressed_bytes = pixel_spool.lengths().into_iter().sum::<u64>();
+        let bytes_per_sample = u64::from(profile.bits_allocated).div_ceil(8);
+        let uncompressed_bytes = u64::from(frame_count)
+            .saturating_mul(u64::from(tile_size))
+            .saturating_mul(u64::from(tile_size))
+            .saturating_mul(u64::from(profile.components))
+            .saturating_mul(bytes_per_sample);
+        Some(LossyCompressionMetadata {
+            method: "ISO_15444_1",
+            ratio: (compressed_bytes > 0)
+                .then_some(uncompressed_bytes as f64 / compressed_bytes as f64),
+        })
+    } else {
+        None
+    };
+
     let object = build_dicom_object(
         metadata,
         study_uid,
@@ -3322,10 +3619,7 @@ fn export_instance(
         Some(pixel_spacing_mm),
         pixel_spool.offsets(),
         pixel_spool.lengths(),
-        j2k_passthrough_lossy.then_some(LossyCompressionMetadata {
-            method: "ISO_15444_1",
-            ratio: None,
-        }),
+        j2k_lossy_compression,
     )?;
     let write_started = Instant::now();
     write_dicom_object_with_spooled_pixel_data(
@@ -3370,19 +3664,15 @@ fn export_jpeg_passthrough_instance(
 ) -> Result<DicomInstanceReport, WsiDicomError> {
     let tile_size = request.options.tile_size;
     let (matrix_columns, matrix_rows) = level.dimensions;
-    let geometry = jpeg_baseline_route_frame_geometry(
-        slide,
-        level,
-        JpegBaselineFrameLocation {
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-        },
-        tile_size,
-    )?;
+    let location = JpegBaselineFrameLocation {
+        scene_idx,
+        series_idx,
+        level_idx,
+        z,
+        c,
+        t,
+    };
+    let geometry = jpeg_baseline_route_frame_geometry(slide, level, location, tile_size)?;
     let (tiles_across, tiles_down) = (geometry.tiles_across, geometry.tiles_down);
     let (frame_columns, frame_rows) = (geometry.frame_columns, geometry.frame_rows);
     let frame_count = tiles_across
@@ -3438,6 +3728,92 @@ fn export_jpeg_passthrough_instance(
     let pixel_spacing_mm = require_pixel_spacing_mm(level_pixel_spacing_mm(slide, level))?;
 
     let path = deterministic_instance_path(&request.output_dir, level_idx, z, c, t);
+    if let Some(direct_frames) =
+        try_plan_direct_jpeg_passthrough_frames(slide, location, level, geometry)?
+    {
+        let mut pixel_profile = None;
+        let mut metrics = DicomExportMetrics::default();
+        let mut compressed_bytes = 0u64;
+        let mut uncompressed_bytes = 0u64;
+        let mut lengths = Vec::with_capacity(direct_frames.len());
+        for frame in &direct_frames {
+            ensure_jpeg_baseline_profile(
+                &mut pixel_profile,
+                frame.profile,
+                "JPEG passthrough pixel profile changed across frames",
+            )?;
+            compressed_bytes = compressed_bytes.saturating_add(frame.compressed_bytes);
+            uncompressed_bytes = uncompressed_bytes.saturating_add(frame.uncompressed_bytes);
+            lengths.push(frame.compressed_bytes);
+            metrics.record_passthrough_frame();
+            metrics.record_pixel_profile(frame.profile);
+        }
+
+        let profile = pixel_profile.ok_or_else(|| WsiDicomError::Unsupported {
+            reason: "slide level produced no frames".into(),
+        })?;
+        let offsets = pixel_data_offsets_from_lengths(&lengths)?;
+        let object = build_dicom_object(
+            metadata,
+            study_uid,
+            &series_uid,
+            &sop_instance_uid,
+            &frame_of_reference_uid,
+            &pyramid_uid,
+            &dimension_organization_uid,
+            &pyramid_label,
+            (series_idx + 1) as u32,
+            instance_number,
+            level_idx,
+            frame_columns,
+            frame_rows,
+            matrix_columns,
+            matrix_rows,
+            frame_count,
+            profile,
+            Some(pixel_spacing_mm),
+            offsets,
+            lengths.clone(),
+            Some(LossyCompressionMetadata {
+                method: "ISO_10918_1",
+                ratio: (compressed_bytes > 0)
+                    .then_some(uncompressed_bytes as f64 / compressed_bytes as f64),
+            }),
+        )?;
+        let mut direct_writer = DirectJpegPassthroughFrameWriter::new(
+            slide,
+            location,
+            geometry,
+            direct_frames.len(),
+            DIRECT_JPEG_PASSTHROUGH_WRITE_CHUNK_FRAMES,
+        );
+        let write_started = Instant::now();
+        write_dicom_object_with_direct_pixel_data(
+            &path,
+            object,
+            FileMetaTableBuilder::new()
+                .media_storage_sop_class_uid(VL_WSI_SOP_CLASS_UID)
+                .media_storage_sop_instance_uid(&sop_instance_uid)
+                .transfer_syntax(request.options.transfer_syntax.uid()),
+            &lengths,
+            |idx, output| direct_writer.write_frame(idx, output),
+        )?;
+        metrics.record_write_duration(write_started.elapsed());
+
+        return Ok(DicomInstanceReport {
+            path,
+            sop_instance_uid,
+            series_instance_uid: series_uid,
+            transfer_syntax_uid: request.options.transfer_syntax.uid(),
+            level: level_idx,
+            z,
+            c,
+            t,
+            frame_count,
+            metrics,
+        });
+    }
+
     let spool_path = path.with_extension("pixeldata.tmp");
     let mut pixel_spool = PixelDataSpool::create(spool_path, frame_count as usize)?;
     let mut pixel_profile = None;
@@ -3564,6 +3940,7 @@ fn export_jpeg_passthrough_instance(
                         &fallback_frames,
                         frame_columns,
                         frame_rows,
+                        request.options.jpeg_quality,
                     )?;
                     #[cfg(not(all(feature = "metal", target_os = "macos")))]
                     let mut metal_run =
@@ -3608,6 +3985,7 @@ fn export_jpeg_passthrough_instance(
                             &cpu_frames,
                             frame_columns,
                             frame_rows,
+                            request.options.jpeg_quality,
                         )?;
                         for (idx, encoded) in cpu_indices.into_iter().zip(cpu_encoded) {
                             cpu_batch_results[idx] = Some(encoded);
@@ -3807,6 +4185,170 @@ enum JpegBaselinePlannedFrame {
         uncompressed_bytes: u64,
     },
     Fallback(JpegBaselineFallbackFrame),
+}
+
+#[derive(Clone, Copy)]
+struct DirectJpegPassthroughFrame {
+    profile: PixelProfile,
+    compressed_bytes: u64,
+    uncompressed_bytes: u64,
+}
+
+struct DirectJpegPassthroughFrameWriter<'a> {
+    slide: &'a Slide,
+    location: JpegBaselineFrameLocation,
+    geometry: JpegBaselineFrameGeometry,
+    frame_count: usize,
+    chunk_size: usize,
+    chunk_start: usize,
+    chunk_frames: Vec<Vec<u8>>,
+}
+
+impl<'a> DirectJpegPassthroughFrameWriter<'a> {
+    fn new(
+        slide: &'a Slide,
+        location: JpegBaselineFrameLocation,
+        geometry: JpegBaselineFrameGeometry,
+        frame_count: usize,
+        chunk_size: usize,
+    ) -> Self {
+        Self {
+            slide,
+            location,
+            geometry,
+            frame_count,
+            chunk_size: chunk_size.max(1),
+            chunk_start: 0,
+            chunk_frames: Vec::new(),
+        }
+    }
+
+    fn write_frame(&mut self, idx: usize, output: &mut dyn Write) -> io::Result<()> {
+        let chunk_end = self.chunk_start.saturating_add(self.chunk_frames.len());
+        if idx < self.chunk_start || idx >= chunk_end {
+            self.load_chunk(idx)?;
+        }
+        let frame = self
+            .chunk_frames
+            .get(idx - self.chunk_start)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "frame index out of range")
+            })?;
+        output.write_all(frame)
+    }
+
+    fn load_chunk(&mut self, idx: usize) -> io::Result<()> {
+        if idx >= self.frame_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "frame index out of range",
+            ));
+        }
+        let end = idx.saturating_add(self.chunk_size).min(self.frame_count);
+        let frames = (idx..end)
+            .into_par_iter()
+            .map(|frame_idx| {
+                read_direct_jpeg_passthrough_frame(
+                    self.slide,
+                    self.location,
+                    self.geometry,
+                    frame_idx,
+                )
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        self.chunk_start = idx;
+        self.chunk_frames = frames;
+        Ok(())
+    }
+}
+
+fn try_plan_direct_jpeg_passthrough_frames(
+    slide: &Slide,
+    location: JpegBaselineFrameLocation,
+    level: &statumen::Level,
+    geometry: JpegBaselineFrameGeometry,
+) -> Result<Option<Vec<DirectJpegPassthroughFrame>>, WsiDicomError> {
+    let frame_count = geometry
+        .tiles_across
+        .checked_mul(geometry.tiles_down)
+        .ok_or_else(|| WsiDicomError::Unsupported {
+            reason: "JPEG passthrough frame count overflow".into(),
+        })?;
+    let frame_count = usize::try_from(frame_count).map_err(|_| WsiDicomError::Unsupported {
+        reason: "JPEG passthrough frame count exceeds platform addressable memory".into(),
+    })?;
+    let allow_raw_rgb_passthrough = raw_rgb_passthrough_has_no_geometry_fallback(level, geometry);
+    let planned = (0..frame_count)
+        .into_par_iter()
+        .map(|frame_idx| {
+            let raw = match read_raw_jpeg_passthrough_tile(slide, location, geometry, frame_idx)? {
+                Some(raw) => raw,
+                None => return Ok(None),
+            };
+            let profile = pixel_profile_from_raw_jpeg_tile(&raw)?;
+            if !raw_jpeg_profile_can_passthrough(profile, allow_raw_rgb_passthrough) {
+                return Ok(None);
+            }
+            let compressed_bytes =
+                u64::try_from(raw.data.len()).map_err(|_| WsiDicomError::Unsupported {
+                    reason: "JPEG passthrough frame length exceeds u64".into(),
+                })?;
+            Ok(Some(DirectJpegPassthroughFrame {
+                profile,
+                compressed_bytes,
+                uncompressed_bytes: uncompressed_frame_bytes(&raw)?,
+            }))
+        })
+        .collect::<Result<Vec<_>, WsiDicomError>>()?;
+    if planned.iter().any(Option::is_none) {
+        return Ok(None);
+    }
+    Ok(Some(planned.into_iter().flatten().collect()))
+}
+
+fn read_direct_jpeg_passthrough_frame(
+    slide: &Slide,
+    location: JpegBaselineFrameLocation,
+    geometry: JpegBaselineFrameGeometry,
+    frame_idx: usize,
+) -> io::Result<Vec<u8>> {
+    let raw = read_raw_jpeg_passthrough_tile(slide, location, geometry, frame_idx)
+        .map_err(io::Error::other)?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "direct JPEG passthrough frame is no longer passthrough-eligible",
+            )
+        })?;
+    Ok(raw.data)
+}
+
+fn read_raw_jpeg_passthrough_tile(
+    slide: &Slide,
+    location: JpegBaselineFrameLocation,
+    geometry: JpegBaselineFrameGeometry,
+    frame_idx: usize,
+) -> Result<Option<RawCompressedTile>, WsiDicomError> {
+    let frame_idx = u64::try_from(frame_idx).map_err(|_| WsiDicomError::Unsupported {
+        reason: "JPEG passthrough frame index exceeds u64".into(),
+    })?;
+    let row = frame_idx / geometry.tiles_across;
+    let col = frame_idx % geometry.tiles_across;
+    let row = i64::try_from(row).map_err(|_| WsiDicomError::Unsupported {
+        reason: "JPEG passthrough row index exceeds i64".into(),
+    })?;
+    let col = i64::try_from(col).map_err(|_| WsiDicomError::Unsupported {
+        reason: "JPEG passthrough column index exceeds i64".into(),
+    })?;
+    let raw = match slide.read_raw_compressed_tile(&location.tile_request(col, row)) {
+        Ok(raw) => raw,
+        Err(_) => return Ok(None),
+    };
+    if raw_jpeg_matches_frame_geometry(&raw, geometry.frame_columns, geometry.frame_rows) {
+        Ok(Some(raw))
+    } else {
+        Ok(None)
+    }
 }
 
 struct JpegBaselineMetalEncodedRun {
@@ -4089,6 +4631,7 @@ fn encode_jpeg_baseline_cpu_input_tile_batch(
     frames: &[JpegBaselineFallbackFrame],
     frame_columns: u32,
     frame_rows: u32,
+    jpeg_quality: u8,
 ) -> Result<Vec<EncodedJpegBaselineFrame>, WsiDicomError> {
     frames
         .par_iter()
@@ -4107,6 +4650,7 @@ fn encode_jpeg_baseline_cpu_input_tile_batch(
                 frame.height,
                 frame_columns,
                 frame_rows,
+                jpeg_quality,
             )
         })
         .collect()
@@ -4127,6 +4671,7 @@ fn encode_jpeg_baseline_cpu_input_tile(
     height: u32,
     frame_columns: u32,
     frame_rows: u32,
+    jpeg_quality: u8,
 ) -> Result<EncodedJpegBaselineFrame, WsiDicomError> {
     let (prepared_bytes, profile, subsampling, input_decode_duration, compose_duration) =
         prepare_jpeg_baseline_cpu_input_tile(
@@ -4162,22 +4707,12 @@ fn encode_jpeg_baseline_cpu_input_tile(
         }
     };
     let encode_started = Instant::now();
-    let encoded = encode_jpeg_baseline(
+    let encoded = encode_jpeg_baseline_cpu_fragment(
         samples,
-        JpegEncodeOptions {
-            quality: 90,
-            subsampling,
-            restart_interval: jpeg_baseline_cpu_restart_interval(
-                frame_columns,
-                frame_rows,
-                subsampling,
-            ),
-            backend: JpegBackend::Cpu,
-        },
-    )
-    .map_err(|source| WsiDicomError::Encode {
-        message: source.to_string(),
-    })?;
+        jpeg_quality,
+        subsampling,
+        jpeg_baseline_cpu_restart_interval(frame_columns, frame_rows, subsampling),
+    )?;
     let encode_duration = encode_started.elapsed();
 
     Ok((
@@ -4187,6 +4722,26 @@ fn encode_jpeg_baseline_cpu_input_tile(
         compose_duration,
         encode_duration,
     ))
+}
+
+fn encode_jpeg_baseline_cpu_fragment(
+    samples: JpegSamples<'_>,
+    jpeg_quality: u8,
+    subsampling: JpegSubsampling,
+    restart_interval: Option<u16>,
+) -> Result<EncodedJpeg, WsiDicomError> {
+    signinum_jpeg::encode_jpeg_baseline(
+        samples,
+        signinum_jpeg::JpegEncodeOptions {
+            quality: jpeg_quality,
+            subsampling,
+            restart_interval,
+            backend: JpegBackend::Cpu,
+        },
+    )
+    .map_err(|source| WsiDicomError::Encode {
+        message: source.to_string(),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4366,6 +4921,7 @@ fn try_encode_jpeg_baseline_metal_input_tile_run(
     frames: &[JpegBaselineFallbackFrame],
     frame_columns: u32,
     frame_rows: u32,
+    jpeg_quality: u8,
 ) -> Result<JpegBaselineMetalEncodedRun, WsiDicomError> {
     objc::rc::autoreleasepool(|| {
         if !jpeg_baseline_auto_allows_metal_batch(
@@ -4445,43 +5001,25 @@ fn try_encode_jpeg_baseline_metal_input_tile_run(
         };
         let input_decode_duration = input_decode_started.elapsed();
 
-        let mut tiles = Vec::with_capacity(frames.len());
-        for (pixels, frame) in pixels.into_iter().zip(frames.iter()) {
-            let TilePixels::Device(DeviceTile::Metal(tile)) = pixels else {
-                if metal_input.preference == EncodeBackendPreference::RequireDevice {
-                    return Err(WsiDicomError::Unsupported {
-                        reason:
-                            "requested JPEG Baseline Metal input decode returned CPU pixels; set STATUMEN_JPEG_DEVICE_DECODE=1 or STATUMEN_JP2K_DEVICE_DECODE=1 for compressed WSI tiles"
-                                .into(),
-                    });
-                }
-                return Ok(empty_jpeg_baseline_metal_run_with_input_duration(
-                    frames.len(),
-                    input_decode_duration,
-                ));
-            };
-            if tile.width != frame.width || tile.height != frame.height {
-                if metal_input.preference == EncodeBackendPreference::RequireDevice {
-                    return Err(WsiDicomError::Unsupported {
-                        reason: format!(
-                            "JPEG Baseline Metal input geometry changed: expected {}x{}, got {}x{}",
-                            frame.width, frame.height, tile.width, tile.height
-                        ),
-                    });
-                }
-                return Ok(empty_jpeg_baseline_metal_run_with_input_duration(
-                    frames.len(),
-                    input_decode_duration,
-                ));
-            }
-            tiles.push(tile);
+        let tile_entries =
+            jpeg_baseline_metal_tile_entries(pixels, frames, metal_input.preference)?;
+        let batch_tiles: Vec<_> = tile_entries
+            .iter()
+            .filter_map(|entry| entry.as_ref().cloned())
+            .collect();
+        if batch_tiles.is_empty() {
+            return Ok(empty_jpeg_baseline_metal_run_with_input_duration(
+                frames.len(),
+                input_decode_duration,
+            ));
         }
 
         let encode_started = Instant::now();
         let encoded = match encode_jpeg_baseline_metal_device_tile_batch(
-            &tiles,
+            &batch_tiles,
             frame_columns,
             frame_rows,
+            jpeg_quality,
             metal_input.jpeg_encode_session()?,
         ) {
             Ok(encoded) => encoded,
@@ -4490,9 +5028,35 @@ fn try_encode_jpeg_baseline_metal_input_tile_run(
             }
             Err(_) => return Ok(empty_jpeg_baseline_metal_run(frames.len())),
         };
+        if encoded.len() != batch_tiles.len() {
+            if metal_input.preference == EncodeBackendPreference::RequireDevice {
+                return Err(WsiDicomError::Encode {
+                    message: format!(
+                        "JPEG Baseline Metal encode returned {} frame(s), expected {}",
+                        encoded.len(),
+                        batch_tiles.len()
+                    ),
+                });
+            }
+            return Ok(empty_jpeg_baseline_metal_run_with_input_duration(
+                frames.len(),
+                input_decode_duration,
+            ));
+        }
         let encode_duration = encode_started.elapsed();
+        let mut encoded = encoded.into_iter();
+        let mut output_frames = Vec::with_capacity(frames.len());
+        for entry in tile_entries {
+            if entry.is_some() {
+                output_frames.push(Some(encoded.next().expect(
+                    "JPEG Baseline Metal encoded frame count matches input tile count",
+                )));
+            } else {
+                output_frames.push(None);
+            }
+        }
         Ok(JpegBaselineMetalEncodedRun {
-            frames: encoded.into_iter().map(Some).collect(),
+            frames: output_frames,
             input_decode_duration,
             encode_duration,
             input_decode_batches: 1,
@@ -4502,10 +5066,47 @@ fn try_encode_jpeg_baseline_metal_input_tile_run(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
+fn jpeg_baseline_metal_tile_entries(
+    pixels: Vec<TilePixels>,
+    frames: &[JpegBaselineFallbackFrame],
+    preference: EncodeBackendPreference,
+) -> Result<Vec<Option<statumen::output::metal::MetalDeviceTile>>, WsiDicomError> {
+    let mut entries = Vec::with_capacity(frames.len());
+    for (pixels, frame) in pixels.into_iter().zip(frames.iter()) {
+        let TilePixels::Device(DeviceTile::Metal(tile)) = pixels else {
+            if preference == EncodeBackendPreference::RequireDevice {
+                return Err(WsiDicomError::Unsupported {
+                    reason:
+                        "requested JPEG Baseline Metal input decode returned CPU pixels; set STATUMEN_JPEG_DEVICE_DECODE=1 or STATUMEN_JP2K_DEVICE_DECODE=1 for compressed WSI tiles"
+                            .into(),
+                });
+            }
+            entries.push(None);
+            continue;
+        };
+        if tile.width != frame.width || tile.height != frame.height {
+            if preference == EncodeBackendPreference::RequireDevice {
+                return Err(WsiDicomError::Unsupported {
+                    reason: format!(
+                        "JPEG Baseline Metal input geometry changed: expected {}x{}, got {}x{}",
+                        frame.width, frame.height, tile.width, tile.height
+                    ),
+                });
+            }
+            entries.push(None);
+            continue;
+        }
+        entries.push(Some(tile));
+    }
+    Ok(entries)
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
 fn encode_jpeg_baseline_metal_device_tile_batch(
     tiles: &[statumen::output::metal::MetalDeviceTile],
     frame_columns: u32,
     frame_rows: u32,
+    jpeg_quality: u8,
     session: &signinum_jpeg_metal::MetalBackendSession,
 ) -> Result<Vec<(EncodedJpeg, PixelProfile)>, WsiDicomError> {
     let first = tiles.first().ok_or_else(|| WsiDicomError::Unsupported {
@@ -4537,8 +5138,8 @@ fn encode_jpeg_baseline_metal_device_tile_batch(
     }
     let encoded = encode_jpeg_baseline_batch_from_metal_buffers(
         &requests,
-        JpegEncodeOptions {
-            quality: 90,
+        signinum_jpeg::JpegEncodeOptions {
+            quality: jpeg_quality,
             subsampling,
             restart_interval: None,
             backend: JpegBackend::Metal,
@@ -4670,6 +5271,8 @@ fn encode_cpu_input_lossless_j2k_tile_batch(
                     samples,
                     settings.transfer_syntax,
                     settings.codec_validation,
+                    settings.j2k_decomposition_levels,
+                    settings.reversible_transform,
                 ),
                 profile,
                 input_decode_duration,
@@ -6599,11 +7202,29 @@ mod tests {
 
         assert_eq!(options.tile_size, 512);
         assert_eq!(options.transfer_syntax.uid(), "1.2.840.10008.1.2.4.202");
+        assert_eq!(options.jpeg_quality, 90);
         assert_eq!(options.encode_backend, EncodeBackendPreference::Auto);
         assert_eq!(options.codec_validation, CodecValidation::Disabled);
         assert!(!options.source_device_decode);
+        assert_eq!(options.j2k_decomposition_levels, None);
         assert_eq!(options.gpu_encode_inflight_tiles, None);
         assert_eq!(options.gpu_encode_memory_mib, None);
+    }
+
+    #[test]
+    fn options_reject_out_of_range_jpeg_quality() {
+        for jpeg_quality in [0, 101] {
+            let err = DicomExportOptions {
+                jpeg_quality,
+                ..DicomExportOptions::default()
+            }
+            .validate()
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("jpeg_quality"),
+                "unexpected error for quality {jpeg_quality}: {err}"
+            );
+        }
     }
 
     #[test]
@@ -6817,6 +7438,58 @@ mod tests {
         let rgb = vec![0; 128 * 128 * 3];
         let rgb_samples = J2kLosslessSamples::new(&rgb, 128, 128, 3, 8, false).expect("valid rgb");
         assert_eq!(dicom_j2k_decomposition_levels(rgb_samples), 1);
+    }
+
+    #[test]
+    fn j2k_decomposition_level_override_reaches_lossless_encoders() {
+        for transfer_syntax in [
+            TransferSyntax::Jpeg2000Lossless,
+            TransferSyntax::Htj2kLossless,
+        ] {
+            for requested_levels in [0, 5] {
+                let tmp = tempfile::tempdir().unwrap();
+                let source = tmp.path().join("source.dcm");
+                write_source_dicom_with_dimensions(
+                    &source,
+                    "1.2.826.0.1.3680043.10.999.77",
+                    128,
+                    128,
+                );
+
+                let report = export_dicom(DicomExportRequest {
+                    source_path: source,
+                    output_dir: tmp
+                        .path()
+                        .join(format!("out-{transfer_syntax:?}-{requested_levels}")),
+                    options: DicomExportOptions {
+                        tile_size: 128,
+                        transfer_syntax,
+                        encode_backend: EncodeBackendPreference::CpuOnly,
+                        codec_validation: CodecValidation::Disabled,
+                        j2k_decomposition_levels: Some(requested_levels),
+                        ..DicomExportOptions::default()
+                    },
+                    metadata: MetadataSource::ResearchPlaceholder,
+                    level_filter: None,
+                })
+                .unwrap();
+
+                let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+                let fragments = object
+                    .element(tags::PIXEL_DATA)
+                    .unwrap()
+                    .value()
+                    .fragments()
+                    .unwrap();
+                assert_eq!(
+                    j2k_cod_decomposition_levels(dicom_fragment_payload_without_padding(
+                        &fragments[0]
+                    )),
+                    requested_levels,
+                    "{transfer_syntax:?} should honor explicit {requested_levels} DWT levels"
+                );
+            }
+        }
     }
 
     #[test]
@@ -7121,27 +7794,45 @@ mod tests {
     }
 
     #[test]
-    fn export_general_j2k_passthrough_only_rejects_mismatched_geometry_before_gpu_work() {
+    fn export_general_j2k_edge_fallback_preserves_interior_passthrough() {
         let tmp = tempfile::tempdir().unwrap();
-        let bytes: Vec<u8> = (0..2 * 2 * 3)
+        let interior_bytes: Vec<u8> = (0..2 * 2 * 3)
             .map(|value| ((value * 7) & 0xFF) as u8)
             .collect();
-        let samples = J2kLosslessSamples::new(&bytes, 2, 2, 3, 8, false).expect("valid samples");
-        let codestream = encode_dicom_lossless(
-            samples,
+        let interior_samples =
+            J2kLosslessSamples::new(&interior_bytes, 2, 2, 3, 8, false).expect("valid samples");
+        let interior_codestream = encode_dicom_lossless(
+            interior_samples,
+            TransferSyntax::Jpeg2000Lossless,
+            EncodeBackendPreference::CpuOnly,
+            CodecValidation::RoundTrip,
+        )
+        .unwrap();
+        let edge_bytes: Vec<u8> = (0..6).map(|value| ((value * 11) & 0xFF) as u8).collect();
+        let edge_samples =
+            J2kLosslessSamples::new(&edge_bytes, 1, 2, 3, 8, false).expect("valid edge samples");
+        let edge_codestream = encode_dicom_lossless(
+            edge_samples,
             TransferSyntax::Jpeg2000Lossless,
             EncodeBackendPreference::CpuOnly,
             CodecValidation::RoundTrip,
         )
         .unwrap();
         let source = tmp.path().join("source.svs");
-        write_tiled_jp2k_ycbcr_tiff(&source, 2, 2, 2, 3, std::slice::from_ref(&codestream));
+        write_tiled_jp2k_ycbcr_tiff(
+            &source,
+            3,
+            2,
+            2,
+            2,
+            &[interior_codestream.clone(), edge_codestream.clone()],
+        );
 
-        let err = export_dicom(DicomExportRequest {
+        let report = export_dicom(DicomExportRequest {
             source_path: source,
             output_dir: tmp.path().join("out"),
             options: DicomExportOptions {
-                tile_size: 4,
+                tile_size: 512,
                 transfer_syntax: TransferSyntax::Jpeg2000,
                 encode_backend: EncodeBackendPreference::RequireDevice,
                 codec_validation: CodecValidation::Disabled,
@@ -7151,14 +7842,297 @@ mod tests {
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
         })
+        .unwrap();
+
+        assert_eq!(report.metrics.total_frames, 2);
+        assert_eq!(report.metrics.j2k_passthrough_frames, 1);
+        assert_eq!(report.metrics.cpu_input_frames, 1);
+        assert_eq!(report.metrics.cpu_fallback_frames, 1);
+        assert_eq!(report.metrics.gpu_encode_frames, 0);
+
+        let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+        assert_eq!(
+            object.meta().transfer_syntax.as_str(),
+            TransferSyntax::Jpeg2000.uid()
+        );
+        let fragments = object
+            .element(tags::PIXEL_DATA)
+            .unwrap()
+            .value()
+            .fragments()
+            .unwrap();
+        assert_eq!(fragments.len(), 2);
+        assert_eq!(
+            dicom_fragment_payload_without_padding(&fragments[0]),
+            interior_codestream
+        );
+        let edge_payload = dicom_fragment_payload_without_padding(&fragments[1]);
+        assert_ne!(edge_payload, edge_codestream);
+        assert_eq!(j2k_view_dimensions(edge_payload), (2, 2));
+        assert_eq!(j2k_cod_decomposition_levels(edge_payload), 0);
+    }
+
+    #[test]
+    fn export_general_j2k_rgb_edge_fallback_matches_passthrough_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let interior_bytes: Vec<u8> = (0..2 * 2 * 3)
+            .map(|value| ((value * 7) & 0xFF) as u8)
+            .collect();
+        let interior_samples =
+            J2kLosslessSamples::new(&interior_bytes, 2, 2, 3, 8, false).expect("valid samples");
+        let interior_codestream = encode_dicom_lossless(
+            interior_samples,
+            TransferSyntax::Jpeg2000Lossless,
+            EncodeBackendPreference::CpuOnly,
+            CodecValidation::RoundTrip,
+        )
+        .unwrap();
+        let edge_bytes: Vec<u8> = (0..6).map(|value| ((value * 11) & 0xFF) as u8).collect();
+        let edge_samples =
+            J2kLosslessSamples::new(&edge_bytes, 1, 2, 3, 8, false).expect("valid edge samples");
+        let edge_codestream = encode_dicom_lossless(
+            edge_samples,
+            TransferSyntax::Jpeg2000Lossless,
+            EncodeBackendPreference::CpuOnly,
+            CodecValidation::RoundTrip,
+        )
+        .unwrap();
+        let source = tmp.path().join("source.svs");
+        write_tiled_jp2k_rgb_tiff(
+            &source,
+            3,
+            2,
+            2,
+            2,
+            &[interior_codestream.clone(), edge_codestream],
+        );
+
+        let report = export_dicom(DicomExportRequest {
+            source_path: source,
+            output_dir: tmp.path().join("out"),
+            options: DicomExportOptions {
+                tile_size: 2,
+                transfer_syntax: TransferSyntax::Jpeg2000,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                codec_validation: CodecValidation::Disabled,
+                ..DicomExportOptions::default()
+            },
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: None,
+        })
+        .unwrap();
+
+        assert_eq!(report.metrics.total_frames, 2);
+        assert_eq!(report.metrics.j2k_passthrough_frames, 1);
+        assert_eq!(report.metrics.cpu_input_frames, 1);
+
+        let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+        assert_eq!(
+            object
+                .element(tags::PHOTOMETRIC_INTERPRETATION)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .as_ref(),
+            "RGB"
+        );
+        let fragments = object
+            .element(tags::PIXEL_DATA)
+            .unwrap()
+            .value()
+            .fragments()
+            .unwrap();
+        assert_eq!(
+            dicom_fragment_payload_without_padding(&fragments[0]),
+            interior_codestream
+        );
+        let edge_payload = dicom_fragment_payload_without_padding(&fragments[1]);
+        assert_eq!(j2k_cod_mct(edge_payload), 0);
+    }
+
+    #[test]
+    fn dicom_roundtrip_lossless_pixel_identical() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.dcm");
+        let width = 8u32;
+        let height = 8u32;
+        let pixels = (0..width * height * 3)
+            .map(|value| ((value * 19 + 7) & 0xFF) as u8)
+            .collect::<Vec<_>>();
+        write_source_dicom_with_pixels(
+            &source,
+            "1.2.826.0.1.3680043.10.999.79",
+            width,
+            height,
+            pixels.clone(),
+        );
+
+        for transfer_syntax in [
+            TransferSyntax::Jpeg2000Lossless,
+            TransferSyntax::Htj2kLossless,
+            TransferSyntax::Htj2kLosslessRpcl,
+        ] {
+            let report = export_dicom(DicomExportRequest {
+                source_path: source.clone(),
+                output_dir: tmp.path().join(format!("out-{transfer_syntax:?}")),
+                options: DicomExportOptions {
+                    tile_size: width,
+                    transfer_syntax,
+                    encode_backend: EncodeBackendPreference::CpuOnly,
+                    codec_validation: CodecValidation::Disabled,
+                    ..DicomExportOptions::default()
+                },
+                metadata: MetadataSource::ResearchPlaceholder,
+                level_filter: None,
+            })
+            .unwrap();
+
+            let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+            let fragments = object
+                .element(tags::PIXEL_DATA)
+                .unwrap()
+                .value()
+                .fragments()
+                .unwrap();
+            assert_eq!(fragments.len(), 1);
+            let payload = dicom_fragment_payload_without_padding(&fragments[0]);
+            let actual = decode_j2k_frame_for_test(payload, width, height, 3, 8);
+
+            assert_eq!(
+                actual, pixels,
+                "{transfer_syntax:?} DICOM pixel data should decode byte-identical"
+            );
+        }
+    }
+
+    #[test]
+    fn export_general_j2k_lossy_passthrough_writes_compression_ratio() {
+        let tmp = tempfile::tempdir().unwrap();
+        let interior_bytes: Vec<u8> = (0..2 * 2 * 3)
+            .map(|value| ((value * 7) & 0xFF) as u8)
+            .collect();
+        let interior_samples =
+            J2kLosslessSamples::new(&interior_bytes, 2, 2, 3, 8, false).expect("valid samples");
+        let mut interior_codestream = encode_dicom_lossless(
+            interior_samples,
+            TransferSyntax::Jpeg2000Lossless,
+            EncodeBackendPreference::CpuOnly,
+            CodecValidation::RoundTrip,
+        )
+        .unwrap();
+        patch_j2k_cod_wavelet_transform(&mut interior_codestream, 0);
+        assert_eq!(
+            j2k_passthrough_transfer_syntax(&interior_codestream),
+            CompressedTransferSyntax::Jpeg2000Lossy
+        );
+        let edge_bytes: Vec<u8> = (0..6).map(|value| ((value * 11) & 0xFF) as u8).collect();
+        let edge_samples =
+            J2kLosslessSamples::new(&edge_bytes, 1, 2, 3, 8, false).expect("valid edge samples");
+        let mut edge_codestream = encode_dicom_lossless(
+            edge_samples,
+            TransferSyntax::Jpeg2000Lossless,
+            EncodeBackendPreference::CpuOnly,
+            CodecValidation::RoundTrip,
+        )
+        .unwrap();
+        patch_j2k_cod_wavelet_transform(&mut edge_codestream, 0);
+        let source = tmp.path().join("source.svs");
+        write_tiled_jp2k_rgb_tiff(&source, 3, 2, 2, 2, &[interior_codestream, edge_codestream]);
+
+        let report = export_dicom(DicomExportRequest {
+            source_path: source,
+            output_dir: tmp.path().join("out"),
+            options: DicomExportOptions {
+                tile_size: 2,
+                transfer_syntax: TransferSyntax::Jpeg2000,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                codec_validation: CodecValidation::Disabled,
+                ..DicomExportOptions::default()
+            },
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: None,
+        })
+        .unwrap();
+
+        let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+        assert_eq!(
+            object
+                .element(tags::LOSSY_IMAGE_COMPRESSION)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .as_ref(),
+            "01"
+        );
+        assert_eq!(
+            object
+                .element(tags::LOSSY_IMAGE_COMPRESSION_METHOD)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .as_ref(),
+            "ISO_15444_1"
+        );
+        assert!(
+            object
+                .element(tags::LOSSY_IMAGE_COMPRESSION_RATIO)
+                .unwrap()
+                .to_float32()
+                .unwrap()
+                > 0.0
+        );
+    }
+
+    #[test]
+    fn jpeg2000_lossless_rejects_lossy_edge_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let interior_bytes: Vec<u8> = (0..2 * 2 * 3)
+            .map(|value| ((value * 7) & 0xFF) as u8)
+            .collect();
+        let interior_samples =
+            J2kLosslessSamples::new(&interior_bytes, 2, 2, 3, 8, false).expect("valid samples");
+        let interior_codestream = encode_dicom_lossless(
+            interior_samples,
+            TransferSyntax::Jpeg2000Lossless,
+            EncodeBackendPreference::CpuOnly,
+            CodecValidation::RoundTrip,
+        )
+        .unwrap();
+        let edge_bytes: Vec<u8> = (0..6).map(|value| ((value * 11) & 0xFF) as u8).collect();
+        let edge_samples =
+            J2kLosslessSamples::new(&edge_bytes, 1, 2, 3, 8, false).expect("valid edge samples");
+        let mut edge_codestream = encode_dicom_lossless(
+            edge_samples,
+            TransferSyntax::Jpeg2000Lossless,
+            EncodeBackendPreference::CpuOnly,
+            CodecValidation::RoundTrip,
+        )
+        .unwrap();
+        patch_j2k_cod_wavelet_transform(&mut edge_codestream, 0);
+        assert_eq!(
+            j2k_passthrough_transfer_syntax(&edge_codestream),
+            CompressedTransferSyntax::Jpeg2000Lossy
+        );
+        let source = tmp.path().join("source.svs");
+        write_tiled_jp2k_ycbcr_tiff(&source, 3, 2, 2, 2, &[interior_codestream, edge_codestream]);
+
+        let err = export_dicom(DicomExportRequest {
+            source_path: source,
+            output_dir: tmp.path().join("out"),
+            options: DicomExportOptions {
+                tile_size: 2,
+                transfer_syntax: TransferSyntax::Jpeg2000Lossless,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                codec_validation: CodecValidation::Disabled,
+                ..DicomExportOptions::default()
+            },
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: None,
+        })
         .unwrap_err()
         .to_string();
 
-        assert!(err.contains("passthrough-only"), "unexpected error: {err}");
-        assert!(
-            !err.contains("Metal"),
-            "passthrough-only route should reject before device work: {err}"
-        );
+        assert!(err.contains("lossy"), "unexpected error: {err}");
     }
 
     #[test]
@@ -7917,6 +8891,15 @@ mod tests {
         assert_eq!(
             object.meta().transfer_syntax.trim_end_matches('\0'),
             TransferSyntax::Htj2kLossless.uid()
+        );
+        assert_eq!(
+            object
+                .element(tags::PHOTOMETRIC_INTERPRETATION)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .as_ref(),
+            "YBR_RCT"
         );
         assert_eq!(
             object
@@ -9901,7 +10884,6 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "metal", target_os = "macos"))]
     fn decode_j2k_frame_for_test(
         codestream: &[u8],
         width: u32,
@@ -10123,6 +11105,53 @@ mod tests {
         assert_eq!(composed[1].height, 4);
     }
 
+    #[test]
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn jpeg_baseline_metal_tile_entries_keep_full_tiles_when_edge_geometry_falls_back() {
+        let Some(device) = metal::Device::system_default() else {
+            return;
+        };
+        let full_a = metal_test_tile(&device, &[1u8; 16], 4, 4, SigninumPixelFormat::Gray8);
+        let edge = metal_test_tile(&device, &[2u8; 12], 3, 4, SigninumPixelFormat::Gray8);
+        let full_b = metal_test_tile(&device, &[3u8; 16], 4, 4, SigninumPixelFormat::Gray8);
+        let frames = [
+            JpegBaselineFallbackFrame {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 4,
+            },
+            JpegBaselineFallbackFrame {
+                x: 4,
+                y: 0,
+                width: 4,
+                height: 4,
+            },
+            JpegBaselineFallbackFrame {
+                x: 8,
+                y: 0,
+                width: 4,
+                height: 4,
+            },
+        ];
+
+        let entries = jpeg_baseline_metal_tile_entries(
+            vec![
+                TilePixels::Device(DeviceTile::Metal(full_a)),
+                TilePixels::Device(DeviceTile::Metal(edge)),
+                TilePixels::Device(DeviceTile::Metal(full_b)),
+            ],
+            &frames,
+            EncodeBackendPreference::PreferDevice,
+        )
+        .unwrap();
+
+        assert_eq!(entries.len(), 3);
+        assert!(entries[0].is_some());
+        assert!(entries[1].is_none());
+        assert!(entries[2].is_some());
+    }
+
     #[cfg(all(feature = "metal", target_os = "macos"))]
     fn metal_test_tile(
         device: &metal::Device,
@@ -10174,6 +11203,8 @@ mod tests {
             LosslessJ2kCpuBatchSettings {
                 transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
                 codec_validation: CodecValidation::RoundTrip,
+                j2k_decomposition_levels: None,
+                reversible_transform: ReversibleTransform::Rct53,
             },
             0,
             0,
@@ -10248,7 +11279,7 @@ mod tests {
         ];
 
         let batch =
-            encode_jpeg_baseline_cpu_input_tile_batch(&slide, 0, 0, 0, 0, 0, 0, &frames, 2, 2)
+            encode_jpeg_baseline_cpu_input_tile_batch(&slide, 0, 0, 0, 0, 0, 0, &frames, 2, 2, 90)
                 .unwrap();
         let serial = frames
             .iter()
@@ -10267,6 +11298,7 @@ mod tests {
                     frame.height,
                     2,
                     2,
+                    90,
                 )
                 .unwrap()
             })
@@ -10277,6 +11309,53 @@ mod tests {
             assert_eq!(batch.0.data, serial.0.data);
             assert_eq!(batch.1, serial.1);
         }
+    }
+
+    #[test]
+    fn jpeg_quality_option_changes_fallback_frame_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.dcm");
+        write_source_dicom_with_dimensions(&source, "1.2.826.0.1.3680043.10.999.76", 64, 64);
+
+        let low = export_dicom(DicomExportRequest {
+            source_path: source.clone(),
+            output_dir: tmp.path().join("low"),
+            options: DicomExportOptions {
+                tile_size: 64,
+                transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                codec_validation: CodecValidation::Disabled,
+                jpeg_quality: 40,
+                ..DicomExportOptions::default()
+            },
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: None,
+        })
+        .unwrap();
+        let high = export_dicom(DicomExportRequest {
+            source_path: source,
+            output_dir: tmp.path().join("high"),
+            options: DicomExportOptions {
+                tile_size: 64,
+                transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                codec_validation: CodecValidation::Disabled,
+                jpeg_quality: 95,
+                ..DicomExportOptions::default()
+            },
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: None,
+        })
+        .unwrap();
+
+        assert_eq!(low.metrics.jpeg_cpu_encode_frames, 1);
+        assert_eq!(high.metrics.jpeg_cpu_encode_frames, 1);
+        let low_len = first_pixel_data_fragment_payload_len(&low.instances[0].path);
+        let high_len = first_pixel_data_fragment_payload_len(&high.instances[0].path);
+        assert!(
+            high_len > low_len,
+            "quality 95 payload ({high_len}) should be larger than quality 40 payload ({low_len})"
+        );
     }
 
     #[test]
@@ -10459,13 +11538,13 @@ mod tests {
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
-        encode_jpeg_baseline(
+        signinum_jpeg::encode_jpeg_baseline(
             JpegSamples::Rgb8 {
                 data: &pixels,
                 width,
                 height,
             },
-            JpegEncodeOptions {
+            signinum_jpeg::JpegEncodeOptions {
                 quality: 90,
                 subsampling: JpegSubsampling::Ybr422,
                 restart_interval: None,
@@ -10474,6 +11553,54 @@ mod tests {
         )
         .unwrap()
         .data
+    }
+
+    fn j2k_view_dimensions(codestream: &[u8]) -> (u32, u32) {
+        let view = J2kView::parse(codestream).expect("parse J2K view");
+        view.info().dimensions
+    }
+
+    fn j2k_passthrough_transfer_syntax(codestream: &[u8]) -> CompressedTransferSyntax {
+        J2kView::parse(codestream)
+            .expect("parse J2K view")
+            .passthrough_candidate()
+            .expect("passthrough candidate")
+            .transfer_syntax()
+    }
+
+    fn j2k_cod_decomposition_levels(codestream: &[u8]) -> u8 {
+        let cod_offset = codestream
+            .windows(2)
+            .position(|window| window == [0xFF, 0x52])
+            .expect("COD marker");
+        codestream[cod_offset + 9]
+    }
+
+    fn j2k_cod_mct(codestream: &[u8]) -> u8 {
+        let cod_offset = codestream
+            .windows(2)
+            .position(|window| window == [0xFF, 0x52])
+            .expect("COD marker");
+        codestream[cod_offset + 8]
+    }
+
+    fn patch_j2k_cod_wavelet_transform(codestream: &mut [u8], transform: u8) {
+        let cod_offset = codestream
+            .windows(2)
+            .position(|window| window == [0xFF, 0x52])
+            .expect("COD marker");
+        codestream[cod_offset + 13] = transform;
+    }
+
+    fn first_pixel_data_fragment_payload_len(path: &std::path::Path) -> usize {
+        let object = dicom_object::open_file(path).unwrap();
+        let fragments = object
+            .element(tags::PIXEL_DATA)
+            .unwrap()
+            .value()
+            .fragments()
+            .unwrap();
+        dicom_fragment_jpeg_payload(&fragments[0]).len()
     }
 
     fn dicom_fragment_jpeg_payload(fragment: &[u8]) -> &[u8] {

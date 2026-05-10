@@ -36,10 +36,7 @@ fn lockfile_has_no_duplicate_signinum_package_sources() {
         "signinum-jpeg-metal",
         "signinum-tilecodec",
     ] {
-        let count = lockfile
-            .lines()
-            .filter(|line| line.trim() == format!("name = \"{package}\""))
-            .count();
+        let count = lockfile_package_name_count(&lockfile, package);
         if count > 1 {
             duplicates.push(format!("{package}: {count} entries"));
         }
@@ -50,6 +47,22 @@ fn lockfile_has_no_duplicate_signinum_package_sources() {
         "Cargo.lock must not contain duplicate signinum package identities:\n{}",
         duplicates.join("\n")
     );
+}
+
+fn lockfile_package_name_count(lockfile: &str, package: &str) -> usize {
+    let package_name = format!("name = \"{package}\"");
+    let mut in_package = false;
+    let mut count = 0usize;
+    for line in lockfile.lines().map(str::trim) {
+        if line.starts_with("[[") {
+            in_package = line == "[[package]]";
+            continue;
+        }
+        if in_package && line == package_name {
+            count += 1;
+        }
+    }
+    count
 }
 
 #[test]
