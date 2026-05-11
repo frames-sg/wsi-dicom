@@ -1712,9 +1712,6 @@ pub fn export_dicom(request: DicomExportRequest) -> Result<DicomExportReport, Ws
                 {
                     continue;
                 }
-                if level_is_synthetic_downsample(&slide, scene_idx, series_idx, level_idx)? {
-                    continue;
-                }
                 for z in 0..series.axes.z {
                     for t in 0..series.axes.t {
                         let channel_groups = optical_path_groups(series.axes.c);
@@ -1817,15 +1814,6 @@ pub fn profile_dicom_routes(
         .ok_or_else(|| WsiDicomError::Unsupported {
             reason: format!("route profiling level {} is not available", request.level),
         })?;
-    if level_is_synthetic_downsample(&slide, 0, 0, request.level)? {
-        return Err(WsiDicomError::Unsupported {
-            reason: format!(
-                "route profiling skips synthetic downsample level {}; profile a physical source level instead",
-                request.level
-            ),
-        });
-    }
-
     let started = Instant::now();
     let transfer_syntax_uid = request.options.transfer_syntax.uid();
     let available_frames = route_profile_available_frames(
@@ -1933,18 +1921,6 @@ pub fn profile_dicom_route_coverage(
         let level_idx = u32::try_from(level_idx).map_err(|_| WsiDicomError::Unsupported {
             reason: "route coverage level index exceeds u32".into(),
         })?;
-        if level_is_synthetic_downsample(&slide, 0, 0, level_idx)? {
-            if matches!(request.progress, Some(DicomRouteCoverageProgress::Stderr)) {
-                eprintln!(
-                    "coverage level {}/{} skip {} level={} reason=synthetic_downsample",
-                    usize::try_from(level_idx).unwrap_or(usize::MAX) + 1,
-                    level_limit,
-                    request.source_path.display(),
-                    level_idx
-                );
-            }
-            continue;
-        }
         let level_available_frames = route_profile_available_frames(
             &slide,
             &request.options,
@@ -4522,6 +4498,11 @@ fn jpeg_baseline_frame_geometry(
     level: &statumen::Level,
     fallback_tile_size: u32,
 ) -> Result<JpegBaselineFrameGeometry, WsiDicomError> {
+    if fallback_tile_size == 0 {
+        return Err(WsiDicomError::InvalidOptions {
+            reason: "tile_size must be greater than zero".into(),
+        });
+    }
     let (matrix_columns, matrix_rows) = level.dimensions;
     let (frame_columns, frame_rows, tiles_across, tiles_down) = match level.tile_layout {
         TileLayout::WholeLevel {
@@ -4536,12 +4517,25 @@ fn jpeg_baseline_frame_geometry(
                             .into(),
                 });
             }
-            (
+            if native_jpeg_frame_geometry_is_viewer_friendly(
                 virtual_tile_width,
                 virtual_tile_height,
-                matrix_columns.div_ceil(u64::from(virtual_tile_width)),
-                matrix_rows.div_ceil(u64::from(virtual_tile_height)),
-            )
+                fallback_tile_size,
+            ) {
+                (
+                    virtual_tile_width,
+                    virtual_tile_height,
+                    matrix_columns.div_ceil(u64::from(virtual_tile_width)),
+                    matrix_rows.div_ceil(u64::from(virtual_tile_height)),
+                )
+            } else {
+                (
+                    fallback_tile_size,
+                    fallback_tile_size,
+                    matrix_columns.div_ceil(u64::from(fallback_tile_size)),
+                    matrix_rows.div_ceil(u64::from(fallback_tile_size)),
+                )
+            }
         }
         TileLayout::Regular {
             tile_width,
@@ -4587,9 +4581,12 @@ fn jpeg_baseline_route_frame_geometry(
     location: JpegBaselineFrameLocation,
     fallback_tile_size: u32,
 ) -> Result<JpegBaselineFrameGeometry, WsiDicomError> {
-    if let Some(geometry) =
-        jpeg_baseline_native_regular_passthrough_geometry(slide, level, location)?
-    {
+    if let Some(geometry) = jpeg_baseline_native_regular_passthrough_geometry(
+        slide,
+        level,
+        location,
+        fallback_tile_size,
+    )? {
         return Ok(geometry);
     }
     jpeg_baseline_frame_geometry(level, fallback_tile_size)
@@ -4599,6 +4596,7 @@ fn jpeg_baseline_native_regular_passthrough_geometry(
     slide: &Slide,
     level: &statumen::Level,
     location: JpegBaselineFrameLocation,
+    fallback_tile_size: u32,
 ) -> Result<Option<JpegBaselineFrameGeometry>, WsiDicomError> {
     let TileLayout::Regular {
         tile_width,
@@ -4613,6 +4611,9 @@ fn jpeg_baseline_native_regular_passthrough_geometry(
         return Err(WsiDicomError::Unsupported {
             reason: "JPEG Baseline Regular export requires nonzero tile geometry".into(),
         });
+    }
+    if !native_jpeg_frame_geometry_is_viewer_friendly(tile_width, tile_height, fallback_tile_size) {
+        return Ok(None);
     }
 
     let geometry = JpegBaselineFrameGeometry {
@@ -4637,6 +4638,17 @@ fn jpeg_baseline_native_regular_passthrough_geometry(
     } else {
         Ok(None)
     }
+}
+
+fn native_jpeg_frame_geometry_is_viewer_friendly(
+    frame_columns: u32,
+    frame_rows: u32,
+    fallback_tile_size: u32,
+) -> bool {
+    if frame_columns == 0 || frame_rows == 0 || fallback_tile_size == 0 {
+        return false;
+    }
+    frame_columns.min(frame_rows) >= fallback_tile_size.div_ceil(2)
 }
 
 fn pixel_profile_from_raw_jpeg_tile(
@@ -6324,6 +6336,9 @@ fn try_encode_metal_input_tile_run(
         if !metal_input.enabled() {
             return Ok(empty_metal_tile_run(tile_count));
         }
+        if level_is_synthetic_downsample(slide, scene_idx, series_idx, level_idx)? {
+            return Ok(empty_metal_tile_run(tile_count));
+        }
 
         if output_tile_maps_to_statumen_tile(level, tile_size) {
             return try_encode_metal_aligned_tile_run(
@@ -7431,9 +7446,9 @@ mod tests {
     #[test]
     fn default_transfer_syntax_prefers_jpeg_baseline_passthrough_source() {
         let tmp = tempfile::tempdir().unwrap();
-        let jpeg = encode_test_jpeg(8, 8, [160, 20, 40]);
+        let jpeg = encode_test_jpeg(512, 512, [160, 20, 40]);
         let source = tmp.path().join("source.svs");
-        write_tiled_jpeg_tiff(&source, 8, 8, 8, 8, std::slice::from_ref(&jpeg));
+        write_tiled_jpeg_tiff(&source, 512, 512, 512, 512, std::slice::from_ref(&jpeg));
 
         let selected = default_transfer_syntax_for_source(DefaultTransferSyntaxRequest {
             source_path: source,
@@ -9136,6 +9151,82 @@ mod tests {
     }
 
     #[test]
+    fn export_htj2k_from_jpeg_strips_writes_regular_generated_frames() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.svs");
+        let out = tmp.path().join("out");
+        let tiles = [
+            encode_test_jpeg(16, 2, [160, 20, 40]),
+            encode_test_jpeg(16, 2, [20, 160, 40]),
+            encode_test_jpeg(16, 2, [40, 20, 160]),
+            encode_test_jpeg(16, 2, [160, 160, 40]),
+        ];
+        write_tiled_jpeg_tiff(&source, 32, 4, 16, 2, &tiles);
+
+        let report = export_dicom(DicomExportRequest {
+            source_path: source,
+            output_dir: out,
+            options: DicomExportOptions {
+                tile_size: 8,
+                transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                codec_validation: CodecValidation::Disabled,
+                source_device_decode: false,
+                ..DicomExportOptions::default()
+            },
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: None,
+        })
+        .unwrap();
+
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].frame_count, 4);
+        assert_eq!(report.metrics.total_frames, 4);
+        assert_eq!(report.metrics.cpu_input_frames, 4);
+        assert_eq!(report.metrics.gpu_encode_frames, 0);
+        assert_eq!(report.metrics.route_passthrough_frames(), 0);
+        assert_eq!(report.metrics.j2k_passthrough_frames, 0);
+        assert_eq!(report.metrics.cpu_fallback_frames, 4);
+        assert_eq!(report.metrics.route_unclassified_frames(), 0);
+
+        let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+        assert_eq!(
+            object.meta().transfer_syntax.trim_end_matches('\0'),
+            TransferSyntax::Htj2kLosslessRpcl.uid()
+        );
+        assert_eq!(
+            object.element(tags::ROWS).unwrap().to_int::<u32>().unwrap(),
+            8
+        );
+        assert_eq!(
+            object
+                .element(tags::COLUMNS)
+                .unwrap()
+                .to_int::<u32>()
+                .unwrap(),
+            8
+        );
+        assert_eq!(
+            object
+                .element(tags::NUMBER_OF_FRAMES)
+                .unwrap()
+                .to_int::<u32>()
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            object
+                .element(tags::PIXEL_DATA)
+                .unwrap()
+                .value()
+                .fragments()
+                .unwrap()
+                .len(),
+            4
+        );
+    }
+
+    #[test]
     fn profile_dicom_routes_limits_frames_without_writing_dicom() {
         let tmp = tempfile::tempdir().unwrap();
         let source = tmp.path().join("source.dcm");
@@ -9235,6 +9326,41 @@ mod tests {
         assert_eq!(report.metrics.jpeg_decode_fallback_frames, 0);
         assert_eq!(report.metrics.route_passthrough_frames(), 2);
         assert_eq!(report.metrics.cpu_fallback_frames, 0);
+    }
+
+    #[test]
+    fn profile_jpeg_baseline_retiles_pathological_native_regular_source_tiles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tiles = [
+            encode_test_jpeg(16, 2, [160, 20, 40]),
+            encode_test_jpeg(16, 2, [20, 160, 40]),
+            encode_test_jpeg(16, 2, [40, 20, 160]),
+            encode_test_jpeg(16, 2, [160, 160, 40]),
+        ];
+        let source = tmp.path().join("source.svs");
+        write_tiled_jpeg_tiff(&source, 32, 4, 16, 2, &tiles);
+
+        let report = profile_dicom_routes(DicomRouteProfileRequest {
+            source_path: source,
+            options: DicomExportOptions {
+                tile_size: 8,
+                transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                codec_validation: CodecValidation::Disabled,
+                source_device_decode: false,
+                ..DicomExportOptions::default()
+            },
+            level: 0,
+            max_frames: 2,
+        })
+        .unwrap();
+
+        assert_eq!(report.available_frames, 4);
+        assert_eq!(report.metrics.total_frames, 2);
+        assert_eq!(report.metrics.jpeg_passthrough_frames, 0);
+        assert_eq!(report.metrics.jpeg_decode_fallback_frames, 2);
+        assert_eq!(report.metrics.route_passthrough_frames(), 0);
+        assert_eq!(report.metrics.cpu_fallback_frames, 2);
     }
 
     #[test]
@@ -9718,6 +9844,128 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires WSI_DICOM_NDPI_FIXTURE"]
+    fn export_dicom_can_export_source_synthetic_downsample_level() {
+        let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let slide = Slide::open(&source).unwrap();
+        let series = &slide.dataset().scenes[0].series[0];
+        let (level_idx, level) = series
+            .levels
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(level_idx, _)| {
+                slide
+                    .level_source_kind(0, 0, *level_idx as u32)
+                    .is_ok_and(|kind| kind == LevelSourceKind::SyntheticDownsample)
+            })
+            .expect("HE.ndpi fixture should expose at least one synthetic overview level");
+        let level_idx = level_idx as u32;
+
+        let report = export_dicom(DicomExportRequest {
+            source_path: source,
+            output_dir: tmp.path().join("out"),
+            options: DicomExportOptions {
+                tile_size: 1024,
+                transfer_syntax: TransferSyntax::Htj2kLossless,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                codec_validation: CodecValidation::Disabled,
+                source_device_decode: false,
+                ..DicomExportOptions::default()
+            },
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: Some(level_idx),
+        })
+        .unwrap();
+
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].level, level_idx);
+        assert_eq!(report.instances[0].frame_count, 1);
+
+        let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+        assert_eq!(
+            object
+                .element(tags::IMAGE_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .as_ref(),
+            "DERIVED\\PRIMARY\\VOLUME\\RESAMPLED"
+        );
+        assert_eq!(
+            object
+                .element(tags::TOTAL_PIXEL_MATRIX_COLUMNS)
+                .unwrap()
+                .to_int::<u32>()
+                .unwrap(),
+            level.dimensions.0 as u32
+        );
+        assert_eq!(
+            object
+                .element(tags::TOTAL_PIXEL_MATRIX_ROWS)
+                .unwrap()
+                .to_int::<u32>()
+                .unwrap(),
+            level.dimensions.1 as u32
+        );
+    }
+
+    #[test]
+    #[ignore = "requires WSI_DICOM_NDPI_FIXTURE and Metal"]
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn export_dicom_requires_device_encode_for_synthetic_level_with_cpu_source_input() {
+        let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
+            return;
+        };
+        if metal::Device::system_default().is_none() {
+            eprintln!("skipping synthetic level device export test; Metal is unavailable");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let slide = Slide::open(&source).unwrap();
+        let level_idx = slide.dataset().scenes[0].series[0]
+            .levels
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(level_idx, _)| {
+                slide
+                    .level_source_kind(0, 0, level_idx as u32)
+                    .is_ok_and(|kind| kind == LevelSourceKind::SyntheticDownsample)
+                    .then_some(level_idx as u32)
+            })
+            .expect("HE.ndpi fixture should expose at least one synthetic overview level");
+
+        let report = export_dicom(DicomExportRequest {
+            source_path: source,
+            output_dir: tmp.path().join("out"),
+            options: DicomExportOptions {
+                tile_size: 1024,
+                transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+                encode_backend: EncodeBackendPreference::RequireDevice,
+                codec_validation: CodecValidation::Disabled,
+                source_device_decode: true,
+                j2k_decomposition_levels: Some(1),
+                ..DicomExportOptions::default()
+            },
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: Some(level_idx),
+        })
+        .unwrap();
+
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.metrics.total_frames, 1);
+        assert_eq!(report.metrics.cpu_input_frames, 1);
+        assert_eq!(report.metrics.gpu_encode_frames, 1);
+        assert_eq!(report.metrics.partial_gpu_transcode_frames, 1);
+        assert_eq!(report.metrics.resident_gpu_transcode_frames, 0);
+        assert_eq!(report.metrics.cpu_fallback_frames, 0);
+    }
+
+    #[test]
     fn export_dicom_passthrough_writes_jpeg_baseline_vl_wsi_instance() {
         let tmp = tempfile::tempdir().unwrap();
         let jpeg = encode_test_jpeg(8, 8, [160, 20, 40]);
@@ -9942,7 +10190,7 @@ mod tests {
     }
 
     #[test]
-    fn jpeg_baseline_whole_level_passthrough_uses_rectangular_virtual_frame_geometry() {
+    fn jpeg_baseline_whole_level_pathological_strip_uses_requested_tile_geometry() {
         let level = statumen::Level {
             dimensions: (130, 31),
             downsample: 1.0,
@@ -9956,10 +10204,10 @@ mod tests {
 
         let geometry = jpeg_baseline_frame_geometry(&level, 512).unwrap();
 
-        assert_eq!(geometry.frame_columns, 64);
-        assert_eq!(geometry.frame_rows, 8);
-        assert_eq!(geometry.tiles_across, 3);
-        assert_eq!(geometry.tiles_down, 4);
+        assert_eq!(geometry.frame_columns, 512);
+        assert_eq!(geometry.frame_rows, 512);
+        assert_eq!(geometry.tiles_across, 1);
+        assert_eq!(geometry.tiles_down, 1);
     }
 
     #[test]
@@ -10402,6 +10650,36 @@ mod tests {
         }
         clear_auto_metal_input_route_cache_for_tests();
         clear_auto_metal_input_route_cache_state_for_tests();
+    }
+
+    #[test]
+    #[ignore = "requires WSI_DICOM_NDPI_FIXTURE"]
+    fn ndpi_fixture_htj2k_profile_uses_generated_frames_not_passthrough() {
+        let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
+            return;
+        };
+
+        let report = profile_dicom_routes(DicomRouteProfileRequest {
+            source_path: source,
+            options: DicomExportOptions {
+                tile_size: 1024,
+                transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                codec_validation: CodecValidation::Disabled,
+                source_device_decode: false,
+                ..DicomExportOptions::default()
+            },
+            level: 0,
+            max_frames: 2,
+        })
+        .unwrap();
+
+        assert_eq!(report.metrics.total_frames, 2);
+        assert_eq!(report.metrics.route_passthrough_frames(), 0);
+        assert_eq!(report.metrics.j2k_passthrough_frames, 0);
+        assert_eq!(report.metrics.cpu_input_frames, 2);
+        assert_eq!(report.metrics.cpu_fallback_frames, 2);
+        assert_eq!(report.metrics.route_unclassified_frames(), 0);
     }
 
     #[test]

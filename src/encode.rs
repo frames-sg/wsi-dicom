@@ -357,7 +357,7 @@ impl DicomJ2kEncoder {
             self.transfer_syntax,
             EncodeBackendPreference::PreferDevice,
             self.codec_validation,
-            self.j2k_decomposition_levels,
+            metal_resident_j2k_decomposition_levels(self.j2k_decomposition_levels),
             self.reversible_transform,
         )?;
         let mut encoded = Vec::with_capacity(tiles.len());
@@ -585,6 +585,11 @@ pub(crate) fn metal_tile_is_padded_contiguous(
     tile.width == output_width
         && tile.height == output_height
         && tile.pitch_bytes == (output_width as usize).saturating_mul(tile.format.bytes_per_pixel())
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn metal_resident_j2k_decomposition_levels(j2k_decomposition_levels: Option<u8>) -> Option<u8> {
+    Some(j2k_decomposition_levels.unwrap_or(1).min(1))
 }
 
 #[cfg_attr(
