@@ -39,6 +39,22 @@ fn lib_rs_stays_facade_sized() {
 }
 
 #[test]
+fn export_rs_line_budget_ratchets_down() {
+    let export = crate_root().join("src/export.rs");
+    let source = fs::read_to_string(&export)
+        .unwrap_or_else(|err| panic!("read {}: {err}", export.display()));
+    let nonblank_lines = source
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+
+    assert!(
+        nonblank_lines <= 10_900,
+        "src/export.rs must keep shrinking as route/default/passthrough modules take ownership; found {nonblank_lines} nonblank lines"
+    );
+}
+
+#[test]
 fn cli_report_module_does_not_call_export_internals_directly() {
     let path = crate_root().join("src/cli_report.rs");
     let source =
