@@ -1,5 +1,183 @@
 //! Encode route selection and fallback policy.
-//!
-//! The current implementation is kept crate-private inside `export` while the
-//! public facade is stabilized. New routing helpers should be added here
-//! instead of growing `export`.
+
+use std::path::Path;
+
+use signinum_core::CompressedTransferSyntax;
+use statumen::{LevelSourceKind, Slide, TileLayout};
+
+use crate::error::WsiDicomError;
+use crate::options::{DicomExportOptions, EncodeBackendPreference, TransferSyntax};
+use crate::tile::PixelProfile;
+
+pub(crate) fn j2k_route_tile_size(
+    options: &DicomExportOptions,
+    level: &statumen::Level,
+) -> Result<u32, WsiDicomError> {
+    if options.transfer_syntax.is_jpeg2000_passthrough_only() {
+        let native_square = match level.tile_layout {
+            TileLayout::Regular {
+                tile_width,
+                tile_height,
+                ..
+            }
+            | TileLayout::WholeLevel {
+                virtual_tile_width: tile_width,
+                virtual_tile_height: tile_height,
+                ..
+            } if tile_width == tile_height && tile_width > 0 => Some(tile_width),
+            TileLayout::Regular { .. }
+            | TileLayout::WholeLevel { .. }
+            | TileLayout::Irregular { .. } => None,
+        };
+        if let Some(tile_size) = native_square {
+            return Ok(tile_size);
+        }
+    }
+    if options.tile_size == 0 {
+        return Err(WsiDicomError::InvalidOptions {
+            reason: "tile_size must be greater than zero".into(),
+        });
+    }
+    Ok(options.tile_size)
+}
+
+pub(crate) fn j2k_encode_transfer_syntax(transfer_syntax: TransferSyntax) -> TransferSyntax {
+    if transfer_syntax == TransferSyntax::Jpeg2000 {
+        TransferSyntax::Jpeg2000Lossless
+    } else {
+        transfer_syntax
+    }
+}
+
+pub(crate) fn j2k_encode_backend(
+    transfer_syntax: TransferSyntax,
+    requested_backend: EncodeBackendPreference,
+) -> EncodeBackendPreference {
+    if transfer_syntax == TransferSyntax::Jpeg2000 {
+        EncodeBackendPreference::CpuOnly
+    } else {
+        requested_backend
+    }
+}
+
+pub(crate) fn j2k_encoded_lossless_profile(
+    profile: PixelProfile,
+    transfer_syntax: TransferSyntax,
+) -> PixelProfile {
+    if matches!(
+        transfer_syntax,
+        TransferSyntax::Jpeg2000
+            | TransferSyntax::Jpeg2000Lossless
+            | TransferSyntax::Htj2kLossless
+            | TransferSyntax::Htj2kLosslessRpcl
+    ) && profile.components == 3
+    {
+        PixelProfile {
+            components: profile.components,
+            bits_allocated: profile.bits_allocated,
+            photometric_interpretation: "YBR_RCT",
+        }
+    } else {
+        profile
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(crate) fn transfer_syntax_from_uid(uid: &str) -> Option<TransferSyntax> {
+    [
+        TransferSyntax::JpegBaseline8Bit,
+        TransferSyntax::Jpeg2000,
+        TransferSyntax::Jpeg2000,
+        TransferSyntax::Jpeg2000Lossless,
+        TransferSyntax::Htj2kLossless,
+        TransferSyntax::Htj2kLosslessRpcl,
+        TransferSyntax::ExplicitVrLittleEndian,
+    ]
+    .into_iter()
+    .find(|transfer_syntax| transfer_syntax.uid() == uid)
+}
+
+pub(crate) fn source_path_has_extension(path: &Path, ext: &str) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(ext))
+}
+
+pub(crate) fn j2k_family_passthrough_probe_allowed(
+    source_path: &Path,
+    transfer_syntax: TransferSyntax,
+) -> bool {
+    match transfer_syntax {
+        TransferSyntax::Jpeg2000 | TransferSyntax::Jpeg2000Lossless => true,
+        TransferSyntax::Htj2kLossless | TransferSyntax::Htj2kLosslessRpcl => {
+            source_path_has_extension(source_path, "dcm")
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn level_is_synthetic_downsample(
+    slide: &Slide,
+    scene_idx: usize,
+    series_idx: usize,
+    level_idx: u32,
+) -> Result<bool, WsiDicomError> {
+    slide
+        .level_source_kind(scene_idx, series_idx, level_idx)
+        .map(|kind| kind == LevelSourceKind::SyntheticDownsample)
+        .map_err(|err| WsiDicomError::SlideRead {
+            message: format!("failed to inspect level source kind: {err}"),
+        })
+}
+
+pub(crate) fn required_passthrough_syntax(
+    transfer_syntax: TransferSyntax,
+    candidate_syntax: CompressedTransferSyntax,
+) -> Option<CompressedTransferSyntax> {
+    match transfer_syntax {
+        TransferSyntax::Jpeg2000 => match candidate_syntax {
+            CompressedTransferSyntax::Jpeg2000Lossless
+            | CompressedTransferSyntax::Jpeg2000Lossy => Some(candidate_syntax),
+            _ => None,
+        },
+        TransferSyntax::Jpeg2000Lossless => Some(CompressedTransferSyntax::Jpeg2000Lossless),
+        TransferSyntax::Htj2kLossless => Some(CompressedTransferSyntax::HtJpeg2000Lossless),
+        TransferSyntax::Htj2kLosslessRpcl => Some(CompressedTransferSyntax::HtJpeg2000Lossless),
+        TransferSyntax::JpegBaseline8Bit | TransferSyntax::ExplicitVrLittleEndian => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn htj2k_passthrough_probe_is_limited_to_dicom_sources() {
+        assert!(j2k_family_passthrough_probe_allowed(
+            Path::new("source.svs"),
+            TransferSyntax::Jpeg2000
+        ));
+        assert!(j2k_family_passthrough_probe_allowed(
+            Path::new("source.svs"),
+            TransferSyntax::Jpeg2000Lossless
+        ));
+        assert!(j2k_family_passthrough_probe_allowed(
+            Path::new("source.dcm"),
+            TransferSyntax::Htj2kLosslessRpcl
+        ));
+        assert!(j2k_family_passthrough_probe_allowed(
+            Path::new("source.DCM"),
+            TransferSyntax::Htj2kLossless
+        ));
+        assert!(!j2k_family_passthrough_probe_allowed(
+            Path::new("source.svs"),
+            TransferSyntax::Htj2kLosslessRpcl
+        ));
+        assert!(!j2k_family_passthrough_probe_allowed(
+            Path::new("source.ndpi"),
+            TransferSyntax::Htj2kLosslessRpcl
+        ));
+    }
+}

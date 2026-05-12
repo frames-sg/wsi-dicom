@@ -22,16 +22,19 @@ use signinum_jpeg::{EncodedJpeg, JpegBackend, JpegSamples, JpegSubsampling};
 use signinum_jpeg_metal::{
     encode_jpeg_baseline_batch_from_metal_buffers, JpegBaselineMetalEncodeTile,
 };
+#[cfg(test)]
+use statumen::LevelSourceKind;
 use statumen::{
-    Compression, EncodedTilePhotometricInterpretation, LevelIdx, LevelSourceKind, PlaneIdx,
-    PlaneSelection, RawCompressedTile, RegionRequest, SceneId, SeriesId, Slide, TileLayout,
-    TileRequest,
+    Compression, EncodedTilePhotometricInterpretation, LevelIdx, PlaneIdx, PlaneSelection,
+    RawCompressedTile, RegionRequest, SceneId, SeriesId, Slide, TileLayout, TileRequest,
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use statumen::{DeviceTile, TileOutputPreference, TilePixels};
 
 #[cfg(test)]
 use crate::api::DicomExport;
+#[cfg(test)]
+use crate::defaults::default_transfer_syntax_for_source;
 use crate::encode::{self, DicomJ2kEncoder, EncodedDicomJ2kFrame};
 use crate::error::WsiDicomError;
 use crate::metadata::DicomMetadata;
@@ -40,15 +43,26 @@ use crate::metadata::MetadataSource;
 use crate::options::{
     CodecValidation, DicomExportOptions, EncodeBackendPreference, TransferSyntax,
 };
+use crate::passthrough::j2k_codestream_is_rpcl;
 use crate::report::{
     duration_as_reported_micros, DicomEncodedFrame, DicomExportMetrics, DicomExportReport,
     DicomInstanceReport, DicomRouteCorpusCoverageFailure, DicomRouteCorpusCoverageReport,
     DicomRouteCoverageReport, DicomRouteProfileReport,
 };
+#[cfg(test)]
+use crate::request::DefaultTransferSyntaxRequest;
 use crate::request::{
-    DefaultTransferSyntaxRequest, DicomExportRequest, DicomJ2kFrameEncodeRequest,
-    DicomRouteCorpusCoverageProgress, DicomRouteCorpusCoverageRequest, DicomRouteCoverageProgress,
-    DicomRouteCoverageRequest, DicomRouteProfileRequest,
+    DicomExportRequest, DicomJ2kFrameEncodeRequest, DicomRouteCorpusCoverageProgress,
+    DicomRouteCorpusCoverageRequest, DicomRouteCoverageProgress, DicomRouteCoverageRequest,
+    DicomRouteProfileRequest,
+};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use crate::routing::level_is_synthetic_downsample;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use crate::routing::transfer_syntax_from_uid;
+use crate::routing::{
+    j2k_encode_backend, j2k_encode_transfer_syntax, j2k_encoded_lossless_profile,
+    j2k_family_passthrough_probe_allowed, j2k_route_tile_size, required_passthrough_syntax,
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use crate::tile::pixel_profile_from_device_format;
@@ -428,207 +442,6 @@ fn route_profile_available_frames(
         })
 }
 
-/// Pick the default transfer syntax for a source by preserving native compressed
-/// frames when an eligible passthrough route is visible.
-pub fn default_transfer_syntax_for_source(
-    request: DefaultTransferSyntaxRequest,
-) -> Result<TransferSyntax, WsiDicomError> {
-    if request.tile_size == 0 {
-        return Err(WsiDicomError::InvalidOptions {
-            reason: "tile_size must be greater than zero".into(),
-        });
-    }
-    if request.max_levels == Some(0) {
-        return Err(WsiDicomError::InvalidOptions {
-            reason: "max_levels must be greater than zero when provided".into(),
-        });
-    }
-    let max_levels = request
-        .max_levels
-        .map(usize::try_from)
-        .transpose()
-        .map_err(|_| WsiDicomError::Unsupported {
-            reason: "max_levels exceeds platform addressable memory".into(),
-        })?;
-    let slide = Slide::open(&request.source_path).map_err(|source| WsiDicomError::SourceOpen {
-        path: request.source_path.clone(),
-        message: source.to_string(),
-    })?;
-    let mut j2k_passthrough_available = false;
-
-    for (scene_idx, scene) in slide.dataset().scenes.iter().enumerate() {
-        for (series_idx, series) in scene.series.iter().enumerate() {
-            let level_limit = max_levels
-                .unwrap_or(series.levels.len())
-                .min(series.levels.len());
-            for (level_idx, level) in series.levels.iter().take(level_limit).enumerate() {
-                let level_idx =
-                    u32::try_from(level_idx).map_err(|_| WsiDicomError::Unsupported {
-                        reason: "default transfer syntax level index exceeds u32".into(),
-                    })?;
-                if request
-                    .level_filter
-                    .is_some_and(|requested_level| requested_level != level_idx)
-                {
-                    continue;
-                }
-                if level_is_synthetic_downsample(&slide, scene_idx, series_idx, level_idx)? {
-                    continue;
-                }
-                for z in 0..series.axes.z {
-                    for t in 0..series.axes.t {
-                        for c in optical_path_groups(series.axes.c) {
-                            let location = JpegBaselineFrameLocation {
-                                scene_idx,
-                                series_idx,
-                                level_idx,
-                                z,
-                                c,
-                                t,
-                            };
-                            if jpeg_baseline_passthrough_available_for_default(
-                                &slide,
-                                level,
-                                location,
-                                request.tile_size,
-                            )? {
-                                return Ok(TransferSyntax::JpegBaseline8Bit);
-                            }
-                            if !j2k_passthrough_available
-                                && j2k_passthrough_available_for_default(
-                                    &slide,
-                                    level,
-                                    location,
-                                    request.tile_size,
-                                )?
-                            {
-                                j2k_passthrough_available = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if j2k_passthrough_available {
-        Ok(TransferSyntax::Jpeg2000)
-    } else {
-        Ok(TransferSyntax::Htj2kLosslessRpcl)
-    }
-}
-
-fn jpeg_baseline_passthrough_available_for_default(
-    slide: &Slide,
-    level: &statumen::Level,
-    location: JpegBaselineFrameLocation,
-    fallback_tile_size: u32,
-) -> Result<bool, WsiDicomError> {
-    let geometry =
-        match jpeg_baseline_route_frame_geometry(slide, level, location, fallback_tile_size) {
-            Ok(geometry) => geometry,
-            Err(err @ WsiDicomError::InvalidOptions { .. }) => return Err(err),
-            Err(_) => return Ok(false),
-        };
-    let Some(raw) = read_raw_jpeg_passthrough_tile(slide, location, geometry, 0)? else {
-        return Ok(false);
-    };
-    let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&raw) else {
-        return Ok(false);
-    };
-    Ok(raw_jpeg_profile_can_passthrough(
-        profile,
-        raw_rgb_passthrough_has_no_geometry_fallback(level, geometry),
-    ))
-}
-
-fn j2k_passthrough_available_for_default(
-    slide: &Slide,
-    level: &statumen::Level,
-    location: JpegBaselineFrameLocation,
-    fallback_tile_size: u32,
-) -> Result<bool, WsiDicomError> {
-    let options = DicomExportOptions {
-        tile_size: fallback_tile_size,
-        transfer_syntax: TransferSyntax::Jpeg2000,
-        ..DicomExportOptions::default()
-    };
-    let tile_size = j2k_route_tile_size(&options, level)?;
-    let (matrix_columns, matrix_rows) = level.dimensions;
-    if matrix_columns == 0 || matrix_rows == 0 {
-        return Ok(false);
-    }
-    let planned = plan_lossless_j2k_row(
-        slide,
-        location.scene_idx,
-        location.series_idx,
-        location.level_idx,
-        location.z,
-        location.c,
-        location.t,
-        0,
-        0,
-        1,
-        matrix_columns,
-        matrix_rows,
-        tile_size,
-        TransferSyntax::Jpeg2000,
-        true,
-    )?;
-    Ok(planned.iter().any(|frame| frame.passthrough.is_some()))
-}
-
-fn j2k_route_tile_size(
-    options: &DicomExportOptions,
-    level: &statumen::Level,
-) -> Result<u32, WsiDicomError> {
-    if options.transfer_syntax.is_jpeg2000_passthrough_only() {
-        let native_square = match level.tile_layout {
-            TileLayout::Regular {
-                tile_width,
-                tile_height,
-                ..
-            }
-            | TileLayout::WholeLevel {
-                virtual_tile_width: tile_width,
-                virtual_tile_height: tile_height,
-                ..
-            } if tile_width == tile_height && tile_width > 0 => Some(tile_width),
-            TileLayout::Regular { .. }
-            | TileLayout::WholeLevel { .. }
-            | TileLayout::Irregular { .. } => None,
-        };
-        if let Some(tile_size) = native_square {
-            return Ok(tile_size);
-        }
-    }
-    if options.tile_size == 0 {
-        return Err(WsiDicomError::InvalidOptions {
-            reason: "tile_size must be greater than zero".into(),
-        });
-    }
-    Ok(options.tile_size)
-}
-
-fn j2k_encode_transfer_syntax(transfer_syntax: TransferSyntax) -> TransferSyntax {
-    if transfer_syntax == TransferSyntax::Jpeg2000 {
-        TransferSyntax::Jpeg2000Lossless
-    } else {
-        transfer_syntax
-    }
-}
-
-fn j2k_encode_backend(
-    transfer_syntax: TransferSyntax,
-    requested_backend: EncodeBackendPreference,
-) -> EncodeBackendPreference {
-    if transfer_syntax == TransferSyntax::Jpeg2000 {
-        EncodeBackendPreference::CpuOnly
-    } else {
-        requested_backend
-    }
-}
-
 fn j2k_edge_fallback_allowed(
     planned: &LosslessJ2kPlannedFrame,
     transfer_syntax: TransferSyntax,
@@ -691,28 +504,6 @@ fn j2k_lossless_fallback_source_profile(
     })
 }
 
-fn j2k_encoded_lossless_profile(
-    profile: PixelProfile,
-    transfer_syntax: TransferSyntax,
-) -> PixelProfile {
-    if matches!(
-        transfer_syntax,
-        TransferSyntax::Jpeg2000
-            | TransferSyntax::Jpeg2000Lossless
-            | TransferSyntax::Htj2kLossless
-            | TransferSyntax::Htj2kLosslessRpcl
-    ) && profile.components == 3
-    {
-        PixelProfile {
-            components: profile.components,
-            bits_allocated: profile.bits_allocated,
-            photometric_interpretation: "YBR_RCT",
-        }
-    } else {
-        profile
-    }
-}
-
 fn reject_lossy_j2k_lossless_fallback(
     planned: &LosslessJ2kPlannedFrame,
     transfer_syntax: TransferSyntax,
@@ -731,20 +522,6 @@ fn reject_lossy_j2k_lossless_fallback(
         });
     }
     Ok(())
-}
-
-#[cfg(all(feature = "metal", target_os = "macos"))]
-fn transfer_syntax_from_uid(uid: &str) -> Option<TransferSyntax> {
-    [
-        TransferSyntax::JpegBaseline8Bit,
-        TransferSyntax::Jpeg2000,
-        TransferSyntax::Jpeg2000Lossless,
-        TransferSyntax::Htj2kLossless,
-        TransferSyntax::Htj2kLosslessRpcl,
-        TransferSyntax::ExplicitVrLittleEndian,
-    ]
-    .into_iter()
-    .find(|transfer_syntax| transfer_syntax.uid() == uid)
 }
 
 fn j2k_passthrough_frame(
@@ -859,108 +636,6 @@ fn j2k_passthrough_photometric_interpretation(
             _ => None,
         },
         _ => None,
-    }
-}
-
-fn j2k_codestream_is_rpcl(data: &[u8]) -> bool {
-    const MARKER_SOC: u16 = 0xFF4F;
-    const MARKER_COD: u16 = 0xFF52;
-    const MARKER_SOT: u16 = 0xFF90;
-    const MARKER_SOD: u16 = 0xFF93;
-    const MARKER_EOC: u16 = 0xFFD9;
-    const PROGRESSION_RPCL: u8 = 2;
-
-    let mut offset = 0usize;
-    if read_be_u16(data, offset) == Some(MARKER_SOC) {
-        offset += 2;
-    }
-    while offset + 4 <= data.len() {
-        while offset < data.len() && data[offset] == 0xFF {
-            offset += 1;
-        }
-        if offset >= data.len() {
-            return false;
-        }
-        let marker = 0xFF00 | u16::from(data[offset]);
-        offset += 1;
-        match marker {
-            MARKER_COD => {
-                let Some(length) = read_be_u16(data, offset).map(usize::from) else {
-                    return false;
-                };
-                if length < 4 || offset + length > data.len() {
-                    return false;
-                }
-                let payload = &data[offset + 2..offset + length];
-                return payload.get(1) == Some(&PROGRESSION_RPCL);
-            }
-            MARKER_SOT | MARKER_SOD | MARKER_EOC => return false,
-            _ => {
-                let Some(length) = read_be_u16(data, offset).map(usize::from) else {
-                    return false;
-                };
-                if length < 2 || offset + length > data.len() {
-                    return false;
-                }
-                offset += length;
-            }
-        }
-    }
-    false
-}
-
-fn read_be_u16(data: &[u8], offset: usize) -> Option<u16> {
-    let bytes = data.get(offset..offset.checked_add(2)?)?;
-    Some(u16::from_be_bytes([bytes[0], bytes[1]]))
-}
-
-fn source_path_has_extension(path: &Path, ext: &str) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case(ext))
-}
-
-fn j2k_family_passthrough_probe_allowed(
-    source_path: &Path,
-    transfer_syntax: TransferSyntax,
-) -> bool {
-    match transfer_syntax {
-        TransferSyntax::Jpeg2000 | TransferSyntax::Jpeg2000Lossless => true,
-        TransferSyntax::Htj2kLossless | TransferSyntax::Htj2kLosslessRpcl => {
-            source_path_has_extension(source_path, "dcm")
-        }
-        _ => false,
-    }
-}
-
-fn level_is_synthetic_downsample(
-    slide: &Slide,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-) -> Result<bool, WsiDicomError> {
-    slide
-        .level_source_kind(scene_idx, series_idx, level_idx)
-        .map(|kind| kind == LevelSourceKind::SyntheticDownsample)
-        .map_err(|err| WsiDicomError::SlideRead {
-            message: format!("failed to inspect level source kind: {err}"),
-        })
-}
-
-fn required_passthrough_syntax(
-    transfer_syntax: TransferSyntax,
-    candidate_syntax: CompressedTransferSyntax,
-) -> Option<CompressedTransferSyntax> {
-    match transfer_syntax {
-        TransferSyntax::Jpeg2000 => match candidate_syntax {
-            CompressedTransferSyntax::Jpeg2000Lossless
-            | CompressedTransferSyntax::Jpeg2000Lossy => Some(candidate_syntax),
-            _ => None,
-        },
-        TransferSyntax::Jpeg2000Lossless => Some(CompressedTransferSyntax::Jpeg2000Lossless),
-        TransferSyntax::Htj2kLossless => Some(CompressedTransferSyntax::HtJpeg2000Lossless),
-        TransferSyntax::Htj2kLosslessRpcl => Some(CompressedTransferSyntax::HtJpeg2000Lossless),
-        TransferSyntax::JpegBaseline8Bit | TransferSyntax::ExplicitVrLittleEndian => None,
     }
 }
 
@@ -1485,7 +1160,7 @@ fn is_wsi_candidate_path(path: &Path) -> bool {
     )
 }
 
-struct LosslessJ2kPlannedFrame {
+pub(crate) struct LosslessJ2kPlannedFrame {
     col: u64,
     x: u64,
     y: u64,
@@ -1495,6 +1170,12 @@ struct LosslessJ2kPlannedFrame {
     source_j2k_syntax: Option<CompressedTransferSyntax>,
     source_j2k_profile: Option<PixelProfile>,
     passthrough: Option<J2kPassthroughFrame>,
+}
+
+impl LosslessJ2kPlannedFrame {
+    pub(crate) fn has_passthrough(&self) -> bool {
+        self.passthrough.is_some()
+    }
 }
 
 #[allow(dead_code)]
@@ -1540,7 +1221,7 @@ impl J2kPassthroughFrame {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn plan_lossless_j2k_row(
+pub(crate) fn plan_lossless_j2k_row(
     slide: &Slide,
     scene_idx: usize,
     series_idx: usize,
@@ -3585,7 +3266,7 @@ fn export_jpeg_passthrough_instance(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct JpegBaselineFrameGeometry {
+pub(crate) struct JpegBaselineFrameGeometry {
     frame_columns: u32,
     frame_rows: u32,
     tiles_across: u64,
@@ -3593,13 +3274,13 @@ struct JpegBaselineFrameGeometry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct JpegBaselineFrameLocation {
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
+pub(crate) struct JpegBaselineFrameLocation {
+    pub(crate) scene_idx: usize,
+    pub(crate) series_idx: usize,
+    pub(crate) level_idx: u32,
+    pub(crate) z: u32,
+    pub(crate) c: u32,
+    pub(crate) t: u32,
 }
 
 impl JpegBaselineFrameLocation {
@@ -3783,7 +3464,7 @@ fn read_direct_jpeg_passthrough_frame(
     Ok(raw.data)
 }
 
-fn read_raw_jpeg_passthrough_tile(
+pub(crate) fn read_raw_jpeg_passthrough_tile(
     slide: &Slide,
     location: JpegBaselineFrameLocation,
     geometry: JpegBaselineFrameGeometry,
@@ -3900,7 +3581,7 @@ fn jpeg_baseline_frame_geometry(
     })
 }
 
-fn jpeg_baseline_route_frame_geometry(
+pub(crate) fn jpeg_baseline_route_frame_geometry(
     slide: &Slide,
     level: &statumen::Level,
     location: JpegBaselineFrameLocation,
@@ -3976,7 +3657,7 @@ fn native_jpeg_frame_geometry_is_viewer_friendly(
     frame_columns.min(frame_rows) >= fallback_tile_size.div_ceil(2)
 }
 
-fn pixel_profile_from_raw_jpeg_tile(
+pub(crate) fn pixel_profile_from_raw_jpeg_tile(
     raw: &RawCompressedTile,
 ) -> Result<PixelProfile, WsiDicomError> {
     if raw.compression != Compression::Jpeg {
@@ -4014,7 +3695,7 @@ fn pixel_profile_from_raw_jpeg_tile(
     })
 }
 
-fn raw_jpeg_profile_can_passthrough(
+pub(crate) fn raw_jpeg_profile_can_passthrough(
     profile: PixelProfile,
     allow_raw_rgb_passthrough: bool,
 ) -> bool {
@@ -4029,7 +3710,7 @@ fn raw_jpeg_matches_frame_geometry(
     raw.compression == Compression::Jpeg && raw.width == frame_columns && raw.height == frame_rows
 }
 
-fn raw_rgb_passthrough_has_no_geometry_fallback(
+pub(crate) fn raw_rgb_passthrough_has_no_geometry_fallback(
     level: &statumen::Level,
     geometry: JpegBaselineFrameGeometry,
 ) -> bool {
@@ -7291,34 +6972,6 @@ mod tests {
             passed.transfer_syntax,
             CompressedTransferSyntax::Jpeg2000Lossless
         );
-    }
-
-    #[test]
-    fn htj2k_passthrough_probe_is_limited_to_dicom_sources() {
-        assert!(j2k_family_passthrough_probe_allowed(
-            std::path::Path::new("source.svs"),
-            TransferSyntax::Jpeg2000
-        ));
-        assert!(j2k_family_passthrough_probe_allowed(
-            std::path::Path::new("source.svs"),
-            TransferSyntax::Jpeg2000Lossless
-        ));
-        assert!(j2k_family_passthrough_probe_allowed(
-            std::path::Path::new("source.dcm"),
-            TransferSyntax::Htj2kLosslessRpcl
-        ));
-        assert!(j2k_family_passthrough_probe_allowed(
-            std::path::Path::new("source.DCM"),
-            TransferSyntax::Htj2kLossless
-        ));
-        assert!(!j2k_family_passthrough_probe_allowed(
-            std::path::Path::new("source.svs"),
-            TransferSyntax::Htj2kLosslessRpcl
-        ));
-        assert!(!j2k_family_passthrough_probe_allowed(
-            std::path::Path::new("source.ndpi"),
-            TransferSyntax::Htj2kLosslessRpcl
-        ));
     }
 
     #[test]
