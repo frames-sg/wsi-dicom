@@ -58,6 +58,39 @@ Runtime backend selection is still controlled by the CLI/API backend option:
 compiled in, `prefer-device` falls back to CPU and `require-device` reports a
 clear unsupported-device error.
 
+## Rust API
+
+Use the builder API for normal exports. Its defaults match the CLI: research
+placeholder metadata, all source levels, source-aware transfer syntax selection,
+and `DicomExportOptions::default()` for the remaining conversion options.
+
+```rust
+use wsi_dicom::DicomExport;
+
+let report = DicomExport::from_slide("slide.ndpi")
+    .to_directory("out")
+    .run()?;
+```
+
+Use request types when an integration needs full control:
+
+```rust
+use wsi_dicom::{
+    export_dicom, DicomExportOptions, DicomExportRequest, MetadataSource, TransferSyntax,
+};
+
+let mut options = DicomExportOptions::default();
+options.transfer_syntax = TransferSyntax::Htj2kLosslessRpcl;
+
+let report = export_dicom(DicomExportRequest {
+    source_path: "slide.ndpi".into(),
+    output_dir: "out".into(),
+    options,
+    metadata: MetadataSource::ResearchPlaceholder,
+    level_filter: None,
+})?;
+```
+
 J2K/HTJ2K runtime codec validation is explicit. The default
 `codec_validation: Disabled` skips the per-frame roundtrip validation decode in
 normal conversion so production exports do not pay that cost. Set
@@ -131,9 +164,11 @@ passthrough: JPEG-backed sources use JPEG Baseline 8-bit when eligible, JPEG
 2000-backed sources use general JPEG 2000 when eligible, and other sources fall
 back to HTJ2K Lossless RPCL. Pass
 `--transfer-syntax htj2k-lossless-rpcl` to explicitly request HTJ2K re-encoding.
-The Rust API keeps `DicomExportOptions::default()` source-independent at
-HTJ2K Lossless RPCL; integrations that want the CLI default can call
-`default_transfer_syntax_for_source(...)` before export.
+The builder resolves source-aware transfer syntax at `build_request()` or
+`run()` time. `DicomExportOptions::default()` remains source-independent at
+HTJ2K Lossless RPCL for advanced request construction; integrations that build
+requests directly can call `default_transfer_syntax_for_source(...)` before
+export.
 
 | CLI value | UID | Description |
 | --- | --- | --- |
