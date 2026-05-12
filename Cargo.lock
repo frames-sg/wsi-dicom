@@ -1711,7 +1711,7 @@ dependencies = [
 
 [[package]]
 name = "wsi-dicom"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "clap",
  "dicom-core",
