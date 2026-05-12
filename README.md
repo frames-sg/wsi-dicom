@@ -29,18 +29,24 @@ Rust code.
 crate directly; JPEG 2000 and WSI reader crates are internal implementation
 dependencies.
 
-Default builds are CPU-only:
+Install the CLI when you want a command-line conversion tool:
+
+```sh
+cargo install wsi-dicom
+```
+
+Add the Rust API when you are writing an application or workflow:
 
 ```toml
 [dependencies]
-wsi-dicom = "0.1"
+wsi-dicom = "0.1.9"
 ```
 
 GPU support is opt-in:
 
 ```toml
 [dependencies]
-wsi-dicom = { version = "0.1", features = ["gpu"] }
+wsi-dicom = { version = "0.1.9", features = ["gpu"] }
 ```
 
 Feature flags:
@@ -57,6 +63,26 @@ Runtime backend selection is still controlled by the CLI/API backend option:
 `auto`, `cpu`, `prefer-device`, or `require-device`. If GPU features are not
 compiled in, `prefer-device` falls back to CPU and `require-device` reports a
 clear unsupported-device error.
+
+## Fast Path For LLM-Assisted Use
+
+If you are a pathologist or researcher asking an LLM to use this repository,
+give it this instruction:
+
+> Use `wsi-dicom` to convert a whole-slide image that `statumen` can open into
+> DICOM VL Whole Slide Microscopy. Prefer the builder API in Rust and the
+> `wsi-dicom convert` command in the shell. Do not write DICOM tags manually
+> unless metadata policy requires it.
+
+The shortest CLI export is:
+
+```sh
+wsi-dicom convert slide.ndpi --out dicom-out --research-placeholder
+```
+
+When you do not pass `--transfer-syntax`, the CLI chooses a source-aware
+default: it preserves eligible native JPEG or JPEG 2000 source frames and
+falls back to HTJ2K Lossless RPCL when passthrough is unavailable.
 
 ## Rust API
 
