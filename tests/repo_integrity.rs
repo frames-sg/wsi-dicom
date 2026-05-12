@@ -236,6 +236,27 @@ fn tracked_text_files_do_not_include_agent_private_artifacts() {
     );
 }
 
+#[test]
+fn tracked_text_files_do_not_include_local_user_paths() {
+    let unix_user_home = ["/", "Users", "/"].concat();
+    let windows_user_home = ["C:", "\\", "Users", "\\"].concat();
+    let mut offenders = Vec::new();
+
+    for path in tracked_text_files(crate_root()) {
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        if source.contains(&unix_user_home) || source.contains(&windows_user_home) {
+            offenders.push(relative_path(&path));
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "tracked text files must not include local user-home paths:\n{}",
+        offenders.join("\n")
+    );
+}
+
 fn rust_sources(root: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     visit_rust_sources(root, &mut out);

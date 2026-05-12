@@ -82,7 +82,7 @@ validating generated DICOM/codec output against external tools.
 ## Corpus Coverage
 
 Corpus:
-`/Users/user/Bench/SlideViewer/downloads/openslide-testdata`
+local OpenSlide testdata corpus, configured outside the repository.
 
 Bounded HTJ2K RPCL baseline, default non-Metal build, backend `auto`, tile size
 512, `max_frames_per_level=4`, `max_levels=3`, `max_level_ms=30000`:
@@ -990,8 +990,8 @@ resident GPU. With the 8% gate, `auto --source-device-decode` selects resident
 GPU for the same 64-frame scope: `resident_gpu_transcode_frames=64`,
 `cpu_fallback_frames=0`, and `elapsed_micros=39165374` including probe cost.
 
-Bounded `coverage-corpus` over
-`/Users/user/Bench/SlideViewer/downloads/openslide-testdata`, `max_levels=1`,
+Bounded `coverage-corpus` over the local OpenSlide testdata corpus,
+`max_levels=1`,
 `max_frames_per_level=16`, `max_level_ms=30000`, HTJ2K RPCL, `backend=auto`,
 and `--source-device-decode` after the JPEG residency split considered 23
 sources and sampled 352 frames. After the 8% gate, the honest resident count is

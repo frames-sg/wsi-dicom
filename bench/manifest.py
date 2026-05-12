@@ -1,9 +1,23 @@
 """Slide registry, tool registry, and transfer-syntax mapping for the benchmark."""
 from __future__ import annotations
 from dataclasses import dataclass
+import os
 from pathlib import Path
 
-REPO_ROOT = Path("/Users/user/Bench/wsi-dicom")
+
+def _repo_root() -> Path:
+    if root := os.environ.get("WSI_DICOM_REPO_ROOT"):
+        return Path(root).expanduser().resolve()
+    return Path(__file__).resolve().parents[1]
+
+
+def _slide_path(env_var: str, fallback_relative: str) -> str:
+    if path := os.environ.get(env_var):
+        return str(Path(path).expanduser())
+    return str(BENCH_ROOT / fallback_relative)
+
+
+REPO_ROOT = _repo_root()
 WSI_DICOM_BIN = REPO_ROOT / "target" / "release" / "wsi-dicom"
 BENCH_ROOT = REPO_ROOT / "bench"
 OUTPUTS_ROOT = BENCH_ROOT / "outputs"
@@ -25,7 +39,7 @@ class Slide:
 SLIDES: list[Slide] = [
     Slide(
         slide_id="tiff_cmu1",
-        path="/Users/user/Bench/wsi-dicom/bench/testdata/CMU-1.tiff",
+        path=_slide_path("WSI_DICOM_BENCH_TIFF_CMU1", "testdata/CMU-1.tiff"),
         vendor="generic-tiff",
         size_class="mid",
         native_codec="jpeg",
@@ -35,7 +49,7 @@ SLIDES: list[Slide] = [
     ),
     Slide(
         slide_id="ndpi_mid",
-        path="/Users/user/Downloads/Test slides/297.12-1 HA - 2021-05-21 15.42.45.ndpi",
+        path=_slide_path("WSI_DICOM_BENCH_NDPI_MID", "slides/ndpi-mid.ndpi"),
         vendor="hamamatsu",
         size_class="mid",
         native_codec="jpeg",
@@ -45,7 +59,7 @@ SLIDES: list[Slide] = [
     ),
     Slide(
         slide_id="ndpi_large",
-        path="/Users/user/Downloads/GS-26-2522 D12 DAVIS Ki-67.ndpi",
+        path=_slide_path("WSI_DICOM_BENCH_NDPI_LARGE", "slides/ndpi-large.ndpi"),
         vendor="hamamatsu",
         size_class="large",
         native_codec="jpeg",
@@ -55,7 +69,7 @@ SLIDES: list[Slide] = [
     ),
     Slide(
         slide_id="svs_mid",
-        path="/Users/user/Downloads/gdc_download_20260221_235930.806672/5e6aec52-6d9a-4c37-9113-58792e717113/Pancreas.svs",
+        path=_slide_path("WSI_DICOM_BENCH_SVS_MID", "slides/svs-mid.svs"),
         vendor="aperio",
         size_class="mid",
         native_codec="j2k",
@@ -65,7 +79,7 @@ SLIDES: list[Slide] = [
     ),
     Slide(
         slide_id="svs_large",
-        path="/Users/user/Downloads/gdc_download_20260222_000619.992001/dfc7216d-a42b-40a7-87fa-29b207fdcb66/Metastatic Melanoma.svs",
+        path=_slide_path("WSI_DICOM_BENCH_SVS_LARGE", "slides/svs-large.svs"),
         vendor="aperio",
         size_class="large",
         native_codec="jpeg",
