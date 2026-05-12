@@ -49,15 +49,3 @@ vendored-codecs = []
 
 [dev-dependencies]
 tempfile = "3"
-
-[patch.crates-io]
-statumen = { path = "../statumen" }
-signinum-core = { path = "../signinum/crates/signinum-core" }
-signinum-j2k = { path = "../signinum/crates/signinum-j2k" }
-signinum-j2k-cuda = { path = "../signinum/crates/signinum-j2k-cuda" }
-signinum-j2k-metal = { path = "../signinum/crates/signinum-j2k-metal" }
-signinum-j2k-native = { path = "../signinum/crates/signinum-j2k-native" }
-signinum-jpeg = { path = "../signinum/crates/signinum-jpeg" }
-signinum-jpeg-metal = { path = "../signinum/crates/signinum-jpeg-metal" }
-signinum-tilecodec = { path = "../signinum/crates/signinum-tilecodec" }
-signinum-cuda-runtime = { path = "../signinum/crates/signinum-cuda-runtime" }
