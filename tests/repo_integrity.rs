@@ -150,6 +150,23 @@ fn metal_feature_enables_statumen_metal_decode_plumbing() {
     );
 }
 
+#[test]
+fn readme_keeps_public_quickstart_current() {
+    let readme = fs::read_to_string(crate_root().join("README.md")).expect("read README");
+    for required in [
+        "cargo install wsi-dicom",
+        "wsi-dicom = \"0.1.9\"",
+        "Fast Path For LLM-Assisted Use",
+        "wsi-dicom convert slide.ndpi --out dicom-out --research-placeholder",
+        "DicomExport::from_slide",
+    ] {
+        assert!(
+            readme.contains(required),
+            "README.md must keep the public quickstart current and LLM-friendly; missing `{required}`"
+        );
+    }
+}
+
 fn rust_sources(root: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     visit_rust_sources(root, &mut out);
