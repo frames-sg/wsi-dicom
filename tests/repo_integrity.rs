@@ -210,10 +210,70 @@ fn crates_io_publish_path_is_explicit() {
     }
 }
 
+#[test]
+fn tracked_text_files_do_not_include_agent_private_artifacts() {
+    let private_dir = ["docs", "private-docs"].join("/");
+    let migration_doc = ["MIGRATION", ".md"].concat();
+    let migration_doc_lower = migration_doc.to_ascii_lowercase();
+    let mut offenders = Vec::new();
+
+    for path in tracked_text_files(crate_root()) {
+        let relative = relative_path(&path);
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if relative.starts_with(&private_dir) || file_name == migration_doc_lower {
+            offenders.push(relative);
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "tracked text files must not include agent-private planning docs or migration scratch files:\n{}",
+        offenders.join("\n")
+    );
+}
+
 fn rust_sources(root: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     visit_rust_sources(root, &mut out);
     out
+}
+
+fn tracked_text_files(root: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    visit_text_files(root, &mut out);
+    out
+}
+
+fn visit_text_files(path: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if matches!(file_name, ".git" | "target") {
+        return;
+    }
+
+    for entry in fs::read_dir(path).unwrap_or_else(|err| panic!("read {}: {err}", path.display())) {
+        let entry =
+            entry.unwrap_or_else(|err| panic!("read dir entry in {}: {err}", path.display()));
+        let path = entry.path();
+        if path.is_dir() {
+            visit_text_files(&path, out);
+        } else if is_text_file(&path) {
+            out.push(path);
+        }
+    }
+}
+
+fn is_text_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|value| value.to_str()),
+        Some("md" | "rs" | "toml" | "yaml" | "yml" | "sh" | "txt")
+    ) || path.file_name().and_then(|value| value.to_str()) == Some(".gitignore")
 }
 
 fn visit_rust_sources(path: &Path, out: &mut Vec<std::path::PathBuf>) {
