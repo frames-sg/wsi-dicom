@@ -168,6 +168,22 @@ fn readme_keeps_public_quickstart_current() {
 }
 
 #[test]
+fn package_metadata_points_to_public_project_surfaces() {
+    let manifest = fs::read_to_string(crate_root().join("Cargo.toml")).expect("read Cargo.toml");
+
+    for required in [
+        "repository = \"https://github.com/frames-sg/wsi-dicom\"",
+        "homepage = \"https://github.com/frames-sg/wsi-dicom\"",
+        "documentation = \"https://docs.rs/wsi-dicom\"",
+    ] {
+        assert!(
+            manifest.contains(required),
+            "Cargo.toml package metadata must include `{required}`"
+        );
+    }
+}
+
+#[test]
 fn crates_io_publish_path_is_explicit() {
     let workflow = fs::read_to_string(crate_root().join(".github/workflows/publish.yml"))
         .expect("read publish workflow");
