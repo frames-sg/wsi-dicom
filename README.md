@@ -39,14 +39,14 @@ Add the Rust API when you are writing an application or workflow:
 
 ```toml
 [dependencies]
-wsi-dicom = "0.1.9"
+wsi-dicom = "0.2.0"
 ```
 
 GPU support is opt-in:
 
 ```toml
 [dependencies]
-wsi-dicom = { version = "0.1.9", features = ["gpu"] }
+wsi-dicom = { version = "0.2.0", features = ["gpu"] }
 ```
 
 Feature flags:
