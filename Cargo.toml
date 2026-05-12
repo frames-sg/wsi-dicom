@@ -1,6 +1,6 @@
 [package]
 name = "wsi-dicom"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 license = "Apache-2.0"
 description = "DICOM whole-slide export layer for statumen datasets"
