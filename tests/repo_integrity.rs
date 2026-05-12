@@ -155,7 +155,7 @@ fn readme_keeps_public_quickstart_current() {
     let readme = fs::read_to_string(crate_root().join("README.md")).expect("read README");
     for required in [
         "cargo install wsi-dicom",
-        "wsi-dicom = \"0.1.9\"",
+        "wsi-dicom = \"0.2.0\"",
         "Fast Path For LLM-Assisted Use",
         "wsi-dicom convert slide.ndpi --out dicom-out --research-placeholder",
         "DicomExport::from_slide",
