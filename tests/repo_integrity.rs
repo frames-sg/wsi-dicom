@@ -23,6 +23,42 @@ fn source_does_not_import_signinum_j2k_native_directly() {
 }
 
 #[test]
+fn lib_rs_stays_facade_sized() {
+    let lib = crate_root().join("src/lib.rs");
+    let source =
+        fs::read_to_string(&lib).unwrap_or_else(|err| panic!("read {}: {err}", lib.display()));
+    let nonblank_lines = source
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+
+    assert!(
+        nonblank_lines <= 80,
+        "src/lib.rs must stay facade-sized; found {nonblank_lines} nonblank lines"
+    );
+}
+
+#[test]
+fn cli_report_module_does_not_call_export_internals_directly() {
+    let path = crate_root().join("src/cli_report.rs");
+    let source =
+        fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+
+    for forbidden in [
+        "export_dicom(",
+        "profile_dicom_routes(",
+        "profile_dicom_route_coverage(",
+        "profile_dicom_route_corpus_coverage(",
+        "DefaultTransferSyntaxRequest",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "src/cli_report.rs must format reports only, but contains `{forbidden}`"
+        );
+    }
+}
+
+#[test]
 fn lockfile_has_no_duplicate_signinum_package_sources() {
     let lockfile = fs::read_to_string(crate_root().join("Cargo.lock")).expect("read Cargo.lock");
     let mut duplicates = Vec::new();
