@@ -167,6 +167,33 @@ fn readme_keeps_public_quickstart_current() {
     }
 }
 
+#[test]
+fn crates_io_publish_path_is_explicit() {
+    let workflow = fs::read_to_string(crate_root().join(".github/workflows/publish.yml"))
+        .expect("read publish workflow");
+    let script = fs::read_to_string(crate_root().join("scripts/publish-crate.sh"))
+        .expect("read publish script");
+
+    assert!(
+        workflow.contains("scripts/publish-crate.sh"),
+        "publish workflow must call the checked-in publish script"
+    );
+    assert!(
+        workflow.contains("CRATES_IO_API_TOKEN"),
+        "publish workflow must require the crates.io token secret"
+    );
+    for required in [
+        "cargo publish --dry-run",
+        "cargo info \"${crate}@${version}\"",
+        "cargo publish",
+    ] {
+        assert!(
+            script.contains(required),
+            "publish script must include `{required}`"
+        );
+    }
+}
+
 fn rust_sources(root: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     visit_rust_sources(root, &mut out);
