@@ -1,17 +1,6 @@
 /target
-
-
-private-notes.md
-private-notes.md
 bench/testdata/
 bench/results/
 bench/outputs/
 __pycache__/
 *.py[cod]
-paper/
-papers/
-docs/papers/
-docs/benchmarks/paper/
-*.pdf
-*.docx
-*.pptx
