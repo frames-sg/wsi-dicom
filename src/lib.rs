@@ -7,10 +7,14 @@
 //! behind crate-private module boundaries.
 
 mod api;
+#[cfg(feature = "bench-internals")]
+#[doc(hidden)]
+pub mod bench_support;
 mod defaults;
 mod encode;
 mod error;
 mod export;
+mod instance_context;
 mod metadata;
 mod options;
 mod passthrough;
@@ -21,6 +25,9 @@ mod routing;
 mod tile;
 mod uid;
 mod writer;
+
+#[cfg(test)]
+mod test_support;
 
 #[cfg(any(feature = "cuda", all(feature = "metal", target_os = "macos")))]
 mod gpu;
@@ -35,9 +42,9 @@ pub use profile::{
     profile_dicom_route_corpus_coverage, profile_dicom_route_coverage, profile_dicom_routes,
 };
 pub use report::{
-    DicomEncodedFrame, DicomExportMetrics, DicomExportReport, DicomInstanceReport,
-    DicomRouteCorpusCoverageFailure, DicomRouteCorpusCoverageReport, DicomRouteCoverageReport,
-    DicomRouteProfileReport,
+    duration_as_reported_micros, DicomEncodedFrame, DicomExportMetrics, DicomExportReport,
+    DicomInstanceReport, DicomRouteCorpusCoverageFailure, DicomRouteCorpusCoverageReport,
+    DicomRouteCoverageReport, DicomRouteProfileReport,
 };
 pub use request::{
     DefaultTransferSyntaxRequest, DicomExportRequest, DicomJ2kFrameEncodeRequest,

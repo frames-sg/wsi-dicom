@@ -36,11 +36,6 @@ impl CodecValidation {
             Self::RoundTrip => signinum_j2k::J2kEncodeValidation::CpuRoundTrip,
         }
     }
-
-    #[allow(dead_code)]
-    pub(crate) fn enabled(self) -> bool {
-        self == Self::RoundTrip
-    }
 }
 
 /// DICOM transfer syntax choices for exported VL Whole Slide Microscopy files.

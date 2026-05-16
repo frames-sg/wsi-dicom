@@ -361,23 +361,23 @@ impl DicomExportMetrics {
     }
 
     pub(crate) fn record_cpu_input(&mut self) {
-        self.total_frames = self.total_frames.saturating_add(1);
-        self.cpu_input_frames = self.cpu_input_frames.saturating_add(1);
+        increment_u64(&mut self.total_frames);
+        increment_u64(&mut self.cpu_input_frames);
     }
 
     pub(crate) fn record_gpu_input(&mut self) {
-        self.total_frames = self.total_frames.saturating_add(1);
-        self.gpu_input_decode_frames = self.gpu_input_decode_frames.saturating_add(1);
+        increment_u64(&mut self.total_frames);
+        increment_u64(&mut self.gpu_input_decode_frames);
     }
 
     pub(crate) fn record_passthrough_frame(&mut self) {
-        self.total_frames = self.total_frames.saturating_add(1);
-        self.jpeg_passthrough_frames = self.jpeg_passthrough_frames.saturating_add(1);
+        increment_u64(&mut self.total_frames);
+        increment_u64(&mut self.jpeg_passthrough_frames);
     }
 
     pub(crate) fn record_j2k_passthrough_frame(&mut self) {
-        self.total_frames = self.total_frames.saturating_add(1);
-        self.j2k_passthrough_frames = self.j2k_passthrough_frames.saturating_add(1);
+        increment_u64(&mut self.total_frames);
+        increment_u64(&mut self.j2k_passthrough_frames);
     }
 
     pub(crate) fn record_pixel_profile(&mut self, profile: PixelProfile) {
@@ -396,7 +396,7 @@ impl DicomExportMetrics {
     }
 
     pub(crate) fn record_unknown_pixel_profile(&mut self) {
-        self.unknown_pixel_profile_frames = self.unknown_pixel_profile_frames.saturating_add(1);
+        increment_u64(&mut self.unknown_pixel_profile_frames);
     }
 
     pub(crate) fn record_transcode_route(&mut self, used_gpu_input: bool, used_gpu_encode: bool) {
@@ -479,24 +479,24 @@ impl DicomExportMetrics {
     }
 
     pub(crate) fn record_jpeg_decode_fallback(&mut self) {
-        self.jpeg_decode_fallback_frames = self.jpeg_decode_fallback_frames.saturating_add(1);
+        increment_u64(&mut self.jpeg_decode_fallback_frames);
     }
 
     pub(crate) fn record_jpeg_cpu_fallback_route_classification(&mut self) {
-        self.total_frames = self.total_frames.saturating_add(1);
-        self.cpu_fallback_frames = self.cpu_fallback_frames.saturating_add(1);
-        self.jpeg_decode_fallback_frames = self.jpeg_decode_fallback_frames.saturating_add(1);
+        increment_u64(&mut self.total_frames);
+        increment_u64(&mut self.cpu_fallback_frames);
+        increment_u64(&mut self.jpeg_decode_fallback_frames);
         self.record_unknown_pixel_profile();
     }
 
     pub(crate) fn record_j2k_passthrough_only_fallback_classification(&mut self) {
-        self.total_frames = self.total_frames.saturating_add(1);
-        self.cpu_fallback_frames = self.cpu_fallback_frames.saturating_add(1);
+        increment_u64(&mut self.total_frames);
+        increment_u64(&mut self.cpu_fallback_frames);
         self.record_unknown_pixel_profile();
     }
 
     pub(crate) fn record_jpeg_cpu_encode(&mut self, duration: Duration) {
-        self.jpeg_cpu_encode_frames = self.jpeg_cpu_encode_frames.saturating_add(1);
+        increment_u64(&mut self.jpeg_cpu_encode_frames);
         self.record_encode_duration(duration);
     }
 
@@ -508,7 +508,7 @@ impl DicomExportMetrics {
 
     pub(crate) fn record_encoded_frame(&mut self, encoded: &encode::EncodedDicomJ2kFrame) {
         if encoded.used_device_encode {
-            self.gpu_encode_frames = self.gpu_encode_frames.saturating_add(1);
+            increment_u64(&mut self.gpu_encode_frames);
             self.record_gpu_dispatch_duration(encoded.encode_duration);
             self.record_gpu_encode_hardware_duration(
                 encoded.device_gpu_duration,
@@ -516,7 +516,7 @@ impl DicomExportMetrics {
             );
         }
         if encoded.used_device_validation {
-            self.gpu_validation_frames = self.gpu_validation_frames.saturating_add(1);
+            increment_u64(&mut self.gpu_validation_frames);
             self.record_gpu_dispatch_duration(encoded.validation_duration);
         }
         self.record_encode_duration(encoded.encode_duration);
@@ -524,9 +524,7 @@ impl DicomExportMetrics {
     }
 
     pub(crate) fn record_input_decode_duration(&mut self, duration: Duration) {
-        self.input_decode_micros = self
-            .input_decode_micros
-            .saturating_add(duration_as_reported_micros(duration));
+        add_duration_micros(&mut self.input_decode_micros, duration);
     }
 
     pub(crate) fn record_gpu_input_decode_duration(&mut self, duration: Duration) {
@@ -535,9 +533,7 @@ impl DicomExportMetrics {
     }
 
     pub(crate) fn record_compose_duration(&mut self, duration: Duration) {
-        self.compose_micros = self
-            .compose_micros
-            .saturating_add(duration_as_reported_micros(duration));
+        add_duration_micros(&mut self.compose_micros, duration);
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -547,21 +543,15 @@ impl DicomExportMetrics {
     }
 
     pub(crate) fn record_encode_duration(&mut self, duration: Duration) {
-        self.encode_micros = self
-            .encode_micros
-            .saturating_add(duration_as_reported_micros(duration));
+        add_duration_micros(&mut self.encode_micros, duration);
     }
 
     pub(crate) fn record_validation_duration(&mut self, duration: Duration) {
-        self.validation_micros = self
-            .validation_micros
-            .saturating_add(duration_as_reported_micros(duration));
+        add_duration_micros(&mut self.validation_micros, duration);
     }
 
     pub(crate) fn record_gpu_dispatch_duration(&mut self, duration: Duration) {
-        self.gpu_dispatch_micros = self
-            .gpu_dispatch_micros
-            .saturating_add(duration_as_reported_micros(duration));
+        add_duration_micros(&mut self.gpu_dispatch_micros, duration);
     }
 
     pub(crate) fn record_gpu_encode_hardware_duration(
@@ -583,9 +573,7 @@ impl DicomExportMetrics {
     }
 
     pub(crate) fn record_write_duration(&mut self, duration: Duration) {
-        self.write_micros = self
-            .write_micros
-            .saturating_add(duration_as_reported_micros(duration));
+        add_duration_micros(&mut self.write_micros, duration);
     }
 
     pub fn gpu_encode_effective_parallelism(&self) -> f64 {
@@ -597,9 +585,33 @@ impl DicomExportMetrics {
     }
 }
 
-pub(crate) fn duration_as_reported_micros(duration: Duration) -> u128 {
+pub fn duration_as_reported_micros(duration: Duration) -> u128 {
     match duration.as_micros() {
         0 if duration > Duration::ZERO => 1,
         micros => micros,
+    }
+}
+
+fn increment_u64(value: &mut u64) {
+    *value = value.saturating_add(1);
+}
+
+fn add_duration_micros(value: &mut u128, duration: Duration) {
+    *value = value.saturating_add(duration_as_reported_micros(duration));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::duration_as_reported_micros;
+    use std::time::Duration;
+
+    #[test]
+    fn duration_as_reported_micros_preserves_zero_duration() {
+        assert_eq!(duration_as_reported_micros(Duration::ZERO), 0);
+    }
+
+    #[test]
+    fn duration_as_reported_micros_rounds_submicrosecond_work_up_to_one() {
+        assert_eq!(duration_as_reported_micros(Duration::from_nanos(1)), 1);
     }
 }

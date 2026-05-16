@@ -38,6 +38,7 @@ objc = { version = "0.2", optional = true }
 
 [features]
 default = []
+bench-internals = []
 gpu = ["cuda", "metal"]
 cuda = ["dep:signinum-j2k-cuda"]
 metal = [
@@ -50,4 +51,10 @@ metal = [
 vendored-codecs = []
 
 [dev-dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 tempfile = "3"
+
+[[bench]]
+name = "internal_helpers"
+harness = false
+required-features = ["bench-internals"]

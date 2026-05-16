@@ -4,20 +4,20 @@ use std::{path::PathBuf, time::Duration};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use wsi_dicom::{
-    default_transfer_syntax_for_source, profile_dicom_route_corpus_coverage,
-    profile_dicom_route_coverage, profile_dicom_routes, CodecValidation,
-    DefaultTransferSyntaxRequest, DicomExport, DicomExportOptions, DicomExportReport,
-    DicomMetadata, DicomRouteCorpusCoverageProgress, DicomRouteCorpusCoverageRequest,
-    DicomRouteCoverageProgress, DicomRouteCoverageReport, DicomRouteCoverageRequest,
-    DicomRouteProfileRequest, EncodeBackendPreference, MetadataSource, TransferSyntax,
-    WsiDicomError,
+    default_transfer_syntax_for_source, duration_as_reported_micros,
+    profile_dicom_route_corpus_coverage, profile_dicom_route_coverage, profile_dicom_routes,
+    CodecValidation, DefaultTransferSyntaxRequest, DicomExport, DicomExportOptions,
+    DicomExportReport, DicomMetadata, DicomRouteCorpusCoverageProgress,
+    DicomRouteCorpusCoverageRequest, DicomRouteCoverageProgress, DicomRouteCoverageReport,
+    DicomRouteCoverageRequest, DicomRouteProfileRequest, EncodeBackendPreference, MetadataSource,
+    TransferSyntax, WsiDicomError,
 };
 
 mod cli_report;
 
 use cli_report::{
-    duration_as_reported_micros, format_corpus_coverage_summary, format_coverage_summary,
-    format_profile_summary, format_report_summary, format_sustain_export_iteration_summary,
+    format_corpus_coverage_summary, format_coverage_summary, format_profile_summary,
+    format_report_summary, format_sustain_export_iteration_summary,
     format_sustain_iteration_summary, process_memory_pressure, process_resident_memory_bytes,
     process_thermal_state,
 };
@@ -330,12 +330,7 @@ fn run() -> Result<(), WsiDicomError> {
                 export = export.source_aware_transfer_syntax();
             }
             let report = export.run()?;
-            if json {
-                print_json_line(&report)?;
-            } else {
-                println!("{}", format_report_summary(&report));
-            }
-            Ok(())
+            print_cli_output(json, &report, format_report_summary)
         }
         Command::Profile {
             source,
@@ -368,12 +363,7 @@ fn run() -> Result<(), WsiDicomError> {
                 level,
                 max_frames,
             })?;
-            if json {
-                print_json_line(&report)?;
-            } else {
-                println!("{}", format_profile_summary(&report));
-            }
-            Ok(())
+            print_cli_output(json, &report, format_profile_summary)
         }
         Command::Coverage {
             source,
@@ -413,12 +403,7 @@ fn run() -> Result<(), WsiDicomError> {
                 max_level_elapsed,
                 progress: (!json).then_some(DicomRouteCoverageProgress::Stderr),
             })?;
-            if json {
-                print_json_line(&report)?;
-            } else {
-                println!("{}", format_coverage_summary(&report));
-            }
-            Ok(())
+            print_cli_output(json, &report, format_coverage_summary)
         }
         Command::CoverageCorpus {
             root,
@@ -458,12 +443,7 @@ fn run() -> Result<(), WsiDicomError> {
                 max_level_elapsed,
                 progress: (!json).then_some(DicomRouteCorpusCoverageProgress::Stderr),
             })?;
-            if json {
-                print_json_line(&report)?;
-            } else {
-                println!("{}", format_corpus_coverage_summary(&report));
-            }
-            Ok(())
+            print_cli_output(json, &report, format_corpus_coverage_summary)
         }
         Command::SustainConvert {
             source,
@@ -655,6 +635,29 @@ struct SustainCoverageIterationJson<'a> {
     report: &'a DicomRouteCoverageReport,
 }
 
+fn cli_output_line<T, F>(json: bool, value: &T, summary: F) -> Result<String, WsiDicomError>
+where
+    T: serde::Serialize,
+    F: FnOnce(&T) -> String,
+{
+    if json {
+        serde_json::to_string(value).map_err(|source| WsiDicomError::JsonSerialize {
+            message: source.to_string(),
+        })
+    } else {
+        Ok(summary(value))
+    }
+}
+
+fn print_cli_output<T, F>(json: bool, value: &T, summary: F) -> Result<(), WsiDicomError>
+where
+    T: serde::Serialize,
+    F: FnOnce(&T) -> String,
+{
+    println!("{}", cli_output_line(json, value, summary)?);
+    Ok(())
+}
+
 fn print_json_line<T: serde::Serialize>(value: &T) -> Result<(), WsiDicomError> {
     let json = serde_json::to_string(value).map_err(|source| WsiDicomError::JsonSerialize {
         message: source.to_string(),
@@ -789,8 +792,8 @@ fn looks_like_fhir(value: &serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_max_frames_per_level, load_metadata_source, max_level_elapsed_from_ms, Cli,
-        Command, TransferSyntaxArg,
+        cli_output_line, effective_max_frames_per_level, load_metadata_source,
+        max_level_elapsed_from_ms, Cli, Command, TransferSyntaxArg,
     };
     use crate::cli_report::{
         format_corpus_coverage_summary_with_memory, format_coverage_summary_with_memory,
@@ -804,6 +807,22 @@ mod tests {
         DicomExportMetrics, DicomExportReport, DicomRouteCorpusCoverageFailure,
         DicomRouteCorpusCoverageReport, DicomRouteCoverageReport, DicomRouteProfileReport,
     };
+
+    #[derive(serde::Serialize)]
+    struct SampleCliOutput {
+        value: u8,
+    }
+
+    #[test]
+    fn cli_output_line_formats_summary_or_json() {
+        let sample = SampleCliOutput { value: 7 };
+
+        let summary = cli_output_line(false, &sample, |_| "summary".to_string()).unwrap();
+        assert_eq!(summary, "summary");
+
+        let json = cli_output_line(true, &sample, |_| "summary".to_string()).unwrap();
+        assert_eq!(json, r#"{"value":7}"#);
+    }
 
     #[test]
     fn cli_uses_research_placeholder_metadata_by_default() {
@@ -1194,6 +1213,23 @@ mod tests {
         assert!(summary.contains("route_cpu_fallback_pct=33.3"));
         assert!(summary.contains("route_unclassified=0"));
         assert!(summary.contains("rss_mb=10.0"));
+        assert_eq!(
+            summary,
+            concat!(
+                "wrote 0 DICOM instance(s) to out; frames total=27 route_passthrough=11 route_passthrough_pct=40.7 ",
+                "route_gpu_transcode=7 route_gpu_transcode_pct=25.9 route_resident_gpu_transcode=4 route_partial_gpu_transcode=3 ",
+                "route_cpu_fallback=9 route_cpu_fallback_pct=33.3 route_unclassified=0 cpu_input=1 gpu_input_decode=2 ",
+                "gpu_encode=3 gpu_validation=4 gray_frames=0 rgb_like_frames=0 other_component_frames=0 unknown_pixel_profile_frames=0 ",
+                "bits8_frames=0 bits16_frames=0 other_bit_depth_frames=0 gpu_input_batches=2 gpu_compose_batches=1 gpu_encode_batches=3 ",
+                "gpu_encode_configured_inflight_tiles=8 gpu_encode_effective_inflight_tiles=4 gpu_encode_max_observed_inflight_tiles=4 ",
+                "gpu_encode_configured_memory_mib=4096 gpu_encode_effective_memory_mib=3277 gpu_encode_wall_ms=5.000 ",
+                "gpu_encode_effective_parallelism=0.400 gpu_dispatch_ms=6.500 gpu_encode_hardware_ms=2.000 ",
+                "gpu_encode_dispatch_overhead_ms=4.500 auto_probe_frames=0 auto_probe_selected_gpu_input=0 auto_probe_gpu_batches=0 ",
+                "auto_probe_cpu_ms=0.000 auto_probe_gpu_ms=0.000 jpeg_passthrough=5 j2k_passthrough=6 jpeg_decode_fallback=1 ",
+                "jpeg_cpu_encode=1 jpeg_metal_encode=2 input_decode_ms=0.000 compose_ms=0.000 encode_ms=0.000 ",
+                "validation_ms=0.000 write_ms=0.000 rss_mb=10.0"
+            )
+        );
     }
 
     #[test]
@@ -1254,6 +1290,24 @@ mod tests {
         assert!(summary.contains("final_byte_ms=1.250"));
         assert!(summary.contains("elapsed_ms=42.500"));
         assert!(summary.contains("rss_mb=20.0"));
+        assert_eq!(
+            summary,
+            concat!(
+                "profiled source.svs level=2 transfer_syntax=1.2.840.10008.1.2.4.202 requested_frames=12 available_frames=20 ",
+                "sampled_frames_pct=50.0000 frames total=10 route_passthrough=2 route_passthrough_pct=20.0 ",
+                "route_gpu_transcode=7 route_gpu_transcode_pct=70.0 route_resident_gpu_transcode=4 route_partial_gpu_transcode=3 ",
+                "route_cpu_fallback=3 route_cpu_fallback_pct=30.0 route_unclassified=0 cpu_input=0 gpu_input_decode=7 gpu_encode=7 ",
+                "gpu_validation=0 gray_frames=0 rgb_like_frames=0 other_component_frames=0 unknown_pixel_profile_frames=0 bits8_frames=0 ",
+                "bits16_frames=0 other_bit_depth_frames=0 gpu_input_batches=0 gpu_compose_batches=0 gpu_encode_batches=0 ",
+                "gpu_encode_configured_inflight_tiles=0 gpu_encode_effective_inflight_tiles=0 gpu_encode_max_observed_inflight_tiles=0 ",
+                "gpu_encode_configured_memory_mib=0 gpu_encode_effective_memory_mib=0 gpu_encode_wall_ms=0.000 ",
+                "gpu_encode_effective_parallelism=0.000 gpu_dispatch_ms=6.500 gpu_encode_hardware_ms=0.000 ",
+                "gpu_encode_dispatch_overhead_ms=0.000 auto_probe_frames=2 auto_probe_selected_gpu_input=0 auto_probe_gpu_batches=3 ",
+                "auto_probe_cpu_ms=1.200 auto_probe_gpu_ms=1.300 jpeg_passthrough=2 j2k_passthrough=0 jpeg_decode_fallback=1 ",
+                "jpeg_cpu_encode=1 jpeg_metal_encode=2 final_byte_ms=1.250 input_decode_ms=0.000 compose_ms=0.000 ",
+                "encode_ms=0.000 validation_ms=0.000 elapsed_ms=42.500 rss_mb=20.0"
+            )
+        );
     }
 
     #[test]
@@ -1328,6 +1382,24 @@ mod tests {
         assert!(summary.contains("gpu_dispatch_ms=7.000"));
         assert!(summary.contains("elapsed_ms=5.000"));
         assert!(summary.contains("rss_mb=30.0"));
+        assert_eq!(
+            summary,
+            concat!(
+                "covered source.ndpi levels=2 transfer_syntax=1.2.840.10008.1.2.4.50 requested_frames_per_level=8 ",
+                "available_frames=20 sampled_frames_pct=60.0000 complete_frame_coverage=false frames total=12 route_passthrough=8 ",
+                "route_passthrough_pct=66.7 route_gpu_transcode=0 route_gpu_transcode_pct=0.0 route_resident_gpu_transcode=0 ",
+                "route_partial_gpu_transcode=0 route_cpu_fallback=4 route_cpu_fallback_pct=33.3 route_unclassified=0 cpu_input=0 ",
+                "gpu_input_decode=0 gpu_encode=0 gpu_validation=0 gray_frames=0 rgb_like_frames=0 other_component_frames=0 ",
+                "unknown_pixel_profile_frames=0 bits8_frames=0 bits16_frames=0 other_bit_depth_frames=0 gpu_input_batches=0 ",
+                "gpu_compose_batches=0 gpu_encode_batches=0 gpu_encode_configured_inflight_tiles=0 gpu_encode_effective_inflight_tiles=0 ",
+                "gpu_encode_max_observed_inflight_tiles=0 gpu_encode_configured_memory_mib=0 gpu_encode_effective_memory_mib=0 ",
+                "gpu_encode_wall_ms=0.000 gpu_encode_effective_parallelism=0.000 gpu_dispatch_ms=7.000 gpu_encode_hardware_ms=0.000 ",
+                "gpu_encode_dispatch_overhead_ms=0.000 auto_probe_frames=0 auto_probe_selected_gpu_input=0 auto_probe_gpu_batches=0 ",
+                "auto_probe_cpu_ms=0.000 auto_probe_gpu_ms=0.000 jpeg_passthrough=8 j2k_passthrough=0 jpeg_decode_fallback=4 ",
+                "jpeg_cpu_encode=4 jpeg_metal_encode=0 final_byte_ms=0.000 input_decode_ms=3.000 compose_ms=0.000 encode_ms=4.000 ",
+                "validation_ms=0.000 elapsed_ms=5.000 rss_mb=30.0"
+            )
+        );
     }
 
     #[test]
@@ -1352,6 +1424,24 @@ mod tests {
 
         assert!(summary.contains("requested_frames_per_level=all"));
         assert!(summary.contains("complete_frame_coverage=true"));
+        assert_eq!(
+            summary,
+            concat!(
+                "covered source.svs levels=0 transfer_syntax=1.2.840.10008.1.2.4.202 requested_frames_per_level=all ",
+                "available_frames=1 sampled_frames_pct=100.0000 complete_frame_coverage=true frames total=1 route_passthrough=0 ",
+                "route_passthrough_pct=0.0 route_gpu_transcode=1 route_gpu_transcode_pct=100.0 route_resident_gpu_transcode=0 ",
+                "route_partial_gpu_transcode=0 route_cpu_fallback=0 route_cpu_fallback_pct=0.0 route_unclassified=0 cpu_input=0 ",
+                "gpu_input_decode=0 gpu_encode=0 gpu_validation=0 gray_frames=0 rgb_like_frames=0 other_component_frames=0 ",
+                "unknown_pixel_profile_frames=0 bits8_frames=0 bits16_frames=0 other_bit_depth_frames=0 gpu_input_batches=0 ",
+                "gpu_compose_batches=0 gpu_encode_batches=0 gpu_encode_configured_inflight_tiles=0 gpu_encode_effective_inflight_tiles=0 ",
+                "gpu_encode_max_observed_inflight_tiles=0 gpu_encode_configured_memory_mib=0 gpu_encode_effective_memory_mib=0 ",
+                "gpu_encode_wall_ms=0.000 gpu_encode_effective_parallelism=0.000 gpu_dispatch_ms=0.000 gpu_encode_hardware_ms=0.000 ",
+                "gpu_encode_dispatch_overhead_ms=0.000 auto_probe_frames=0 auto_probe_selected_gpu_input=0 auto_probe_gpu_batches=0 ",
+                "auto_probe_cpu_ms=0.000 auto_probe_gpu_ms=0.000 jpeg_passthrough=0 j2k_passthrough=0 jpeg_decode_fallback=0 ",
+                "jpeg_cpu_encode=0 jpeg_metal_encode=0 final_byte_ms=0.000 input_decode_ms=0.000 compose_ms=0.000 encode_ms=0.000 ",
+                "validation_ms=0.000 elapsed_ms=1.000 rss_mb=unknown"
+            )
+        );
     }
 
     #[test]
@@ -1427,6 +1517,24 @@ mod tests {
         assert!(summary.contains("route_resident_gpu_transcode=4"));
         assert!(summary.contains("gpu_dispatch_ms=9.000"));
         assert!(summary.contains("rss_mb=40.0"));
+        assert_eq!(
+            summary,
+            concat!(
+                "covered_corpus corpus sources_considered=3 sources_profiled=1 failures=1 transfer_syntax=1.2.840.10008.1.2.4.202 ",
+                "requested_frames_per_level=4 available_frames=100000 sampled_frames_pct=0.0040 complete_frame_coverage=false ",
+                "frames total=4 route_passthrough=0 route_passthrough_pct=0.0 route_gpu_transcode=4 route_gpu_transcode_pct=100.0 ",
+                "route_resident_gpu_transcode=4 route_partial_gpu_transcode=0 route_cpu_fallback=0 route_cpu_fallback_pct=0.0 ",
+                "route_unclassified=0 cpu_input=0 gpu_input_decode=4 gpu_encode=4 gpu_validation=0 gray_frames=0 rgb_like_frames=0 ",
+                "other_component_frames=0 unknown_pixel_profile_frames=0 bits8_frames=0 bits16_frames=0 other_bit_depth_frames=0 ",
+                "gpu_input_batches=0 gpu_compose_batches=0 gpu_encode_batches=0 gpu_encode_configured_inflight_tiles=0 ",
+                "gpu_encode_effective_inflight_tiles=0 gpu_encode_max_observed_inflight_tiles=0 gpu_encode_configured_memory_mib=0 ",
+                "gpu_encode_effective_memory_mib=0 gpu_encode_wall_ms=0.000 gpu_encode_effective_parallelism=0.000 gpu_dispatch_ms=9.000 ",
+                "gpu_encode_hardware_ms=0.000 gpu_encode_dispatch_overhead_ms=0.000 auto_probe_frames=0 auto_probe_selected_gpu_input=0 ",
+                "auto_probe_gpu_batches=0 auto_probe_cpu_ms=0.000 auto_probe_gpu_ms=0.000 jpeg_passthrough=0 j2k_passthrough=0 ",
+                "jpeg_decode_fallback=0 jpeg_cpu_encode=0 jpeg_metal_encode=0 final_byte_ms=0.000 input_decode_ms=0.000 ",
+                "compose_ms=0.000 encode_ms=0.000 validation_ms=0.000 elapsed_ms=12.000 rss_mb=40.0"
+            )
+        );
     }
 
     #[test]
@@ -1469,6 +1577,25 @@ mod tests {
         assert!(summary.contains("rss_mb=40.0"));
         assert!(summary.contains("thermal=\"No thermal warning level has been recorded\""));
         assert!(summary.contains("memory_pressure=\"System-wide memory free percentage: 92%\""));
+        assert_eq!(
+            summary,
+            concat!(
+                "sustain_iteration=2/5 source=source.svs transfer_syntax=1.2.840.10008.1.2.4.202 frames=12 available_frames=12 ",
+                "sampled_frames_pct=100.0000 complete_frame_coverage=true frames_per_sec=6.00 route_passthrough=0 ",
+                "route_passthrough_pct=0.0 route_gpu_transcode=12 route_gpu_transcode_pct=100.0 route_resident_gpu_transcode=12 ",
+                "route_partial_gpu_transcode=0 route_cpu_fallback=0 route_cpu_fallback_pct=0.0 route_unclassified=0 cpu_input=0 ",
+                "gpu_input_decode=12 gpu_encode=12 gpu_validation=0 gray_frames=0 rgb_like_frames=0 other_component_frames=0 ",
+                "unknown_pixel_profile_frames=0 bits8_frames=0 bits16_frames=0 other_bit_depth_frames=0 gpu_input_batches=0 ",
+                "gpu_compose_batches=0 gpu_encode_batches=0 gpu_encode_configured_inflight_tiles=0 gpu_encode_effective_inflight_tiles=0 ",
+                "gpu_encode_max_observed_inflight_tiles=0 gpu_encode_configured_memory_mib=0 gpu_encode_effective_memory_mib=0 ",
+                "gpu_encode_wall_ms=0.000 gpu_encode_effective_parallelism=0.000 gpu_dispatch_ms=12.500 gpu_encode_hardware_ms=0.000 ",
+                "gpu_encode_dispatch_overhead_ms=0.000 auto_probe_frames=0 auto_probe_selected_gpu_input=0 auto_probe_gpu_batches=0 ",
+                "auto_probe_cpu_ms=0.000 auto_probe_gpu_ms=0.000 jpeg_passthrough=0 j2k_passthrough=0 jpeg_decode_fallback=0 ",
+                "jpeg_cpu_encode=0 jpeg_metal_encode=0 final_byte_ms=0.000 input_decode_ms=0.000 compose_ms=0.000 encode_ms=0.000 ",
+                "validation_ms=0.000 elapsed_ms=2000.000 rss_mb=40.0 thermal=\"No thermal warning level has been recorded\" ",
+                "memory_pressure=\"System-wide memory free percentage: 92%\""
+            )
+        );
     }
 
     #[test]
@@ -1519,5 +1646,23 @@ mod tests {
         assert!(summary.contains("rss_mb=50.0"));
         assert!(summary.contains("thermal=\"No thermal warning level has been recorded\""));
         assert!(summary.contains("memory_pressure=\"System-wide memory free percentage: 91%\""));
+        assert_eq!(
+            summary,
+            concat!(
+                "sustain_iteration=1/3 mode=convert output=out/iteration-0001 instances=0 frames=20 frames_per_sec=10.00 ",
+                "route_passthrough=4 route_passthrough_pct=20.0 route_gpu_transcode=12 route_gpu_transcode_pct=60.0 ",
+                "route_resident_gpu_transcode=10 route_partial_gpu_transcode=2 route_cpu_fallback=4 route_cpu_fallback_pct=20.0 ",
+                "route_unclassified=0 cpu_input=0 gpu_input_decode=12 gpu_encode=12 gpu_validation=0 gray_frames=0 rgb_like_frames=0 ",
+                "other_component_frames=0 unknown_pixel_profile_frames=0 bits8_frames=0 bits16_frames=0 other_bit_depth_frames=0 ",
+                "gpu_input_batches=0 gpu_compose_batches=0 gpu_encode_batches=0 gpu_encode_configured_inflight_tiles=0 ",
+                "gpu_encode_effective_inflight_tiles=0 gpu_encode_max_observed_inflight_tiles=0 gpu_encode_configured_memory_mib=0 ",
+                "gpu_encode_effective_memory_mib=0 gpu_encode_wall_ms=0.000 gpu_encode_effective_parallelism=0.000 gpu_dispatch_ms=15.000 ",
+                "gpu_encode_hardware_ms=0.000 gpu_encode_dispatch_overhead_ms=0.000 auto_probe_frames=0 auto_probe_selected_gpu_input=0 ",
+                "auto_probe_gpu_batches=0 auto_probe_cpu_ms=0.000 auto_probe_gpu_ms=0.000 jpeg_passthrough=0 j2k_passthrough=4 ",
+                "jpeg_decode_fallback=0 jpeg_cpu_encode=0 jpeg_metal_encode=0 final_byte_ms=3.500 input_decode_ms=8.000 ",
+                "compose_ms=2.000 encode_ms=4.000 validation_ms=1.000 elapsed_ms=2000.000 rss_mb=50.0 ",
+                "thermal=\"No thermal warning level has been recorded\" memory_pressure=\"System-wide memory free percentage: 91%\""
+            )
+        );
     }
 }

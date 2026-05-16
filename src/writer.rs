@@ -535,33 +535,9 @@ pub(crate) fn write_dicom_object_with_direct_pixel_data(
     lengths: &[u64],
     write_frame: impl FnMut(usize, &mut dyn Write) -> io::Result<()>,
 ) -> Result<(), WsiDicomError> {
-    let file = File::create(path).map_err(|source| WsiDicomError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    let mut file = BufWriter::new(file);
-    object
-        .with_meta(meta)
-        .map_err(|err| WsiDicomError::DicomWrite {
-            path: path.to_path_buf(),
-            message: err.to_string(),
-        })?
-        .write_all(&mut file)
-        .map_err(|err| WsiDicomError::DicomWrite {
-            path: path.to_path_buf(),
-            message: err.to_string(),
-        })?;
-    write_encapsulated_pixel_data_from_frames(&mut file, lengths, write_frame).map_err(
-        |source| WsiDicomError::Io {
-            path: path.to_path_buf(),
-            source,
-        },
-    )?;
-    file.flush().map_err(|source| WsiDicomError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    Ok(())
+    write_dicom_object_with_pixel_data(path, object, meta, |file| {
+        write_encapsulated_pixel_data_from_frames(file, lengths, write_frame)
+    })
 }
 
 pub(crate) fn write_dicom_object_with_spooled_pixel_data(
@@ -582,6 +558,17 @@ pub(crate) fn write_dicom_object_with_spooled_pixel_data(
             source,
         })?;
 
+    write_dicom_object_with_pixel_data(path, object, meta, |file| {
+        write_encapsulated_pixel_data_from_spool(file, &mut spool.file, &spool.fragments)
+    })
+}
+
+fn write_dicom_object_with_pixel_data(
+    path: &Path,
+    object: InMemDicomObject,
+    meta: FileMetaTableBuilder,
+    write_pixel_data: impl FnOnce(&mut BufWriter<File>) -> io::Result<()>,
+) -> Result<(), WsiDicomError> {
     let file = File::create(path).map_err(|source| WsiDicomError::Io {
         path: path.to_path_buf(),
         source,
@@ -598,11 +585,10 @@ pub(crate) fn write_dicom_object_with_spooled_pixel_data(
             path: path.to_path_buf(),
             message: err.to_string(),
         })?;
-    write_encapsulated_pixel_data_from_spool(&mut file, &mut spool.file, &spool.fragments)
-        .map_err(|source| WsiDicomError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    write_pixel_data(&mut file).map_err(|source| WsiDicomError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
     file.flush().map_err(|source| WsiDicomError::Io {
         path: path.to_path_buf(),
         source,
@@ -615,11 +601,7 @@ pub(crate) fn write_encapsulated_pixel_data_from_frames(
     lengths: &[u64],
     mut write_frame: impl FnMut(usize, &mut dyn Write) -> io::Result<()>,
 ) -> io::Result<()> {
-    write_tag(output, 0x7FE0, 0x0010)?;
-    output.write_all(b"OB")?;
-    output.write_all(&[0, 0])?;
-    output.write_all(&u32::MAX.to_le_bytes())?;
-    write_item_header(output, 0)?;
+    write_encapsulated_pixel_data_header(output)?;
     for (idx, &raw_len) in lengths.iter().enumerate() {
         let padded_len = padded_fragment_len_io(raw_len)?;
         write_item_header(output, padded_len)?;
@@ -640,8 +622,7 @@ pub(crate) fn write_encapsulated_pixel_data_from_frames(
             output.write_all(&[0])?;
         }
     }
-    write_tag(output, 0xFFFE, 0xE0DD)?;
-    output.write_all(&0u32.to_le_bytes())
+    write_encapsulated_pixel_data_trailer(output)
 }
 
 pub(crate) fn write_encapsulated_pixel_data_from_spool(
@@ -649,11 +630,7 @@ pub(crate) fn write_encapsulated_pixel_data_from_spool(
     spool: &mut (impl Read + Seek),
     fragments: &[SpooledPixelDataFragment],
 ) -> std::io::Result<()> {
-    write_tag(output, 0x7FE0, 0x0010)?;
-    output.write_all(b"OB")?;
-    output.write_all(&[0, 0])?;
-    output.write_all(&u32::MAX.to_le_bytes())?;
-    write_item_header(output, 0)?;
+    write_encapsulated_pixel_data_header(output)?;
     let mut current_offset = 0u64;
     for fragment in fragments {
         if fragment.spool_offset < current_offset {
@@ -688,6 +665,18 @@ pub(crate) fn write_encapsulated_pixel_data_from_spool(
                 )
             })?;
     }
+    write_encapsulated_pixel_data_trailer(output)
+}
+
+fn write_encapsulated_pixel_data_header(output: &mut impl Write) -> std::io::Result<()> {
+    write_tag(output, 0x7FE0, 0x0010)?;
+    output.write_all(b"OB")?;
+    output.write_all(&[0, 0])?;
+    output.write_all(&u32::MAX.to_le_bytes())?;
+    write_item_header(output, 0)
+}
+
+fn write_encapsulated_pixel_data_trailer(output: &mut impl Write) -> std::io::Result<()> {
     write_tag(output, 0xFFFE, 0xE0DD)?;
     output.write_all(&0u32.to_le_bytes())
 }

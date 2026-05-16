@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use dicom_object::FileMetaTableBuilder;
 use rayon::prelude::*;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use serde::Serialize;
@@ -37,6 +36,7 @@ use crate::api::DicomExport;
 use crate::defaults::default_transfer_syntax_for_source;
 use crate::encode::{self, DicomJ2kEncoder, EncodedDicomJ2kFrame};
 use crate::error::WsiDicomError;
+use crate::instance_context::DicomInstanceContext;
 use crate::metadata::DicomMetadata;
 #[cfg(test)]
 use crate::metadata::MetadataSource;
@@ -67,12 +67,11 @@ use crate::routing::{
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use crate::tile::pixel_profile_from_device_format;
 use crate::tile::{optical_path_groups, prepare_tile_samples, PixelProfile};
-use crate::uid::{deterministic_instance_path, uid_from_seed};
+use crate::uid::uid_from_seed;
 use crate::writer::{
-    build_dicom_object, pixel_data_offsets_from_lengths, write_dicom_object_with_direct_pixel_data,
+    pixel_data_offsets_from_lengths, write_dicom_object_with_direct_pixel_data,
     write_dicom_object_with_spooled_pixel_data, LossyCompressionMetadata, PixelDataSpool,
 };
-use crate::VL_WSI_SOP_CLASS_UID;
 
 type EncodedJpegBaselineFrame = (EncodedJpeg, PixelProfile, Duration, Duration, Duration);
 
@@ -390,10 +389,6 @@ fn check_route_level_deadline(
         });
     }
     Ok(())
-}
-
-fn pyramid_label(scene_idx: usize, series_idx: usize, z: u32, c: u32, t: u32) -> String {
-    format!("WSI pyramid s{scene_idx} ser{series_idx} z{z} c{c} t{t}")
 }
 
 fn level_pixel_spacing_mm(slide: &Slide, level: &statumen::Level) -> Option<(f64, f64)> {
@@ -1178,7 +1173,6 @@ impl LosslessJ2kPlannedFrame {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 struct LosslessJ2kCpuBatchSettings {
     transfer_syntax: TransferSyntax,
@@ -1187,7 +1181,6 @@ struct LosslessJ2kCpuBatchSettings {
     reversible_transform: ReversibleTransform,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 struct LosslessJ2kCpuBatchFrame {
     x: u64,
@@ -1196,7 +1189,6 @@ struct LosslessJ2kCpuBatchFrame {
     height: u32,
 }
 
-#[allow(dead_code)]
 struct LosslessJ2kCpuBatchOutcome {
     encoded: Result<EncodedDicomJ2kFrame, WsiDicomError>,
     profile: PixelProfile,
@@ -1569,15 +1561,11 @@ fn profile_lossless_j2k_routes(
                 );
                 if let Some(passthrough) = planned_frame.passthrough.as_ref() {
                     let profile = passthrough.profile;
-                    if let Some(existing) = pixel_profile {
-                        if existing != profile {
-                            return Err(WsiDicomError::UnsupportedPixelData {
-                                reason: "pixel profile changed across profiled frames".into(),
-                            });
-                        }
-                    } else {
-                        pixel_profile = Some(profile);
-                    }
+                    ensure_consistent_pixel_profile(
+                        &mut pixel_profile,
+                        profile,
+                        "pixel profile changed across profiled frames",
+                    )?;
                     let byte_started = Instant::now();
                     metrics.record_write_duration(byte_started.elapsed());
                     metrics.record_j2k_passthrough_frame();
@@ -1658,15 +1646,11 @@ fn profile_lossless_j2k_routes(
                     metrics.record_compose_duration(compose_duration);
                 }
                 metrics.record_pixel_profile(profile);
-                if let Some(existing) = pixel_profile {
-                    if existing != profile {
-                        return Err(WsiDicomError::UnsupportedPixelData {
-                            reason: "pixel profile changed across profiled frames".into(),
-                        });
-                    }
-                } else {
-                    pixel_profile = Some(profile);
-                }
+                ensure_consistent_pixel_profile(
+                    &mut pixel_profile,
+                    profile,
+                    "pixel profile changed across profiled frames",
+                )?;
                 let encoded = encoded?;
                 metrics.record_encoded_frame(&encoded);
                 metrics.record_transcode_route(used_gpu_input, encoded.used_device_encode);
@@ -1730,15 +1714,11 @@ fn profile_lossless_j2k_routes(
                 );
                 if let Some(passthrough) = planned_frame.passthrough.as_ref() {
                     let profile = passthrough.profile;
-                    if let Some(existing) = pixel_profile {
-                        if existing != profile {
-                            return Err(WsiDicomError::UnsupportedPixelData {
-                                reason: "pixel profile changed across profiled frames".into(),
-                            });
-                        }
-                    } else {
-                        pixel_profile = Some(profile);
-                    }
+                    ensure_consistent_pixel_profile(
+                        &mut pixel_profile,
+                        profile,
+                        "pixel profile changed across profiled frames",
+                    )?;
                     let byte_started = Instant::now();
                     metrics.record_write_duration(byte_started.elapsed());
                     metrics.record_j2k_passthrough_frame();
@@ -1790,15 +1770,11 @@ fn profile_lossless_j2k_routes(
                 metrics.record_compose_duration(compose_duration);
                 metrics.record_cpu_input();
                 metrics.record_pixel_profile(profile);
-                if let Some(existing) = pixel_profile {
-                    if existing != profile {
-                        return Err(WsiDicomError::UnsupportedPixelData {
-                            reason: "pixel profile changed across profiled frames".into(),
-                        });
-                    }
-                } else {
-                    pixel_profile = Some(profile);
-                }
+                ensure_consistent_pixel_profile(
+                    &mut pixel_profile,
+                    profile,
+                    "pixel profile changed across profiled frames",
+                )?;
                 let encoded = encoded?;
                 metrics.record_encoded_frame(&encoded);
                 metrics.record_transcode_route(false, encoded.used_device_encode);
@@ -1901,7 +1877,7 @@ fn profile_jpeg_baseline_routes(
         while index < planned.len() {
             match &planned[index] {
                 JpegBaselinePlannedFrame::Passthrough { data, profile, .. } => {
-                    ensure_jpeg_baseline_profile(
+                    ensure_consistent_pixel_profile(
                         &mut pixel_profile,
                         *profile,
                         "JPEG passthrough pixel profile changed across profiled frames",
@@ -2030,7 +2006,7 @@ fn profile_jpeg_baseline_routes(
                                 .take()
                                 .expect("CPU JPEG batch encoded every non-Metal frame")
                         };
-                        ensure_jpeg_baseline_profile(
+                        ensure_consistent_pixel_profile(
                             &mut pixel_profile,
                             profile,
                             "JPEG Baseline pixel profile changed across profiled frames",
@@ -2108,7 +2084,7 @@ fn coverage_jpeg_baseline_routes(
                 Ok(raw) if raw_jpeg_matches_frame_geometry(&raw, frame_columns, frame_rows) => {
                     let profile = pixel_profile_from_raw_jpeg_tile(&raw)?;
                     if raw_jpeg_profile_can_passthrough(profile, allow_raw_rgb_passthrough) {
-                        ensure_jpeg_baseline_profile(
+                        ensure_consistent_pixel_profile(
                             &mut pixel_profile,
                             profile,
                             "JPEG passthrough pixel profile changed across coverage frames",
@@ -2159,54 +2135,19 @@ fn export_instance(
         .ok_or_else(|| WsiDicomError::Unsupported {
             reason: "frame count exceeds u32".into(),
         })?;
-
-    let series_uid = uid_from_seed(&format!(
-        "series:{}:{}:{}:{}:{}:{}",
-        request.source_path.display(),
-        scene_idx,
-        series_idx,
-        z,
-        c,
-        t
-    ));
-    let sop_instance_uid = uid_from_seed(&format!(
-        "instance:{}:{}:{}:{}:{}:{}",
-        request.source_path.display(),
+    let context = DicomInstanceContext::new(
+        &request.source_path,
+        &request.output_dir,
+        require_pixel_spacing_mm(level_pixel_spacing_mm(slide, level))?,
         scene_idx,
         series_idx,
         level_idx,
         z,
-        c
-    ));
-    let frame_of_reference_uid = uid_from_seed(&format!(
-        "frame-of-reference:{}:{}:{}",
-        request.source_path.display(),
-        scene_idx,
-        series_idx
-    ));
-    let pyramid_uid = uid_from_seed(&format!(
-        "pyramid:{}:{}:{}:{}:{}:{}",
-        request.source_path.display(),
-        scene_idx,
-        series_idx,
-        z,
         c,
-        t
-    ));
-    let dimension_organization_uid = uid_from_seed(&format!(
-        "dimension-organization:{}:{}:{}:{}:{}:{}",
-        request.source_path.display(),
-        scene_idx,
-        series_idx,
-        z,
-        c,
-        t
-    ));
-    let pyramid_label = pyramid_label(scene_idx, series_idx, z, c, t);
-    let pixel_spacing_mm = require_pixel_spacing_mm(level_pixel_spacing_mm(slide, level))?;
+        t,
+    );
 
-    let path = deterministic_instance_path(&request.output_dir, level_idx, z, c, t);
-    let spool_path = path.with_extension("pixeldata.tmp");
+    let spool_path = context.path.with_extension("pixeldata.tmp");
     let mut pixel_spool = PixelDataSpool::create(spool_path, frame_count as usize)?;
     let mut pixel_profile = None;
     let mut j2k_encoder = DicomJ2kEncoder::new(
@@ -2444,15 +2385,11 @@ fn export_instance(
                 );
                 if let Some(passthrough) = planned_frame.passthrough.as_ref() {
                     let profile = passthrough.profile;
-                    if let Some(existing) = pixel_profile {
-                        if existing != profile {
-                            return Err(WsiDicomError::UnsupportedPixelData {
-                                reason: "pixel profile changed across frames".into(),
-                            });
-                        }
-                    } else {
-                        pixel_profile = Some(profile);
-                    }
+                    ensure_consistent_pixel_profile(
+                        &mut pixel_profile,
+                        profile,
+                        "pixel profile changed across frames",
+                    )?;
                     j2k_passthrough_lossy |= passthrough.is_lossy();
                     let byte_started = Instant::now();
                     pixel_spool.push_frame(&passthrough.codestream)?;
@@ -2542,15 +2479,11 @@ fn export_instance(
                 }
                 metrics.record_pixel_profile(profile);
 
-                if let Some(existing) = pixel_profile {
-                    if existing != profile {
-                        return Err(WsiDicomError::UnsupportedPixelData {
-                            reason: "pixel profile changed across frames".into(),
-                        });
-                    }
-                } else {
-                    pixel_profile = Some(profile);
-                }
+                ensure_consistent_pixel_profile(
+                    &mut pixel_profile,
+                    profile,
+                    "pixel profile changed across frames",
+                )?;
 
                 let encoded = encoded.map_err(|err| match err {
                     WsiDicomError::Encode { message } => WsiDicomError::FrameEncode {
@@ -2622,15 +2555,11 @@ fn export_instance(
                 );
                 if let Some(passthrough) = planned_frame.passthrough.as_ref() {
                     let profile = passthrough.profile;
-                    if let Some(existing) = pixel_profile {
-                        if existing != profile {
-                            return Err(WsiDicomError::UnsupportedPixelData {
-                                reason: "pixel profile changed across frames".into(),
-                            });
-                        }
-                    } else {
-                        pixel_profile = Some(profile);
-                    }
+                    ensure_consistent_pixel_profile(
+                        &mut pixel_profile,
+                        profile,
+                        "pixel profile changed across frames",
+                    )?;
                     j2k_passthrough_lossy |= passthrough.is_lossy();
                     let byte_started = Instant::now();
                     pixel_spool.push_frame(&passthrough.codestream)?;
@@ -2691,15 +2620,11 @@ fn export_instance(
                 metrics.record_cpu_input();
                 metrics.record_pixel_profile(profile);
 
-                if let Some(existing) = pixel_profile {
-                    if existing != profile {
-                        return Err(WsiDicomError::UnsupportedPixelData {
-                            reason: "pixel profile changed across frames".into(),
-                        });
-                    }
-                } else {
-                    pixel_profile = Some(profile);
-                }
+                ensure_consistent_pixel_profile(
+                    &mut pixel_profile,
+                    profile,
+                    "pixel profile changed across frames",
+                )?;
 
                 let encoded = encoded.map_err(|err| match err {
                     WsiDicomError::Encode { message } => WsiDicomError::FrameEncode {
@@ -2739,53 +2664,30 @@ fn export_instance(
         None
     };
 
-    let object = build_dicom_object(
+    let object = context.build_dicom_object(
         metadata,
         study_uid,
-        &series_uid,
-        &sop_instance_uid,
-        &frame_of_reference_uid,
-        &pyramid_uid,
-        &dimension_organization_uid,
-        &pyramid_label,
-        (series_idx + 1) as u32,
         instance_number,
-        level_idx,
         tile_size,
         tile_size,
         matrix_columns,
         matrix_rows,
         frame_count,
         profile,
-        Some(pixel_spacing_mm),
         pixel_spool.offsets(),
         pixel_spool.lengths(),
         j2k_lossy_compression,
     )?;
     let write_started = Instant::now();
     write_dicom_object_with_spooled_pixel_data(
-        &path,
+        &context.path,
         object,
-        FileMetaTableBuilder::new()
-            .media_storage_sop_class_uid(VL_WSI_SOP_CLASS_UID)
-            .media_storage_sop_instance_uid(&sop_instance_uid)
-            .transfer_syntax(request.options.transfer_syntax.uid()),
+        context.file_meta(request.options.transfer_syntax.uid()),
         &mut pixel_spool,
     )?;
     metrics.record_write_duration(write_started.elapsed());
 
-    Ok(DicomInstanceReport {
-        path,
-        sop_instance_uid,
-        series_instance_uid: series_uid,
-        transfer_syntax_uid: request.options.transfer_syntax.uid(),
-        level: level_idx,
-        z,
-        c,
-        t,
-        frame_count,
-        metrics,
-    })
+    Ok(context.report(request.options.transfer_syntax.uid(), frame_count, metrics))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2822,53 +2724,18 @@ fn export_jpeg_passthrough_instance(
         .ok_or_else(|| WsiDicomError::Unsupported {
             reason: "frame count exceeds u32".into(),
         })?;
-
-    let series_uid = uid_from_seed(&format!(
-        "series:{}:{}:{}:{}:{}:{}",
-        request.source_path.display(),
-        scene_idx,
-        series_idx,
-        z,
-        c,
-        t
-    ));
-    let sop_instance_uid = uid_from_seed(&format!(
-        "instance:{}:{}:{}:{}:{}:{}",
-        request.source_path.display(),
+    let context = DicomInstanceContext::new(
+        &request.source_path,
+        &request.output_dir,
+        require_pixel_spacing_mm(level_pixel_spacing_mm(slide, level))?,
         scene_idx,
         series_idx,
         level_idx,
         z,
-        c
-    ));
-    let frame_of_reference_uid = uid_from_seed(&format!(
-        "frame-of-reference:{}:{}:{}",
-        request.source_path.display(),
-        scene_idx,
-        series_idx
-    ));
-    let pyramid_uid = uid_from_seed(&format!(
-        "pyramid:{}:{}:{}:{}:{}:{}",
-        request.source_path.display(),
-        scene_idx,
-        series_idx,
-        z,
         c,
-        t
-    ));
-    let dimension_organization_uid = uid_from_seed(&format!(
-        "dimension-organization:{}:{}:{}:{}:{}:{}",
-        request.source_path.display(),
-        scene_idx,
-        series_idx,
-        z,
-        c,
-        t
-    ));
-    let pyramid_label = pyramid_label(scene_idx, series_idx, z, c, t);
-    let pixel_spacing_mm = require_pixel_spacing_mm(level_pixel_spacing_mm(slide, level))?;
+        t,
+    );
 
-    let path = deterministic_instance_path(&request.output_dir, level_idx, z, c, t);
     if let Some(direct_frames) =
         try_plan_direct_jpeg_passthrough_frames(slide, location, level, geometry)?
     {
@@ -2878,7 +2745,7 @@ fn export_jpeg_passthrough_instance(
         let mut uncompressed_bytes = 0u64;
         let mut lengths = Vec::with_capacity(direct_frames.len());
         for frame in &direct_frames {
-            ensure_jpeg_baseline_profile(
+            ensure_consistent_pixel_profile(
                 &mut pixel_profile,
                 frame.profile,
                 "JPEG passthrough pixel profile changed across frames",
@@ -2894,25 +2761,16 @@ fn export_jpeg_passthrough_instance(
             reason: "slide level produced no frames".into(),
         })?;
         let offsets = pixel_data_offsets_from_lengths(&lengths)?;
-        let object = build_dicom_object(
+        let object = context.build_dicom_object(
             metadata,
             study_uid,
-            &series_uid,
-            &sop_instance_uid,
-            &frame_of_reference_uid,
-            &pyramid_uid,
-            &dimension_organization_uid,
-            &pyramid_label,
-            (series_idx + 1) as u32,
             instance_number,
-            level_idx,
             frame_columns,
             frame_rows,
             matrix_columns,
             matrix_rows,
             frame_count,
             profile,
-            Some(pixel_spacing_mm),
             offsets,
             lengths.clone(),
             Some(LossyCompressionMetadata {
@@ -2930,32 +2788,18 @@ fn export_jpeg_passthrough_instance(
         );
         let write_started = Instant::now();
         write_dicom_object_with_direct_pixel_data(
-            &path,
+            &context.path,
             object,
-            FileMetaTableBuilder::new()
-                .media_storage_sop_class_uid(VL_WSI_SOP_CLASS_UID)
-                .media_storage_sop_instance_uid(&sop_instance_uid)
-                .transfer_syntax(request.options.transfer_syntax.uid()),
+            context.file_meta(request.options.transfer_syntax.uid()),
             &lengths,
             |idx, output| direct_writer.write_frame(idx, output),
         )?;
         metrics.record_write_duration(write_started.elapsed());
 
-        return Ok(DicomInstanceReport {
-            path,
-            sop_instance_uid,
-            series_instance_uid: series_uid,
-            transfer_syntax_uid: request.options.transfer_syntax.uid(),
-            level: level_idx,
-            z,
-            c,
-            t,
-            frame_count,
-            metrics,
-        });
+        return Ok(context.report(request.options.transfer_syntax.uid(), frame_count, metrics));
     }
 
-    let spool_path = path.with_extension("pixeldata.tmp");
+    let spool_path = context.path.with_extension("pixeldata.tmp");
     let mut pixel_spool = PixelDataSpool::create(spool_path, frame_count as usize)?;
     let mut pixel_profile = None;
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -3033,7 +2877,7 @@ fn export_jpeg_passthrough_instance(
                     profile,
                     uncompressed_bytes: frame_uncompressed_bytes,
                 } => {
-                    ensure_jpeg_baseline_profile(
+                    ensure_consistent_pixel_profile(
                         &mut pixel_profile,
                         *profile,
                         "JPEG passthrough pixel profile changed across frames",
@@ -3167,7 +3011,7 @@ fn export_jpeg_passthrough_instance(
                                 .take()
                                 .expect("CPU JPEG batch encoded every non-Metal frame")
                         };
-                        ensure_jpeg_baseline_profile(
+                        ensure_consistent_pixel_profile(
                             &mut pixel_profile,
                             profile,
                             "JPEG Baseline pixel profile changed across frames",
@@ -3212,25 +3056,16 @@ fn export_jpeg_passthrough_instance(
     let profile = pixel_profile.ok_or_else(|| WsiDicomError::Unsupported {
         reason: "slide level produced no frames".into(),
     })?;
-    let object = build_dicom_object(
+    let object = context.build_dicom_object(
         metadata,
         study_uid,
-        &series_uid,
-        &sop_instance_uid,
-        &frame_of_reference_uid,
-        &pyramid_uid,
-        &dimension_organization_uid,
-        &pyramid_label,
-        (series_idx + 1) as u32,
         instance_number,
-        level_idx,
         frame_columns,
         frame_rows,
         matrix_columns,
         matrix_rows,
         frame_count,
         profile,
-        Some(pixel_spacing_mm),
         pixel_spool.offsets(),
         pixel_spool.lengths(),
         Some(LossyCompressionMetadata {
@@ -3241,28 +3076,14 @@ fn export_jpeg_passthrough_instance(
     )?;
     let write_started = Instant::now();
     write_dicom_object_with_spooled_pixel_data(
-        &path,
+        &context.path,
         object,
-        FileMetaTableBuilder::new()
-            .media_storage_sop_class_uid(VL_WSI_SOP_CLASS_UID)
-            .media_storage_sop_instance_uid(&sop_instance_uid)
-            .transfer_syntax(request.options.transfer_syntax.uid()),
+        context.file_meta(request.options.transfer_syntax.uid()),
         &mut pixel_spool,
     )?;
     metrics.record_write_duration(write_started.elapsed());
 
-    Ok(DicomInstanceReport {
-        path,
-        sop_instance_uid,
-        series_instance_uid: series_uid,
-        transfer_syntax_uid: request.options.transfer_syntax.uid(),
-        level: level_idx,
-        z,
-        c,
-        t,
-        frame_count,
-        metrics,
-    })
+    Ok(context.report(request.options.transfer_syntax.uid(), frame_count, metrics))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3745,16 +3566,18 @@ pub(crate) fn raw_rgb_passthrough_has_no_geometry_fallback(
 }
 
 fn uncompressed_frame_bytes(raw: &RawCompressedTile) -> Result<u64, WsiDicomError> {
-    u64::from(raw.width)
-        .checked_mul(u64::from(raw.height))
-        .and_then(|pixels| pixels.checked_mul(u64::from(raw.samples_per_pixel)))
-        .and_then(|samples| samples.checked_mul(u64::from(raw.bits_allocated / 8)))
-        .ok_or_else(|| WsiDicomError::Unsupported {
-            reason: "JPEG passthrough uncompressed frame byte count overflow".into(),
-        })
+    checked_uncompressed_byte_count(
+        u64::from(raw.width),
+        u64::from(raw.height),
+        u64::from(raw.samples_per_pixel),
+        raw.bits_allocated,
+    )
+    .ok_or_else(|| WsiDicomError::Unsupported {
+        reason: "JPEG passthrough uncompressed frame byte count overflow".into(),
+    })
 }
 
-fn ensure_jpeg_baseline_profile(
+fn ensure_consistent_pixel_profile(
     existing: &mut Option<PixelProfile>,
     profile: PixelProfile,
     mismatch_reason: &'static str,
@@ -3776,13 +3599,27 @@ fn jpeg_baseline_fallback_uncompressed_bytes(
     frame_rows: u32,
     profile: PixelProfile,
 ) -> Result<u64, WsiDicomError> {
-    u64::from(frame_columns)
-        .checked_mul(u64::from(frame_rows))
-        .and_then(|pixels| pixels.checked_mul(u64::from(profile.components)))
-        .and_then(|samples| samples.checked_mul(u64::from(profile.bits_allocated / 8)))
-        .ok_or_else(|| WsiDicomError::Unsupported {
-            reason: "JPEG Baseline uncompressed frame byte count overflow".into(),
-        })
+    checked_uncompressed_byte_count(
+        u64::from(frame_columns),
+        u64::from(frame_rows),
+        u64::from(profile.components),
+        profile.bits_allocated,
+    )
+    .ok_or_else(|| WsiDicomError::Unsupported {
+        reason: "JPEG Baseline uncompressed frame byte count overflow".into(),
+    })
+}
+
+fn checked_uncompressed_byte_count(
+    width: u64,
+    height: u64,
+    samples_per_pixel: u64,
+    bits_allocated: u16,
+) -> Option<u64> {
+    width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(samples_per_pixel))
+        .and_then(|samples| samples.checked_mul(u64::from(bits_allocated / 8)))
 }
 
 #[cfg(not(all(feature = "metal", target_os = "macos")))]
@@ -3937,13 +3774,62 @@ fn prepare_jpeg_baseline_cpu_input_tile(
     frame_columns: u32,
     frame_rows: u32,
 ) -> Result<(Vec<u8>, PixelProfile, JpegSubsampling, Duration, Duration), WsiDicomError> {
+    let prepared = read_and_prepare_region(
+        slide,
+        JpegBaselineFrameLocation {
+            scene_idx,
+            series_idx,
+            level_idx,
+            z,
+            c,
+            t,
+        },
+        x,
+        y,
+        width,
+        height,
+        frame_columns,
+        frame_rows,
+    )?;
+    let (profile, subsampling) = jpeg_baseline_output_profile(prepared.profile)?;
+    Ok((
+        prepared.bytes,
+        profile,
+        subsampling,
+        prepared.input_decode_duration,
+        prepared.compose_duration,
+    ))
+}
+
+struct PreparedCpuRegion {
+    bytes: Vec<u8>,
+    profile: PixelProfile,
+    input_decode_duration: Duration,
+    compose_duration: Duration,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_and_prepare_region(
+    slide: &Slide,
+    location: JpegBaselineFrameLocation,
+    x: u64,
+    y: u64,
+    width: u32,
+    height: u32,
+    output_width: u32,
+    output_height: u32,
+) -> Result<PreparedCpuRegion, WsiDicomError> {
     let input_decode_started = Instant::now();
     let region = slide
         .read_region(&RegionRequest {
-            scene: SceneId(scene_idx),
-            series: SeriesId(series_idx),
-            level: LevelIdx(level_idx),
-            plane: PlaneIdx(PlaneSelection { z, c, t }),
+            scene: SceneId(location.scene_idx),
+            series: SeriesId(location.series_idx),
+            level: LevelIdx(location.level_idx),
+            plane: PlaneIdx(PlaneSelection {
+                z: location.z,
+                c: location.c,
+                t: location.t,
+            }),
             origin_px: (x as i64, y as i64),
             size_px: (width, height),
         })
@@ -3953,16 +3839,14 @@ fn prepare_jpeg_baseline_cpu_input_tile(
     let input_decode_duration = input_decode_started.elapsed();
 
     let compose_started = Instant::now();
-    let prepared = prepare_tile_samples(&region, frame_columns, frame_rows)?;
-    let (profile, subsampling) = jpeg_baseline_output_profile(prepared.profile)?;
+    let prepared = prepare_tile_samples(&region, output_width, output_height)?;
     let compose_duration = compose_started.elapsed();
-    Ok((
-        prepared.bytes,
-        profile,
-        subsampling,
+    Ok(PreparedCpuRegion {
+        bytes: prepared.bytes,
+        profile: prepared.profile,
         input_decode_duration,
         compose_duration,
-    ))
+    })
 }
 
 fn jpeg_baseline_cpu_restart_interval(
@@ -4401,7 +4285,6 @@ fn encode_cpu_input_tile(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 fn encode_cpu_input_lossless_j2k_tile_batch(
     slide: &Slide,
     settings: LosslessJ2kCpuBatchSettings,
@@ -4506,28 +4389,28 @@ fn prepare_cpu_input_lossless_j2k_tile(
     height: u32,
     tile_size: u32,
 ) -> Result<(Vec<u8>, PixelProfile, Duration, Duration), WsiDicomError> {
-    let input_decode_started = Instant::now();
-    let region = slide
-        .read_region(&RegionRequest {
-            scene: SceneId(scene_idx),
-            series: SeriesId(series_idx),
-            level: LevelIdx(level_idx),
-            plane: PlaneIdx(PlaneSelection { z, c, t }),
-            origin_px: (x as i64, y as i64),
-            size_px: (width, height),
-        })
-        .map_err(|source| WsiDicomError::SlideRead {
-            message: source.to_string(),
-        })?;
-    let input_decode_duration = input_decode_started.elapsed();
-    let compose_started = Instant::now();
-    let prepared = prepare_tile_samples(&region, tile_size, tile_size)?;
-    let compose_duration = compose_started.elapsed();
+    let prepared = read_and_prepare_region(
+        slide,
+        JpegBaselineFrameLocation {
+            scene_idx,
+            series_idx,
+            level_idx,
+            z,
+            c,
+            t,
+        },
+        x,
+        y,
+        width,
+        height,
+        tile_size,
+        tile_size,
+    )?;
     Ok((
         prepared.bytes,
         prepared.profile,
-        input_decode_duration,
-        compose_duration,
+        prepared.input_decode_duration,
+        prepared.compose_duration,
     ))
 }
 
@@ -5073,33 +4956,6 @@ impl MetalStripComposer {
             slot_stride,
             tile_slot_bytes,
             format,
-        })
-    }
-
-    #[allow(dead_code, clippy::too_many_arguments)]
-    fn compose_tile(
-        &self,
-        packed: &PackedMetalStrips,
-        src_origin_x: u32,
-        src_origin_y: u32,
-        valid_width: u32,
-        valid_height: u32,
-        output_width: u32,
-        output_height: u32,
-    ) -> Result<statumen::output::metal::MetalDeviceTile, WsiDicomError> {
-        let mut tiles = self.compose_tiles(
-            packed,
-            &[MetalComposeTileRequest {
-                src_origin_x,
-                src_origin_y,
-                valid_width,
-                valid_height,
-                output_width,
-                output_height,
-            }],
-        )?;
-        tiles.pop().ok_or_else(|| WsiDicomError::Unsupported {
-            reason: "Metal composed tile batch unexpectedly returned no tiles".into(),
         })
     }
 
@@ -6304,13 +6160,7 @@ fn regular_tiled_source_layout(level: &statumen::Level) -> Option<WholeLevelStri
     else {
         return None;
     };
-    if tile_width == 0 || tile_height == 0 {
-        return None;
-    }
-    Some(WholeLevelStripLayout {
-        width: tile_width,
-        height: tile_height,
-    })
+    nonzero_strip_layout(tile_width, tile_height)
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -6323,13 +6173,15 @@ fn whole_level_strip_layout(level: &statumen::Level) -> Option<WholeLevelStripLa
     else {
         return None;
     };
-    if virtual_tile_width == 0 || virtual_tile_height == 0 {
+    nonzero_strip_layout(virtual_tile_width, virtual_tile_height)
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn nonzero_strip_layout(width: u32, height: u32) -> Option<WholeLevelStripLayout> {
+    if width == 0 || height == 0 {
         return None;
     }
-    Some(WholeLevelStripLayout {
-        width: virtual_tile_width,
-        height: virtual_tile_height,
-    })
+    Some(WholeLevelStripLayout { width, height })
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -6369,12 +6221,71 @@ mod tests {
     use crate::encode::{
         dicom_j2k_decomposition_levels, encode_dicom_j2k_lossless, encode_dicom_lossless,
     };
+    use crate::test_support::{find_command_for_test, read_binary_ppm_for_test};
     use dicom_core::{DataElement, PrimitiveValue, VR};
     use dicom_dictionary_std::{tags, uids};
     use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
     static DEVICE_DECODE_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn consistent_pixel_profile_accepts_first_matching_profile_and_rejects_mismatch() {
+        let rgb = PixelProfile {
+            components: 3,
+            bits_allocated: 8,
+            photometric_interpretation: "RGB",
+        };
+        let gray = PixelProfile {
+            components: 1,
+            bits_allocated: 8,
+            photometric_interpretation: "MONOCHROME2",
+        };
+        let mut existing = None;
+
+        ensure_consistent_pixel_profile(&mut existing, rgb, "profile changed").unwrap();
+        ensure_consistent_pixel_profile(&mut existing, rgb, "profile changed").unwrap();
+
+        let err = ensure_consistent_pixel_profile(&mut existing, gray, "profile changed")
+            .expect_err("mismatched profile should fail");
+        assert!(err.to_string().contains("profile changed"));
+    }
+
+    #[test]
+    fn read_and_prepare_region_pads_cpu_region_to_requested_output_geometry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.dcm");
+        let pixels = vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        write_source_dicom_with_pixels(&source, "1.2.826.0.1.3680043.10.999.81", 2, 2, pixels);
+        let slide = Slide::open(&source).unwrap();
+
+        let prepared = read_and_prepare_region(
+            &slide,
+            JpegBaselineFrameLocation::first_series_level(0),
+            0,
+            0,
+            2,
+            2,
+            3,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            prepared.profile,
+            PixelProfile {
+                components: 3,
+                bits_allocated: 8,
+                photometric_interpretation: "RGB",
+            }
+        );
+        assert_eq!(
+            prepared.bytes,
+            vec![
+                1, 2, 3, 4, 5, 6, 0, 0, 0, 7, 8, 9, 10, 11, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]
+        );
+    }
 
     #[test]
     fn default_options_use_htj2k_lossless_rpcl_and_auto_backend() {
@@ -11277,67 +11188,6 @@ mod tests {
             stdout,
             stderr
         );
-    }
-
-    fn find_command_for_test(name: &str) -> Option<String> {
-        std::env::var_os("PATH")
-            .and_then(|paths| {
-                std::env::split_paths(&paths)
-                    .map(|path| path.join(name))
-                    .find(|path| path.is_file())
-            })
-            .or_else(|| {
-                let staged = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("target")
-                    .join("dicom3tools-mac")
-                    .join(name);
-                staged.is_file().then_some(staged)
-            })
-            .map(|path| path.to_string_lossy().into_owned())
-    }
-
-    fn read_binary_ppm_for_test(path: &std::path::Path) -> (u32, u32, Vec<u8>) {
-        let bytes = std::fs::read(path).unwrap();
-        let mut cursor = 0usize;
-        let magic = read_netpbm_token_for_test(&bytes, &mut cursor);
-        assert_eq!(magic, "P6");
-        let width = read_netpbm_token_for_test(&bytes, &mut cursor)
-            .parse::<u32>()
-            .unwrap();
-        let height = read_netpbm_token_for_test(&bytes, &mut cursor)
-            .parse::<u32>()
-            .unwrap();
-        let max_value = read_netpbm_token_for_test(&bytes, &mut cursor)
-            .parse::<u32>()
-            .unwrap();
-        assert_eq!(max_value, 255);
-        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        let expected_len = (width as usize) * (height as usize) * 3;
-        assert_eq!(bytes.len() - cursor, expected_len);
-        (width, height, bytes[cursor..].to_vec())
-    }
-
-    fn read_netpbm_token_for_test(bytes: &[u8], cursor: &mut usize) -> String {
-        loop {
-            while *cursor < bytes.len() && bytes[*cursor].is_ascii_whitespace() {
-                *cursor += 1;
-            }
-            if *cursor >= bytes.len() || bytes[*cursor] != b'#' {
-                break;
-            }
-            while *cursor < bytes.len() && bytes[*cursor] != b'\n' {
-                *cursor += 1;
-            }
-        }
-        let start = *cursor;
-        while *cursor < bytes.len() && !bytes[*cursor].is_ascii_whitespace() {
-            *cursor += 1;
-        }
-        std::str::from_utf8(&bytes[start..*cursor])
-            .unwrap()
-            .to_string()
     }
 
     fn write_tiled_jpeg_tiff(

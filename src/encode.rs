@@ -225,7 +225,6 @@ impl DicomJ2kEncoder {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn cpu_batch_settings(
         &self,
     ) -> Option<(
@@ -273,8 +272,9 @@ impl DicomJ2kEncoder {
             self.reversible_transform,
         )?;
         let encode_duration = encode_started.elapsed();
+        let codec_validation_enabled = self.codec_validation == CodecValidation::RoundTrip;
         let mut validation_duration = Duration::ZERO;
-        if self.codec_validation.enabled() {
+        if codec_validation_enabled {
             if let Some(codestream) = &encoded {
                 let validation_started = Instant::now();
                 signinum_j2k_metal::validate_lossless_roundtrip_on_metal_with_session(
@@ -289,7 +289,7 @@ impl DicomJ2kEncoder {
         Ok(encoded.map(|codestream| EncodedDicomJ2kFrame {
             codestream: EncodedDicomJ2kCodestream::Host(codestream),
             used_device_encode: true,
-            used_device_validation: self.codec_validation.enabled(),
+            used_device_validation: codec_validation_enabled,
             encode_duration,
             device_gpu_duration: None,
             validation_duration,
@@ -318,6 +318,7 @@ impl DicomJ2kEncoder {
             accelerator,
             self.codec_validation.to_j2k_validation(),
             self.j2k_decomposition_levels,
+            self.reversible_transform,
         )?;
         let encode_duration = started.elapsed();
         Ok(encoded.map(|codestream| EncodedDicomJ2kFrame {
@@ -425,7 +426,7 @@ impl DicomJ2kEncoder {
                     encoded.push(Some(EncodedDicomJ2kFrame {
                         codestream: EncodedDicomJ2kCodestream::Metal(outcome.encoded),
                         used_device_encode: true,
-                        used_device_validation: self.codec_validation.enabled(),
+                        used_device_validation: self.codec_validation == CodecValidation::RoundTrip,
                         encode_duration: outcome
                             .encode_duration
                             .saturating_add(outcome.input_copy_duration),
@@ -459,7 +460,7 @@ impl DicomJ2kEncoder {
                     encoded.push(Some(EncodedDicomJ2kFrame {
                         codestream: EncodedDicomJ2kCodestream::Metal(outcome.encoded),
                         used_device_encode: true,
-                        used_device_validation: self.codec_validation.enabled(),
+                        used_device_validation: self.codec_validation == CodecValidation::RoundTrip,
                         encode_duration: outcome
                             .encode_duration
                             .saturating_add(outcome.input_copy_duration),
@@ -672,6 +673,7 @@ pub(crate) fn dicom_j2k_decomposition_levels(samples: J2kLosslessSamples<'_>) ->
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 mod tests {
     use super::DicomJ2kEncoder;
+    use crate::test_support::{find_command_for_test, read_binary_ppm_for_test};
     use crate::{CodecValidation, EncodeBackendPreference, TransferSyntax};
     use signinum_core::PixelFormat;
     use statumen::output::metal::{MetalDeviceStorage, MetalDeviceTile};
@@ -1036,56 +1038,5 @@ mod tests {
             .as_ref()
             .expect("Metal frame")
             .codestream_is_metal_buffer_backed());
-    }
-
-    fn find_command_for_test(name: &str) -> Option<String> {
-        std::env::var_os("PATH").and_then(|paths| {
-            std::env::split_paths(&paths)
-                .map(|path| path.join(name))
-                .find(|path| path.is_file())
-                .map(|path| path.to_string_lossy().into_owned())
-        })
-    }
-
-    fn read_binary_ppm_for_test(path: &std::path::Path) -> (usize, usize, Vec<u8>) {
-        let bytes = std::fs::read(path).expect("read PPM");
-        let mut cursor = 0usize;
-        let magic = next_ppm_token_for_test(&bytes, &mut cursor);
-        assert_eq!(magic, "P6");
-        let width: usize = next_ppm_token_for_test(&bytes, &mut cursor)
-            .parse()
-            .expect("PPM width");
-        let height: usize = next_ppm_token_for_test(&bytes, &mut cursor)
-            .parse()
-            .expect("PPM height");
-        let maxval = next_ppm_token_for_test(&bytes, &mut cursor);
-        assert_eq!(maxval, "255");
-        if cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        let pixels = bytes[cursor..].to_vec();
-        assert_eq!(pixels.len(), width * height * 3);
-        (width, height, pixels)
-    }
-
-    fn next_ppm_token_for_test(bytes: &[u8], cursor: &mut usize) -> String {
-        loop {
-            while *cursor < bytes.len() && bytes[*cursor].is_ascii_whitespace() {
-                *cursor += 1;
-            }
-            if *cursor >= bytes.len() || bytes[*cursor] != b'#' {
-                break;
-            }
-            while *cursor < bytes.len() && bytes[*cursor] != b'\n' {
-                *cursor += 1;
-            }
-        }
-        let start = *cursor;
-        while *cursor < bytes.len() && !bytes[*cursor].is_ascii_whitespace() {
-            *cursor += 1;
-        }
-        std::str::from_utf8(&bytes[start..*cursor])
-            .expect("PPM token is UTF-8")
-            .to_string()
     }
 }

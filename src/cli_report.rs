@@ -20,54 +20,13 @@ pub(crate) fn format_report_summary_with_memory(
     rss_bytes: Option<u64>,
 ) -> String {
     let metrics = report.metrics;
-    let route_passthrough = metrics.route_passthrough_frames();
-    let route_unclassified = metrics.route_unclassified_frames();
     format!(
-        "wrote {} DICOM instance(s) to {}; frames total={} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} {} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} write_ms={:.3} rss_mb={}",
+        "wrote {} DICOM instance(s) to {}; frames total={} {} {} write_ms={:.3} rss_mb={}",
         report.instances.len(),
         report.output_dir.display(),
         metrics.total_frames,
-        route_passthrough,
-        frame_percent(route_passthrough, metrics.total_frames),
-        metrics.gpu_transcode_frames,
-        frame_percent(metrics.gpu_transcode_frames, metrics.total_frames),
-        metrics.resident_gpu_transcode_frames,
-        metrics.partial_gpu_transcode_frames,
-        metrics.cpu_fallback_frames,
-        frame_percent(metrics.cpu_fallback_frames, metrics.total_frames),
-        route_unclassified,
-        metrics.cpu_input_frames,
-        metrics.gpu_input_decode_frames,
-        metrics.gpu_encode_frames,
-        metrics.gpu_validation_frames,
-        metrics.gray_frames,
-        metrics.rgb_like_frames,
-        metrics.other_component_frames,
-        metrics.unknown_pixel_profile_frames,
-        metrics.bits8_frames,
-        metrics.bits16_frames,
-        metrics.other_bit_depth_frames,
-        metrics.gpu_input_decode_batches,
-        metrics.gpu_compose_batches,
-        metrics.gpu_encode_batches,
-        format_gpu_encode_metrics(metrics),
-        micros_to_ms(metrics.gpu_dispatch_micros),
-        micros_to_ms(metrics.gpu_encode_hardware_micros),
-        micros_to_ms(metrics.gpu_encode_dispatch_overhead_micros),
-        metrics.auto_route_probe_frames,
-        metrics.auto_route_probe_selected_gpu_input_frames,
-        metrics.auto_route_probe_gpu_batches,
-        micros_to_ms(metrics.auto_route_probe_cpu_micros),
-        micros_to_ms(metrics.auto_route_probe_gpu_micros),
-        metrics.jpeg_passthrough_frames,
-        metrics.j2k_passthrough_frames,
-        metrics.jpeg_decode_fallback_frames,
-        metrics.jpeg_cpu_encode_frames,
-        metrics.jpeg_metal_encode_frames,
-        micros_to_ms(metrics.input_decode_micros),
-        micros_to_ms(metrics.compose_micros),
-        micros_to_ms(metrics.encode_micros),
-        micros_to_ms(metrics.validation_micros),
+        format_route_metric_fields(metrics),
+        format_processing_timing_fields(metrics),
         micros_to_ms(metrics.write_micros),
         format_rss_mb(rss_bytes),
     )
@@ -90,26 +49,11 @@ fn format_gpu_encode_metrics(metrics: DicomExportMetrics) -> String {
     )
 }
 
-pub(crate) fn format_profile_summary(report: &DicomRouteProfileReport) -> String {
-    format_profile_summary_with_memory(report, process_resident_memory_bytes())
-}
-
-pub(crate) fn format_profile_summary_with_memory(
-    report: &DicomRouteProfileReport,
-    rss_bytes: Option<u64>,
-) -> String {
-    let metrics = report.metrics;
+fn format_route_metric_fields(metrics: DicomExportMetrics) -> String {
     let route_passthrough = metrics.route_passthrough_frames();
     let route_unclassified = metrics.route_unclassified_frames();
     format!(
-        "profiled {} level={} transfer_syntax={} requested_frames={} available_frames={} sampled_frames_pct={:.4} frames total={} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} {} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} final_byte_ms={:.3} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} elapsed_ms={:.3} rss_mb={}",
-        report.source_path.display(),
-        report.level,
-        report.transfer_syntax_uid,
-        report.requested_frames,
-        report.available_frames,
-        frame_percent(metrics.total_frames, report.available_frames),
-        metrics.total_frames,
+        "route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} {} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={}",
         route_passthrough,
         frame_percent(route_passthrough, metrics.total_frames),
         metrics.gpu_transcode_frames,
@@ -147,11 +91,40 @@ pub(crate) fn format_profile_summary_with_memory(
         metrics.jpeg_decode_fallback_frames,
         metrics.jpeg_cpu_encode_frames,
         metrics.jpeg_metal_encode_frames,
-        micros_to_ms(metrics.write_micros),
+    )
+}
+
+fn format_processing_timing_fields(metrics: DicomExportMetrics) -> String {
+    format!(
+        "input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3}",
         micros_to_ms(metrics.input_decode_micros),
         micros_to_ms(metrics.compose_micros),
         micros_to_ms(metrics.encode_micros),
         micros_to_ms(metrics.validation_micros),
+    )
+}
+
+pub(crate) fn format_profile_summary(report: &DicomRouteProfileReport) -> String {
+    format_profile_summary_with_memory(report, process_resident_memory_bytes())
+}
+
+pub(crate) fn format_profile_summary_with_memory(
+    report: &DicomRouteProfileReport,
+    rss_bytes: Option<u64>,
+) -> String {
+    let metrics = report.metrics;
+    format!(
+        "profiled {} level={} transfer_syntax={} requested_frames={} available_frames={} sampled_frames_pct={:.4} frames total={} {} final_byte_ms={:.3} {} elapsed_ms={:.3} rss_mb={}",
+        report.source_path.display(),
+        report.level,
+        report.transfer_syntax_uid,
+        report.requested_frames,
+        report.available_frames,
+        frame_percent(metrics.total_frames, report.available_frames),
+        metrics.total_frames,
+        format_route_metric_fields(metrics),
+        micros_to_ms(metrics.write_micros),
+        format_processing_timing_fields(metrics),
         micros_to_ms(report.elapsed_micros),
         format_rss_mb(rss_bytes),
     )
@@ -166,10 +139,8 @@ pub(crate) fn format_coverage_summary_with_memory(
     rss_bytes: Option<u64>,
 ) -> String {
     let metrics = report.metrics;
-    let route_passthrough = metrics.route_passthrough_frames();
-    let route_unclassified = metrics.route_unclassified_frames();
     format!(
-        "covered {} levels={} transfer_syntax={} requested_frames_per_level={} available_frames={} sampled_frames_pct={:.4} complete_frame_coverage={} frames total={} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} {} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} final_byte_ms={:.3} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} elapsed_ms={:.3} rss_mb={}",
+        "covered {} levels={} transfer_syntax={} requested_frames_per_level={} available_frames={} sampled_frames_pct={:.4} complete_frame_coverage={} frames total={} {} final_byte_ms={:.3} {} elapsed_ms={:.3} rss_mb={}",
         report.source_path.display(),
         report.levels.len(),
         report.transfer_syntax_uid,
@@ -178,48 +149,9 @@ pub(crate) fn format_coverage_summary_with_memory(
         frame_percent(metrics.total_frames, report.available_frames),
         report.complete_frame_coverage,
         metrics.total_frames,
-        route_passthrough,
-        frame_percent(route_passthrough, metrics.total_frames),
-        metrics.gpu_transcode_frames,
-        frame_percent(metrics.gpu_transcode_frames, metrics.total_frames),
-        metrics.resident_gpu_transcode_frames,
-        metrics.partial_gpu_transcode_frames,
-        metrics.cpu_fallback_frames,
-        frame_percent(metrics.cpu_fallback_frames, metrics.total_frames),
-        route_unclassified,
-        metrics.cpu_input_frames,
-        metrics.gpu_input_decode_frames,
-        metrics.gpu_encode_frames,
-        metrics.gpu_validation_frames,
-        metrics.gray_frames,
-        metrics.rgb_like_frames,
-        metrics.other_component_frames,
-        metrics.unknown_pixel_profile_frames,
-        metrics.bits8_frames,
-        metrics.bits16_frames,
-        metrics.other_bit_depth_frames,
-        metrics.gpu_input_decode_batches,
-        metrics.gpu_compose_batches,
-        metrics.gpu_encode_batches,
-        format_gpu_encode_metrics(metrics),
-        micros_to_ms(metrics.gpu_dispatch_micros),
-        micros_to_ms(metrics.gpu_encode_hardware_micros),
-        micros_to_ms(metrics.gpu_encode_dispatch_overhead_micros),
-        metrics.auto_route_probe_frames,
-        metrics.auto_route_probe_selected_gpu_input_frames,
-        metrics.auto_route_probe_gpu_batches,
-        micros_to_ms(metrics.auto_route_probe_cpu_micros),
-        micros_to_ms(metrics.auto_route_probe_gpu_micros),
-        metrics.jpeg_passthrough_frames,
-        metrics.j2k_passthrough_frames,
-        metrics.jpeg_decode_fallback_frames,
-        metrics.jpeg_cpu_encode_frames,
-        metrics.jpeg_metal_encode_frames,
+        format_route_metric_fields(metrics),
         micros_to_ms(metrics.write_micros),
-        micros_to_ms(metrics.input_decode_micros),
-        micros_to_ms(metrics.compose_micros),
-        micros_to_ms(metrics.encode_micros),
-        micros_to_ms(metrics.validation_micros),
+        format_processing_timing_fields(metrics),
         micros_to_ms(report.elapsed_micros),
         format_rss_mb(rss_bytes),
     )
@@ -234,10 +166,8 @@ pub(crate) fn format_corpus_coverage_summary_with_memory(
     rss_bytes: Option<u64>,
 ) -> String {
     let metrics = report.metrics;
-    let route_passthrough = metrics.route_passthrough_frames();
-    let route_unclassified = metrics.route_unclassified_frames();
     format!(
-        "covered_corpus {} sources_considered={} sources_profiled={} failures={} transfer_syntax={} requested_frames_per_level={} available_frames={} sampled_frames_pct={:.4} complete_frame_coverage={} frames total={} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} {} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} final_byte_ms={:.3} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} elapsed_ms={:.3} rss_mb={}",
+        "covered_corpus {} sources_considered={} sources_profiled={} failures={} transfer_syntax={} requested_frames_per_level={} available_frames={} sampled_frames_pct={:.4} complete_frame_coverage={} frames total={} {} final_byte_ms={:.3} {} elapsed_ms={:.3} rss_mb={}",
         report.source_root.display(),
         report.sources_considered,
         report.reports.len(),
@@ -248,48 +178,9 @@ pub(crate) fn format_corpus_coverage_summary_with_memory(
         frame_percent(metrics.total_frames, report.available_frames),
         report.complete_frame_coverage,
         metrics.total_frames,
-        route_passthrough,
-        frame_percent(route_passthrough, metrics.total_frames),
-        metrics.gpu_transcode_frames,
-        frame_percent(metrics.gpu_transcode_frames, metrics.total_frames),
-        metrics.resident_gpu_transcode_frames,
-        metrics.partial_gpu_transcode_frames,
-        metrics.cpu_fallback_frames,
-        frame_percent(metrics.cpu_fallback_frames, metrics.total_frames),
-        route_unclassified,
-        metrics.cpu_input_frames,
-        metrics.gpu_input_decode_frames,
-        metrics.gpu_encode_frames,
-        metrics.gpu_validation_frames,
-        metrics.gray_frames,
-        metrics.rgb_like_frames,
-        metrics.other_component_frames,
-        metrics.unknown_pixel_profile_frames,
-        metrics.bits8_frames,
-        metrics.bits16_frames,
-        metrics.other_bit_depth_frames,
-        metrics.gpu_input_decode_batches,
-        metrics.gpu_compose_batches,
-        metrics.gpu_encode_batches,
-        format_gpu_encode_metrics(metrics),
-        micros_to_ms(metrics.gpu_dispatch_micros),
-        micros_to_ms(metrics.gpu_encode_hardware_micros),
-        micros_to_ms(metrics.gpu_encode_dispatch_overhead_micros),
-        metrics.auto_route_probe_frames,
-        metrics.auto_route_probe_selected_gpu_input_frames,
-        metrics.auto_route_probe_gpu_batches,
-        micros_to_ms(metrics.auto_route_probe_cpu_micros),
-        micros_to_ms(metrics.auto_route_probe_gpu_micros),
-        metrics.jpeg_passthrough_frames,
-        metrics.j2k_passthrough_frames,
-        metrics.jpeg_decode_fallback_frames,
-        metrics.jpeg_cpu_encode_frames,
-        metrics.jpeg_metal_encode_frames,
+        format_route_metric_fields(metrics),
         micros_to_ms(metrics.write_micros),
-        micros_to_ms(metrics.input_decode_micros),
-        micros_to_ms(metrics.compose_micros),
-        micros_to_ms(metrics.encode_micros),
-        micros_to_ms(metrics.validation_micros),
+        format_processing_timing_fields(metrics),
         micros_to_ms(report.elapsed_micros),
         format_rss_mb(rss_bytes),
     )
@@ -305,8 +196,6 @@ pub(crate) fn format_sustain_export_iteration_summary(
     memory_pressure: Option<&str>,
 ) -> String {
     let metrics = report.metrics;
-    let route_passthrough = metrics.route_passthrough_frames();
-    let route_unclassified = metrics.route_unclassified_frames();
     let elapsed_seconds = elapsed_micros as f64 / 1_000_000.0;
     let frames_per_sec = if elapsed_seconds > 0.0 {
         metrics.total_frames as f64 / elapsed_seconds
@@ -320,55 +209,16 @@ pub(crate) fn format_sustain_export_iteration_summary(
         .map(escape_summary_value)
         .unwrap_or_else(|| "unknown".into());
     format!(
-        "sustain_iteration={}/{} mode=convert output={} instances={} frames={} frames_per_sec={:.2} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} {} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} final_byte_ms={:.3} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} elapsed_ms={:.3} rss_mb={} thermal=\"{}\" memory_pressure=\"{}\"",
+        "sustain_iteration={}/{} mode=convert output={} instances={} frames={} frames_per_sec={:.2} {} final_byte_ms={:.3} {} elapsed_ms={:.3} rss_mb={} thermal=\"{}\" memory_pressure=\"{}\"",
         iteration,
         iterations,
         report.output_dir.display(),
         report.instances.len(),
         metrics.total_frames,
         frames_per_sec,
-        route_passthrough,
-        frame_percent(route_passthrough, metrics.total_frames),
-        metrics.gpu_transcode_frames,
-        frame_percent(metrics.gpu_transcode_frames, metrics.total_frames),
-        metrics.resident_gpu_transcode_frames,
-        metrics.partial_gpu_transcode_frames,
-        metrics.cpu_fallback_frames,
-        frame_percent(metrics.cpu_fallback_frames, metrics.total_frames),
-        route_unclassified,
-        metrics.cpu_input_frames,
-        metrics.gpu_input_decode_frames,
-        metrics.gpu_encode_frames,
-        metrics.gpu_validation_frames,
-        metrics.gray_frames,
-        metrics.rgb_like_frames,
-        metrics.other_component_frames,
-        metrics.unknown_pixel_profile_frames,
-        metrics.bits8_frames,
-        metrics.bits16_frames,
-        metrics.other_bit_depth_frames,
-        metrics.gpu_input_decode_batches,
-        metrics.gpu_compose_batches,
-        metrics.gpu_encode_batches,
-        format_gpu_encode_metrics(metrics),
-        micros_to_ms(metrics.gpu_dispatch_micros),
-        micros_to_ms(metrics.gpu_encode_hardware_micros),
-        micros_to_ms(metrics.gpu_encode_dispatch_overhead_micros),
-        metrics.auto_route_probe_frames,
-        metrics.auto_route_probe_selected_gpu_input_frames,
-        metrics.auto_route_probe_gpu_batches,
-        micros_to_ms(metrics.auto_route_probe_cpu_micros),
-        micros_to_ms(metrics.auto_route_probe_gpu_micros),
-        metrics.jpeg_passthrough_frames,
-        metrics.j2k_passthrough_frames,
-        metrics.jpeg_decode_fallback_frames,
-        metrics.jpeg_cpu_encode_frames,
-        metrics.jpeg_metal_encode_frames,
+        format_route_metric_fields(metrics),
         micros_to_ms(metrics.write_micros),
-        micros_to_ms(metrics.input_decode_micros),
-        micros_to_ms(metrics.compose_micros),
-        micros_to_ms(metrics.encode_micros),
-        micros_to_ms(metrics.validation_micros),
+        format_processing_timing_fields(metrics),
         micros_to_ms(elapsed_micros),
         format_rss_mb(rss_bytes),
         thermal_state,
@@ -385,8 +235,6 @@ pub(crate) fn format_sustain_iteration_summary(
     memory_pressure: Option<&str>,
 ) -> String {
     let metrics = report.metrics;
-    let route_passthrough = metrics.route_passthrough_frames();
-    let route_unclassified = metrics.route_unclassified_frames();
     let elapsed_seconds = report.elapsed_micros as f64 / 1_000_000.0;
     let frames_per_sec = if elapsed_seconds > 0.0 {
         metrics.total_frames as f64 / elapsed_seconds
@@ -400,7 +248,7 @@ pub(crate) fn format_sustain_iteration_summary(
         .map(escape_summary_value)
         .unwrap_or_else(|| "unknown".into());
     format!(
-        "sustain_iteration={}/{} source={} transfer_syntax={} frames={} available_frames={} sampled_frames_pct={:.4} complete_frame_coverage={} frames_per_sec={:.2} route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} {} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} final_byte_ms={:.3} input_decode_ms={:.3} compose_ms={:.3} encode_ms={:.3} validation_ms={:.3} elapsed_ms={:.3} rss_mb={} thermal=\"{}\" memory_pressure=\"{}\"",
+        "sustain_iteration={}/{} source={} transfer_syntax={} frames={} available_frames={} sampled_frames_pct={:.4} complete_frame_coverage={} frames_per_sec={:.2} {} final_byte_ms={:.3} {} elapsed_ms={:.3} rss_mb={} thermal=\"{}\" memory_pressure=\"{}\"",
         iteration,
         iterations,
         report.source_path.display(),
@@ -410,48 +258,9 @@ pub(crate) fn format_sustain_iteration_summary(
         frame_percent(metrics.total_frames, report.available_frames),
         report.complete_frame_coverage,
         frames_per_sec,
-        route_passthrough,
-        frame_percent(route_passthrough, metrics.total_frames),
-        metrics.gpu_transcode_frames,
-        frame_percent(metrics.gpu_transcode_frames, metrics.total_frames),
-        metrics.resident_gpu_transcode_frames,
-        metrics.partial_gpu_transcode_frames,
-        metrics.cpu_fallback_frames,
-        frame_percent(metrics.cpu_fallback_frames, metrics.total_frames),
-        route_unclassified,
-        metrics.cpu_input_frames,
-        metrics.gpu_input_decode_frames,
-        metrics.gpu_encode_frames,
-        metrics.gpu_validation_frames,
-        metrics.gray_frames,
-        metrics.rgb_like_frames,
-        metrics.other_component_frames,
-        metrics.unknown_pixel_profile_frames,
-        metrics.bits8_frames,
-        metrics.bits16_frames,
-        metrics.other_bit_depth_frames,
-        metrics.gpu_input_decode_batches,
-        metrics.gpu_compose_batches,
-        metrics.gpu_encode_batches,
-        format_gpu_encode_metrics(metrics),
-        micros_to_ms(metrics.gpu_dispatch_micros),
-        micros_to_ms(metrics.gpu_encode_hardware_micros),
-        micros_to_ms(metrics.gpu_encode_dispatch_overhead_micros),
-        metrics.auto_route_probe_frames,
-        metrics.auto_route_probe_selected_gpu_input_frames,
-        metrics.auto_route_probe_gpu_batches,
-        micros_to_ms(metrics.auto_route_probe_cpu_micros),
-        micros_to_ms(metrics.auto_route_probe_gpu_micros),
-        metrics.jpeg_passthrough_frames,
-        metrics.j2k_passthrough_frames,
-        metrics.jpeg_decode_fallback_frames,
-        metrics.jpeg_cpu_encode_frames,
-        metrics.jpeg_metal_encode_frames,
+        format_route_metric_fields(metrics),
         micros_to_ms(metrics.write_micros),
-        micros_to_ms(metrics.input_decode_micros),
-        micros_to_ms(metrics.compose_micros),
-        micros_to_ms(metrics.encode_micros),
-        micros_to_ms(metrics.validation_micros),
+        format_processing_timing_fields(metrics),
         micros_to_ms(report.elapsed_micros),
         format_rss_mb(rss_bytes),
         thermal_state,
@@ -469,13 +278,6 @@ fn frame_percent(frames: u64, total: u64) -> f64 {
 
 fn escape_summary_value(value: &str) -> String {
     value.replace('"', "'")
-}
-
-pub(crate) fn duration_as_reported_micros(duration: std::time::Duration) -> u128 {
-    match duration.as_micros() {
-        0 if duration > std::time::Duration::ZERO => 1,
-        micros => micros,
-    }
 }
 
 fn format_rss_mb(rss_bytes: Option<u64>) -> String {
