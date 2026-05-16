@@ -218,12 +218,21 @@ struct GpuEncodeArgs {
     gpu_encode_inflight_tiles: Option<usize>,
     #[arg(long)]
     gpu_encode_memory_mib: Option<u64>,
+    #[arg(long)]
+    gpu_pipeline_depth: Option<usize>,
+    #[arg(long)]
+    gpu_row_batch_rows: Option<usize>,
+    #[arg(long)]
+    gpu_row_batch_target_tiles: Option<usize>,
 }
 
 impl GpuEncodeArgs {
     fn into_options_fields(self, options: &mut DicomExportOptions) {
         options.gpu_encode_inflight_tiles = self.gpu_encode_inflight_tiles;
         options.gpu_encode_memory_mib = self.gpu_encode_memory_mib;
+        options.gpu_pipeline_depth = self.gpu_pipeline_depth;
+        options.gpu_row_batch_rows = self.gpu_row_batch_rows;
+        options.gpu_row_batch_target_tiles = self.gpu_row_batch_target_tiles;
     }
 }
 
@@ -973,6 +982,12 @@ mod tests {
             "8",
             "--gpu-encode-memory-mib",
             "4096",
+            "--gpu-pipeline-depth",
+            "3",
+            "--gpu-row-batch-rows",
+            "6",
+            "--gpu-row-batch-target-tiles",
+            "96",
         ])
         .unwrap();
 
@@ -982,6 +997,9 @@ mod tests {
 
         assert_eq!(gpu_encode.gpu_encode_inflight_tiles, Some(8));
         assert_eq!(gpu_encode.gpu_encode_memory_mib, Some(4096));
+        assert_eq!(gpu_encode.gpu_pipeline_depth, Some(3));
+        assert_eq!(gpu_encode.gpu_row_batch_rows, Some(6));
+        assert_eq!(gpu_encode.gpu_row_batch_target_tiles, Some(96));
     }
 
     #[test]

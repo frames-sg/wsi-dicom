@@ -92,6 +92,9 @@ pub struct DicomExportOptions {
     pub j2k_decomposition_levels: Option<u8>,
     pub gpu_encode_inflight_tiles: Option<usize>,
     pub gpu_encode_memory_mib: Option<u64>,
+    pub gpu_pipeline_depth: Option<usize>,
+    pub gpu_row_batch_rows: Option<usize>,
+    pub gpu_row_batch_target_tiles: Option<usize>,
 }
 
 impl Default for DicomExportOptions {
@@ -106,6 +109,9 @@ impl Default for DicomExportOptions {
             j2k_decomposition_levels: None,
             gpu_encode_inflight_tiles: None,
             gpu_encode_memory_mib: None,
+            gpu_pipeline_depth: None,
+            gpu_row_batch_rows: None,
+            gpu_row_batch_target_tiles: None,
         }
     }
 }
@@ -130,6 +136,21 @@ impl DicomExportOptions {
         if self.gpu_encode_memory_mib == Some(0) {
             return Err(WsiDicomError::InvalidOptions {
                 reason: "gpu_encode_memory_mib must be greater than zero when provided".into(),
+            });
+        }
+        if self.gpu_pipeline_depth == Some(0) {
+            return Err(WsiDicomError::InvalidOptions {
+                reason: "gpu_pipeline_depth must be greater than zero when provided".into(),
+            });
+        }
+        if self.gpu_row_batch_rows == Some(0) {
+            return Err(WsiDicomError::InvalidOptions {
+                reason: "gpu_row_batch_rows must be greater than zero when provided".into(),
+            });
+        }
+        if self.gpu_row_batch_target_tiles == Some(0) {
+            return Err(WsiDicomError::InvalidOptions {
+                reason: "gpu_row_batch_target_tiles must be greater than zero when provided".into(),
             });
         }
         if let Some(memory_mib) = self.gpu_encode_memory_mib {

@@ -1,6 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use dicom_core::value::DataSetSequence;
 use dicom_core::{DataElement, PrimitiveValue, Tag, VR};
@@ -22,6 +23,7 @@ const DEFAULT_SPECIMEN_IDENTIFIER: &str = "RESEARCH-SPECIMEN";
 const DEFAULT_SPECIMEN_DESCRIPTION: &str = "Research placeholder specimen";
 const DEFAULT_IMAGED_VOLUME_DEPTH_MM: f64 = 0.001;
 const DEFAULT_FOCUS_METHOD: &str = "AUTO";
+const DICOM_FILE_WRITE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
 pub(crate) struct LossyCompressionMetadata {
     pub(crate) method: &'static str,
@@ -504,6 +506,26 @@ impl PixelDataSpool {
     pub(crate) fn lengths(&self) -> Vec<u64> {
         self.lengths.clone()
     }
+
+    pub(crate) fn stream_frames_to(
+        &mut self,
+        writer: &mut StreamingPixelDataFrameWriter<'_>,
+    ) -> Result<(), WsiDicomError> {
+        self.file.flush().map_err(|source| WsiDicomError::Io {
+            path: self.path.clone(),
+            source,
+        })?;
+        for (fragment, &raw_len) in self.fragments.iter().zip(&self.lengths) {
+            self.file
+                .seek(SeekFrom::Start(fragment.spool_offset))
+                .map_err(|source| WsiDicomError::Io {
+                    path: self.path.clone(),
+                    source,
+                })?;
+            writer.push_frame_from_reader(raw_len, &mut self.file)?;
+        }
+        Ok(())
+    }
 }
 
 impl Drop for PixelDataSpool {
@@ -563,6 +585,175 @@ pub(crate) fn write_dicom_object_with_spooled_pixel_data(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StreamedPixelDataWriteReport {
+    pub(crate) offsets: Vec<u64>,
+    pub(crate) lengths: Vec<u64>,
+    pub(crate) streaming_write_duration: Duration,
+    pub(crate) pixel_data_patch_duration: Duration,
+}
+
+pub(crate) struct StreamingPixelDataFrameWriter<'a> {
+    path: PathBuf,
+    output: &'a mut BufWriter<File>,
+    frame_count: usize,
+    frames_written: usize,
+    offsets: Vec<u64>,
+    lengths: Vec<u64>,
+    next_extended_offset: u64,
+    streaming_write_duration: Duration,
+}
+
+impl StreamingPixelDataFrameWriter<'_> {
+    #[cfg(test)]
+    pub(crate) fn push_frame(&mut self, codestream: &[u8]) -> Result<(), WsiDicomError> {
+        let raw_len = u64::try_from(codestream.len()).map_err(|_| WsiDicomError::Unsupported {
+            reason: "encoded frame length exceeds u64".into(),
+        })?;
+        self.push_frame_impl(raw_len, |output| output.write_all(codestream))
+    }
+
+    pub(crate) fn push_frame_from_reader(
+        &mut self,
+        raw_len: u64,
+        reader: &mut impl Read,
+    ) -> Result<(), WsiDicomError> {
+        self.push_frame_impl(raw_len, |output| {
+            let copied = io::copy(&mut reader.take(raw_len), output)?;
+            if copied != raw_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "streamed PixelData frame reader ended before declared length",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    fn push_frame_impl(
+        &mut self,
+        raw_len: u64,
+        write_frame: impl FnOnce(&mut BufWriter<File>) -> io::Result<()>,
+    ) -> Result<(), WsiDicomError> {
+        if self.frames_written >= self.frame_count {
+            return Err(WsiDicomError::DicomWrite {
+                path: self.path.clone(),
+                message: format!(
+                    "streamed PixelData received more than {} frame(s)",
+                    self.frame_count
+                ),
+            });
+        }
+        let padded_len_u32 = padded_fragment_len(raw_len)?;
+        let padded_len = u64::from(padded_len_u32);
+        let started = Instant::now();
+        write_item_header(self.output, padded_len_u32).map_err(|source| WsiDicomError::Io {
+            path: self.path.clone(),
+            source,
+        })?;
+        write_frame(self.output).map_err(|source| WsiDicomError::Io {
+            path: self.path.clone(),
+            source,
+        })?;
+        if raw_len != padded_len {
+            self.output
+                .write_all(&[0])
+                .map_err(|source| WsiDicomError::Io {
+                    path: self.path.clone(),
+                    source,
+                })?;
+        }
+        self.streaming_write_duration = self
+            .streaming_write_duration
+            .saturating_add(started.elapsed());
+        self.offsets.push(self.next_extended_offset);
+        self.lengths.push(raw_len);
+        self.next_extended_offset = self
+            .next_extended_offset
+            .checked_add(8)
+            .and_then(|offset| offset.checked_add(padded_len))
+            .ok_or_else(|| WsiDicomError::Unsupported {
+                reason: "extended offset table overflow".into(),
+            })?;
+        self.frames_written += 1;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<StreamedPixelDataWriteReport, WsiDicomError> {
+        if self.frames_written != self.frame_count {
+            return Err(WsiDicomError::DicomWrite {
+                path: self.path,
+                message: format!(
+                    "streamed PixelData wrote {} frame(s), expected {}",
+                    self.frames_written, self.frame_count
+                ),
+            });
+        }
+        Ok(StreamedPixelDataWriteReport {
+            offsets: self.offsets,
+            lengths: self.lengths,
+            streaming_write_duration: self.streaming_write_duration,
+            pixel_data_patch_duration: Duration::ZERO,
+        })
+    }
+}
+
+pub(crate) fn write_dicom_object_with_streamed_pixel_data(
+    path: &Path,
+    object: InMemDicomObject,
+    meta: FileMetaTableBuilder,
+    frame_count: usize,
+    write_frames: impl FnOnce(&mut StreamingPixelDataFrameWriter<'_>) -> Result<(), WsiDicomError>,
+) -> Result<StreamedPixelDataWriteReport, WsiDicomError> {
+    let file = File::create(path).map_err(|source| WsiDicomError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut file = dicom_file_writer(file);
+    object
+        .with_meta(meta)
+        .map_err(|err| WsiDicomError::DicomWrite {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?
+        .write_all(&mut file)
+        .map_err(|err| WsiDicomError::DicomWrite {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?;
+    write_encapsulated_pixel_data_header(&mut file).map_err(|source| WsiDicomError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    let mut writer = StreamingPixelDataFrameWriter {
+        path: path.to_path_buf(),
+        output: &mut file,
+        frame_count,
+        frames_written: 0,
+        offsets: Vec::with_capacity(frame_count),
+        lengths: Vec::with_capacity(frame_count),
+        next_extended_offset: 0,
+        streaming_write_duration: Duration::ZERO,
+    };
+    write_frames(&mut writer)?;
+    let mut report = writer.finish()?;
+    write_encapsulated_pixel_data_trailer(&mut file).map_err(|source| WsiDicomError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    file.flush().map_err(|source| WsiDicomError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    drop(file);
+
+    let patch_started = Instant::now();
+    patch_extended_offset_tables(path, &report.offsets, &report.lengths)?;
+    report.pixel_data_patch_duration = patch_started.elapsed();
+    Ok(report)
+}
+
 fn write_dicom_object_with_pixel_data(
     path: &Path,
     object: InMemDicomObject,
@@ -573,7 +764,7 @@ fn write_dicom_object_with_pixel_data(
         path: path.to_path_buf(),
         source,
     })?;
-    let mut file = BufWriter::new(file);
+    let mut file = dicom_file_writer(file);
     object
         .with_meta(meta)
         .map_err(|err| WsiDicomError::DicomWrite {
@@ -594,6 +785,10 @@ fn write_dicom_object_with_pixel_data(
         source,
     })?;
     Ok(())
+}
+
+fn dicom_file_writer(file: File) -> BufWriter<File> {
+    BufWriter::with_capacity(DICOM_FILE_WRITE_BUFFER_BYTES, file)
 }
 
 pub(crate) fn write_encapsulated_pixel_data_from_frames(
@@ -726,6 +921,162 @@ fn padded_fragment_len(raw_len: u64) -> Result<u32, WsiDicomError> {
 
 fn padded_fragment_len_io(raw_len: u64) -> io::Result<u32> {
     padded_fragment_len(raw_len).map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))
+}
+
+fn patch_extended_offset_tables(
+    path: &Path,
+    offsets: &[u64],
+    lengths: &[u64],
+) -> Result<(), WsiDicomError> {
+    let expected_bytes = offsets
+        .len()
+        .checked_mul(std::mem::size_of::<u64>())
+        .ok_or_else(|| WsiDicomError::Unsupported {
+            reason: "extended offset table byte length overflow".into(),
+        })?;
+    if lengths.len() != offsets.len() {
+        return Err(WsiDicomError::DicomWrite {
+            path: path.to_path_buf(),
+            message: format!(
+                "streamed PixelData has {} offset(s) but {} length(s)",
+                offsets.len(),
+                lengths.len()
+            ),
+        });
+    }
+    let expected_bytes_u32 =
+        u32::try_from(expected_bytes).map_err(|_| WsiDicomError::Unsupported {
+            reason: "extended offset table exceeds DICOM element length limit".into(),
+        })?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|source| WsiDicomError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let locations =
+        find_extended_offset_table_locations(&mut file, expected_bytes_u32).map_err(|source| {
+            WsiDicomError::Io {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
+    patch_u64_table(&mut file, locations.offset_table_value_offset, offsets).map_err(|source| {
+        WsiDicomError::Io {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    patch_u64_table(&mut file, locations.length_table_value_offset, lengths).map_err(|source| {
+        WsiDicomError::Io {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    Ok(())
+}
+
+struct ExtendedOffsetTableLocations {
+    offset_table_value_offset: u64,
+    length_table_value_offset: u64,
+}
+
+fn find_extended_offset_table_locations(
+    file: &mut File,
+    expected_value_bytes: u32,
+) -> io::Result<ExtendedOffsetTableLocations> {
+    const CHUNK_LEN: usize = 64 * 1024;
+    const CARRY_LEN: usize = 32;
+    let mut offset_table_value_offset = None;
+    let mut length_table_value_offset = None;
+    let mut absolute_next = 0u64;
+    let mut carry = Vec::new();
+    let mut chunk = [0u8; CHUNK_LEN];
+    let mut reached_pixel_data = false;
+    file.seek(SeekFrom::Start(0))?;
+
+    loop {
+        let read = file.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+
+        let mut bytes = Vec::with_capacity(carry.len() + read);
+        bytes.extend_from_slice(&carry);
+        bytes.extend_from_slice(&chunk[..read]);
+        let base_offset = absolute_next.saturating_sub(carry.len() as u64);
+
+        let mut idx = 0usize;
+        while idx + 12 <= bytes.len() {
+            let tag = &bytes[idx..idx + 4];
+            if tag == [0xE0, 0x7F, 0x10, 0x00] {
+                reached_pixel_data = true;
+                break;
+            }
+            if tag == [0xE0, 0x7F, 0x01, 0x00] || tag == [0xE0, 0x7F, 0x02, 0x00] {
+                if &bytes[idx + 4..idx + 6] != b"OV" {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "extended offset table element did not use OV VR",
+                    ));
+                }
+                let value_len = u32::from_le_bytes([
+                    bytes[idx + 8],
+                    bytes[idx + 9],
+                    bytes[idx + 10],
+                    bytes[idx + 11],
+                ]);
+                if value_len != expected_value_bytes {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "extended offset table byte length {value_len} did not match expected {expected_value_bytes}"
+                        ),
+                    ));
+                }
+                let value_offset = base_offset + idx as u64 + 12;
+                if tag == [0xE0, 0x7F, 0x01, 0x00] {
+                    offset_table_value_offset = Some(value_offset);
+                } else {
+                    length_table_value_offset = Some(value_offset);
+                }
+                if let (Some(offset_table_value_offset), Some(length_table_value_offset)) =
+                    (offset_table_value_offset, length_table_value_offset)
+                {
+                    return Ok(ExtendedOffsetTableLocations {
+                        offset_table_value_offset,
+                        length_table_value_offset,
+                    });
+                }
+            }
+            idx += 1;
+        }
+
+        absolute_next = absolute_next
+            .checked_add(read as u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "file offset overflow"))?;
+        let keep = bytes.len().min(CARRY_LEN);
+        carry.clear();
+        carry.extend_from_slice(&bytes[bytes.len() - keep..]);
+        if reached_pixel_data {
+            break;
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "could not find both extended offset table elements before PixelData",
+    ))
+}
+
+fn patch_u64_table(file: &mut File, value_offset: u64, values: &[u64]) -> io::Result<()> {
+    file.seek(SeekFrom::Start(value_offset))?;
+    for value in values {
+        file.write_all(&value.to_le_bytes())?;
+    }
+    Ok(())
 }
 
 fn write_item_header(output: &mut impl Write, length: u32) -> std::io::Result<()> {
@@ -1093,9 +1444,18 @@ mod tests {
     };
     use crate::{tile::PixelProfile, DicomMetadata};
     use dicom_core::Tag;
-    use dicom_dictionary_std::tags;
+    use dicom_dictionary_std::{tags, uids};
     use dicom_object::InMemDicomObject;
     use std::io::{Read, Seek, SeekFrom, Write};
+
+    #[test]
+    fn dicom_file_writer_uses_large_buffer_for_pixel_data_streams() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = std::fs::File::create(tmp.path().join("buffered.dcm")).unwrap();
+        let writer = super::dicom_file_writer(file);
+
+        assert!(writer.capacity() >= 1024 * 1024);
+    }
 
     #[test]
     fn spooled_pixel_data_writer_appends_encapsulated_fragments_with_padding() {
@@ -1198,6 +1558,102 @@ mod tests {
 
         assert_eq!(spool.offsets(), vec![0, 12]);
         assert_eq!(spool.lengths(), vec![3, 2]);
+    }
+
+    #[test]
+    fn streamed_pixel_data_writer_matches_spooled_output_and_patches_offset_tables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let frames = [vec![1, 2, 3], vec![4, 5]];
+        let lengths = frames
+            .iter()
+            .map(|frame| frame.len() as u64)
+            .collect::<Vec<_>>();
+        let offsets = super::pixel_data_offsets_from_lengths(&lengths).unwrap();
+
+        let mut spool =
+            super::PixelDataSpool::create(tmp.path().join("frames.bin"), frames.len()).unwrap();
+        for frame in &frames {
+            spool.push_frame(frame).unwrap();
+        }
+        let spooled_path = tmp.path().join("spooled.dcm");
+        super::write_dicom_object_with_spooled_pixel_data(
+            &spooled_path,
+            sample_object_with_offset_tables(offsets.clone(), lengths.clone()),
+            sample_file_meta(),
+            &mut spool,
+        )
+        .unwrap();
+
+        let streamed_path = tmp.path().join("streamed.dcm");
+        let report = super::write_dicom_object_with_streamed_pixel_data(
+            &streamed_path,
+            sample_object_with_offset_tables(vec![0; frames.len()], vec![0; frames.len()]),
+            sample_file_meta(),
+            frames.len(),
+            |writer| {
+                for frame in &frames {
+                    writer.push_frame(frame)?;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.offsets, offsets);
+        assert_eq!(report.lengths, lengths);
+        assert_eq!(
+            std::fs::read(streamed_path).unwrap(),
+            std::fs::read(spooled_path).unwrap()
+        );
+    }
+
+    #[test]
+    fn streamed_pixel_data_writer_copies_reader_frame_in_chunks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let frame_len = super::DICOM_FILE_WRITE_BUFFER_BYTES + 17;
+        let frame = (0..frame_len)
+            .map(|value| (value % 251) as u8)
+            .collect::<Vec<_>>();
+        let max_read_len = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let mut reader = MaxReadLenReader {
+            bytes: frame.clone(),
+            position: 0,
+            max_read_len: max_read_len.clone(),
+        };
+
+        let streamed_path = tmp.path().join("streamed-reader.dcm");
+        let report = super::write_dicom_object_with_streamed_pixel_data(
+            &streamed_path,
+            sample_object_with_offset_tables(vec![0], vec![0]),
+            sample_file_meta(),
+            1,
+            |writer| writer.push_frame_from_reader(frame.len() as u64, &mut reader),
+        )
+        .unwrap();
+
+        assert_eq!(report.offsets, vec![0]);
+        assert_eq!(report.lengths, vec![frame.len() as u64]);
+        assert_eq!(reader.position, frame.len());
+        assert!(max_read_len.get() <= super::DICOM_FILE_WRITE_BUFFER_BYTES);
+        assert!(max_read_len.get() < frame.len());
+    }
+
+    #[test]
+    fn streamed_pixel_data_writer_rejects_wrong_frame_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = super::write_dicom_object_with_streamed_pixel_data(
+            &tmp.path().join("streamed.dcm"),
+            sample_object_with_offset_tables(vec![0; 2], vec![0; 2]),
+            sample_file_meta(),
+            2,
+            |writer| writer.push_frame(&[1, 2, 3]),
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("expected 2"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -1645,6 +2101,30 @@ mod tests {
         metadata: DicomMetadata,
         level_idx: u32,
     ) -> InMemDicomObject {
+        sample_object_with_metadata_level_and_offset_tables(
+            metadata,
+            level_idx,
+            vec![0; 6],
+            vec![128; 6],
+        )
+    }
+
+    fn sample_object_with_offset_tables(offsets: Vec<u64>, lengths: Vec<u64>) -> InMemDicomObject {
+        sample_object_with_metadata_level_and_offset_tables(
+            DicomMetadata::default(),
+            0,
+            offsets,
+            lengths,
+        )
+    }
+
+    fn sample_object_with_metadata_level_and_offset_tables(
+        metadata: DicomMetadata,
+        level_idx: u32,
+        offsets: Vec<u64>,
+        lengths: Vec<u64>,
+    ) -> InMemDicomObject {
+        let frame_count = u32::try_from(lengths.len()).unwrap();
         super::build_dicom_object(
             &metadata,
             "1.2.826.0.1.3680043.10.999.1",
@@ -1661,18 +2141,25 @@ mod tests {
             512,
             1024,
             1536,
-            6,
+            frame_count,
             PixelProfile {
                 components: 3,
                 bits_allocated: 8,
                 photometric_interpretation: "RGB",
             },
             Some((0.0005, 0.0005)),
-            vec![0; 6],
-            vec![128; 6],
+            offsets,
+            lengths,
             None,
         )
         .unwrap()
+    }
+
+    fn sample_file_meta() -> dicom_object::FileMetaTableBuilder {
+        dicom_object::FileMetaTableBuilder::new()
+            .media_storage_sop_class_uid(uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE)
+            .media_storage_sop_instance_uid("1.2.826.0.1.3680043.10.999.3")
+            .transfer_syntax("1.2.840.10008.1.2.4.202")
     }
 
     #[test]
@@ -1834,6 +2321,26 @@ mod tests {
     struct SeekCountingReader {
         inner: std::io::Cursor<Vec<u8>>,
         seek_count: usize,
+    }
+
+    struct MaxReadLenReader {
+        bytes: Vec<u8>,
+        position: usize,
+        max_read_len: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl Read for MaxReadLenReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.max_read_len
+                .set(self.max_read_len.get().max(buf.len()));
+            if self.position >= self.bytes.len() {
+                return Ok(0);
+            }
+            let len = buf.len().min(self.bytes.len() - self.position);
+            buf[..len].copy_from_slice(&self.bytes[self.position..self.position + len]);
+            self.position += len;
+            Ok(len)
+        }
     }
 
     impl SeekCountingReader {

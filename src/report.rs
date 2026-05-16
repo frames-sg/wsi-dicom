@@ -128,6 +128,21 @@ pub struct DicomExportMetrics {
     pub gpu_encode_wall_micros: u128,
     pub gpu_encode_hardware_micros: u128,
     pub gpu_encode_dispatch_overhead_micros: u128,
+    pub gpu_encode_plan_micros: u128,
+    pub gpu_encode_prepare_submit_micros: u128,
+    pub gpu_encode_ht_table_build_micros: u128,
+    pub gpu_encode_ht_buffer_allocation_micros: u128,
+    pub gpu_encode_ht_command_encode_micros: u128,
+    pub gpu_encode_codestream_wait_micros: u128,
+    pub gpu_encode_chunk_count: u64,
+    pub gpu_encode_tile_count: u64,
+    pub gpu_encode_code_block_count: u64,
+    pub gpu_pipeline_depth: u64,
+    pub gpu_row_batch_rows_max: u64,
+    pub gpu_row_batch_target_tiles: u64,
+    pub streaming_write_micros: u128,
+    pub pixel_data_patch_micros: u128,
+    pub writer_backpressure_micros: u128,
     pub write_micros: u128,
 }
 
@@ -136,7 +151,7 @@ impl Serialize for DicomExportMetrics {
     where
         S: serde::Serializer,
     {
-        let mut state = serializer.serialize_struct("DicomExportMetrics", 43)?;
+        let mut state = serializer.serialize_struct("DicomExportMetrics", 58)?;
         state.serialize_field("total_frames", &self.total_frames)?;
         state.serialize_field("cpu_input_frames", &self.cpu_input_frames)?;
         state.serialize_field("gpu_input_decode_frames", &self.gpu_input_decode_frames)?;
@@ -227,6 +242,45 @@ impl Serialize for DicomExportMetrics {
         state.serialize_field(
             "gpu_encode_dispatch_overhead_micros",
             &self.gpu_encode_dispatch_overhead_micros,
+        )?;
+        state.serialize_field("gpu_encode_plan_micros", &self.gpu_encode_plan_micros)?;
+        state.serialize_field(
+            "gpu_encode_prepare_submit_micros",
+            &self.gpu_encode_prepare_submit_micros,
+        )?;
+        state.serialize_field(
+            "gpu_encode_ht_table_build_micros",
+            &self.gpu_encode_ht_table_build_micros,
+        )?;
+        state.serialize_field(
+            "gpu_encode_ht_buffer_allocation_micros",
+            &self.gpu_encode_ht_buffer_allocation_micros,
+        )?;
+        state.serialize_field(
+            "gpu_encode_ht_command_encode_micros",
+            &self.gpu_encode_ht_command_encode_micros,
+        )?;
+        state.serialize_field(
+            "gpu_encode_codestream_wait_micros",
+            &self.gpu_encode_codestream_wait_micros,
+        )?;
+        state.serialize_field("gpu_encode_chunk_count", &self.gpu_encode_chunk_count)?;
+        state.serialize_field("gpu_encode_tile_count", &self.gpu_encode_tile_count)?;
+        state.serialize_field(
+            "gpu_encode_code_block_count",
+            &self.gpu_encode_code_block_count,
+        )?;
+        state.serialize_field("gpu_pipeline_depth", &self.gpu_pipeline_depth)?;
+        state.serialize_field("gpu_row_batch_rows_max", &self.gpu_row_batch_rows_max)?;
+        state.serialize_field(
+            "gpu_row_batch_target_tiles",
+            &self.gpu_row_batch_target_tiles,
+        )?;
+        state.serialize_field("streaming_write_micros", &self.streaming_write_micros)?;
+        state.serialize_field("pixel_data_patch_micros", &self.pixel_data_patch_micros)?;
+        state.serialize_field(
+            "writer_backpressure_micros",
+            &self.writer_backpressure_micros,
         )?;
         state.serialize_field("write_micros", &self.write_micros)?;
         state.end()
@@ -357,6 +411,49 @@ impl DicomExportMetrics {
         self.gpu_encode_dispatch_overhead_micros = self
             .gpu_encode_dispatch_overhead_micros
             .saturating_add(other.gpu_encode_dispatch_overhead_micros);
+        self.gpu_encode_plan_micros = self
+            .gpu_encode_plan_micros
+            .saturating_add(other.gpu_encode_plan_micros);
+        self.gpu_encode_prepare_submit_micros = self
+            .gpu_encode_prepare_submit_micros
+            .saturating_add(other.gpu_encode_prepare_submit_micros);
+        self.gpu_encode_ht_table_build_micros = self
+            .gpu_encode_ht_table_build_micros
+            .saturating_add(other.gpu_encode_ht_table_build_micros);
+        self.gpu_encode_ht_buffer_allocation_micros = self
+            .gpu_encode_ht_buffer_allocation_micros
+            .saturating_add(other.gpu_encode_ht_buffer_allocation_micros);
+        self.gpu_encode_ht_command_encode_micros = self
+            .gpu_encode_ht_command_encode_micros
+            .saturating_add(other.gpu_encode_ht_command_encode_micros);
+        self.gpu_encode_codestream_wait_micros = self
+            .gpu_encode_codestream_wait_micros
+            .saturating_add(other.gpu_encode_codestream_wait_micros);
+        self.gpu_encode_chunk_count = self
+            .gpu_encode_chunk_count
+            .saturating_add(other.gpu_encode_chunk_count);
+        self.gpu_encode_tile_count = self
+            .gpu_encode_tile_count
+            .saturating_add(other.gpu_encode_tile_count);
+        self.gpu_encode_code_block_count = self
+            .gpu_encode_code_block_count
+            .saturating_add(other.gpu_encode_code_block_count);
+        self.gpu_pipeline_depth = self.gpu_pipeline_depth.max(other.gpu_pipeline_depth);
+        self.gpu_row_batch_rows_max = self
+            .gpu_row_batch_rows_max
+            .max(other.gpu_row_batch_rows_max);
+        self.gpu_row_batch_target_tiles = self
+            .gpu_row_batch_target_tiles
+            .max(other.gpu_row_batch_target_tiles);
+        self.streaming_write_micros = self
+            .streaming_write_micros
+            .saturating_add(other.streaming_write_micros);
+        self.pixel_data_patch_micros = self
+            .pixel_data_patch_micros
+            .saturating_add(other.pixel_data_patch_micros);
+        self.writer_backpressure_micros = self
+            .writer_backpressure_micros
+            .saturating_add(other.writer_backpressure_micros);
         self.write_micros = self.write_micros.saturating_add(other.write_micros);
     }
 
@@ -450,6 +547,42 @@ impl DicomExportMetrics {
         self.gpu_encode_wall_micros = self
             .gpu_encode_wall_micros
             .saturating_add(duration_as_reported_micros(stats.encode_wall_duration));
+        self.gpu_encode_plan_micros = self
+            .gpu_encode_plan_micros
+            .saturating_add(duration_as_reported_micros(stats.stage_stats.plan_duration));
+        self.gpu_encode_prepare_submit_micros = self
+            .gpu_encode_prepare_submit_micros
+            .saturating_add(duration_as_reported_micros(
+                stats.stage_stats.prepare_submit_duration,
+            ));
+        self.gpu_encode_ht_table_build_micros = self
+            .gpu_encode_ht_table_build_micros
+            .saturating_add(duration_as_reported_micros(
+                stats.stage_stats.ht_table_build_duration,
+            ));
+        self.gpu_encode_ht_buffer_allocation_micros =
+            self.gpu_encode_ht_buffer_allocation_micros.saturating_add(
+                duration_as_reported_micros(stats.stage_stats.ht_buffer_allocation_duration),
+            );
+        self.gpu_encode_ht_command_encode_micros = self
+            .gpu_encode_ht_command_encode_micros
+            .saturating_add(duration_as_reported_micros(
+                stats.stage_stats.ht_command_encode_duration,
+            ));
+        self.gpu_encode_codestream_wait_micros = self
+            .gpu_encode_codestream_wait_micros
+            .saturating_add(duration_as_reported_micros(
+                stats.stage_stats.codestream_wait_duration,
+            ));
+        self.gpu_encode_chunk_count = self
+            .gpu_encode_chunk_count
+            .saturating_add(stats.stage_stats.chunk_count as u64);
+        self.gpu_encode_tile_count = self
+            .gpu_encode_tile_count
+            .saturating_add(stats.stage_stats.tile_count as u64);
+        self.gpu_encode_code_block_count = self
+            .gpu_encode_code_block_count
+            .saturating_add(stats.stage_stats.code_block_count as u64);
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -574,6 +707,27 @@ impl DicomExportMetrics {
 
     pub(crate) fn record_write_duration(&mut self, duration: Duration) {
         add_duration_micros(&mut self.write_micros, duration);
+    }
+
+    pub(crate) fn record_streaming_write_duration(&mut self, duration: Duration) {
+        add_duration_micros(&mut self.streaming_write_micros, duration);
+    }
+
+    pub(crate) fn record_pixel_data_patch_duration(&mut self, duration: Duration) {
+        add_duration_micros(&mut self.pixel_data_patch_micros, duration);
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub(crate) fn record_gpu_pipeline_depth(&mut self, depth: usize) {
+        self.gpu_pipeline_depth = self.gpu_pipeline_depth.max(depth as u64);
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub(crate) fn record_gpu_row_batch_config(&mut self, rows: usize, target_tiles: Option<usize>) {
+        self.gpu_row_batch_rows_max = self.gpu_row_batch_rows_max.max(rows as u64);
+        self.gpu_row_batch_target_tiles = self
+            .gpu_row_batch_target_tiles
+            .max(target_tiles.unwrap_or(0) as u64);
     }
 
     pub fn gpu_encode_effective_parallelism(&self) -> f64 {

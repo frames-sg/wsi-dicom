@@ -1,5 +1,9 @@
 use std::time::{Duration, Instant};
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use rayon::prelude::*;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use signinum_core::DeviceSubmission;
 use signinum_j2k::{
     encode_j2k_lossless, encode_j2k_lossless_with_accelerator, BackendKind, J2kBlockCodingMode,
     J2kEncodeStageAccelerator, J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples,
@@ -48,6 +52,7 @@ pub(crate) struct DicomJ2kGpuEncodeBatchStats {
     pub(crate) configured_memory_mib: Option<u64>,
     pub(crate) effective_memory_mib: u64,
     pub(crate) encode_wall_duration: Duration,
+    pub(crate) stage_stats: signinum_j2k_metal::MetalLosslessEncodeStageStats,
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -67,6 +72,42 @@ impl DicomJ2kGpuEncodeBatchStats {
         self.encode_wall_duration = self
             .encode_wall_duration
             .saturating_add(other.encode_wall_duration);
+        self.stage_stats.plan_duration = self
+            .stage_stats
+            .plan_duration
+            .saturating_add(other.stage_stats.plan_duration);
+        self.stage_stats.prepare_submit_duration = self
+            .stage_stats
+            .prepare_submit_duration
+            .saturating_add(other.stage_stats.prepare_submit_duration);
+        self.stage_stats.ht_table_build_duration = self
+            .stage_stats
+            .ht_table_build_duration
+            .saturating_add(other.stage_stats.ht_table_build_duration);
+        self.stage_stats.ht_buffer_allocation_duration = self
+            .stage_stats
+            .ht_buffer_allocation_duration
+            .saturating_add(other.stage_stats.ht_buffer_allocation_duration);
+        self.stage_stats.ht_command_encode_duration = self
+            .stage_stats
+            .ht_command_encode_duration
+            .saturating_add(other.stage_stats.ht_command_encode_duration);
+        self.stage_stats.codestream_wait_duration = self
+            .stage_stats
+            .codestream_wait_duration
+            .saturating_add(other.stage_stats.codestream_wait_duration);
+        self.stage_stats.chunk_count = self
+            .stage_stats
+            .chunk_count
+            .saturating_add(other.stage_stats.chunk_count);
+        self.stage_stats.tile_count = self
+            .stage_stats
+            .tile_count
+            .saturating_add(other.stage_stats.tile_count);
+        self.stage_stats.code_block_count = self
+            .stage_stats
+            .code_block_count
+            .saturating_add(other.stage_stats.code_block_count);
     }
 }
 
@@ -74,6 +115,33 @@ impl DicomJ2kGpuEncodeBatchStats {
 pub(crate) struct EncodedDicomJ2kMetalTileBatch {
     pub(crate) frames: Vec<Option<EncodedDicomJ2kFrame>>,
     pub(crate) gpu_encode_stats: DicomJ2kGpuEncodeBatchStats,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(crate) struct SubmittedDicomJ2kMetalTileBatch {
+    tiles: Vec<statumen::output::metal::MetalDeviceTile>,
+    output_width: u32,
+    output_height: u32,
+    options: J2kLosslessEncodeOptions,
+    session: Option<signinum_j2k_metal::MetalBackendSession>,
+    preference: EncodeBackendPreference,
+    used_device_validation: bool,
+    configured_inflight_tiles: Option<usize>,
+    configured_memory_mib: Option<u64>,
+    groups: Vec<SubmittedDicomJ2kMetalTileGroup>,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+enum SubmittedDicomJ2kMetalTileGroup {
+    Submitted {
+        start: usize,
+        end: usize,
+        submission: Box<signinum_j2k_metal::SubmittedJ2kLosslessMetalBufferEncodeBatch>,
+    },
+    HostFallback {
+        start: usize,
+        end: usize,
+    },
 }
 
 impl EncodedDicomJ2kFrame {
@@ -108,6 +176,99 @@ impl EncodedDicomJ2kFrame {
     #[cfg(all(test, feature = "metal", target_os = "macos"))]
     pub(crate) fn codestream_is_metal_buffer_backed(&self) -> bool {
         matches!(self.codestream, EncodedDicomJ2kCodestream::Metal(_))
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl SubmittedDicomJ2kMetalTileBatch {
+    pub(crate) fn wait(self) -> Result<EncodedDicomJ2kMetalTileBatch, WsiDicomError> {
+        let Self {
+            tiles,
+            output_width,
+            output_height,
+            options,
+            session,
+            preference,
+            used_device_validation,
+            configured_inflight_tiles,
+            configured_memory_mib,
+            groups,
+        } = self;
+
+        if preference == EncodeBackendPreference::CpuOnly {
+            return Ok(EncodedDicomJ2kMetalTileBatch {
+                frames: (0..tiles.len()).map(|_| None).collect(),
+                gpu_encode_stats: DicomJ2kGpuEncodeBatchStats::default(),
+            });
+        }
+
+        let session = session.ok_or_else(|| WsiDicomError::Encode {
+            message: "submitted JPEG 2000 Metal tile batch is missing its session".into(),
+        })?;
+        let mut encoded = Vec::with_capacity(tiles.len());
+        let mut gpu_encode_stats = DicomJ2kGpuEncodeBatchStats::default();
+        for group in groups {
+            match group {
+                SubmittedDicomJ2kMetalTileGroup::Submitted {
+                    start,
+                    end,
+                    submission,
+                } => match submission.wait() {
+                    Ok(batch) => {
+                        gpu_encode_stats.add_assign(dicom_gpu_encode_stats_from_metal(
+                            batch.stats,
+                            configured_memory_mib,
+                        ));
+                        for outcome in batch.outcomes {
+                            encoded.push(Some(EncodedDicomJ2kFrame {
+                                codestream: EncodedDicomJ2kCodestream::Metal(outcome.encoded),
+                                used_device_encode: true,
+                                used_device_validation,
+                                encode_duration: outcome
+                                    .encode_duration
+                                    .saturating_add(outcome.input_copy_duration),
+                                device_gpu_duration: outcome.gpu_duration,
+                                validation_duration: outcome.validation_duration,
+                            }));
+                        }
+                    }
+                    Err(_) => {
+                        let requests = metal_encode_requests_from_device_tiles(
+                            &tiles[start..end],
+                            output_width,
+                            output_height,
+                        );
+                        encoded.extend(encode_metal_tiles_to_host_with_settings(
+                            &requests,
+                            &options,
+                            &session,
+                            preference,
+                            used_device_validation,
+                            configured_inflight_tiles,
+                        )?);
+                    }
+                },
+                SubmittedDicomJ2kMetalTileGroup::HostFallback { start, end } => {
+                    let requests = metal_encode_requests_from_device_tiles(
+                        &tiles[start..end],
+                        output_width,
+                        output_height,
+                    );
+                    encoded.extend(encode_metal_tiles_to_host_with_settings(
+                        &requests,
+                        &options,
+                        &session,
+                        preference,
+                        used_device_validation,
+                        configured_inflight_tiles,
+                    )?);
+                }
+            }
+        }
+        Ok(EncodedDicomJ2kMetalTileBatch {
+            frames: encoded,
+            gpu_encode_stats,
+        })
     }
 }
 
@@ -346,10 +507,35 @@ impl DicomJ2kEncoder {
         output_width: u32,
         output_height: u32,
     ) -> Result<EncodedDicomJ2kMetalTileBatch, WsiDicomError> {
+        self.submit_metal_tiles_owned(tiles.to_vec(), output_width, output_height)?
+            .wait()
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub(crate) fn submit_metal_tiles_owned(
+        &mut self,
+        tiles: Vec<statumen::output::metal::MetalDeviceTile>,
+        output_width: u32,
+        output_height: u32,
+    ) -> Result<SubmittedDicomJ2kMetalTileBatch, WsiDicomError> {
         if self.preference == EncodeBackendPreference::CpuOnly {
-            return Ok(EncodedDicomJ2kMetalTileBatch {
-                frames: (0..tiles.len()).map(|_| None).collect(),
-                gpu_encode_stats: DicomJ2kGpuEncodeBatchStats::default(),
+            return Ok(SubmittedDicomJ2kMetalTileBatch {
+                tiles,
+                output_width,
+                output_height,
+                options: lossless_encode_options(
+                    self.transfer_syntax,
+                    EncodeBackendPreference::PreferDevice,
+                    self.codec_validation,
+                    self.j2k_decomposition_levels,
+                    self.reversible_transform,
+                )?,
+                session: None,
+                preference: self.preference,
+                used_device_validation: self.codec_validation == CodecValidation::RoundTrip,
+                configured_inflight_tiles: self.gpu_encode_inflight_tiles,
+                configured_memory_mib: self.gpu_encode_memory_mib,
+                groups: Vec::new(),
             });
         }
 
@@ -358,11 +544,11 @@ impl DicomJ2kEncoder {
             self.transfer_syntax,
             EncodeBackendPreference::PreferDevice,
             self.codec_validation,
-            metal_resident_j2k_decomposition_levels(self.j2k_decomposition_levels),
+            self.j2k_decomposition_levels,
             self.reversible_transform,
         )?;
-        let mut encoded = Vec::with_capacity(tiles.len());
-        let mut gpu_encode_stats = DicomJ2kGpuEncodeBatchStats::default();
+
+        let mut groups = Vec::new();
         let mut start = 0usize;
         while start < tiles.len() {
             let padded =
@@ -374,106 +560,62 @@ impl DicomJ2kEncoder {
             {
                 end += 1;
             }
-            let mut requests = Vec::with_capacity(end - start);
-            for tile in &tiles[start..end] {
-                let statumen::output::metal::MetalDeviceStorage::Buffer {
-                    buffer,
-                    byte_offset,
-                } = &tile.storage;
-                requests.push(signinum_j2k_metal::MetalLosslessEncodeTile {
-                    buffer,
-                    byte_offset: *byte_offset,
-                    width: tile.width,
-                    height: tile.height,
-                    pitch_bytes: tile.pitch_bytes,
-                    output_width,
-                    output_height,
-                    format: tile.format,
-                });
-            }
+            let requests = metal_encode_requests_from_device_tiles(
+                &tiles[start..end],
+                output_width,
+                output_height,
+            );
             let config = signinum_j2k_metal::MetalLosslessEncodeConfig {
-                gpu_encode_inflight_tiles: self.gpu_encode_inflight_tiles,
+                gpu_encode_inflight_tiles: metal_encode_inflight_tiles_for_batch(
+                    self.gpu_encode_inflight_tiles,
+                    requests.len(),
+                ),
                 gpu_encode_memory_budget_bytes: self
                     .gpu_encode_memory_mib
                     .and_then(|mib| usize::try_from(mib).ok())
                     .and_then(|mib| mib.checked_mul(1024 * 1024)),
             };
             if padded {
-                let batch = match signinum_j2k_metal::encode_lossless_from_padded_metal_buffers_to_metal_batch(
-                    &requests,
-                    &options,
-                    &session,
-                    config,
+                match signinum_j2k_metal::submit_lossless_from_padded_metal_buffers_to_metal_batch(
+                    &requests, &options, &session, config,
                 ) {
-                    Ok(batch) => batch,
-                    Err(_) if self.preference != EncodeBackendPreference::RequireDevice => {
-                        encoded.extend((start..end).map(|_| None));
-                        start = end;
-                        continue;
+                    Ok(submission) => groups.push(SubmittedDicomJ2kMetalTileGroup::Submitted {
+                        start,
+                        end,
+                        submission: Box::new(submission),
+                    }),
+                    Err(_) => {
+                        groups.push(SubmittedDicomJ2kMetalTileGroup::HostFallback { start, end })
                     }
-                    Err(err) => {
-                        return Err(WsiDicomError::Encode {
-                            message: format!("JPEG 2000 Metal tile batch encode failed: {err}"),
-                        });
-                    }
-                };
-                gpu_encode_stats.add_assign(dicom_gpu_encode_stats_from_metal(
-                    batch.stats,
-                    self.gpu_encode_memory_mib,
-                ));
-
-                for outcome in batch.outcomes {
-                    encoded.push(Some(EncodedDicomJ2kFrame {
-                        codestream: EncodedDicomJ2kCodestream::Metal(outcome.encoded),
-                        used_device_encode: true,
-                        used_device_validation: self.codec_validation == CodecValidation::RoundTrip,
-                        encode_duration: outcome
-                            .encode_duration
-                            .saturating_add(outcome.input_copy_duration),
-                        device_gpu_duration: outcome.gpu_duration,
-                        validation_duration: outcome.validation_duration,
-                    }));
                 }
             } else {
-                let batch =
-                    match signinum_j2k_metal::encode_lossless_from_metal_buffers_to_metal_batch(
-                        &requests, &options, &session, config,
-                    ) {
-                        Ok(batch) => batch,
-                        Err(_) if self.preference != EncodeBackendPreference::RequireDevice => {
-                            encoded.extend((start..end).map(|_| None));
-                            start = end;
-                            continue;
-                        }
-                        Err(err) => {
-                            return Err(WsiDicomError::Encode {
-                                message: format!("JPEG 2000 Metal tile batch encode failed: {err}"),
-                            });
-                        }
-                    };
-                gpu_encode_stats.add_assign(dicom_gpu_encode_stats_from_metal(
-                    batch.stats,
-                    self.gpu_encode_memory_mib,
-                ));
-
-                for outcome in batch.outcomes {
-                    encoded.push(Some(EncodedDicomJ2kFrame {
-                        codestream: EncodedDicomJ2kCodestream::Metal(outcome.encoded),
-                        used_device_encode: true,
-                        used_device_validation: self.codec_validation == CodecValidation::RoundTrip,
-                        encode_duration: outcome
-                            .encode_duration
-                            .saturating_add(outcome.input_copy_duration),
-                        device_gpu_duration: outcome.gpu_duration,
-                        validation_duration: outcome.validation_duration,
-                    }));
+                match signinum_j2k_metal::submit_lossless_from_metal_buffers_to_metal_batch(
+                    &requests, &options, &session, config,
+                ) {
+                    Ok(submission) => groups.push(SubmittedDicomJ2kMetalTileGroup::Submitted {
+                        start,
+                        end,
+                        submission: Box::new(submission),
+                    }),
+                    Err(_) => {
+                        groups.push(SubmittedDicomJ2kMetalTileGroup::HostFallback { start, end })
+                    }
                 }
             }
             start = end;
         }
-        Ok(EncodedDicomJ2kMetalTileBatch {
-            frames: encoded,
-            gpu_encode_stats,
+
+        Ok(SubmittedDicomJ2kMetalTileBatch {
+            tiles,
+            output_width,
+            output_height,
+            options,
+            session: Some(session),
+            preference: self.preference,
+            used_device_validation: self.codec_validation == CodecValidation::RoundTrip,
+            configured_inflight_tiles: self.gpu_encode_inflight_tiles,
+            configured_memory_mib: self.gpu_encode_memory_mib,
+            groups,
         })
     }
 
@@ -498,6 +640,62 @@ impl DicomJ2kEncoder {
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
+fn metal_encode_requests_from_device_tiles(
+    tiles: &[statumen::output::metal::MetalDeviceTile],
+    output_width: u32,
+    output_height: u32,
+) -> Vec<signinum_j2k_metal::MetalLosslessEncodeTile<'_>> {
+    let mut requests = Vec::with_capacity(tiles.len());
+    for tile in tiles {
+        let statumen::output::metal::MetalDeviceStorage::Buffer {
+            buffer,
+            byte_offset,
+        } = &tile.storage;
+        requests.push(signinum_j2k_metal::MetalLosslessEncodeTile {
+            buffer,
+            byte_offset: *byte_offset,
+            width: tile.width,
+            height: tile.height,
+            pitch_bytes: tile.pitch_bytes,
+            output_width,
+            output_height,
+            format: tile.format,
+        });
+    }
+    requests
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn encode_metal_tiles_to_host_with_settings(
+    requests: &[signinum_j2k_metal::MetalLosslessEncodeTile<'_>],
+    options: &J2kLosslessEncodeOptions,
+    session: &signinum_j2k_metal::MetalBackendSession,
+    preference: EncodeBackendPreference,
+    used_device_validation: bool,
+    configured_inflight_tiles: Option<usize>,
+) -> Result<Vec<Option<EncodedDicomJ2kFrame>>, WsiDicomError> {
+    let chunk_size = metal_host_fallback_parallel_chunk_size(
+        requests.len(),
+        configured_inflight_tiles,
+        rayon::current_num_threads(),
+    );
+
+    let chunks = requests
+        .par_chunks(chunk_size)
+        .map(|chunk| {
+            encode_metal_tile_chunk_to_host(
+                chunk,
+                options,
+                session,
+                preference,
+                used_device_validation,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(chunks.into_iter().flatten().collect())
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
 fn dicom_gpu_encode_stats_from_metal(
     stats: signinum_j2k_metal::MetalLosslessEncodeBatchStats,
     configured_memory_mib: Option<u64>,
@@ -509,7 +707,85 @@ fn dicom_gpu_encode_stats_from_metal(
         configured_memory_mib,
         effective_memory_mib: bytes_to_mib_ceil(stats.effective_memory_budget_bytes),
         encode_wall_duration: stats.encode_wall_duration,
+        stage_stats: stats.stage_stats,
     }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn metal_encode_inflight_tiles_for_batch(
+    configured_inflight_tiles: Option<usize>,
+    request_count: usize,
+) -> Option<usize> {
+    let _ = request_count;
+    configured_inflight_tiles
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn metal_host_fallback_parallel_chunk_size(
+    request_count: usize,
+    configured_inflight_tiles: Option<usize>,
+    worker_threads: usize,
+) -> usize {
+    if request_count == 0 {
+        return 1;
+    }
+
+    let parallel_chunks = configured_inflight_tiles
+        .unwrap_or(worker_threads)
+        .max(1)
+        .min(request_count);
+    request_count.div_ceil(parallel_chunks)
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn encode_metal_tile_chunk_to_host(
+    requests: &[signinum_j2k_metal::MetalLosslessEncodeTile<'_>],
+    options: &J2kLosslessEncodeOptions,
+    session: &signinum_j2k_metal::MetalBackendSession,
+    preference: EncodeBackendPreference,
+    used_device_validation: bool,
+) -> Result<Vec<Option<EncodedDicomJ2kFrame>>, WsiDicomError> {
+    let outcomes = match signinum_j2k_metal::encode_lossless_from_metal_buffers_with_report(
+        requests, options, session,
+    ) {
+        Ok(outcomes) => outcomes,
+        Err(_) if preference != EncodeBackendPreference::RequireDevice => {
+            return Ok((0..requests.len()).map(|_| None).collect());
+        }
+        Err(err) => {
+            return Err(WsiDicomError::Encode {
+                message: format!("JPEG 2000 Metal tile batch encode failed: {err}"),
+            });
+        }
+    };
+
+    outcomes
+        .into_iter()
+        .map(|outcome| {
+            let used_device_encode = outcome.encoded.backend == BackendKind::Metal;
+            if !used_device_encode {
+                if preference == EncodeBackendPreference::RequireDevice {
+                    return Err(WsiDicomError::Unsupported {
+                        reason:
+                            "requested JPEG 2000 device encode backend did not preserve the requested profile"
+                                .into(),
+                    });
+                }
+                return Ok(None);
+            }
+
+            Ok(Some(EncodedDicomJ2kFrame {
+                codestream: EncodedDicomJ2kCodestream::Host(outcome.encoded.codestream),
+                used_device_encode,
+                used_device_validation,
+                encode_duration: outcome
+                    .encode_duration
+                    .saturating_add(outcome.input_copy_duration),
+                device_gpu_duration: outcome.gpu_duration,
+                validation_duration: outcome.validation_duration,
+            }))
+        })
+        .collect()
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -586,11 +862,6 @@ pub(crate) fn metal_tile_is_padded_contiguous(
     tile.width == output_width
         && tile.height == output_height
         && tile.pitch_bytes == (output_width as usize).saturating_mul(tile.format.bytes_per_pixel())
-}
-
-#[cfg(all(feature = "metal", target_os = "macos"))]
-fn metal_resident_j2k_decomposition_levels(j2k_decomposition_levels: Option<u8>) -> Option<u8> {
-    Some(j2k_decomposition_levels.unwrap_or(1).min(1))
 }
 
 #[cfg_attr(
@@ -672,10 +943,17 @@ pub(crate) fn dicom_j2k_decomposition_levels(samples: J2kLosslessSamples<'_>) ->
 
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 mod tests {
-    use super::DicomJ2kEncoder;
+    use super::{
+        metal_encode_inflight_tiles_for_batch, metal_host_fallback_parallel_chunk_size,
+        DicomJ2kEncoder,
+    };
     use crate::test_support::{find_command_for_test, read_binary_ppm_for_test};
     use crate::{CodecValidation, EncodeBackendPreference, TransferSyntax};
     use signinum_core::PixelFormat;
+    use signinum_j2k::{
+        j2k_lossless_decomposition_levels_for_options, J2kBlockCodingMode,
+        J2kLosslessEncodeOptions, J2kLosslessSamples, J2kProgressionOrder,
+    };
     use statumen::output::metal::{MetalDeviceStorage, MetalDeviceTile};
 
     #[test]
@@ -735,6 +1013,58 @@ mod tests {
         let encoded = encoder
             .encode_metal_tiles(&[tile], 8, 8)
             .expect("Metal DICOM tile encode")
+            .frames;
+        let frame = encoded
+            .into_iter()
+            .next()
+            .expect("one frame")
+            .expect("Metal frame");
+
+        assert!(frame.codestream_is_metal_buffer_backed());
+        let codestream = frame.codestream_bytes().expect("codestream bytes");
+        assert!(codestream.starts_with(&[0xFF, 0x4F]));
+        let mut decoded = vec![0u8; pixels.len()];
+        signinum_j2k::J2kDecoder::new(codestream)
+            .expect("parse J2K")
+            .decode_into(&mut decoded, 8 * 3, PixelFormat::Rgb8)
+            .expect("decode J2K");
+        assert_eq!(decoded, pixels);
+    }
+
+    #[test]
+    fn submitted_metal_tile_batch_wait_returns_buffer_backed_codestream() {
+        let pixels: Vec<u8> = (0..8 * 8 * 3)
+            .map(|idx| ((idx * 29) & 0xFF) as u8)
+            .collect();
+        let session =
+            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let buffer = session.device().new_buffer_with_data(
+            pixels.as_ptr().cast(),
+            pixels.len() as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let tile = MetalDeviceTile {
+            width: 8,
+            height: 8,
+            pitch_bytes: 8 * 3,
+            format: PixelFormat::Rgb8,
+            storage: MetalDeviceStorage::Buffer {
+                buffer,
+                byte_offset: 0,
+            },
+        };
+        let mut encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::RequireDevice,
+            TransferSyntax::Jpeg2000Lossless,
+            CodecValidation::RoundTrip,
+        );
+
+        let submitted = encoder
+            .submit_metal_tiles_owned(vec![tile], 8, 8)
+            .expect("submit Metal DICOM tile encode");
+        let encoded = submitted
+            .wait()
+            .expect("wait submitted Metal encode")
             .frames;
         let frame = encoded
             .into_iter()
@@ -890,7 +1220,8 @@ mod tests {
             EncodeBackendPreference::RequireDevice,
             TransferSyntax::Htj2kLosslessRpcl,
             CodecValidation::RoundTrip,
-        );
+        )
+        .with_j2k_decomposition_levels(Some(1));
 
         let encoded = encoder
             .encode_metal_tiles(&[tile], 256, 256)
@@ -910,6 +1241,7 @@ mod tests {
             .position(|window| window == [0xFF, 0x52])
             .expect("COD marker");
         assert_eq!(codestream[cod_marker + 5], 0x02);
+        assert_eq!(j2k_cod_decomposition_levels(codestream), 1);
         assert_eq!(codestream[cod_marker + 12], 0x40);
         let mut decoded = vec![0u8; pixels.len()];
         signinum_j2k::J2kDecoder::new(codestream)
@@ -917,6 +1249,86 @@ mod tests {
             .decode_into(&mut decoded, 256 * 3, PixelFormat::Rgb8)
             .expect("decode HTJ2K");
         assert_eq!(decoded, pixels);
+    }
+
+    #[test]
+    fn metal_tile_encode_preserves_default_htj2k_rpcl_decomposition_profile() {
+        let pixels: Vec<u8> = (0..512 * 512 * 3)
+            .map(|idx| ((idx * 47 + idx / 17) & 0xFF) as u8)
+            .collect();
+        let samples =
+            J2kLosslessSamples::new(&pixels, 512, 512, 3, 8, false).expect("valid RGB samples");
+        let expected_levels = j2k_lossless_decomposition_levels_for_options(
+            samples,
+            J2kLosslessEncodeOptions {
+                block_coding_mode: J2kBlockCodingMode::HighThroughput,
+                progression: J2kProgressionOrder::Rpcl,
+                ..J2kLosslessEncodeOptions::default()
+            },
+        );
+        assert_eq!(expected_levels, 3);
+
+        let session =
+            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let buffer = session.device().new_buffer_with_data(
+            pixels.as_ptr().cast(),
+            pixels.len() as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let tile = MetalDeviceTile {
+            width: 512,
+            height: 512,
+            pitch_bytes: 512 * 3,
+            format: PixelFormat::Rgb8,
+            storage: MetalDeviceStorage::Buffer {
+                buffer,
+                byte_offset: 0,
+            },
+        };
+        let mut encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::RequireDevice,
+            TransferSyntax::Htj2kLosslessRpcl,
+            CodecValidation::RoundTrip,
+        );
+
+        let encoded = encoder
+            .encode_metal_tiles(&[tile], 512, 512)
+            .expect("Metal DICOM HTJ2K RPCL tile encode")
+            .frames;
+        let frame = encoded
+            .into_iter()
+            .next()
+            .expect("one frame")
+            .expect("Metal frame");
+
+        assert!(frame.used_device_encode);
+        let codestream = frame.codestream_bytes().expect("codestream bytes");
+        assert_eq!(j2k_cod_decomposition_levels(codestream), expected_levels);
+        let mut decoded = vec![0u8; pixels.len()];
+        signinum_j2k::J2kDecoder::new(codestream)
+            .expect("parse HTJ2K")
+            .decode_into(&mut decoded, 512 * 3, PixelFormat::Rgb8)
+            .expect("decode HTJ2K");
+        assert_eq!(decoded, pixels);
+    }
+
+    #[test]
+    fn metal_host_fallback_parallel_chunk_size_bounds_serial_work() {
+        assert_eq!(metal_host_fallback_parallel_chunk_size(0, None, 8), 1);
+        assert_eq!(metal_host_fallback_parallel_chunk_size(64, None, 8), 8);
+        assert_eq!(metal_host_fallback_parallel_chunk_size(64, Some(16), 8), 4);
+        assert_eq!(metal_host_fallback_parallel_chunk_size(10, Some(64), 8), 1);
+        assert_eq!(metal_host_fallback_parallel_chunk_size(64, Some(1), 8), 64);
+    }
+
+    #[test]
+    fn metal_default_inflight_tiles_defer_to_signinum_default() {
+        assert_eq!(metal_encode_inflight_tiles_for_batch(None, 0), None);
+        assert_eq!(metal_encode_inflight_tiles_for_batch(None, 132), None);
+        assert_eq!(
+            metal_encode_inflight_tiles_for_batch(Some(64), 132),
+            Some(64)
+        );
     }
 
     #[test]
@@ -1026,7 +1438,8 @@ mod tests {
             EncodeBackendPreference::PreferDevice,
             TransferSyntax::Htj2kLosslessRpcl,
             CodecValidation::RoundTrip,
-        );
+        )
+        .with_j2k_decomposition_levels(Some(1));
 
         let encoded = encoder
             .encode_metal_tiles(&[tile], 256, 256)
@@ -1038,5 +1451,13 @@ mod tests {
             .as_ref()
             .expect("Metal frame")
             .codestream_is_metal_buffer_backed());
+    }
+
+    fn j2k_cod_decomposition_levels(codestream: &[u8]) -> u8 {
+        let cod_marker = codestream
+            .windows(2)
+            .position(|window| window == [0xFF, 0x52])
+            .expect("COD marker");
+        codestream[cod_marker + 9]
     }
 }

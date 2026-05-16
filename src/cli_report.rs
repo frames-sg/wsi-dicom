@@ -37,7 +37,7 @@ fn micros_to_ms(micros: u128) -> f64 {
 }
 
 fn format_gpu_encode_metrics(metrics: DicomExportMetrics) -> String {
-    format!(
+    let base = format!(
         "gpu_encode_configured_inflight_tiles={} gpu_encode_effective_inflight_tiles={} gpu_encode_max_observed_inflight_tiles={} gpu_encode_configured_memory_mib={} gpu_encode_effective_memory_mib={} gpu_encode_wall_ms={:.3} gpu_encode_effective_parallelism={:.3}",
         metrics.gpu_encode_configured_inflight_tiles,
         metrics.gpu_encode_effective_inflight_tiles,
@@ -46,6 +46,39 @@ fn format_gpu_encode_metrics(metrics: DicomExportMetrics) -> String {
         metrics.gpu_encode_effective_memory_mib,
         micros_to_ms(metrics.gpu_encode_wall_micros),
         metrics.gpu_encode_effective_parallelism(),
+    );
+    let stages = format_gpu_encode_stage_metrics(metrics);
+    if stages.is_empty() {
+        base
+    } else {
+        format!("{base} {stages}")
+    }
+}
+
+fn format_gpu_encode_stage_metrics(metrics: DicomExportMetrics) -> String {
+    let has_stage_metrics = metrics.gpu_encode_plan_micros > 0
+        || metrics.gpu_encode_prepare_submit_micros > 0
+        || metrics.gpu_encode_ht_table_build_micros > 0
+        || metrics.gpu_encode_ht_buffer_allocation_micros > 0
+        || metrics.gpu_encode_ht_command_encode_micros > 0
+        || metrics.gpu_encode_codestream_wait_micros > 0
+        || metrics.gpu_encode_chunk_count > 0
+        || metrics.gpu_encode_tile_count > 0
+        || metrics.gpu_encode_code_block_count > 0;
+    if !has_stage_metrics {
+        return String::new();
+    }
+    format!(
+        "gpu_encode_plan_ms={:.3} gpu_encode_prepare_submit_ms={:.3} gpu_encode_ht_table_build_ms={:.3} gpu_encode_ht_buffer_allocation_ms={:.3} gpu_encode_ht_command_encode_ms={:.3} gpu_encode_codestream_wait_ms={:.3} gpu_encode_chunk_count={} gpu_encode_tile_count={} gpu_encode_code_block_count={}",
+        micros_to_ms(metrics.gpu_encode_plan_micros),
+        micros_to_ms(metrics.gpu_encode_prepare_submit_micros),
+        micros_to_ms(metrics.gpu_encode_ht_table_build_micros),
+        micros_to_ms(metrics.gpu_encode_ht_buffer_allocation_micros),
+        micros_to_ms(metrics.gpu_encode_ht_command_encode_micros),
+        micros_to_ms(metrics.gpu_encode_codestream_wait_micros),
+        metrics.gpu_encode_chunk_count,
+        metrics.gpu_encode_tile_count,
+        metrics.gpu_encode_code_block_count,
     )
 }
 

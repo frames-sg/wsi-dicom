@@ -1297,18 +1297,14 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "signinum-core"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5a6ef463d867fb70c3ee6e83eca2f4899405303a82043c91324c98866f6426f"
+version = "0.4.2"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "signinum-cuda-runtime"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "538e999bf2b1143d7e5feddf438e0791b14539a80de81fab752ca5a9be980798"
+version = "0.4.2"
 dependencies = [
  "libloading",
  "thiserror 2.0.18",
@@ -1316,9 +1312,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00f0729dc3279c5165ef6560065bed5c7bf83447225747ce95b1c16814d2efe8"
+version = "0.4.2"
 dependencies = [
  "signinum-core",
  "signinum-j2k-native",
@@ -1327,22 +1321,19 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k-cuda"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "daf13e5f131fefa9af830959fc32390e05878d075ecbfe0f22f18b79df9f211e"
+version = "0.4.2"
 dependencies = [
  "signinum-core",
  "signinum-cuda-runtime",
  "signinum-j2k",
  "signinum-j2k-native",
+ "signinum-profile",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "signinum-j2k-metal"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6963df6ba4bbbf58f03fc933819a15d40235e8901b99a8daa41de95cc221bd9"
+version = "0.4.2"
 dependencies = [
  "libc",
  "metal",
@@ -1350,49 +1341,49 @@ dependencies = [
  "signinum-core",
  "signinum-j2k",
  "signinum-j2k-native",
+ "signinum-profile",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "signinum-j2k-native"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20fbccb37f7bafae07cfc9ac59dac42947b0d1ca30cccbf971a3472b9f5b7d9a"
+version = "0.4.2"
 dependencies = [
  "fearless_simd",
  "libm",
  "rayon",
+ "signinum-profile",
 ]
 
 [[package]]
 name = "signinum-jpeg"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db21160e9c279b027391a8e3c0e1a95fe57f2d246487ceca7a306e50b9159e57"
+version = "0.4.2"
 dependencies = [
  "memchr",
  "rayon",
  "signinum-core",
+ "signinum-profile",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "signinum-jpeg-metal"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8090c020feb753e16c598ea13dc376accb17596c1d0836d0014cc93c35b29df"
+version = "0.4.2"
 dependencies = [
  "metal",
  "signinum-core",
  "signinum-jpeg",
+ "signinum-profile",
  "thiserror 2.0.18",
 ]
 
 [[package]]
+name = "signinum-profile"
+version = "0.4.2"
+
+[[package]]
 name = "signinum-tilecodec"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2dff52bf3edd72bf13944a58480d9ac69b090c6131d026b13060e5aa6e2457f"
+version = "0.4.2"
 dependencies = [
  "flate2",
  "signinum-core",
