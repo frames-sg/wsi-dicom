@@ -116,7 +116,7 @@ const WSI_DICOM_METAL_ROW_BATCH_ROWS_ENV: &str = "WSI_DICOM_METAL_ROW_BATCH_ROWS
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 const DEFAULT_METAL_ROW_BATCH_TARGET_TILES: usize = 384;
-const PREFER_DEVICE_SMALL_HTJ2K_RPCL_CPU_MAX_FRAMES: u64 = 1_500;
+const PREFER_DEVICE_TINY_HTJ2K_RPCL_CPU_MAX_FRAMES: u64 = 128;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 const DEFAULT_GPU_PIPELINE_DEPTH: usize = 2;
@@ -141,14 +141,18 @@ fn effective_lossless_j2k_encode_backend(
     options: &DicomExportOptions,
     frame_count: u64,
 ) -> EncodeBackendPreference {
-    if options.encode_backend == EncodeBackendPreference::PreferDevice
-        && options.transfer_syntax == TransferSyntax::Htj2kLosslessRpcl
-        && frame_count <= PREFER_DEVICE_SMALL_HTJ2K_RPCL_CPU_MAX_FRAMES
-    {
-        EncodeBackendPreference::CpuOnly
-    } else {
-        j2k_encode_backend(options.transfer_syntax, options.encode_backend)
+    if options.encode_backend == EncodeBackendPreference::PreferDevice {
+        if options.transfer_syntax == TransferSyntax::Jpeg2000Lossless {
+            // Keep classic J2K lossless on CPU until Metal beats CPU in route-level benchmarks.
+            return EncodeBackendPreference::CpuOnly;
+        }
+        if options.transfer_syntax == TransferSyntax::Htj2kLosslessRpcl
+            && frame_count <= PREFER_DEVICE_TINY_HTJ2K_RPCL_CPU_MAX_FRAMES
+        {
+            return EncodeBackendPreference::CpuOnly;
+        }
     }
+    j2k_encode_backend(options.transfer_syntax, options.encode_backend)
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -903,6 +907,7 @@ fn export_dicom_instance_jobs_parallel(
     Ok(reports.into_iter().map(|(_, report)| report).collect())
 }
 
+#[cfg_attr(not(all(feature = "metal", target_os = "macos")), allow(dead_code))]
 fn dicom_instance_job_frame_count(
     options: &DicomExportOptions,
     job: &DicomExportInstanceJob<'_>,
@@ -1529,7 +1534,6 @@ fn profile_lossless_j2k_routes(
     let (matrix_columns, matrix_rows) = level.dimensions;
     let tiles_across = matrix_columns.div_ceil(u64::from(tile_size));
     let tiles_down = matrix_rows.div_ceil(u64::from(tile_size));
-    #[cfg(all(feature = "metal", target_os = "macos"))]
     let route_scope_frames = tiles_across
         .checked_mul(tiles_down)
         .ok_or_else(|| WsiDicomError::Unsupported {
@@ -6344,15 +6348,23 @@ mod tests {
             Some(16_384)
         );
         assert_eq!(
+            hybrid_lane::prefer_device_htj2k_rpcl_hybrid_lane(&options, 391),
+            Some(hybrid_lane::HybridExportLane::Gpu)
+        );
+        assert_eq!(
             hybrid_lane::prefer_device_htj2k_rpcl_hybrid_lane(&options, 1_188),
+            Some(hybrid_lane::HybridExportLane::Gpu)
+        );
+        assert_eq!(
+            hybrid_lane::prefer_device_htj2k_rpcl_hybrid_lane(&options, 128),
             Some(hybrid_lane::HybridExportLane::Cpu)
         );
         assert_eq!(
-            hybrid_lane::effective_lossless_gpu_row_batch_target_tiles(&options, 1_188),
+            hybrid_lane::effective_lossless_gpu_row_batch_target_tiles(&options, 128),
             Some(384)
         );
         assert_eq!(
-            hybrid_lane::effective_lossless_gpu_encode_memory_mib(&options, 1_188),
+            hybrid_lane::effective_lossless_gpu_encode_memory_mib(&options, 128),
             None
         );
 
@@ -6385,31 +6397,34 @@ mod tests {
     }
 
     #[test]
-    fn prefer_device_small_htj2k_rpcl_levels_use_cpu_backend() {
-        let options = DicomExportOptions {
-            encode_backend: EncodeBackendPreference::PreferDevice,
-            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
-            ..DicomExportOptions::default()
-        };
+    fn lossless_j2k_prefer_device_backend_routing_uses_measured_cpu_cutoffs() {
+        use EncodeBackendPreference::{CpuOnly, PreferDevice, RequireDevice};
+        use TransferSyntax::{Htj2kLosslessRpcl, Jpeg2000, Jpeg2000Lossless};
 
-        assert_eq!(
-            effective_lossless_j2k_encode_backend(&options, 1_188),
-            EncodeBackendPreference::CpuOnly
-        );
-        assert_eq!(
-            effective_lossless_j2k_encode_backend(&options, 4_752),
-            EncodeBackendPreference::PreferDevice
-        );
-
-        let require_device = DicomExportOptions {
-            encode_backend: EncodeBackendPreference::RequireDevice,
-            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
-            ..DicomExportOptions::default()
+        let backend = |encode_backend, transfer_syntax, frame_count| {
+            effective_lossless_j2k_encode_backend(
+                &DicomExportOptions {
+                    encode_backend,
+                    transfer_syntax,
+                    ..DicomExportOptions::default()
+                },
+                frame_count,
+            )
         };
-        assert_eq!(
-            effective_lossless_j2k_encode_backend(&require_device, 1_188),
-            EncodeBackendPreference::RequireDevice
-        );
+        for (encode_backend, transfer_syntax, frame_count, expected) in [
+            (PreferDevice, Htj2kLosslessRpcl, 128, CpuOnly),
+            (PreferDevice, Htj2kLosslessRpcl, 129, PreferDevice),
+            (PreferDevice, Htj2kLosslessRpcl, 391, PreferDevice),
+            (RequireDevice, Htj2kLosslessRpcl, 1_188, RequireDevice),
+            (PreferDevice, Jpeg2000Lossless, 5_850, CpuOnly),
+            (RequireDevice, Jpeg2000Lossless, 5_850, RequireDevice),
+            (PreferDevice, Jpeg2000, 5_850, CpuOnly),
+        ] {
+            assert_eq!(
+                backend(encode_backend, transfer_syntax, frame_count),
+                expected
+            );
+        }
     }
 
     #[test]
