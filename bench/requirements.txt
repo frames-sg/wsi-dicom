@@ -1,0 +1,11 @@
+openslide-bin==4.0.1.1
+openslide-python==1.4.6
+wsidicom==0.30.0
+wsidicomizer==0.25.0
+highdicom==0.27.0
+scikit-image==0.26.0
+colour-science==0.4.7
+glymur==0.14.8
+pydicom==3.0.2
+numpy==2.4.6
+Pillow==12.2.0

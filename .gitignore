@@ -1,0 +1,12 @@
+/target
+.DS_Store
+bench/testdata/
+bench/results/
+bench/outputs/
+__pycache__/
+*.py[cod]
+.venv/
+.venv-bench/
+fuzz/artifacts/
+fuzz/corpus/
+fuzz/target/

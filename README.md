@@ -1,0 +1,219 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# wsi-dicom
+
+`wsi-dicom` converts whole-slide imaging files that `statumen` can open into
+DICOM VL Whole Slide Microscopy instances. It provides a Rust API, a CLI, and an
+optional native GUI.
+
+`signinum` supplies JPEG, JPEG 2000, and HTJ2K codec primitives. `statumen`
+opens vendor WSI formats such as SVS and NDPI. `wsi-dicom` owns DICOM export,
+metadata validation, transfer-syntax routing, reports, and writer errors.
+
+## Install
+
+Install the CLI:
+
+```sh
+cargo install wsi-dicom
+```
+
+Use the Rust API:
+
+```toml
+[dependencies]
+wsi-dicom = "0.4.0"
+```
+
+GPU support is opt-in:
+
+```toml
+[dependencies]
+wsi-dicom = { version = "0.4.0", features = ["gpu"] }
+```
+
+Feature flags:
+
+| Feature | Effect |
+| --- | --- |
+| `default` | CPU-only DICOM export. |
+| `gpu` | Enables both `cuda` and `metal` backends. |
+| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. statumen CUDA tile decode waits on a published statumen 0.4.x crate/API. Direct JPEG-to-HTJ2K CUDA acceleration waits on a published `signinum-transcode-cuda` crate/API. |
+| `metal` | Enables Metal JPEG 2000 encode acceleration on macOS, Metal codestream validation decode, and statumen Metal tile decode plumbing. |
+
+For local maximum CPU throughput:
+
+```sh
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
+The optional GUI lives in `apps/wsi-dicom-gui`:
+
+```sh
+cargo run -p wsi-dicom-gui
+```
+
+## Quickstart
+
+Always provide metadata JSON/FHIR input or explicitly select research
+placeholder metadata.
+
+```sh
+wsi-dicom convert slide.ndpi --out dicom-out --research-placeholder
+```
+
+Use `--metadata metadata.json` for real metadata. `--metadata` and
+`--research-placeholder` are mutually exclusive. Existing generated `.dcm`
+paths are refused by default; pass `--overwrite` only when replacement is
+intentional.
+
+The default conversion preset is `lossless-review`, which emits HTJ2K Lossless
+RPCL. For explicit JPEG Baseline output:
+
+```sh
+wsi-dicom convert slide.ndpi --out dicom-fast --research-placeholder --preset fast-jpeg
+```
+
+Useful operational commands:
+
+```sh
+wsi-dicom doctor --strict --json
+wsi-dicom self-test --json --out self-test-evidence --keep-output
+wsi-dicom validate dicom-out --strict --json
+wsi-dicom coverage slide.ndpi --json
+```
+
+HTJ2K pixel decode validation needs an external decoder command:
+
+```sh
+wsi-dicom validate dicom-out \
+  --htj2k-decoder "ojph_expand -i {input} -o {output}"
+```
+
+Missing external tools are reported as skipped unless `--strict` is set.
+Directory validation is bounded by file count, depth, timeout, and child output
+capture limits; symlink traversal is refused.
+
+## Rust API
+
+Use the builder API for normal exports:
+
+```rust
+use wsi_dicom::{Export, IccProfilePolicy};
+
+let report = Export::from_slide("slide.ndpi")
+    .to_directory("out")
+    .with_research_placeholder_metadata()
+    .tile_size(512)
+    .jpeg_quality(90)
+    .icc_profile_policy(IccProfilePolicy::FallbackSrgb)
+    .run()?;
+```
+
+Use request types when an integration needs full control:
+
+```rust
+use wsi_dicom::{
+    export_dicom, ExportOptions, ExportRequest, IccProfilePolicy,
+    JpegDirectHtj2kProfile, MetadataSource, TransferSyntax,
+};
+
+let mut options = ExportOptions::lossless_review();
+options.transfer_syntax = TransferSyntax::Htj2k;
+options.jpeg_direct_htj2k_profile = JpegDirectHtj2kProfile::Lossy97Balanced;
+options.icc_profile_policy = IccProfilePolicy::FallbackSrgb;
+
+let request = ExportRequest::new(
+    "slide.ndpi".into(),
+    "out".into(),
+    options,
+    MetadataSource::ResearchPlaceholder,
+)?;
+
+let report = export_dicom(request)?;
+```
+
+For composed tile samples:
+
+```rust
+use wsi_dicom::{
+    encode_dicom_j2k_frame, CodecValidation, EncodeBackendPreference,
+    FrameSamples, J2kFrameEncodeRequest, TransferSyntax,
+};
+
+let pixels = vec![0_u8; 512 * 512 * 3];
+let samples = FrameSamples::new(&pixels, 512, 512, 3, 8, false)?;
+let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
+    samples,
+    TransferSyntax::Htj2kLosslessRpcl,
+    EncodeBackendPreference::CpuOnly,
+    CodecValidation::RoundTrip,
+))?;
+```
+
+## Behavior Notes
+
+- ICC handling is explicit. Missing source profiles default to synthesized sRGB;
+  use `--icc strict`, `--icc fallback-display-p3`, or `--icc omit-if-missing`
+  when a different policy is required.
+- JPEG Baseline output preserves compatible native JPEG frames. HTJ2K lossless
+  output rejects nonconformant color JPEG direct routes and falls back through
+  decoded RGB/RCT.
+- JPEG 2000 passthrough preserves eligible native source codestreams.
+- Route profile and coverage JSON reports expose available frame counts,
+  sampled frame percentages, route counters, pixel profiles, and GPU counters.
+- Passing validators is release evidence, not formal DICOM certification.
+
+## Development
+
+Core checks:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --no-default-features --all-targets -- -D warnings
+cargo test --workspace --no-default-features --all-targets
+cargo check -p wsi-dicom-gui
+```
+
+Pre-1.0 release gates:
+
+```sh
+cargo xtask docs-strict
+cargo xtask coverage
+cargo xtask semver
+cargo publish --dry-run
+```
+
+Before a `1.0 release candidate`, run these gates against published
+dependencies and a representative real-slide corpus covering advertised routes,
+metadata modes, ICC policies, validator checks, and any GPU route being
+advertised.
+
+Use the benchmark harness only when publishing speed evidence:
+
+```sh
+./.venv/bin/python scripts/benchmark_wsidicomizer.py \
+  --corpus-root "$OPENSLIDE_TESTDATA" \
+  --out target/wsidicomizer-benchmark \
+  --profile fast-jpeg \
+  --tile-size 256 \
+  --level 0 \
+  --workers 8 \
+  --timeout-secs 3600 \
+  --validate
+```
+
+Publish failures, unsupported slides, transfer syntax, frame geometry, tool
+versions, host details, and machine-readable results with any performance
+claim.
+
+## Stability
+
+`wsi-dicom` is pre-1.0. The builder API is the preferred integration surface.
+Lower-level request, report, validation, and profiling types are public, but
+callers should prefer constructors and defaults over struct literals where
+provided.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).

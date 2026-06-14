@@ -1,0 +1,88 @@
+[package]
+name = "wsi-dicom"
+version = "0.4.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Convert whole-slide imaging files to DICOM VL Whole Slide Microscopy"
+rust-version = "1.96"
+readme = "README.md"
+repository = "https://github.com/frames-sg/wsi-dicom"
+homepage = "https://github.com/frames-sg/wsi-dicom"
+documentation = "https://docs.rs/wsi-dicom"
+keywords = ["dicom", "whole-slide", "microscopy", "pathology", "wsi"]
+categories = ["multimedia::images", "science"]
+exclude = [
+    "bench/**",
+    "apps/wsi-dicom-gui/**",
+    ".github/**",
+    ".cargo/**",
+    "fuzz/**",
+    "supply-chain/**",
+]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+dicom-core = "0.9"
+dicom-dictionary-std = "0.9"
+dicom-object = "0.9"
+moxcms = "0.8.1"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+shlex = "2"
+signinum-core = "0.4.4"
+signinum-j2k = "0.4.4"
+signinum-j2k-cuda = { version = "0.4.4", optional = true, default-features = false, features = ["cuda-runtime"] }
+signinum-j2k-metal = { version = "0.4.4", optional = true }
+signinum-jpeg = "0.4.4"
+signinum-jpeg-metal = { version = "0.4.4", optional = true }
+signinum-transcode = "0.4.4"
+signinum-transcode-metal = { version = "0.4.4", optional = true }
+statumen = "0.3.1"
+tempfile = "3"
+thiserror = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = { version = "0.31", optional = true }
+objc = { version = "0.2", optional = true }
+
+[features]
+default = []
+bench-internals = []
+gpu = ["cuda", "metal"]
+cuda = ["dep:signinum-j2k-cuda"]
+metal = [
+    "dep:metal",
+    "dep:objc",
+    "dep:signinum-j2k-metal",
+    "dep:signinum-jpeg-metal",
+    "dep:signinum-transcode-metal",
+    "statumen/metal",
+]
+
+[dev-dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+
+[package.metadata.docs.rs]
+no-default-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[[bench]]
+name = "internal_helpers"
+harness = false
+required-features = ["bench-internals"]
+
+[workspace]
+members = [".", "xtask", "apps/wsi-dicom-gui"]
+resolver = "2"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.bench]
+lto = "fat"
+codegen-units = 1

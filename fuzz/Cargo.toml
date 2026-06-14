@@ -1,0 +1,51 @@
+[package]
+name = "wsi-dicom-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+statumen = "0.3.1"
+wsi-dicom = { path = "..", features = ["bench-internals"] }
+
+[workspace]
+
+[[bin]]
+name = "metadata_json"
+path = "fuzz_targets/metadata_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fhir_bundle"
+path = "fuzz_targets/fhir_bundle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tile_preparation"
+path = "fuzz_targets/tile_preparation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dicom_validation_fragment"
+path = "fuzz_targets/dicom_validation_fragment.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "htj2k_decoder_template"
+path = "fuzz_targets/htj2k_decoder_template.rs"
+test = false
+doc = false
+bench = false

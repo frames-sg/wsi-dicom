@@ -1,0 +1,17 @@
+[files]
+extend-exclude = [
+    ".git",
+    "target",
+    "bench/outputs",
+    "bench/results",
+]
+
+[default.extend-words]
+dicom = "dicom"
+HTJ2K = "HTJ2K"
+ndpi = "ndpi"
+PN = "PN"
+SOP = "SOP"
+UID = "UID"
+uids = "uids"
+wsi = "wsi"

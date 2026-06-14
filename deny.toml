@@ -1,0 +1,53 @@
+# cargo-deny configuration. See https://embarkstudios.github.io/cargo-deny/
+# for the full schema.
+
+[graph]
+all-features = true
+no-default-features = false
+
+[advisories]
+version = 2
+ignore = [
+    # RUSTSEC-2021-0153: `encoding` is pulled transitively by dicom-encoding
+    # 0.9.1. No safe upstream upgrade exists yet; revisit when dicom-rs
+    # replaces it.
+    "RUSTSEC-2021-0153",
+    # RUSTSEC-2024-0436: transitive via metal-rs. This is an unmaintained
+    # advisory for paste, not a known memory-safety or code-execution issue.
+    "RUSTSEC-2024-0436",
+]
+
+[licenses]
+version = 2
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "0BSD",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+highlight = "all"
+skip = [
+    # Reviewed transitive duplicates currently held by upstream DICOM,
+    # statumen/signinum, platform, and dev-tool dependencies.
+    { name = "bitflags", version = "1.3.2" },
+    { name = "getrandom", version = "0.3.4" },
+    { name = "r-efi", version = "5.3.0" },
+    { name = "thiserror", version = "1.0.69" },
+    { name = "thiserror-impl", version = "1.0.69" },
+    { name = "wit-bindgen", version = "0.51.0" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

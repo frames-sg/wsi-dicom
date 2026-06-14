@@ -1,0 +1,53 @@
+name: publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry-run-only:
+        description: "Run cargo publish in dry-run mode"
+        type: boolean
+        required: false
+        default: true
+      version:
+        description: "Package version to publish without dry-run; must match Cargo.toml"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CARGO_TERM_COLOR: always
+  DRY_RUN_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run-only }}
+
+jobs:
+  publish-wsi-dicom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+      - name: Check release ref matches package version
+        if: github.event_name == 'push' || env.DRY_RUN_ONLY != 'true'
+        run: |
+          version="$(cargo pkgid | sed 's/.*#//')"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            release_version="${GITHUB_REF_NAME#v}"
+          else
+            release_version="${{ inputs.version }}"
+          fi
+          test "$release_version" = "$version"
+      - name: Require CI success for tagged commit
+        if: github.event_name == 'push' || env.DRY_RUN_ONLY != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count="$(gh run list --workflow CI --commit "$GITHUB_SHA" --json conclusion,status --jq '[.[] | select(.status == "completed" and .conclusion == "success")] | length')"
+          test "$count" -gt 0
+      - run: scripts/publish-crate.sh
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
