@@ -200,6 +200,80 @@ fn default_transfer_syntax_prefers_general_jpeg2000_passthrough_source() {
 }
 
 #[test]
+fn default_transfer_syntax_retiles_oversized_jpeg2000_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bytes: Vec<u8> = (0..4 * 4 * 3)
+        .map(|value| ((value * 13) & 0xFF) as u8)
+        .collect();
+    let samples = J2kLosslessSamples::new(&bytes, 4, 4, 3, 8, false).expect("valid samples");
+    let codestream = encode_dicom_lossless(
+        samples,
+        TransferSyntax::Jpeg2000Lossless,
+        EncodeBackendPreference::CpuOnly,
+        CodecValidation::RoundTrip,
+    )
+    .unwrap();
+    let source = tmp.path().join("source.svs");
+    write_tiled_jp2k_ycbcr_tiff(&source, 4, 4, 4, 4, std::slice::from_ref(&codestream));
+
+    let selected = default_transfer_syntax_for_source(DefaultTransferSyntaxRequest {
+        source_path: source,
+        tile_size: 2,
+        level_filter: None,
+        max_levels: None,
+    })
+    .unwrap();
+
+    assert_eq!(selected, TransferSyntax::Htj2kLosslessRpcl);
+}
+
+#[test]
+fn source_aware_builder_writes_requested_tile_geometry_for_oversized_jpeg2000_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bytes: Vec<u8> = (0..4 * 4 * 3)
+        .map(|value| ((value * 17) & 0xFF) as u8)
+        .collect();
+    let samples = J2kLosslessSamples::new(&bytes, 4, 4, 3, 8, false).expect("valid samples");
+    let codestream = encode_dicom_lossless(
+        samples,
+        TransferSyntax::Jpeg2000Lossless,
+        EncodeBackendPreference::CpuOnly,
+        CodecValidation::RoundTrip,
+    )
+    .unwrap();
+    let source = tmp.path().join("source.svs");
+    write_tiled_jp2k_ycbcr_tiff(&source, 4, 4, 4, 4, std::slice::from_ref(&codestream));
+
+    let report = Export::from_slide(&source)
+        .to_directory(tmp.path().join("out"))
+        .tile_size(2)
+        .encode_backend(EncodeBackendPreference::CpuOnly)
+        .codec_validation(CodecValidation::Disabled)
+        .with_research_placeholder_metadata()
+        .run()
+        .unwrap();
+
+    assert_eq!(report.instances[0].frame_count, 4);
+    assert_eq!(
+        report.instances[0].transfer_syntax_uid,
+        TransferSyntax::Htj2kLosslessRpcl.uid()
+    );
+    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+    assert_eq!(
+        object.element(tags::ROWS).unwrap().to_int::<u16>().unwrap(),
+        2
+    );
+    assert_eq!(
+        object
+            .element(tags::COLUMNS)
+            .unwrap()
+            .to_int::<u16>()
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
 fn default_transfer_syntax_falls_back_to_htj2k_when_passthrough_is_unavailable() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source.dcm");

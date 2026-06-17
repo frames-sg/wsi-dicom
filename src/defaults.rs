@@ -13,6 +13,13 @@ use crate::request::DefaultTransferSyntaxRequest;
 use crate::routing::{j2k_route_tile_size, level_is_synthetic_downsample};
 use crate::tile::optical_path_groups;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum J2kDefaultPassthroughStatus {
+    NoJ2kSource,
+    Eligible,
+    Blocked,
+}
+
 /// Pick the default transfer syntax for a source.
 ///
 /// JPEG and JPEG 2000-backed sources preserve native compressed frames when an
@@ -42,7 +49,8 @@ pub fn default_transfer_syntax_for_source(
         path: request.source_path.clone(),
         message: source.to_string(),
     })?;
-    let mut j2k_passthrough_available = false;
+    let mut j2k_passthrough_eligible = false;
+    let mut j2k_passthrough_blocked = false;
 
     for (scene_idx, scene) in slide.dataset().scenes.iter().enumerate() {
         for (series_idx, series) in scene.series.iter().enumerate() {
@@ -81,15 +89,19 @@ pub fn default_transfer_syntax_for_source(
                             )? {
                                 return Ok(TransferSyntax::JpegBaseline8Bit);
                             }
-                            if !j2k_passthrough_available
-                                && j2k_passthrough_available_for_default(
-                                    &slide,
-                                    level,
-                                    location,
-                                    request.tile_size,
-                                )?
-                            {
-                                j2k_passthrough_available = true;
+                            match j2k_passthrough_status_for_default(
+                                &slide,
+                                level,
+                                location,
+                                request.tile_size,
+                            )? {
+                                J2kDefaultPassthroughStatus::Eligible => {
+                                    j2k_passthrough_eligible = true;
+                                }
+                                J2kDefaultPassthroughStatus::Blocked => {
+                                    j2k_passthrough_blocked = true;
+                                }
+                                J2kDefaultPassthroughStatus::NoJ2kSource => {}
                             }
                         }
                     }
@@ -98,7 +110,7 @@ pub fn default_transfer_syntax_for_source(
         }
     }
 
-    if j2k_passthrough_available {
+    if j2k_passthrough_eligible && !j2k_passthrough_blocked {
         Ok(TransferSyntax::Jpeg2000)
     } else {
         Ok(TransferSyntax::Htj2kLosslessRpcl)
@@ -129,12 +141,12 @@ fn jpeg_baseline_passthrough_available_for_default(
     ))
 }
 
-fn j2k_passthrough_available_for_default(
+fn j2k_passthrough_status_for_default(
     slide: &Slide,
     level: &statumen::Level,
     location: JpegBaselineFrameLocation,
     fallback_tile_size: u32,
-) -> Result<bool, Error> {
+) -> Result<J2kDefaultPassthroughStatus, Error> {
     let options = ExportOptions {
         tile_size: fallback_tile_size,
         transfer_syntax: TransferSyntax::Jpeg2000,
@@ -143,7 +155,7 @@ fn j2k_passthrough_available_for_default(
     let tile_size = j2k_route_tile_size(&options, level)?;
     let (matrix_columns, matrix_rows) = level.dimensions;
     if matrix_columns == 0 || matrix_rows == 0 {
-        return Ok(false);
+        return Ok(J2kDefaultPassthroughStatus::NoJ2kSource);
     }
     let planned = plan_lossless_j2k_row(
         slide,
@@ -162,5 +174,11 @@ fn j2k_passthrough_available_for_default(
         TransferSyntax::Jpeg2000,
         true,
     )?;
-    Ok(planned.iter().any(|frame| frame.has_passthrough()))
+    if planned.iter().any(|frame| frame.has_passthrough()) {
+        return Ok(J2kDefaultPassthroughStatus::Eligible);
+    }
+    if planned.iter().any(|frame| frame.has_j2k_source()) {
+        return Ok(J2kDefaultPassthroughStatus::Blocked);
+    }
+    Ok(J2kDefaultPassthroughStatus::NoJ2kSource)
 }

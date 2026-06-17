@@ -13,6 +13,11 @@ pub(crate) fn j2k_route_tile_size(
     options: &ExportOptions,
     level: &statumen::Level,
 ) -> Result<u32, Error> {
+    if options.tile_size == 0 {
+        return Err(Error::InvalidOptions {
+            reason: "tile_size must be greater than zero".into(),
+        });
+    }
     if options.transfer_syntax.is_jpeg2000_passthrough_only() {
         let native_square = match level.tile_layout {
             TileLayout::Regular {
@@ -30,13 +35,8 @@ pub(crate) fn j2k_route_tile_size(
             | TileLayout::Irregular { .. } => None,
         };
         if let Some(tile_size) = native_square {
-            return Ok(tile_size);
+            return Ok(tile_size.min(options.tile_size));
         }
-    }
-    if options.tile_size == 0 {
-        return Err(Error::InvalidOptions {
-            reason: "tile_size must be greater than zero".into(),
-        });
     }
     Ok(options.tile_size)
 }
@@ -166,6 +166,66 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    fn level_with_layout(tile_layout: TileLayout) -> statumen::Level {
+        statumen::Level {
+            dimensions: (2048, 2048),
+            downsample: 1.0,
+            tile_layout,
+        }
+    }
+
+    #[test]
+    fn j2k_passthrough_tile_size_caps_oversized_native_geometry() {
+        let options = ExportOptions {
+            tile_size: 512,
+            transfer_syntax: TransferSyntax::Jpeg2000,
+            ..ExportOptions::default()
+        };
+        let level = level_with_layout(TileLayout::Regular {
+            tile_width: 2048,
+            tile_height: 2048,
+            tiles_across: 1,
+            tiles_down: 1,
+        });
+
+        assert_eq!(j2k_route_tile_size(&options, &level).unwrap(), 512);
+    }
+
+    #[test]
+    fn j2k_passthrough_tile_size_preserves_smaller_native_geometry() {
+        let options = ExportOptions {
+            tile_size: 512,
+            transfer_syntax: TransferSyntax::Jpeg2000,
+            ..ExportOptions::default()
+        };
+        let level = level_with_layout(TileLayout::WholeLevel {
+            width: 256,
+            height: 256,
+            virtual_tile_width: 256,
+            virtual_tile_height: 256,
+        });
+
+        assert_eq!(j2k_route_tile_size(&options, &level).unwrap(), 256);
+    }
+
+    #[test]
+    fn j2k_route_tile_size_rejects_zero_tile_size_before_native_geometry() {
+        let options = ExportOptions {
+            tile_size: 0,
+            transfer_syntax: TransferSyntax::Jpeg2000,
+            ..ExportOptions::default()
+        };
+        let level = level_with_layout(TileLayout::Regular {
+            tile_width: 256,
+            tile_height: 256,
+            tiles_across: 1,
+            tiles_down: 1,
+        });
+
+        let err = j2k_route_tile_size(&options, &level).unwrap_err();
+        assert!(err.to_string().contains("tile_size"));
+    }
 
     #[test]
     fn htj2k_passthrough_probe_is_limited_to_dicom_sources() {

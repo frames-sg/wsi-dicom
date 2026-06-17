@@ -255,7 +255,8 @@ fn native_jpeg_frame_geometry_is_viewer_friendly(
     if frame_columns == 0 || frame_rows == 0 || fallback_tile_size == 0 {
         return false;
     }
-    frame_columns.min(frame_rows) >= fallback_tile_size.div_ceil(2)
+    frame_columns.max(frame_rows) <= fallback_tile_size
+        && frame_columns.min(frame_rows) >= fallback_tile_size.div_ceil(2)
 }
 
 pub(crate) fn pixel_profile_from_raw_jpeg_tile(
