@@ -84,11 +84,12 @@ wsi-dicom validate dicom-out --strict --json
 wsi-dicom coverage slide.ndpi --json
 ```
 
-HTJ2K pixel decode validation needs an external decoder command:
+HTJ2K pixel decode validation auto-detects `grk_decompress` when it is on
+`PATH`. You can also provide an explicit absolute decoder command:
 
 ```sh
 wsi-dicom validate dicom-out \
-  --htj2k-decoder "ojph_expand -i {input} -o {output}"
+  --htj2k-decoder "/opt/homebrew/bin/grk_decompress -i {input} -o {output}"
 ```
 
 Missing external tools are reported as skipped unless `--strict` is set.
