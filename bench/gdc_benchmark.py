@@ -593,6 +593,7 @@ def validate_output(
         *wsi_dicom_command,
         "validate",
         str(output_dir),
+        "--strict",
         "--json",
         "--command-timeout-secs",
         str(max(1, min(timeout_secs, 300))),
@@ -635,6 +636,16 @@ def first_text_line(path: Path) -> str | None:
     except OSError:
         return None
     return None
+
+
+def validation_failure_message(validation: dict) -> str:
+    stderr_path = validation.get("stderr_path")
+    if stderr_path:
+        detail = first_text_line(Path(stderr_path))
+        if detail:
+            return f"validation failed: {detail}"
+    status = validation.get("status") or "failed"
+    return f"validation {status}"
 
 
 def profile_metric(report: dict | None, name: str, default: int = 0) -> int:
@@ -918,13 +929,17 @@ def benchmark_trial(
     if dicom_metadata_error:
         row["dicom_metadata_error"] = dicom_metadata_error
     if validate and result["status"] == "passed":
-        row["validation"] = validate_output(
+        validation = validate_output(
             wsi_dicom_command=wsi_dicom_command,
             output_dir=output_dir,
             artifact_dir=artifact_dir,
             cwd=cwd,
             timeout_secs=timeout_secs,
         )
+        row["validation"] = validation
+        if validation["status"] != "passed":
+            row["status"] = "failed"
+            row["error"] = validation_failure_message(validation)
     if preflight:
         row["preflight"] = preflight
     return attach_result_context(row, system_label=system_label)

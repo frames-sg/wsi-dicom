@@ -366,6 +366,72 @@ class GdcBenchmarkTests(unittest.TestCase):
         self.assertEqual(row["status"], "passed")
         self.assertEqual(row["produced_files"], 1)
 
+    def test_trial_fails_when_strict_validation_fails(self):
+        bench = load_benchmark_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "nested" / "tool-output"
+            artifact_dir = root / "artifacts"
+            source = root / "slide.svs"
+            source.write_bytes(b"svs")
+            fake_wsi_dicom = root / "fake_wsi_dicom.py"
+            fake_wsi_dicom.write_text(
+                "import json\n"
+                "import sys\n"
+                "if sys.argv[1] != 'validate':\n"
+                "    raise SystemExit(2)\n"
+                "if '--strict' not in sys.argv:\n"
+                "    raise SystemExit('missing --strict')\n"
+                "print(json.dumps({'checks': [{'name': 'pixel-htj2k', 'status': 'failed'}]}))\n"
+                "sys.stderr.write('1 validation check(s) failed\\n')\n"
+                "raise SystemExit(1)\n",
+                encoding="utf-8",
+            )
+            slide = bench.Slide(
+                slide_id="tcga-a",
+                display_name="TCGA-A.svs",
+                path=source,
+                download_dir=root,
+                relative_path="slide.svs",
+                gdc_file_id="file-id",
+                manifest_filename="file-id/TCGA-A.svs",
+                manifest_md5="abc",
+                manifest_size=3,
+                manifest_state="validated",
+                bytes_on_disk=3,
+            )
+            command = [
+                sys.executable,
+                "-c",
+                (
+                    "from pathlib import Path; import sys; "
+                    "out=Path(sys.argv[1]); "
+                    "out.mkdir(parents=True); "
+                    "(out / 'ok.bin').write_bytes(b'ok')"
+                ),
+                str(output_dir),
+            ]
+
+            row = bench.benchmark_trial(
+                slide=slide,
+                tool="fake-tool",
+                command=command,
+                output_dir=output_dir,
+                artifact_dir=artifact_dir,
+                cwd=root,
+                timeout_secs=10,
+                run_index=1,
+                profile="htj2k-lossless-rpcl",
+                scope="base",
+                validate=True,
+                wsi_dicom_command=[sys.executable, str(fake_wsi_dicom)],
+            )
+
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["validation"]["status"], "failed")
+        self.assertIn("--strict", row["validation"]["command"])
+        self.assertEqual(row["error"], "validation failed: 1 validation check(s) failed")
+
     def test_device_preflight_fails_when_device_is_slower_than_cpu(self):
         bench = load_benchmark_module()
         with tempfile.TemporaryDirectory() as tmp:
