@@ -33,6 +33,7 @@ pub(crate) struct EncodedDicomJ2kFrame {
     pub(crate) used_device_encode: bool,
     pub(crate) used_device_validation: bool,
     pub(crate) encode_duration: Duration,
+    pub(crate) gpu_encode_wall_duration: Option<Duration>,
     pub(crate) device_gpu_duration: Option<Duration>,
     pub(crate) validation_duration: Duration,
 }
@@ -233,6 +234,7 @@ impl SubmittedDicomJ2kMetalTileBatch {
                                 encode_duration: outcome
                                     .encode_duration
                                     .saturating_add(outcome.input_copy_duration),
+                                gpu_encode_wall_duration: None,
                                 device_gpu_duration: outcome.gpu_duration,
                                 validation_duration: outcome.validation_duration,
                             }));
@@ -457,6 +459,7 @@ impl DicomJ2kEncoder {
             used_device_encode: codestream.used_device_encode,
             used_device_validation: codec_validation_enabled,
             encode_duration,
+            gpu_encode_wall_duration: codestream.used_device_encode.then_some(encode_duration),
             device_gpu_duration: None,
             validation_duration,
         }))
@@ -492,6 +495,7 @@ impl DicomJ2kEncoder {
             used_device_encode: codestream.used_device_encode,
             used_device_validation: false,
             encode_duration,
+            gpu_encode_wall_duration: codestream.used_device_encode.then_some(encode_duration),
             device_gpu_duration: None,
             validation_duration: Duration::ZERO,
         }))
@@ -781,6 +785,11 @@ fn encode_metal_tile_chunk_to_host(
                 encode_duration: outcome
                     .encode_duration
                     .saturating_add(outcome.input_copy_duration),
+                gpu_encode_wall_duration: Some(
+                    outcome
+                        .encode_duration
+                        .saturating_add(outcome.input_copy_duration),
+                ),
                 device_gpu_duration: outcome.gpu_duration,
                 validation_duration: outcome.validation_duration,
             }))
@@ -844,6 +853,7 @@ pub(crate) fn encode_lossless_cpu(
             used_device_encode: false,
             used_device_validation: false,
             encode_duration,
+            gpu_encode_wall_duration: None,
             device_gpu_duration: None,
             validation_duration: Duration::ZERO,
         }
