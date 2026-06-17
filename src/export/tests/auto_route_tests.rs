@@ -2,6 +2,27 @@ use super::*;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
+fn require_device_lossless_j2k_metal_input_requires_source_device_decode_opt_in() {
+    assert_eq!(
+        lossless_j2k_metal_input_preference(EncodeBackendPreference::RequireDevice, false),
+        EncodeBackendPreference::CpuOnly
+    );
+    assert_eq!(
+        lossless_j2k_metal_input_preference(EncodeBackendPreference::RequireDevice, true),
+        EncodeBackendPreference::RequireDevice
+    );
+    assert_eq!(
+        lossless_j2k_metal_input_preference(EncodeBackendPreference::PreferDevice, false),
+        EncodeBackendPreference::PreferDevice
+    );
+    assert_eq!(
+        lossless_j2k_metal_input_preference(EncodeBackendPreference::Auto, false),
+        EncodeBackendPreference::Auto
+    );
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
 fn auto_metal_input_routing_ignores_device_decode_env_until_explicitly_preferred() {
     let _guard = DEVICE_DECODE_ENV_MUTEX.lock().unwrap();
     let old_jpeg = std::env::var_os(STATUMEN_JPEG_DEVICE_DECODE_ENV);
@@ -48,7 +69,7 @@ fn auto_metal_input_routing_ignores_device_decode_env_until_explicitly_preferred
             encode_backend: EncodeBackendPreference::Auto,
             ..ExportOptions::default()
         },
-        0,
+        JpegBaselineFrameLocation::first_series_level(0),
         16
     )
     .is_some());
@@ -334,21 +355,36 @@ fn auto_metal_input_route_cache_reuses_probe_decision() {
     clear_auto_metal_input_route_cache_state_for_tests();
     let key = AutoMetalInputRouteCacheKey {
         source_path: PathBuf::from("slide.svs"),
+        scene_idx: 0,
+        series_idx: 0,
         level: 2,
+        z: 0,
+        c: 0,
+        t: 0,
         tile_size: 512,
         transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
         route_scope_frames: 1,
     };
     let full_key = AutoMetalInputRouteCacheKey {
         source_path: PathBuf::from("slide.svs"),
+        scene_idx: 0,
+        series_idx: 0,
         level: 2,
+        z: 0,
+        c: 0,
+        t: 0,
         tile_size: 512,
         transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
         route_scope_frames: 128,
     };
     let partial_key = AutoMetalInputRouteCacheKey {
         source_path: PathBuf::from("partial.svs"),
+        scene_idx: 0,
+        series_idx: 0,
         level: 0,
+        z: 0,
+        c: 0,
+        t: 0,
         tile_size: 512,
         transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
         route_scope_frames: 16,
@@ -437,7 +473,12 @@ fn auto_metal_input_route_cache_can_persist_when_env_path_is_set() {
 
     let key = AutoMetalInputRouteCacheKey {
         source_path: PathBuf::from("slide.svs"),
+        scene_idx: 0,
+        series_idx: 0,
         level: 2,
+        z: 0,
+        c: 0,
+        t: 0,
         tile_size: 512,
         transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
         route_scope_frames: 128,

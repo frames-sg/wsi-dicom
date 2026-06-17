@@ -29,7 +29,9 @@ GPU support is opt-in:
 
 ```toml
 [dependencies]
-wsi-dicom = { version = "0.4.0", features = ["gpu"] }
+wsi-dicom = { version = "0.4.0", features = ["metal"] } # macOS
+# or
+wsi-dicom = { version = "0.4.0", features = ["cuda"] } # CUDA-capable Linux/Windows
 ```
 
 Feature flags:
@@ -37,7 +39,6 @@ Feature flags:
 | Feature | Effect |
 | --- | --- |
 | `default` | CPU-only DICOM export. |
-| `gpu` | Enables both `cuda` and `metal` backends. |
 | `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. statumen CUDA tile decode waits on a published statumen 0.4.x crate/API. Direct JPEG-to-HTJ2K CUDA acceleration waits on a published `signinum-transcode-cuda` crate/API. |
 | `metal` | Enables Metal JPEG 2000 encode acceleration on macOS, Metal codestream validation decode, and statumen Metal tile decode plumbing. |
 
@@ -189,23 +190,25 @@ dependencies and a representative real-slide corpus covering advertised routes,
 metadata modes, ICC policies, validator checks, and any GPU route being
 advertised.
 
-Use the benchmark harness only when publishing speed evidence:
+Use the GDC benchmark harness only when publishing speed evidence:
 
 ```sh
-./.venv/bin/python scripts/benchmark_wsidicomizer.py \
-  --corpus-root "$OPENSLIDE_TESTDATA" \
-  --out target/wsidicomizer-benchmark \
-  --profile fast-jpeg \
-  --tile-size 256 \
-  --level 0 \
-  --workers 8 \
-  --timeout-secs 3600 \
+./.venv/bin/python bench/gdc_benchmark.py \
+  --downloads-root ~/Downloads \
+  --probe-slide-metadata \
+  --tools wsi-dicom-cpu wsi-dicom-device wsidicomizer \
+  --profile htj2k-lossless-rpcl \
+  --scope base \
+  --runs 1 \
+  --system-label macos-metal \
   --validate
 ```
 
-Publish failures, unsupported slides, transfer syntax, frame geometry, tool
-versions, host details, and machine-readable results with any performance
-claim.
+Run the same command on the Metal and CUDA hosts with host-specific release
+binaries and `--system-label` values. Merge result directories with
+`--merge-results`, then publish failures, unsupported slides, transfer syntax,
+frame geometry, tool versions, host details, and machine-readable results with
+any performance claim.
 
 ## Stability
 

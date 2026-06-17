@@ -44,13 +44,12 @@ tempfile = "3"
 thiserror = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-metal = { version = "0.31", optional = true }
+metal = { version = "=0.33.0", optional = true }
 objc = { version = "0.2", optional = true }
 
 [features]
 default = []
 bench-internals = []
-gpu = ["cuda", "metal"]
 cuda = ["dep:signinum-j2k-cuda"]
 metal = [
     "dep:metal",
@@ -60,6 +59,13 @@ metal = [
     "dep:signinum-transcode-metal",
     "statumen/metal",
 ]
+
+[patch.crates-io]
+# Local patches only change upstream Metal dependencies from 0.31 to =0.33.0.
+statumen = { path = "vendor/metal-0.33-patches/statumen-0.3.1" }
+signinum-j2k-metal = { path = "vendor/metal-0.33-patches/signinum-j2k-metal-0.4.4" }
+signinum-jpeg-metal = { path = "vendor/metal-0.33-patches/signinum-jpeg-metal-0.4.4" }
+signinum-transcode-metal = { path = "vendor/metal-0.33-patches/signinum-transcode-metal-0.4.4" }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }

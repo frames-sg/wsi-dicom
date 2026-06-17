@@ -23,7 +23,12 @@ pub(super) enum AutoLosslessJ2kRouteDecision {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct AutoMetalInputRouteCacheKey {
     pub(super) source_path: PathBuf,
+    pub(super) scene_idx: usize,
+    pub(super) series_idx: usize,
     pub(super) level: u32,
+    pub(super) z: u32,
+    pub(super) c: u32,
+    pub(super) t: u32,
     pub(super) tile_size: u32,
     pub(super) transfer_syntax: TransferSyntax,
     pub(super) route_scope_frames: u64,
@@ -45,7 +50,17 @@ static AUTO_METAL_INPUT_ROUTE_CACHE_STATE: OnceLock<Mutex<AutoMetalInputRouteCac
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 struct PersistentAutoMetalInputRouteCacheEntry {
     source_path: PathBuf,
+    #[serde(default)]
+    scene_idx: usize,
+    #[serde(default)]
+    series_idx: usize,
     level: u32,
+    #[serde(default)]
+    z: u32,
+    #[serde(default)]
+    c: u32,
+    #[serde(default)]
+    t: u32,
     tile_size: u32,
     transfer_syntax_uid: String,
     #[serde(default)]
@@ -179,7 +194,12 @@ pub(super) fn load_persistent_auto_metal_input_route_cache_if_requested() -> Res
             cache.insert(
                 AutoMetalInputRouteCacheKey {
                     source_path: entry.source_path,
+                    scene_idx: entry.scene_idx,
+                    series_idx: entry.series_idx,
                     level: entry.level,
+                    z: entry.z,
+                    c: entry.c,
+                    t: entry.t,
                     tile_size: entry.tile_size,
                     transfer_syntax,
                     route_scope_frames: entry.route_scope_frames,
@@ -233,7 +253,12 @@ pub(super) fn flush_persistent_auto_metal_input_route_cache_if_requested() -> Re
         .iter()
         .map(|(key, route)| PersistentAutoMetalInputRouteCacheEntry {
             source_path: key.source_path.clone(),
+            scene_idx: key.scene_idx,
+            series_idx: key.series_idx,
             level: key.level,
+            z: key.z,
+            c: key.c,
+            t: key.t,
             tile_size: key.tile_size,
             transfer_syntax_uid: key.transfer_syntax.uid().to_string(),
             route_scope_frames: key.route_scope_frames,
@@ -243,7 +268,12 @@ pub(super) fn flush_persistent_auto_metal_input_route_cache_if_requested() -> Re
     entries.sort_by(|left, right| {
         left.source_path
             .cmp(&right.source_path)
+            .then(left.scene_idx.cmp(&right.scene_idx))
+            .then(left.series_idx.cmp(&right.series_idx))
             .then(left.level.cmp(&right.level))
+            .then(left.z.cmp(&right.z))
+            .then(left.c.cmp(&right.c))
+            .then(left.t.cmp(&right.t))
             .then(left.tile_size.cmp(&right.tile_size))
             .then(left.transfer_syntax_uid.cmp(&right.transfer_syntax_uid))
             .then(left.route_scope_frames.cmp(&right.route_scope_frames))

@@ -128,6 +128,14 @@ pub(super) fn prepare_lossless_j2k_instance(
         c,
         t,
     );
+    let location = JpegBaselineFrameLocation {
+        scene_idx,
+        series_idx,
+        level_idx,
+        z,
+        c,
+        t,
+    };
     let icc_profile = resolve_icc_profile(slide, request, scene_idx, series_idx, level_idx, level)?;
 
     let spool_path = unique_spool_path(&context.path);
@@ -153,10 +161,15 @@ pub(super) fn prepare_lossless_j2k_instance(
         ),
     );
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    let mut metal_input = MetalInputTileReader::new_for_lossless_j2k(
+    let metal_input_backend = lossless_j2k_metal_input_preference(
         effective_backend,
+        request.options.source_device_decode,
+    );
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    let mut metal_input = MetalInputTileReader::new_for_lossless_j2k(
+        metal_input_backend,
         lossless_j2k_auto_allows_metal_input(
-            effective_backend,
+            metal_input_backend,
             request.options.transfer_syntax,
             u64::from(frame_count),
             request.options.source_device_decode,
@@ -164,7 +177,7 @@ pub(super) fn prepare_lossless_j2k_instance(
         auto_metal_input_route_cache_key(
             &request.source_path,
             request.options.clone(),
-            level_idx,
+            location,
             u64::from(frame_count),
         ),
         request.options.source_device_decode,
@@ -196,7 +209,7 @@ pub(super) fn prepare_lossless_j2k_instance(
     let allow_passthrough_probe =
         j2k_family_passthrough_probe_allowed(&request.source_path, request.options.transfer_syntax);
     let mut jpeg_direct_encoder =
-        jpeg_direct_htj2k::transfer_syntax(request.options.transfer_syntax)
+        jpeg_direct_htj2k_supported_for_backend(request.options.transfer_syntax, effective_backend)
             .then(|| {
                 jpeg_direct_htj2k::BatchEncoder::new(
                     request.options.transfer_syntax,
@@ -244,13 +257,13 @@ pub(super) fn prepare_lossless_j2k_instance(
         let mut generated_jpeg_direct_results: Vec<Option<GeneratedJpegDirectHtj2kOutcome>> =
             (0..planned.len()).map(|_| None).collect();
         #[cfg(all(feature = "metal", target_os = "macos"))]
-        let generated_jpeg_direct_allowed = generated_jpeg_direct_htj2k_allowed_for_route(
-            request.options.transfer_syntax,
-            &metal_input,
-        );
+        let generated_jpeg_direct_allowed = jpeg_direct_encoder.is_some()
+            && generated_jpeg_direct_htj2k_allowed_for_route(
+                request.options.transfer_syntax,
+                &metal_input,
+            );
         #[cfg(not(all(feature = "metal", target_os = "macos")))]
-        let generated_jpeg_direct_allowed =
-            jpeg_direct_htj2k::transfer_syntax(request.options.transfer_syntax);
+        let generated_jpeg_direct_allowed = jpeg_direct_encoder.is_some();
         if generated_jpeg_direct_allowed {
             let generated_indices = generated_jpeg_direct_htj2k_indices(
                 &planned,
@@ -264,12 +277,7 @@ pub(super) fn prepare_lossless_j2k_instance(
                     jpeg_direct_encoder.as_mut().ok_or_else(|| Error::Encode {
                         message: "generated JPEG direct route missing HTJ2K encoder".into(),
                     })?,
-                    scene_idx,
-                    series_idx,
-                    level_idx,
-                    z,
-                    c,
-                    t,
+                    location,
                     &planned,
                     &generated_indices,
                     tile_size,
@@ -533,12 +541,7 @@ pub(super) fn prepare_lossless_j2k_instance(
                                 encode_cpu_input_tile(
                                     slide,
                                     &mut j2k_encoder,
-                                    scene_idx,
-                                    series_idx,
-                                    level_idx,
-                                    z,
-                                    c,
-                                    t,
+                                    location,
                                     planned_frame.x,
                                     planned_frame.y,
                                     planned_frame.width,
@@ -685,12 +688,7 @@ pub(super) fn prepare_lossless_j2k_instance(
                         encode_cpu_input_tile(
                             slide,
                             &mut j2k_encoder,
-                            scene_idx,
-                            series_idx,
-                            level_idx,
-                            z,
-                            c,
-                            t,
+                            location,
                             planned_frame.x,
                             planned_frame.y,
                             planned_frame.width,

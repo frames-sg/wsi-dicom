@@ -849,6 +849,14 @@ pub(super) fn encode_cpu_input_planned_tile_run(
     planned: &[LosslessJ2kPlannedFrame],
     tile_size: u32,
 ) -> Result<CpuEncodedTileRun, Error> {
+    let location = JpegBaselineFrameLocation {
+        scene_idx,
+        series_idx,
+        level_idx,
+        z,
+        c,
+        t,
+    };
     let mut tiles = Vec::with_capacity(planned.len());
     let mut input_decode_duration = Duration::ZERO;
     let mut compose_duration = Duration::ZERO;
@@ -857,12 +865,7 @@ pub(super) fn encode_cpu_input_planned_tile_run(
             encode_cpu_input_tile(
                 slide,
                 j2k_encoder,
-                scene_idx,
-                series_idx,
-                level_idx,
-                z,
-                c,
-                t,
+                location,
                 planned_frame.x,
                 planned_frame.y,
                 planned_frame.width,

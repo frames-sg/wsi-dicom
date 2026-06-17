@@ -13,6 +13,7 @@ pub(crate) struct FrameLocation {
 }
 
 impl FrameLocation {
+    #[cfg(test)]
     pub(super) fn first_series_level(level_idx: u32) -> Self {
         Self {
             scene_idx: 0,

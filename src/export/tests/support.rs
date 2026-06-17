@@ -1,4 +1,5 @@
 use super::*;
+use statumen::TileRequest;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) static DEVICE_DECODE_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
