@@ -40,6 +40,10 @@ impl LosslessJ2kPlannedFrame {
     pub(crate) fn has_passthrough(&self) -> bool {
         self.passthrough.is_some()
     }
+
+    pub(crate) fn has_j2k_source(&self) -> bool {
+        self.source_j2k_syntax.is_some()
+    }
 }
 
 #[derive(Clone)]

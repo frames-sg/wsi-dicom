@@ -386,7 +386,7 @@ fn export_jpeg_baseline_preserves_viewer_friendly_native_regular_geometry() {
         source_path: source,
         output_dir: out,
         options: ExportOptions {
-            tile_size: 256,
+            tile_size: 512,
             transfer_syntax: TransferSyntax::JpegBaseline8Bit,
             encode_backend: EncodeBackendPreference::CpuOnly,
             codec_validation: CodecValidation::Disabled,
@@ -447,7 +447,7 @@ fn export_jpeg_baseline_preserves_native_geometry_when_first_tile_is_empty() {
         source_path: source,
         output_dir: out,
         options: ExportOptions {
-            tile_size: 256,
+            tile_size: 512,
             transfer_syntax: TransferSyntax::JpegBaseline8Bit,
             encode_backend: EncodeBackendPreference::CpuOnly,
             codec_validation: CodecValidation::Disabled,
@@ -462,6 +462,57 @@ fn export_jpeg_baseline_preserves_native_geometry_when_first_tile_is_empty() {
     assert_eq!(report.instances[0].frame_count, 4);
     assert_eq!(report.metrics.routes.jpeg_passthrough_frames, 3);
     assert_eq!(report.metrics.routes.cpu_fallback_frames, 1);
+
+    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+    assert_eq!(
+        object.element(tags::ROWS).unwrap().to_int::<u32>().unwrap(),
+        512
+    );
+    assert_eq!(
+        object
+            .element(tags::COLUMNS)
+            .unwrap()
+            .to_int::<u32>()
+            .unwrap(),
+        512
+    );
+    assert_eq!(
+        object
+            .element(tags::NUMBER_OF_FRAMES)
+            .unwrap()
+            .to_int::<u32>()
+            .unwrap(),
+        4
+    );
+}
+
+#[test]
+fn export_jpeg_baseline_retiles_oversized_native_regular_geometry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let jpeg = encode_test_jpeg(1024, 1024, [160, 20, 40]);
+    let source = tmp.path().join("source.tiff");
+    write_tiled_jpeg_tiff(&source, 1024, 1024, 1024, 1024, &[jpeg]);
+    let out = tmp.path().join("out");
+
+    let report = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: out,
+        options: ExportOptions {
+            tile_size: 512,
+            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: false,
+            ..ExportOptions::default()
+        },
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: Some(0),
+    })
+    .unwrap();
+
+    assert_eq!(report.instances[0].frame_count, 4);
+    assert_eq!(report.metrics.routes.jpeg_passthrough_frames, 0);
+    assert_eq!(report.metrics.routes.cpu_fallback_frames, 4);
 
     let object = dicom_object::open_file(&report.instances[0].path).unwrap();
     assert_eq!(
