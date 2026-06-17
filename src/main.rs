@@ -1014,7 +1014,7 @@ mod tests {
     #[allow(clippy::too_many_arguments)]
     fn route_corpus_coverage_report(
         source_root: &str,
-        transfer_syntax_uid: &'static str,
+        transfer_syntax_uids: Vec<&'static str>,
         requested_frames_per_level: u64,
         max_levels: Option<u32>,
         sources_considered: usize,
@@ -1027,7 +1027,8 @@ mod tests {
     ) -> RouteCorpusCoverageReport {
         let mut report = RouteCorpusCoverageReport::default();
         report.source_root = PathBuf::from(source_root);
-        report.transfer_syntax_uid = transfer_syntax_uid;
+        report.transfer_syntax_uid = common_transfer_syntax_uid(&transfer_syntax_uids);
+        report.transfer_syntax_uids = transfer_syntax_uids;
         report.requested_frames_per_level = requested_frames_per_level;
         report.max_levels = max_levels;
         report.sources_considered = sources_considered;
@@ -1038,6 +1039,14 @@ mod tests {
         report.metrics = metrics;
         report.elapsed_micros = elapsed_micros;
         report
+    }
+
+    fn common_transfer_syntax_uid(transfer_syntax_uids: &[&'static str]) -> Option<&'static str> {
+        let first = transfer_syntax_uids.first().copied()?;
+        transfer_syntax_uids
+            .iter()
+            .all(|uid| *uid == first)
+            .then_some(first)
     }
 
     #[test]
@@ -2003,7 +2012,7 @@ mod tests {
         let summary = format_corpus_coverage_summary_with_memory(
             &route_corpus_coverage_report(
                 "corpus",
-                "1.2.840.10008.1.2.4.202",
+                vec!["1.2.840.10008.1.2.4.202"],
                 4,
                 Some(1),
                 3,
@@ -2068,7 +2077,7 @@ mod tests {
         assert_eq!(
             summary,
             concat!(
-                "covered_corpus corpus sources_considered=3 sources_profiled=1 failures=1 transfer_syntax=1.2.840.10008.1.2.4.202 ",
+                "covered_corpus corpus sources_considered=3 sources_profiled=1 failures=1 common_transfer_syntax=1.2.840.10008.1.2.4.202 transfer_syntaxes=1.2.840.10008.1.2.4.202 ",
                 "requested_frames_per_level=4 available_frames=100000 sampled_frames_pct=0.0040 complete_frame_coverage=false ",
                 "frames total=4 route_passthrough=0 route_passthrough_pct=0.0 route_gpu_transcode=4 route_gpu_transcode_pct=100.0 ",
                 "route_resident_gpu_transcode=4 route_partial_gpu_transcode=0 route_cpu_fallback=0 route_cpu_fallback_pct=0.0 ",

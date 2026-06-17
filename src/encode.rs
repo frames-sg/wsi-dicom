@@ -43,6 +43,15 @@ pub(crate) enum EncodedDicomJ2kCodestream {
     Metal(signinum_j2k_metal::MetalEncodedJ2k),
 }
 
+#[cfg_attr(
+    not(any(test, feature = "cuda", all(feature = "metal", target_os = "macos"))),
+    allow(dead_code)
+)]
+struct DeviceEncodedCodestream {
+    codestream: Vec<u8>,
+    used_device_encode: bool,
+}
+
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct DicomJ2kGpuEncodeBatchStats {
@@ -430,10 +439,12 @@ impl DicomJ2kEncoder {
         let codec_validation_enabled = self.codec_validation == CodecValidation::RoundTrip;
         let mut validation_duration = Duration::ZERO;
         if codec_validation_enabled {
-            if let Some(codestream) = &encoded {
+            if let Some(encoded) = &encoded {
                 let validation_started = Instant::now();
                 signinum_j2k_metal::validate_lossless_roundtrip_on_metal_with_session(
-                    samples, codestream, &session,
+                    samples,
+                    &encoded.codestream,
+                    &session,
                 )
                 .map_err(|err| Error::Encode {
                     message: format!("JPEG 2000 Metal validation failed: {err}"),
@@ -442,8 +453,8 @@ impl DicomJ2kEncoder {
             }
         }
         Ok(encoded.map(|codestream| EncodedDicomJ2kFrame {
-            codestream: EncodedDicomJ2kCodestream::Host(codestream),
-            used_device_encode: true,
+            codestream: EncodedDicomJ2kCodestream::Host(codestream.codestream),
+            used_device_encode: codestream.used_device_encode,
             used_device_validation: codec_validation_enabled,
             encode_duration,
             device_gpu_duration: None,
@@ -477,8 +488,8 @@ impl DicomJ2kEncoder {
         )?;
         let encode_duration = started.elapsed();
         Ok(encoded.map(|codestream| EncodedDicomJ2kFrame {
-            codestream: EncodedDicomJ2kCodestream::Host(codestream),
-            used_device_encode: true,
+            codestream: EncodedDicomJ2kCodestream::Host(codestream.codestream),
+            used_device_encode: codestream.used_device_encode,
             used_device_validation: false,
             encode_duration,
             device_gpu_duration: None,
@@ -575,6 +586,11 @@ impl DicomJ2kEncoder {
                         end,
                         submission: Box::new(submission),
                     }),
+                    Err(err) if self.preference == EncodeBackendPreference::RequireDevice => {
+                        return Err(Error::Encode {
+                            message: format!("JPEG 2000 Metal tile batch submit failed: {err}"),
+                        });
+                    }
                     Err(_) => {
                         groups.push(SubmittedDicomJ2kMetalTileGroup::HostFallback { start, end })
                     }
@@ -588,6 +604,11 @@ impl DicomJ2kEncoder {
                         end,
                         submission: Box::new(submission),
                     }),
+                    Err(err) if self.preference == EncodeBackendPreference::RequireDevice => {
+                        return Err(Error::Encode {
+                            message: format!("JPEG 2000 Metal tile batch submit failed: {err}"),
+                        });
+                    }
                     Err(_) => {
                         groups.push(SubmittedDicomJ2kMetalTileGroup::HostFallback { start, end })
                     }
@@ -855,7 +876,8 @@ fn encode_j2k_lossless_with_device_accelerator(
     validation: J2kEncodeValidation,
     j2k_decomposition_levels: Option<u8>,
     reversible_transform: ReversibleTransform,
-) -> Result<Option<Vec<u8>>, Error> {
+) -> Result<Option<DeviceEncodedCodestream>, Error> {
+    let before_dispatch = accelerator.dispatch_report();
     let encoded = encode_j2k_lossless_with_accelerator(
         samples,
         &J2kLosslessEncodeOptions {
@@ -874,7 +896,14 @@ fn encode_j2k_lossless_with_device_accelerator(
     .map_err(|err| Error::Encode {
         message: format!("JPEG 2000 device encode failed: {err}"),
     })?;
-    Ok((encoded.backend == backend).then_some(encoded.codestream))
+    let dispatch = accelerator
+        .dispatch_report()
+        .saturating_delta(before_dispatch);
+    let used_device_encode = encoded.backend == backend || dispatch.any();
+    Ok(used_device_encode.then_some(DeviceEncodedCodestream {
+        codestream: encoded.codestream,
+        used_device_encode,
+    }))
 }
 
 fn lossless_encode_options(
@@ -923,8 +952,32 @@ pub(crate) fn dicom_j2k_decomposition_levels(samples: J2kLosslessSamples<'_>) ->
 
 #[cfg(test)]
 mod cpu_tests {
-    use super::DicomJ2kEncoder;
+    use super::{encode_j2k_lossless_with_device_accelerator, DicomJ2kEncoder};
     use crate::{CodecValidation, EncodeBackendPreference, TransferSyntax};
+    use signinum_core::BackendKind;
+    use signinum_j2k::{
+        J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kEncodeValidation,
+        J2kForwardDwt53Job, J2kForwardDwt53Output, J2kLosslessSamples, ReversibleTransform,
+    };
+
+    #[derive(Default)]
+    struct DwtOnlyAccelerator {
+        dispatch: J2kEncodeDispatchReport,
+    }
+
+    impl J2kEncodeStageAccelerator for DwtOnlyAccelerator {
+        fn dispatch_report(&self) -> J2kEncodeDispatchReport {
+            self.dispatch
+        }
+
+        fn encode_forward_dwt53(
+            &mut self,
+            _job: J2kForwardDwt53Job<'_>,
+        ) -> Result<Option<J2kForwardDwt53Output>, &'static str> {
+            self.dispatch.forward_dwt53 = self.dispatch.forward_dwt53.saturating_add(1);
+            Ok(None)
+        }
+    }
 
     #[test]
     fn auto_j2k_encoder_exposes_cpu_batch_settings_for_cpu_fallback() {
@@ -960,6 +1013,30 @@ mod cpu_tests {
             CodecValidation::Disabled,
         );
         assert!(require_device.cpu_batch_settings().is_none());
+    }
+
+    #[test]
+    fn partial_device_dispatch_counts_as_device_used_lossless_encode() {
+        let pixels = vec![7u8; 128 * 128];
+        let samples =
+            J2kLosslessSamples::new(&pixels, 128, 128, 1, 8, false).expect("valid samples");
+        let mut accelerator = DwtOnlyAccelerator::default();
+
+        let encoded = encode_j2k_lossless_with_device_accelerator(
+            samples,
+            TransferSyntax::Htj2kLosslessRpcl,
+            BackendKind::Cuda,
+            &mut accelerator,
+            J2kEncodeValidation::CpuRoundTrip,
+            None,
+            ReversibleTransform::Rct53,
+        )
+        .expect("partial device encode should still produce a codestream")
+        .expect("DWT dispatch should count as device-used encode");
+
+        assert!(encoded.used_device_encode);
+        assert!(!encoded.codestream.is_empty());
+        assert!(accelerator.dispatch_report().forward_dwt53 > 0);
     }
 }
 

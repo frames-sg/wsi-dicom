@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -29,9 +29,11 @@ use statumen::EncodedTilePhotometricInterpretation;
 use statumen::LevelSourceKind;
 #[cfg(any(test, all(feature = "metal", target_os = "macos")))]
 use statumen::TileLayout;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use statumen::TileRequest;
 use statumen::{
     Compression, LevelIdx, PlaneIdx, PlaneSelection, RawCompressedTile, RegionRequest, SceneId,
-    SeriesId, Slide, TileRequest,
+    SeriesId, Slide,
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use statumen::{TileOutputPreference, TilePixels};
@@ -204,6 +206,30 @@ struct DicomExportInstanceJob<'a> {
     level: &'a statumen::Level,
 }
 
+#[derive(Clone, Copy)]
+struct DicomRouteProfileJob<'a> {
+    scene_idx: usize,
+    series_idx: usize,
+    level_idx: u32,
+    z: u32,
+    c: u32,
+    t: u32,
+    level: &'a statumen::Level,
+}
+
+impl DicomRouteProfileJob<'_> {
+    fn location(&self) -> JpegBaselineFrameLocation {
+        JpegBaselineFrameLocation {
+            scene_idx: self.scene_idx,
+            series_idx: self.series_idx,
+            level_idx: self.level_idx,
+            z: self.z,
+            c: self.c,
+            t: self.t,
+        }
+    }
+}
+
 fn j2k_lossy_compression_method(transfer_syntax: TransferSyntax) -> &'static str {
     match transfer_syntax {
         TransferSyntax::Htj2k
@@ -266,6 +292,16 @@ fn effective_lossless_j2k_encode_backend(
         }
     }
     j2k_encode_backend(options.transfer_syntax, options.encode_backend)
+}
+
+fn jpeg_direct_htj2k_supported_for_backend(
+    transfer_syntax: TransferSyntax,
+    backend: EncodeBackendPreference,
+) -> bool {
+    if !jpeg_direct_htj2k::transfer_syntax(transfer_syntax) {
+        return false;
+    }
+    backend != EncodeBackendPreference::RequireDevice
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -482,6 +518,52 @@ fn dicom_export_instance_jobs<'a>(
                             jobs.push(DicomExportInstanceJob {
                                 ordinal: jobs.len(),
                                 instance_number,
+                                scene_idx,
+                                series_idx,
+                                level_idx,
+                                z,
+                                c,
+                                t,
+                                level,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(jobs)
+}
+
+fn dicom_route_profile_jobs(
+    slide: &Slide,
+    level_filter: Option<u32>,
+    max_levels: Option<u32>,
+) -> Result<Vec<DicomRouteProfileJob<'_>>, Error> {
+    let max_levels =
+        max_levels
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| Error::Unsupported {
+                reason: "route profiling max_levels exceeds platform addressable memory".into(),
+            })?;
+    let mut jobs = Vec::new();
+    for (scene_idx, scene) in slide.dataset().scenes.iter().enumerate() {
+        for (series_idx, series) in scene.series.iter().enumerate() {
+            let level_limit = max_levels
+                .unwrap_or(series.levels.len())
+                .min(series.levels.len());
+            for (level_idx, level) in series.levels.iter().take(level_limit).enumerate() {
+                let level_idx = u32::try_from(level_idx).map_err(|_| Error::Unsupported {
+                    reason: "route profiling level index exceeds u32".into(),
+                })?;
+                if level_filter.is_some_and(|requested_level| requested_level != level_idx) {
+                    continue;
+                }
+                for z in 0..series.axes.z {
+                    for t in 0..series.axes.t {
+                        for c in optical_path_groups(series.axes.c) {
+                            jobs.push(DicomRouteProfileJob {
                                 scene_idx,
                                 series_idx,
                                 level_idx,
@@ -758,36 +840,43 @@ pub fn profile_dicom_routes(request: RouteProfileRequest) -> Result<RouteProfile
         path: request.source_path.clone(),
         message: source.to_string(),
     })?;
-    let level = slide
-        .dataset()
-        .scenes
-        .first()
-        .and_then(|scene| scene.series.first())
-        .and_then(|series| series.levels.get(request.level as usize))
-        .ok_or_else(|| Error::Unsupported {
+    let jobs = dicom_route_profile_jobs(&slide, Some(request.level), None)?;
+    if jobs.is_empty() {
+        return Err(Error::Unsupported {
             reason: format!("route profiling level {} is not available", request.level),
-        })?;
+        });
+    }
     let started = Instant::now();
     let transfer_syntax_uid = options.transfer_syntax.uid();
-    let available_frames = route_profile_available_frames(
-        &slide,
-        &options,
-        level,
-        JpegBaselineFrameLocation::first_series_level(request.level),
-    )?;
-    let metrics = if options.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
-        profile_jpeg_baseline_routes(&slide, options, level, request.level, request.max_frames)?
-    } else {
-        profile_lossless_j2k_routes(
-            &slide,
-            &request.source_path,
-            options,
-            level,
-            request.level,
-            request.max_frames,
-            None,
-        )?
-    };
+    let mut metrics = ExportMetrics::default();
+    let mut available_frames = 0u64;
+    let mut remaining = request.max_frames;
+
+    for job in &jobs {
+        let location = job.location();
+        let job_available_frames =
+            route_profile_available_frames(&slide, &options, job.level, location)?;
+        available_frames = available_frames.saturating_add(job_available_frames);
+        if remaining == 0 || job_available_frames == 0 {
+            continue;
+        }
+        let job_frames = remaining.min(job_available_frames);
+        let job_metrics = if options.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
+            profile_jpeg_baseline_routes(&slide, options.clone(), job.level, location, job_frames)?
+        } else {
+            profile_lossless_j2k_routes(
+                &slide,
+                &request.source_path,
+                options.clone(),
+                job.level,
+                location,
+                job_frames,
+                None,
+            )?
+        };
+        remaining = remaining.saturating_sub(job_metrics.routes.total_frames);
+        metrics.add_assign(job_metrics);
+    }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
     flush_persistent_auto_metal_input_route_cache_if_requested()?;
@@ -803,7 +892,7 @@ pub fn profile_dicom_routes(request: RouteProfileRequest) -> Result<RouteProfile
     })
 }
 
-/// Profile route coverage across all levels in the first scene/series without writing DICOM.
+/// Profile route coverage across exportable slide planes without writing DICOM.
 pub fn profile_dicom_route_coverage(
     request: RouteCoverageRequest,
 ) -> Result<RouteCoverageReport, Error> {
@@ -850,80 +939,85 @@ pub fn profile_dicom_route_coverage(
         path: source_path.clone(),
         message: source.to_string(),
     })?;
-    let series = slide
-        .dataset()
-        .scenes
-        .first()
-        .and_then(|scene| scene.series.first())
-        .ok_or_else(|| Error::Unsupported {
-            reason: "route coverage profiling requires at least one scene and series".into(),
-        })?;
-    if series.levels.is_empty() {
+    let jobs = dicom_route_profile_jobs(&slide, None, request.max_levels)?;
+    if jobs.is_empty() {
         return Err(Error::Unsupported {
-            reason: "route coverage profiling requires at least one level".into(),
+            reason: "route coverage profiling requires at least one exportable level".into(),
         });
     }
 
     let started = Instant::now();
     let transfer_syntax_uid = options.transfer_syntax.uid();
-    let level_limit = match request.max_levels {
-        Some(max_levels) => usize::try_from(max_levels).map_err(|_| Error::Unsupported {
-            reason: "route coverage max_levels exceeds platform addressable memory".into(),
-        })?,
-        None => series.levels.len(),
+    let mut jobs_by_level: BTreeMap<u32, Vec<DicomRouteProfileJob<'_>>> = BTreeMap::new();
+    for job in jobs {
+        jobs_by_level.entry(job.level_idx).or_default().push(job);
     }
-    .min(series.levels.len());
-    let mut levels = Vec::with_capacity(level_limit);
+    let level_count = jobs_by_level.len();
+    let mut levels = Vec::with_capacity(level_count);
     let mut metrics = ExportMetrics::default();
     let mut available_frames = 0u64;
 
-    for (level_idx, level) in series.levels.iter().take(level_limit).enumerate() {
+    for (level_ordinal, (level_idx, level_jobs)) in jobs_by_level.into_iter().enumerate() {
         let level_started = Instant::now();
-        let level_idx = u32::try_from(level_idx).map_err(|_| Error::Unsupported {
-            reason: "route coverage level index exceeds u32".into(),
-        })?;
-        let level_available_frames = route_profile_available_frames(
-            &slide,
-            &options,
-            level,
-            JpegBaselineFrameLocation::first_series_level(level_idx),
-        )?;
+        let mut level_available_frames = 0u64;
+        for job in &level_jobs {
+            level_available_frames = level_available_frames.saturating_add(
+                route_profile_available_frames(&slide, &options, job.level, job.location())?,
+            );
+        }
         if matches!(request.progress, Some(RouteProgressSink::Stderr)) {
             eprintln!(
                 "coverage level {}/{} start {} level={} available_frames={}",
-                usize::try_from(level_idx).unwrap_or(usize::MAX) + 1,
-                level_limit,
+                level_ordinal + 1,
+                level_count,
                 source_path.display(),
                 level_idx,
                 level_available_frames
             );
         }
         let level_deadline = RouteLevelDeadline::new(request.max_level_elapsed);
-        let level_metrics = if options.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
-            coverage_jpeg_baseline_routes(
-                &slide,
-                options.clone(),
-                level,
-                level_idx,
-                request.max_frames_per_level,
-                level_deadline,
-            )?
-        } else {
-            profile_lossless_j2k_routes(
-                &slide,
-                &source_path,
-                options.clone(),
-                level,
-                level_idx,
-                request.max_frames_per_level,
-                level_deadline,
-            )?
-        };
+        let mut level_metrics = ExportMetrics::default();
+        let mut remaining = request.max_frames_per_level;
+        for job in &level_jobs {
+            if remaining == 0 {
+                break;
+            }
+            check_route_level_deadline(level_deadline, level_idx)?;
+            let location = job.location();
+            let job_available_frames =
+                route_profile_available_frames(&slide, &options, job.level, location)?;
+            if job_available_frames == 0 {
+                continue;
+            }
+            let job_frames = remaining.min(job_available_frames);
+            let job_metrics = if options.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
+                coverage_jpeg_baseline_routes(
+                    &slide,
+                    options.clone(),
+                    job.level,
+                    location,
+                    job_frames,
+                    level_deadline,
+                )?
+            } else {
+                profile_lossless_j2k_routes(
+                    &slide,
+                    &source_path,
+                    options.clone(),
+                    job.level,
+                    location,
+                    job_frames,
+                    level_deadline,
+                )?
+            };
+            remaining = remaining.saturating_sub(job_metrics.routes.total_frames);
+            level_metrics.add_assign(job_metrics);
+        }
         if matches!(request.progress, Some(RouteProgressSink::Stderr)) {
             eprintln!(
                 "coverage level {}/{} ok {} level={} frames={} route_passthrough={} route_gpu_transcode={} route_cpu_fallback={} elapsed_ms={:.3}",
-                usize::try_from(level_idx).unwrap_or(usize::MAX) + 1,
-                level_limit,
+                level_ordinal + 1,
+                level_count,
                 source_path.display(),
                 level_idx,
                 level_metrics.routes.total_frames,
@@ -985,20 +1079,10 @@ pub fn profile_dicom_route_corpus_coverage(
             });
         }
     };
-    let options = if request.source_aware_transfer_syntax && source_root.is_file() {
-        resolve_source_aware_profile_options(
-            &source_root,
-            request.options,
-            None,
-            request.max_levels,
-            true,
-        )?
-    } else {
-        request.options.validate()?;
-        request.options
-    };
-    if options.transfer_syntax != TransferSyntax::JpegBaseline8Bit
-        && !options.transfer_syntax.is_j2k_family()
+    request.options.validate()?;
+    if !request.source_aware_transfer_syntax
+        && request.options.transfer_syntax != TransferSyntax::JpegBaseline8Bit
+        && !request.options.transfer_syntax.is_j2k_family()
     {
         return Err(Error::Unsupported {
             reason: "corpus route coverage profiling currently supports JPEG Baseline, JPEG 2000, and HTJ2K transfer syntaxes"
@@ -1024,8 +1108,8 @@ pub fn profile_dicom_route_corpus_coverage(
         }
         match profile_dicom_route_coverage(RouteCoverageRequest {
             target: RouteCoverageTarget::Source(source_path.clone()),
-            options: options.clone(),
-            source_aware_transfer_syntax: false,
+            options: request.options.clone(),
+            source_aware_transfer_syntax: request.source_aware_transfer_syntax,
             max_frames_per_level: request.max_frames_per_level,
             max_levels: request.max_levels,
             max_level_elapsed: request.max_level_elapsed,
@@ -1070,10 +1154,12 @@ pub fn profile_dicom_route_corpus_coverage(
             }
         }
     }
+    let transfer_syntax_uids = corpus_transfer_syntax_uids(&reports);
 
     Ok(RouteCorpusCoverageReport {
         source_root,
-        transfer_syntax_uid: options.transfer_syntax.uid(),
+        transfer_syntax_uid: common_corpus_transfer_syntax_uid(&transfer_syntax_uids),
+        transfer_syntax_uids,
         requested_frames_per_level: request.max_frames_per_level,
         max_levels: request.max_levels,
         sources_considered: sources.len(),
@@ -1085,6 +1171,26 @@ pub fn profile_dicom_route_corpus_coverage(
         metrics,
         elapsed_micros: duration_as_reported_micros(started.elapsed()),
     })
+}
+
+fn corpus_transfer_syntax_uids(reports: &[RouteCoverageReport]) -> Vec<&'static str> {
+    let mut transfer_syntax_uids = reports
+        .iter()
+        .map(|report| report.transfer_syntax_uid)
+        .collect::<Vec<_>>();
+    transfer_syntax_uids.sort_unstable();
+    transfer_syntax_uids.dedup();
+    transfer_syntax_uids
+}
+
+fn common_corpus_transfer_syntax_uid(
+    transfer_syntax_uids: &[&'static str],
+) -> Option<&'static str> {
+    let first = transfer_syntax_uids.first().copied()?;
+    transfer_syntax_uids
+        .iter()
+        .all(|uid| *uid == first)
+        .then_some(first)
 }
 
 fn collect_wsi_candidate_paths(
@@ -1358,10 +1464,11 @@ fn profile_lossless_j2k_routes(
     _source_path: &Path,
     options: ExportOptions,
     level: &statumen::Level,
-    level_idx: u32,
+    location: JpegBaselineFrameLocation,
     max_frames: u64,
     deadline: Option<RouteLevelDeadline>,
 ) -> Result<ExportMetrics, Error> {
+    let level_idx = location.level_idx;
     let tile_size = j2k_route_tile_size(&options, level)?;
     let (matrix_columns, matrix_rows) = level.dimensions;
     let grid = TileGrid::square(matrix_columns, matrix_rows, tile_size)?;
@@ -1384,10 +1491,13 @@ fn profile_lossless_j2k_routes(
         hybrid_lane::effective_lossless_gpu_encode_memory_mib(&options, route_scope_frames),
     );
     #[cfg(all(feature = "metal", target_os = "macos"))]
+    let metal_input_backend =
+        lossless_j2k_metal_input_preference(effective_backend, options.source_device_decode);
+    #[cfg(all(feature = "metal", target_os = "macos"))]
     let mut metal_input = MetalInputTileReader::new_for_lossless_j2k(
-        effective_backend,
+        metal_input_backend,
         lossless_j2k_auto_allows_metal_input(
-            effective_backend,
+            metal_input_backend,
             options.transfer_syntax,
             max_frames,
             options.source_device_decode,
@@ -1395,7 +1505,7 @@ fn profile_lossless_j2k_routes(
         auto_metal_input_route_cache_key(
             _source_path,
             options.clone(),
-            level_idx,
+            location,
             route_scope_frames,
         ),
         options.source_device_decode,
@@ -1424,15 +1534,16 @@ fn profile_lossless_j2k_routes(
     let mut remaining = max_frames;
     let allow_passthrough_probe =
         j2k_family_passthrough_probe_allowed(_source_path, options.transfer_syntax);
-    let mut jpeg_direct_encoder = jpeg_direct_htj2k::transfer_syntax(options.transfer_syntax)
-        .then(|| {
-            jpeg_direct_htj2k::BatchEncoder::new(
-                options.transfer_syntax,
-                options.jpeg_direct_htj2k_profile,
-                effective_backend,
-            )
-        })
-        .transpose()?;
+    let mut jpeg_direct_encoder =
+        jpeg_direct_htj2k_supported_for_backend(options.transfer_syntax, effective_backend)
+            .then(|| {
+                jpeg_direct_htj2k::BatchEncoder::new(
+                    options.transfer_syntax,
+                    options.jpeg_direct_htj2k_profile,
+                    effective_backend,
+                )
+            })
+            .transpose()?;
 
     for row in 0..tiles_down {
         if remaining == 0 {
@@ -1442,12 +1553,12 @@ fn profile_lossless_j2k_routes(
         let row_tile_count = grid.row_tile_count(row)?.min(remaining);
         let planned = plan_lossless_j2k_row(
             slide,
-            0,
-            0,
-            level_idx,
-            0,
-            0,
-            0,
+            location.scene_idx,
+            location.series_idx,
+            location.level_idx,
+            location.z,
+            location.c,
+            location.t,
             row,
             0,
             row_tile_count,
@@ -1471,11 +1582,10 @@ fn profile_lossless_j2k_routes(
         let mut generated_jpeg_direct_results: Vec<Option<GeneratedJpegDirectHtj2kOutcome>> =
             (0..planned.len()).map(|_| None).collect();
         #[cfg(all(feature = "metal", target_os = "macos"))]
-        let generated_jpeg_direct_allowed =
-            generated_jpeg_direct_htj2k_allowed_for_route(options.transfer_syntax, &metal_input);
+        let generated_jpeg_direct_allowed = jpeg_direct_encoder.is_some()
+            && generated_jpeg_direct_htj2k_allowed_for_route(options.transfer_syntax, &metal_input);
         #[cfg(not(all(feature = "metal", target_os = "macos")))]
-        let generated_jpeg_direct_allowed =
-            jpeg_direct_htj2k::transfer_syntax(options.transfer_syntax);
+        let generated_jpeg_direct_allowed = jpeg_direct_encoder.is_some();
         if generated_jpeg_direct_allowed {
             let generated_indices =
                 generated_jpeg_direct_htj2k_indices(&planned, options.transfer_syntax, |idx| {
@@ -1488,12 +1598,7 @@ fn profile_lossless_j2k_routes(
                     jpeg_direct_encoder.as_mut().ok_or_else(|| Error::Encode {
                         message: "generated JPEG direct route missing HTJ2K encoder".into(),
                     })?,
-                    0,
-                    0,
-                    level_idx,
-                    0,
-                    0,
-                    0,
+                    location,
                     &planned,
                     &generated_indices,
                     tile_size,
@@ -1543,12 +1648,12 @@ fn profile_lossless_j2k_routes(
                         &mut metal_input,
                         &mut j2k_encoder,
                         level,
-                        0,
-                        0,
-                        level_idx,
-                        0,
-                        0,
-                        0,
+                        location.scene_idx,
+                        location.series_idx,
+                        location.level_idx,
+                        location.z,
+                        location.c,
+                        location.t,
                         row,
                         &planned[run_start..probe_end],
                         route_scope_frames_usize,
@@ -1595,12 +1700,12 @@ fn profile_lossless_j2k_routes(
                         &mut metal_input,
                         &mut j2k_encoder,
                         level,
-                        0,
-                        0,
-                        level_idx,
-                        0,
-                        0,
-                        0,
+                        location.scene_idx,
+                        location.series_idx,
+                        location.level_idx,
+                        location.z,
+                        location.c,
+                        location.t,
                         row,
                         planned[run_start].col,
                         (run_end - run_start) as u64,
@@ -1670,12 +1775,12 @@ fn profile_lossless_j2k_routes(
                             reversible_transform,
                             max_prepared_frame_bytes: options.max_prepared_frame_bytes,
                         },
-                        0,
-                        0,
-                        level_idx,
-                        0,
-                        0,
-                        0,
+                        location.scene_idx,
+                        location.series_idx,
+                        location.level_idx,
+                        location.z,
+                        location.c,
+                        location.t,
                         &planned,
                         &cpu_indices,
                         tile_size,
@@ -1798,12 +1903,7 @@ fn profile_lossless_j2k_routes(
                                 encode_cpu_input_tile(
                                     slide,
                                     &mut j2k_encoder,
-                                    0,
-                                    0,
-                                    level_idx,
-                                    0,
-                                    0,
-                                    0,
+                                    location,
                                     planned_frame.x,
                                     planned_frame.y,
                                     planned_frame.width,
@@ -1878,12 +1978,12 @@ fn profile_lossless_j2k_routes(
                             reversible_transform,
                             max_prepared_frame_bytes: options.max_prepared_frame_bytes,
                         },
-                        0,
-                        0,
-                        level_idx,
-                        0,
-                        0,
-                        0,
+                        location.scene_idx,
+                        location.series_idx,
+                        location.level_idx,
+                        location.z,
+                        location.c,
+                        location.t,
                         &planned,
                         &cpu_indices,
                         tile_size,
@@ -1986,12 +2086,7 @@ fn profile_lossless_j2k_routes(
                         encode_cpu_input_tile(
                             slide,
                             &mut j2k_encoder,
-                            0,
-                            0,
-                            level_idx,
-                            0,
-                            0,
-                            0,
+                            location,
                             planned_frame.x,
                             planned_frame.y,
                             planned_frame.width,
@@ -2026,15 +2121,10 @@ fn profile_jpeg_baseline_routes(
     slide: &Slide,
     options: ExportOptions,
     level: &statumen::Level,
-    level_idx: u32,
+    location: JpegBaselineFrameLocation,
     max_frames: u64,
 ) -> Result<ExportMetrics, Error> {
-    let geometry = jpeg_baseline_route_frame_geometry(
-        slide,
-        level,
-        JpegBaselineFrameLocation::first_series_level(level_idx),
-        options.tile_size,
-    )?;
+    let geometry = jpeg_baseline_route_frame_geometry(slide, level, location, options.tile_size)?;
     let (matrix_columns, matrix_rows) = level.dimensions;
     let (tiles_across, tiles_down) = (geometry.tiles_across, geometry.tiles_down);
     let (frame_columns, frame_rows) = (geometry.frame_columns, geometry.frame_rows);
@@ -2054,7 +2144,7 @@ fn profile_jpeg_baseline_routes(
         let row_tile_count = tiles_across.min(remaining);
         let row_plan = plan_jpeg_baseline_row(
             slide,
-            JpegBaselineFrameLocation::first_series_level(level_idx),
+            location,
             row,
             row_tile_count,
             matrix_columns,
@@ -2127,12 +2217,7 @@ fn profile_jpeg_baseline_routes(
                         slide,
                         &mut metal_input,
                         level,
-                        0,
-                        0,
-                        level_idx,
-                        0,
-                        0,
-                        0,
+                        location,
                         row,
                         &fallback_frames,
                         frame_columns,
@@ -2161,19 +2246,16 @@ fn profile_jpeg_baseline_routes(
 
                     let mut cpu_batch_results = encode_jpeg_baseline_cpu_metal_misses(
                         slide,
-                        0,
-                        0,
-                        level_idx,
-                        0,
-                        0,
-                        0,
+                        location,
                         &fallback_frames,
                         &metal_run,
                         options.encode_backend,
-                        frame_columns,
-                        frame_rows,
-                        options.jpeg_quality,
-                        options.max_prepared_frame_bytes,
+                        JpegBaselineCpuEncodeSettings {
+                            frame_columns,
+                            frame_rows,
+                            jpeg_quality: options.jpeg_quality,
+                            max_prepared_frame_bytes: options.max_prepared_frame_bytes,
+                        },
                     )?;
 
                     for (idx, (_frame, metal_encoded)) in fallback_frames
@@ -2246,16 +2328,12 @@ fn coverage_jpeg_baseline_routes(
     slide: &Slide,
     options: ExportOptions,
     level: &statumen::Level,
-    level_idx: u32,
+    location: JpegBaselineFrameLocation,
     max_frames: u64,
     deadline: Option<RouteLevelDeadline>,
 ) -> Result<ExportMetrics, Error> {
-    let geometry = jpeg_baseline_route_frame_geometry(
-        slide,
-        level,
-        JpegBaselineFrameLocation::first_series_level(level_idx),
-        options.tile_size,
-    )?;
+    let level_idx = location.level_idx;
+    let geometry = jpeg_baseline_route_frame_geometry(slide, level, location, options.tile_size)?;
     let (tiles_across, tiles_down) = (geometry.tiles_across, geometry.tiles_down);
     let (frame_columns, frame_rows) = (geometry.frame_columns, geometry.frame_rows);
     let allow_raw_rgb_passthrough = raw_rgb_passthrough_has_no_geometry_fallback(level, geometry);
@@ -2271,14 +2349,8 @@ fn coverage_jpeg_baseline_routes(
         let row_tile_count = tiles_across.min(remaining);
         for col in 0..row_tile_count {
             let mut raw_jpeg_retile_candidate = false;
-            let raw = slide.read_raw_compressed_tile(&TileRequest {
-                scene: 0,
-                series: 0,
-                level: level_idx,
-                plane: PlaneSelection { z: 0, c: 0, t: 0 },
-                col: col as i64,
-                row: row as i64,
-            });
+            let raw =
+                slide.read_raw_compressed_tile(&location.tile_request(col as i64, row as i64));
 
             match raw {
                 Ok(raw) if raw_jpeg_matches_frame_geometry(&raw, frame_columns, frame_rows) => {
@@ -2304,7 +2376,7 @@ fn coverage_jpeg_baseline_routes(
             if raw_jpeg_retile_candidate {
                 match read_raw_jpeg_retile_display_tile(
                     slide,
-                    JpegBaselineFrameLocation::first_series_level(level_idx),
+                    location,
                     col,
                     row,
                     frame_columns,
@@ -2406,6 +2478,14 @@ fn jpeg_baseline_fallback_run(
 struct JpegBaselineRowPlan {
     frames: Vec<JpegBaselinePlannedFrame>,
     retile_rejections: Vec<JpegRetileRejectionReason>,
+}
+
+#[derive(Clone, Copy)]
+struct JpegBaselineCpuEncodeSettings {
+    frame_columns: u32,
+    frame_rows: u32,
+    jpeg_quality: u8,
+    max_prepared_frame_bytes: u64,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2548,22 +2628,13 @@ fn jpeg_baseline_fallback_frame(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn encode_jpeg_baseline_cpu_metal_misses(
     slide: &Slide,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
+    location: JpegBaselineFrameLocation,
     fallback_frames: &[JpegBaselineFallbackFrame],
     metal_run: &JpegBaselineMetalEncodedRun,
     encode_backend: EncodeBackendPreference,
-    frame_columns: u32,
-    frame_rows: u32,
-    jpeg_quality: u8,
-    max_prepared_frame_bytes: u64,
+    settings: JpegBaselineCpuEncodeSettings,
 ) -> Result<Vec<Option<EncodedJpegBaselineFrame>>, Error> {
     let mut cpu_batch_results: Vec<Option<EncodedJpegBaselineFrame>> =
         (0..fallback_frames.len()).map(|_| None).collect();
@@ -2576,110 +2647,44 @@ fn encode_jpeg_baseline_cpu_metal_misses(
         .iter()
         .map(|&idx| fallback_frames[idx])
         .collect::<Vec<_>>();
-    let cpu_encoded = encode_jpeg_baseline_cpu_input_tile_batch(
-        slide,
-        scene_idx,
-        series_idx,
-        level_idx,
-        z,
-        c,
-        t,
-        &cpu_frames,
-        frame_columns,
-        frame_rows,
-        jpeg_quality,
-        max_prepared_frame_bytes,
-    )?;
+    let cpu_encoded =
+        encode_jpeg_baseline_cpu_input_tile_batch(slide, location, &cpu_frames, settings)?;
     for (idx, encoded) in cpu_indices.into_iter().zip(cpu_encoded) {
         cpu_batch_results[idx] = Some(encoded);
     }
     Ok(cpu_batch_results)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn encode_jpeg_baseline_cpu_input_tile_batch(
     slide: &Slide,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
+    location: JpegBaselineFrameLocation,
     frames: &[JpegBaselineFallbackFrame],
-    frame_columns: u32,
-    frame_rows: u32,
-    jpeg_quality: u8,
-    max_prepared_frame_bytes: u64,
+    settings: JpegBaselineCpuEncodeSettings,
 ) -> Result<Vec<EncodedJpegBaselineFrame>, Error> {
     frames
         .par_iter()
-        .map(|frame| {
-            encode_jpeg_baseline_cpu_input_tile(
-                slide,
-                scene_idx,
-                series_idx,
-                level_idx,
-                z,
-                c,
-                t,
-                frame.x,
-                frame.y,
-                frame.width,
-                frame.height,
-                frame_columns,
-                frame_rows,
-                jpeg_quality,
-                max_prepared_frame_bytes,
-            )
-        })
+        .map(|frame| encode_jpeg_baseline_cpu_input_tile(slide, location, *frame, settings))
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn encode_jpeg_baseline_cpu_input_tile(
     slide: &Slide,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-    x: u64,
-    y: u64,
-    width: u32,
-    height: u32,
-    frame_columns: u32,
-    frame_rows: u32,
-    jpeg_quality: u8,
-    max_prepared_frame_bytes: u64,
+    location: JpegBaselineFrameLocation,
+    frame: JpegBaselineFallbackFrame,
+    settings: JpegBaselineCpuEncodeSettings,
 ) -> Result<EncodedJpegBaselineFrame, Error> {
     let (prepared_bytes, profile, subsampling, input_decode_duration, compose_duration) =
-        prepare_jpeg_baseline_cpu_input_tile(
-            slide,
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-            x,
-            y,
-            width,
-            height,
-            frame_columns,
-            frame_rows,
-            max_prepared_frame_bytes,
-        )?;
+        prepare_jpeg_baseline_cpu_input_tile(slide, location, frame, settings)?;
     let samples = match profile.components {
         1 => JpegSamples::Gray8 {
             data: &prepared_bytes,
-            width: frame_columns,
-            height: frame_rows,
+            width: settings.frame_columns,
+            height: settings.frame_rows,
         },
         3 => JpegSamples::Rgb8 {
             data: &prepared_bytes,
-            width: frame_columns,
-            height: frame_rows,
+            width: settings.frame_columns,
+            height: settings.frame_rows,
         },
         components => {
             return Err(Error::UnsupportedPixelData {
@@ -2690,9 +2695,13 @@ fn encode_jpeg_baseline_cpu_input_tile(
     let encode_started = Instant::now();
     let encoded = encode_jpeg_baseline_cpu_fragment(
         samples,
-        jpeg_quality,
+        settings.jpeg_quality,
         subsampling,
-        jpeg_baseline_cpu_restart_interval(frame_columns, frame_rows, subsampling),
+        jpeg_baseline_cpu_restart_interval(
+            settings.frame_columns,
+            settings.frame_rows,
+            subsampling,
+        ),
     )?;
     let encode_duration = encode_started.elapsed();
 
@@ -2705,40 +2714,22 @@ fn encode_jpeg_baseline_cpu_input_tile(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn prepare_jpeg_baseline_cpu_input_tile(
     slide: &Slide,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-    x: u64,
-    y: u64,
-    width: u32,
-    height: u32,
-    frame_columns: u32,
-    frame_rows: u32,
-    max_prepared_frame_bytes: u64,
+    location: JpegBaselineFrameLocation,
+    frame: JpegBaselineFallbackFrame,
+    settings: JpegBaselineCpuEncodeSettings,
 ) -> Result<(Vec<u8>, PixelProfile, JpegSubsampling, Duration, Duration), Error> {
     let prepared = read_and_prepare_region(
         slide,
-        JpegBaselineFrameLocation {
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-        },
-        x,
-        y,
-        width,
-        height,
-        frame_columns,
-        frame_rows,
-        max_prepared_frame_bytes,
+        location,
+        frame.x,
+        frame.y,
+        frame.width,
+        frame.height,
+        settings.frame_columns,
+        settings.frame_rows,
+        settings.max_prepared_frame_bytes,
     )?;
     let (profile, subsampling) = jpeg_baseline_output_profile(prepared.profile)?;
     Ok((
@@ -2873,6 +2864,18 @@ fn lossless_j2k_auto_allows_metal_input(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
+fn lossless_j2k_metal_input_preference(
+    preference: EncodeBackendPreference,
+    source_device_decode: bool,
+) -> EncodeBackendPreference {
+    if preference == EncodeBackendPreference::RequireDevice && !source_device_decode {
+        EncodeBackendPreference::CpuOnly
+    } else {
+        preference
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
 fn lossless_j2k_auto_should_start_cpu_only(
     preference: EncodeBackendPreference,
     transfer_syntax: TransferSyntax,
@@ -2893,7 +2896,7 @@ fn lossless_j2k_auto_should_start_cpu_only(
 fn auto_metal_input_route_cache_key(
     source_path: &Path,
     options: ExportOptions,
-    level: u32,
+    location: JpegBaselineFrameLocation,
     route_scope_frames: u64,
 ) -> Option<AutoMetalInputRouteCacheKey> {
     (options.encode_backend == EncodeBackendPreference::Auto
@@ -2903,7 +2906,12 @@ fn auto_metal_input_route_cache_key(
         ))
     .then(|| AutoMetalInputRouteCacheKey {
         source_path: source_path.to_path_buf(),
-        level,
+        scene_idx: location.scene_idx,
+        series_idx: location.series_idx,
+        level: location.level_idx,
+        z: location.z,
+        c: location.c,
+        t: location.t,
         tile_size: options.tile_size,
         transfer_syntax: options.transfer_syntax,
         route_scope_frames,
@@ -2916,12 +2924,7 @@ fn try_encode_jpeg_baseline_metal_input_tile_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
     level: &statumen::Level,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
+    location: JpegBaselineFrameLocation,
     row: u64,
     frames: &[JpegBaselineFallbackFrame],
     frame_columns: u32,
@@ -2956,10 +2959,14 @@ fn try_encode_jpeg_baseline_metal_input_tile_run(
         let mut requests = Vec::with_capacity(frames.len());
         for frame in frames {
             requests.push(TileRequest {
-                scene: scene_idx,
-                series: series_idx,
-                level: level_idx,
-                plane: PlaneSelection { z, c, t },
+                scene: location.scene_idx,
+                series: location.series_idx,
+                level: location.level_idx,
+                plane: PlaneSelection {
+                    z: location.z,
+                    c: location.c,
+                    t: location.t,
+                },
                 col: i64::try_from(frame.x / u64::from(frame_columns)).map_err(|_| {
                     Error::Unsupported {
                         reason: "JPEG Baseline Metal tile column exceeds i64".into(),
@@ -3208,12 +3215,7 @@ fn empty_jpeg_baseline_metal_run_with_input_duration(
 fn encode_cpu_input_tile(
     slide: &Slide,
     j2k_encoder: &mut DicomJ2kEncoder,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
+    location: JpegBaselineFrameLocation,
     x: u64,
     y: u64,
     width: u32,
@@ -3230,12 +3232,12 @@ fn encode_cpu_input_tile(
 > {
     let prepared = prepare_cpu_input_lossless_j2k_tile(
         slide,
-        scene_idx,
-        series_idx,
-        level_idx,
-        z,
-        c,
-        t,
+        location.scene_idx,
+        location.series_idx,
+        location.level_idx,
+        location.z,
+        location.c,
+        location.t,
         x,
         y,
         width,
@@ -3256,12 +3258,7 @@ fn encode_cpu_input_tile(
 fn encode_generated_jpeg_direct_htj2k_planned_batch(
     slide: &Slide,
     direct_encoder: &mut jpeg_direct_htj2k::BatchEncoder,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
+    location: JpegBaselineFrameLocation,
     planned: &[LosslessJ2kPlannedFrame],
     indices: &[usize],
     tile_size: u32,
@@ -3277,17 +3274,14 @@ fn encode_generated_jpeg_direct_htj2k_planned_batch(
         .collect::<Vec<_>>();
     let jpeg_tiles = encode_jpeg_baseline_cpu_input_tile_batch(
         slide,
-        scene_idx,
-        series_idx,
-        level_idx,
-        z,
-        c,
-        t,
+        location,
         &frames,
-        tile_size,
-        tile_size,
-        jpeg_quality,
-        max_prepared_frame_bytes,
+        JpegBaselineCpuEncodeSettings {
+            frame_columns: tile_size,
+            frame_rows: tile_size,
+            jpeg_quality,
+            max_prepared_frame_bytes,
+        },
     )?;
     let direct_frames = jpeg_tiles
         .iter()

@@ -104,8 +104,10 @@ pub struct RouteCorpusCoverageFailure {
 pub struct RouteCorpusCoverageReport {
     /// Root directory scanned for source slides.
     pub source_root: PathBuf,
-    /// Transfer syntax UID used for route planning.
-    pub transfer_syntax_uid: &'static str,
+    /// Common transfer syntax UID used by all successful reports, when one exists.
+    pub transfer_syntax_uid: Option<&'static str>,
+    /// Unique transfer syntax UIDs used by successful per-source reports.
+    pub transfer_syntax_uids: Vec<&'static str>,
     /// Requested frame sample count per level.
     pub requested_frames_per_level: u64,
     /// Optional cap on levels inspected per source.

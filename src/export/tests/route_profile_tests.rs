@@ -382,6 +382,14 @@ fn corpus_route_coverage_aggregates_sources_and_records_failures() {
     assert_eq!(report.sources_considered, 2);
     assert_eq!(report.reports.len(), 1);
     assert_eq!(report.failures.len(), 1);
+    assert_eq!(
+        report.transfer_syntax_uid,
+        Some(TransferSyntax::JpegBaseline8Bit.uid())
+    );
+    assert_eq!(
+        report.transfer_syntax_uids,
+        vec![TransferSyntax::JpegBaseline8Bit.uid()]
+    );
     assert_eq!(report.available_frames, 1);
     assert_eq!(report.reports[0].available_frames, 1);
     assert!(report.failures[0]
@@ -460,4 +468,49 @@ fn profile_dicom_route_coverage_resolves_source_aware_transfer_syntax_by_default
     );
     assert_eq!(report.metrics.routes.total_frames, 1);
     assert_eq!(report.metrics.routes.jpeg_passthrough_frames, 1);
+}
+
+#[test]
+fn profile_dicom_route_corpus_coverage_resolves_source_aware_transfer_syntax_per_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source_dir = tmp.path().join("corpus");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    let jpeg = encode_test_jpeg(8, 8, [120, 30, 90]);
+    write_tiled_jpeg_tiff(&source_dir.join("jpeg.svs"), 8, 8, 8, 8, &[jpeg]);
+    write_source_dicom(&source_dir.join("raw.dcm"));
+
+    let mut request = RouteCoverageRequest::new_corpus(
+        source_dir,
+        ExportOptions {
+            tile_size: 8,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: false,
+            ..ExportOptions::default()
+        },
+    );
+    request.max_frames_per_level = 1;
+    request.max_levels = Some(1);
+
+    let report = profile_dicom_route_corpus_coverage(request).unwrap();
+
+    assert_eq!(report.sources_considered, 2);
+    assert_eq!(report.reports.len(), 2);
+    assert!(report.failures.is_empty());
+    assert_eq!(report.transfer_syntax_uid, None);
+    assert_eq!(
+        report.transfer_syntax_uids,
+        vec![
+            TransferSyntax::Htj2kLosslessRpcl.uid(),
+            TransferSyntax::JpegBaseline8Bit.uid(),
+        ]
+    );
+    assert!(report
+        .reports
+        .iter()
+        .any(|report| report.transfer_syntax_uid == TransferSyntax::JpegBaseline8Bit.uid()));
+    assert!(report
+        .reports
+        .iter()
+        .any(|report| report.transfer_syntax_uid == TransferSyntax::Htj2kLosslessRpcl.uid()));
 }

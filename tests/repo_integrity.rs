@@ -118,6 +118,25 @@ fn lockfile_has_no_duplicate_signinum_package_sources() {
     );
 }
 
+#[test]
+fn lockfile_pins_single_metal_version() {
+    let lockfile = fs::read_to_string(crate_root().join("Cargo.lock")).expect("read Cargo.lock");
+
+    assert_eq!(
+        lockfile_package_name_count(&lockfile, "metal"),
+        1,
+        "Cargo.lock must contain exactly one metal package entry"
+    );
+    assert!(
+        lockfile.contains("name = \"metal\"\nversion = \"0.33.0\""),
+        "Cargo.lock must pin metal to 0.33.0"
+    );
+    assert!(
+        !lockfile.contains("name = \"metal\"\nversion = \"0.31.0\""),
+        "Cargo.lock must not retain metal 0.31.0"
+    );
+}
+
 fn lockfile_package_name_count(lockfile: &str, package: &str) -> usize {
     let package_name = format!("name = \"{package}\"");
     let mut in_package = false;
@@ -135,7 +154,7 @@ fn lockfile_package_name_count(lockfile: &str, package: &str) -> usize {
 }
 
 #[test]
-fn release_build_uses_published_dependency_graph_without_local_patches() {
+fn release_build_uses_only_approved_local_metal_patches() {
     if !in_source_checkout() {
         return;
     }
@@ -144,9 +163,16 @@ fn release_build_uses_published_dependency_graph_without_local_patches() {
     let workflow =
         fs::read_to_string(crate_root().join(".github/workflows/ci.yml")).expect("read CI");
 
-    assert!(
-        !manifest.contains("[patch.crates-io]"),
-        "Cargo.toml must not carry local patches in the release-ready dependency graph"
+    let expected_patches = [
+        r#"statumen = { path = "vendor/metal-0.33-patches/statumen-0.3.1" }"#,
+        r#"signinum-j2k-metal = { path = "vendor/metal-0.33-patches/signinum-j2k-metal-0.4.4" }"#,
+        r#"signinum-jpeg-metal = { path = "vendor/metal-0.33-patches/signinum-jpeg-metal-0.4.4" }"#,
+        r#"signinum-transcode-metal = { path = "vendor/metal-0.33-patches/signinum-transcode-metal-0.4.4" }"#,
+    ];
+    assert_eq!(
+        manifest_patch_crates(&manifest),
+        expected_patches,
+        "Cargo.toml must only carry the approved local Metal 0.33 patch set"
     );
     for required in [
         "path: wsi-dicom",
@@ -169,6 +195,48 @@ fn release_build_uses_published_dependency_graph_without_local_patches() {
             "CI must not check out unused local patches; found `{forbidden}`"
         );
     }
+}
+
+#[test]
+fn vendored_metal_patches_pin_new_metal_version() {
+    for manifest_path in [
+        "vendor/metal-0.33-patches/statumen-0.3.1/Cargo.toml",
+        "vendor/metal-0.33-patches/signinum-j2k-metal-0.4.4/Cargo.toml",
+        "vendor/metal-0.33-patches/signinum-jpeg-metal-0.4.4/Cargo.toml",
+        "vendor/metal-0.33-patches/signinum-transcode-metal-0.4.4/Cargo.toml",
+    ] {
+        let manifest = fs::read_to_string(crate_root().join(manifest_path))
+            .unwrap_or_else(|err| panic!("read {manifest_path}: {err}"));
+        assert!(
+            manifest.contains("version = \"=0.33.0\""),
+            "{manifest_path} must pin metal to =0.33.0"
+        );
+        assert!(
+            !manifest.contains("version = \"0.31\""),
+            "{manifest_path} must not retain metal 0.31"
+        );
+    }
+}
+
+fn manifest_patch_crates(manifest: &str) -> Vec<&str> {
+    let mut patches = Vec::new();
+    let mut in_patch_crates_io = false;
+
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with("[patch.") && line != "[patch.crates-io]" {
+            patches.push(line);
+            continue;
+        }
+        if line.starts_with('[') {
+            in_patch_crates_io = line == "[patch.crates-io]";
+            continue;
+        }
+        if in_patch_crates_io && !line.is_empty() && !line.starts_with('#') {
+            patches.push(line);
+        }
+    }
+
+    patches
 }
 
 #[test]
@@ -222,6 +290,10 @@ fn lockfile_package_dependencies(lockfile: &str, package: &str) -> Vec<String> {
 fn metal_feature_enables_statumen_metal_decode_plumbing() {
     let manifest = fs::read_to_string(crate_root().join("Cargo.toml")).expect("read Cargo.toml");
     assert!(
+        !manifest.contains("gpu = ["),
+        "wsi-dicom must not expose a non-portable aggregate gpu feature; use cuda or metal explicitly"
+    );
+    assert!(
         manifest.contains("\"statumen/metal\""),
         "wsi-dicom's metal feature must enable statumen/metal for input decode plumbing"
     );
@@ -243,6 +315,10 @@ fn cuda_feature_keeps_published_encode_plumbing_and_documents_blockers() {
         "wsi-dicom's cuda feature must keep published signinum-j2k-cuda encode acceleration buildable"
     );
     let readme = fs::read_to_string(crate_root().join("README.md")).expect("read README");
+    assert!(
+        !readme.contains("features = [\"gpu\"]") && !readme.contains("| `gpu` |"),
+        "README.md must document cuda/metal features explicitly instead of a non-portable gpu aggregate"
+    );
     assert!(
         readme.contains("statumen CUDA tile decode waits on a published statumen 0.4.x crate/API"),
         "README.md must document why statumen CUDA tile decode is not yet wired"
@@ -425,6 +501,10 @@ fn pre_1_0_release_gates_are_documented_and_automated() {
             "CI must include pre-1.0 release gate `{required}`"
         );
     }
+    assert!(
+        !workflow.contains("--features gpu"),
+        "CI must check cuda and metal explicitly instead of a non-portable gpu aggregate feature"
+    );
 
     let xtask = fs::read_to_string(crate_root().join("xtask/src/main.rs")).expect("read xtask");
     for required in [

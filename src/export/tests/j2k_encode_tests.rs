@@ -1051,6 +1051,7 @@ fn cpu_j2k_batch_matches_serial_ordered_frames() {
         },
     ];
     let level = &slide.dataset().scenes[0].series[0].levels[0];
+    let location = JpegBaselineFrameLocation::first_series_level(0);
 
     let batch = encode_cpu_input_lossless_j2k_tile_batch(
         &slide,
@@ -1084,12 +1085,7 @@ fn cpu_j2k_batch_matches_serial_ordered_frames() {
             encode_cpu_input_tile(
                 &slide,
                 &mut serial_encoder,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
+                location,
                 frame.x,
                 frame.y,
                 frame.width,
@@ -1116,6 +1112,7 @@ fn jpeg_baseline_cpu_batch_matches_serial_ordered_frames() {
     let source = tmp.path().join("source.dcm");
     write_source_dicom_with_dimensions(&source, "1.2.826.0.1.3680043.10.999.72", 4, 2);
     let slide = Slide::open(&source).unwrap();
+    let location = JpegBaselineFrameLocation::first_series_level(0);
     let frames = [
         JpegBaselineFallbackFrame {
             x: 0,
@@ -1130,43 +1127,19 @@ fn jpeg_baseline_cpu_batch_matches_serial_ordered_frames() {
             height: 2,
         },
     ];
+    let settings = JpegBaselineCpuEncodeSettings {
+        frame_columns: 2,
+        frame_rows: 2,
+        jpeg_quality: 90,
+        max_prepared_frame_bytes: u64::MAX,
+    };
 
-    let batch = encode_jpeg_baseline_cpu_input_tile_batch(
-        &slide,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        &frames,
-        2,
-        2,
-        90,
-        u64::MAX,
-    )
-    .unwrap();
+    let batch =
+        encode_jpeg_baseline_cpu_input_tile_batch(&slide, location, &frames, settings).unwrap();
     let serial = frames
         .iter()
         .map(|frame| {
-            encode_jpeg_baseline_cpu_input_tile(
-                &slide,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                frame.x,
-                frame.y,
-                frame.width,
-                frame.height,
-                2,
-                2,
-                90,
-                u64::MAX,
-            )
-            .unwrap()
+            encode_jpeg_baseline_cpu_input_tile(&slide, location, *frame, settings).unwrap()
         })
         .collect::<Vec<_>>();
 

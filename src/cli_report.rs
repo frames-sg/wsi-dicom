@@ -210,13 +210,20 @@ pub(crate) fn format_corpus_coverage_summary_with_memory(
     rss_bytes: Option<u64>,
 ) -> String {
     let metrics = report.metrics;
+    let common_transfer_syntax = report.transfer_syntax_uid.unwrap_or("mixed");
+    let transfer_syntaxes = if report.transfer_syntax_uids.is_empty() {
+        "none".into()
+    } else {
+        report.transfer_syntax_uids.join(",")
+    };
     format!(
-        "covered_corpus {} sources_considered={} sources_profiled={} failures={} transfer_syntax={} requested_frames_per_level={} available_frames={} sampled_frames_pct={:.4} complete_frame_coverage={} frames total={} {} final_byte_ms={:.3} {} elapsed_ms={:.3} rss_mb={}",
+        "covered_corpus {} sources_considered={} sources_profiled={} failures={} common_transfer_syntax={} transfer_syntaxes={} requested_frames_per_level={} available_frames={} sampled_frames_pct={:.4} complete_frame_coverage={} frames total={} {} final_byte_ms={:.3} {} elapsed_ms={:.3} rss_mb={}",
         report.source_root.display(),
         report.sources_considered,
         report.reports.len(),
         report.failures.len(),
-        report.transfer_syntax_uid,
+        common_transfer_syntax,
+        transfer_syntaxes,
         format_requested_frames_per_level(report.requested_frames_per_level),
         report.available_frames,
         frame_percent(metrics.routes.total_frames, report.available_frames),

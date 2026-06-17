@@ -1509,19 +1509,38 @@ fn specimen_description_item(metadata: &DicomMetadata) -> InMemDicomObject {
 }
 
 pub(crate) fn synthetic_srgb_icc_profile() -> Result<Vec<u8>, Error> {
-    moxcms::ColorProfile::new_srgb()
+    let mut profile = moxcms::ColorProfile::new_srgb()
         .encode()
         .map_err(|err| Error::Metadata {
             reason: format!("failed to generate synthetic sRGB ICC profile: {err}"),
-        })
+        })?;
+    stabilize_synthetic_icc_profile(&mut profile);
+    Ok(profile)
 }
 
 pub(crate) fn synthetic_display_p3_icc_profile() -> Result<Vec<u8>, Error> {
-    moxcms::ColorProfile::new_display_p3()
+    let mut profile = moxcms::ColorProfile::new_display_p3()
         .encode()
         .map_err(|err| Error::Metadata {
             reason: format!("failed to generate synthetic Display P3 ICC profile: {err}"),
-        })
+        })?;
+    stabilize_synthetic_icc_profile(&mut profile);
+    Ok(profile)
+}
+
+fn stabilize_synthetic_icc_profile(profile: &mut [u8]) {
+    const ICC_CREATION_DATETIME: std::ops::Range<usize> = 24..36;
+    const FIXED_CREATION_DATETIME: [u8; 12] = [
+        0x07, 0xE8, // 2024
+        0x00, 0x01, // January
+        0x00, 0x01, // Day 1
+        0x00, 0x00, // Hour 0
+        0x00, 0x00, // Minute 0
+        0x00, 0x00, // Second 0
+    ];
+    if let Some(created_at) = profile.get_mut(ICC_CREATION_DATETIME) {
+        created_at.copy_from_slice(&FIXED_CREATION_DATETIME);
+    }
 }
 
 fn code_item(code_value: &str, coding_scheme: &str, code_meaning: &str) -> InMemDicomObject {
@@ -1824,8 +1843,9 @@ fn format_ds(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_ds, synthetic_srgb_icc_profile, write_encapsulated_pixel_data_from_frames,
-        write_encapsulated_pixel_data_from_spool, SpooledPixelDataFragment,
+        format_ds, synthetic_display_p3_icc_profile, synthetic_srgb_icc_profile,
+        write_encapsulated_pixel_data_from_frames, write_encapsulated_pixel_data_from_spool,
+        SpooledPixelDataFragment,
     };
     use crate::{tile::PixelProfile, DicomMetadata, Error};
     use dicom_core::Tag;
@@ -1840,6 +1860,23 @@ mod tests {
         let writer = super::dicom_file_writer(file);
 
         assert!(writer.capacity() >= 1024 * 1024);
+    }
+
+    #[test]
+    fn synthetic_icc_profiles_are_stable_across_instances() {
+        const FIXED_CREATION_DATETIME: [u8; 12] = [
+            0x07, 0xE8, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let srgb_a = synthetic_srgb_icc_profile().unwrap();
+        let srgb_b = synthetic_srgb_icc_profile().unwrap();
+        let display_p3_a = synthetic_display_p3_icc_profile().unwrap();
+        let display_p3_b = synthetic_display_p3_icc_profile().unwrap();
+
+        assert_eq!(srgb_a, srgb_b);
+        assert_eq!(display_p3_a, display_p3_b);
+        assert_eq!(&srgb_a[24..36], &FIXED_CREATION_DATETIME);
+        assert_eq!(&display_p3_a[24..36], &FIXED_CREATION_DATETIME);
     }
 
     #[test]

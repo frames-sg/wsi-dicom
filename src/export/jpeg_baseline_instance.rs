@@ -230,12 +230,7 @@ pub(super) fn export_jpeg_passthrough_instance(
                         slide,
                         &mut metal_input,
                         level,
-                        scene_idx,
-                        series_idx,
-                        level_idx,
-                        z,
-                        c,
-                        t,
+                        location,
                         row,
                         &fallback_frames,
                         frame_columns,
@@ -264,19 +259,16 @@ pub(super) fn export_jpeg_passthrough_instance(
 
                     let mut cpu_batch_results = encode_jpeg_baseline_cpu_metal_misses(
                         slide,
-                        scene_idx,
-                        series_idx,
-                        level_idx,
-                        z,
-                        c,
-                        t,
+                        location,
                         &fallback_frames,
                         &metal_run,
                         request.options.encode_backend,
-                        frame_columns,
-                        frame_rows,
-                        request.options.jpeg_quality,
-                        request.options.max_prepared_frame_bytes,
+                        JpegBaselineCpuEncodeSettings {
+                            frame_columns,
+                            frame_rows,
+                            jpeg_quality: request.options.jpeg_quality,
+                            max_prepared_frame_bytes: request.options.max_prepared_frame_bytes,
+                        },
                     )?;
 
                     for (idx, (_frame, metal_encoded)) in fallback_frames
