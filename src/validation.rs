@@ -302,6 +302,7 @@ const VALIDATOR_DOCTOR_TOOLS: &[ValidatorToolSpec] = &[
     DJPEG_TOOL,
     OPJ_DECOMPRESS_TOOL,
 ];
+const AUTO_HTJ2K_DECODER_COMMAND: &str = "grk_decompress";
 const VALIDATOR_SET_FILE_CHUNK_SIZE: usize = 512;
 
 struct SystemCommandRunner;
@@ -576,20 +577,37 @@ fn doctor_htj2k_decoder_tool(
     runner: &impl ValidationCommandRunner,
     options: &DoctorOptions,
 ) -> DoctorTool {
-    let Some(template) = &options.htj2k_decoder else {
-        return skipped_doctor_tool(
-            "htj2k_decoder",
-            false,
-            "HTJ2K decoder command is not configured".to_string(),
-        );
+    let configured = options.htj2k_decoder.is_some();
+    let template = match options
+        .htj2k_decoder
+        .clone()
+        .or_else(|| auto_htj2k_decoder_template(runner))
+    {
+        Some(template) => template,
+        None => {
+            let status = if options.strict {
+                DoctorStatus::Failed
+            } else {
+                DoctorStatus::Skipped
+            };
+            return DoctorTool {
+                name: "htj2k_decoder".to_string(),
+                required: options.strict,
+                status,
+                command: Vec::new(),
+                path: None,
+                message: "HTJ2K decoder command is not configured and grk_decompress was not found"
+                    .to_string(),
+            };
+        }
     };
     let (name, args) =
-        match htj2k_decoder_command(template, Path::new("input.jhc"), Path::new("output.ppm")) {
+        match htj2k_decoder_command(&template, Path::new("input.jhc"), Path::new("output.ppm")) {
             Ok(command) => command,
             Err(message) => {
                 return DoctorTool {
                     name: "htj2k_decoder".to_string(),
-                    required: true,
+                    required: options.strict || configured,
                     status: DoctorStatus::Failed,
                     command: Vec::new(),
                     path: None,
@@ -603,20 +621,44 @@ fn doctor_htj2k_decoder_tool(
     match runner.find_command(&name) {
         Some(path) => DoctorTool {
             name: "htj2k_decoder".to_string(),
-            required: true,
+            required: options.strict || configured,
             status: DoctorStatus::Available,
             command,
             path: Some(path),
-            message: format!("{name} found"),
+            message: if configured {
+                format!("{name} found")
+            } else {
+                format!("{name} auto-detected")
+            },
         },
         None => DoctorTool {
             name: "htj2k_decoder".to_string(),
-            required: true,
+            required: options.strict || configured,
             status: DoctorStatus::Failed,
             command,
             path: None,
             message: format!("{name} not found"),
         },
+    }
+}
+
+fn auto_htj2k_decoder_template(runner: &impl ValidationCommandRunner) -> Option<String> {
+    let path = runner.find_command(AUTO_HTJ2K_DECODER_COMMAND)?;
+    path.is_absolute().then(|| {
+        format!(
+            "{} -i {{input}} -o {{output}}",
+            shlex_quote_path_for_template(&path)
+        )
+    })
+}
+
+fn shlex_quote_path_for_template(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if path.chars().any(char::is_whitespace) || path.contains('\'') || path.contains('"') {
+        let escaped = path.replace('\'', r"'\''");
+        format!("'{escaped}'")
+    } else {
+        path.into_owned()
     }
 }
 
@@ -988,7 +1030,7 @@ fn run_pixel_decode_checks(
         }
     };
     let transfer_syntax = object.meta().transfer_syntax.trim_end_matches('\0');
-    let Some(decoder) = pixel_decoder_for_transfer_syntax(transfer_syntax, options) else {
+    let Some(decoder) = pixel_decoder_for_transfer_syntax(transfer_syntax, options, runner) else {
         return vec![skipped_check(
             "pixel-decode",
             Some(file),
@@ -1067,6 +1109,7 @@ enum PixelDecoder {
 fn pixel_decoder_for_transfer_syntax(
     transfer_syntax_uid: &str,
     options: &ValidationOptions,
+    runner: &impl ValidationCommandRunner,
 ) -> Option<PixelDecoder> {
     match transfer_syntax_uid {
         uid if uid == TransferSyntax::JpegBaseline8Bit.uid() => Some(PixelDecoder::Djpeg),
@@ -1082,6 +1125,8 @@ fn pixel_decoder_for_transfer_syntax(
             Some(
                 options
                     .htj2k_decoder
+                    .clone()
+                    .or_else(|| auto_htj2k_decoder_template(runner))
                     .as_ref()
                     .map(|template| PixelDecoder::Htj2k {
                         template: template.clone(),
@@ -1337,16 +1382,28 @@ mod tests {
     const ABSOLUTE_HTJ2K_DECODER: &str = "/usr/local/bin/ojph_expand";
     #[cfg(windows)]
     const ABSOLUTE_HTJ2K_DECODER: &str = "C:/Tools/ojph_expand.exe";
+    #[cfg(not(windows))]
+    const ABSOLUTE_GROK_DECODER: &str = "/usr/local/bin/grk_decompress";
+    #[cfg(windows)]
+    const ABSOLUTE_GROK_DECODER: &str = "C:/Tools/grk_decompress.exe";
 
     #[derive(Default)]
     struct FakeRunner {
         commands: BTreeSet<String>,
+        command_paths: BTreeMap<String, PathBuf>,
         outcomes: BTreeMap<String, CommandOutcome>,
     }
 
     impl FakeRunner {
         fn with_command(mut self, name: &str) -> Self {
             self.commands.insert(name.to_string());
+            self
+        }
+
+        fn with_command_path(mut self, name: &str, path: &str) -> Self {
+            self.command_paths
+                .insert(name.to_string(), PathBuf::from(path));
+            self.commands.insert(path.to_string());
             self
         }
 
@@ -1358,6 +1415,9 @@ mod tests {
 
     impl ValidationCommandRunner for FakeRunner {
         fn find_command(&self, name: &str) -> Option<PathBuf> {
+            if let Some(path) = self.command_paths.get(name) {
+                return Some(path.clone());
+            }
             self.commands.contains(name).then(|| PathBuf::from(name))
         }
 
@@ -1646,7 +1706,31 @@ mod tests {
     }
 
     #[test]
-    fn htj2k_pixel_decode_skips_without_configured_decoder() {
+    fn htj2k_pixel_decode_uses_auto_grok_decoder_when_available() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = tmp.path().join("htj2k.dcm");
+        write_encapsulated_dicom(&file, "1.2.840.10008.1.2.4.202", &[0xFF, 0x4F, 0xFF, 0x51]);
+
+        let report = validate_dicom_path_with_runner(
+            &file,
+            &ValidationOptions::default(),
+            &FakeRunner::default()
+                .with_command_path(super::AUTO_HTJ2K_DECODER_COMMAND, ABSOLUTE_GROK_DECODER),
+        )
+        .expect("validation report");
+
+        assert!(report.checks.iter().any(|check| {
+            check.name == "pixel-htj2k"
+                && check.status == ValidationStatus::Passed
+                && check
+                    .command
+                    .first()
+                    .is_some_and(|command| command == ABSOLUTE_GROK_DECODER)
+        }));
+    }
+
+    #[test]
+    fn htj2k_pixel_decode_skips_without_configured_or_auto_decoder() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let file = tmp.path().join("htj2k.dcm");
         write_encapsulated_dicom(&file, "1.2.840.10008.1.2.4.202", &[0xFF, 0x4F, 0xFF, 0x51]);
@@ -1661,6 +1745,28 @@ mod tests {
         assert!(report.checks.iter().any(|check| {
             check.name == "pixel-htj2k" && check.status == ValidationStatus::Skipped
         }));
+    }
+
+    #[test]
+    fn strict_htj2k_pixel_decode_fails_without_configured_or_auto_decoder() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = tmp.path().join("htj2k.dcm");
+        write_encapsulated_dicom(&file, "1.2.840.10008.1.2.4.202", &[0xFF, 0x4F, 0xFF, 0x51]);
+
+        let report = validate_dicom_path_with_runner(
+            &file,
+            &ValidationOptions {
+                strict: true,
+                ..ValidationOptions::default()
+            },
+            &FakeRunner::default(),
+        )
+        .expect("validation report");
+
+        assert!(report.checks.iter().any(|check| {
+            check.name == "pixel-htj2k" && check.status == ValidationStatus::Failed
+        }));
+        assert!(report.has_failures());
     }
 
     #[test]
@@ -2042,6 +2148,39 @@ mod tests {
                     .first()
                     .is_some_and(|command| command == ABSOLUTE_HTJ2K_DECODER)
         }));
+    }
+
+    #[test]
+    fn doctor_auto_detects_grok_for_htj2k_decoder() {
+        let report = doctor_dicom_environment_with_runner(
+            &DoctorOptions::default(),
+            &FakeRunner::default()
+                .with_command_path(super::AUTO_HTJ2K_DECODER_COMMAND, ABSOLUTE_GROK_DECODER),
+        );
+
+        assert!(report.tools.iter().any(|tool| {
+            tool.name == "htj2k_decoder"
+                && tool.status == DoctorStatus::Available
+                && !tool.required
+                && tool.path.as_deref() == Some(Path::new(ABSOLUTE_GROK_DECODER))
+                && tool.message.contains("auto-detected")
+        }));
+    }
+
+    #[test]
+    fn doctor_strict_fails_when_htj2k_decoder_is_not_configured_or_auto_detected() {
+        let report = doctor_dicom_environment_with_runner(
+            &DoctorOptions {
+                strict: true,
+                ..DoctorOptions::default()
+            },
+            &FakeRunner::default(),
+        );
+
+        assert!(report.tools.iter().any(|tool| {
+            tool.name == "htj2k_decoder" && tool.required && tool.status == DoctorStatus::Failed
+        }));
+        assert!(report.has_failures());
     }
 
     #[test]
