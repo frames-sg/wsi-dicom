@@ -1336,6 +1336,9 @@ impl ExportMetrics {
     pub(crate) fn record_encoded_frame(&mut self, encoded: &encode::EncodedDicomJ2kFrame) {
         if encoded.used_device_encode {
             increment_u64(&mut self.routes.gpu_encode_frames);
+            if let Some(duration) = encoded.gpu_encode_wall_duration {
+                self.record_gpu_encode_wall_duration(duration);
+            }
             self.record_gpu_dispatch_duration(encoded.encode_duration);
             self.record_gpu_encode_hardware_duration(
                 encoded.device_gpu_duration,
@@ -1399,6 +1402,10 @@ impl ExportMetrics {
             .gpu_encode
             .gpu_encode_dispatch_overhead_micros
             .saturating_add(duration_as_reported_micros(overhead));
+    }
+
+    pub(crate) fn record_gpu_encode_wall_duration(&mut self, duration: Duration) {
+        add_duration_micros(&mut self.gpu_encode.gpu_encode_wall_micros, duration);
     }
 
     pub(crate) fn record_write_duration(&mut self, duration: Duration) {
@@ -1573,6 +1580,7 @@ mod tests {
             Some(Duration::from_micros(61)),
             Duration::from_micros(67),
         );
+        metrics.record_gpu_encode_wall_duration(Duration::from_micros(69));
         metrics.record_write_duration(Duration::from_micros(71));
         metrics.record_streaming_write_duration(Duration::from_micros(73));
         metrics.record_pixel_data_patch_duration(Duration::from_micros(79));
@@ -1659,6 +1667,7 @@ mod tests {
                 .jpeg_direct_htj2k_cpu_fallback_jobs,
             22
         );
+        assert_eq!(metrics.gpu_encode.gpu_encode_wall_micros, 69);
         assert_eq!(metrics.gpu_encode.gpu_encode_hardware_micros, 61);
         assert_eq!(metrics.gpu_encode.gpu_encode_dispatch_overhead_micros, 6);
         assert_eq!(metrics.timings.streaming_write_micros, 73);

@@ -646,13 +646,14 @@ mod tests {
         );
         assert_eq!(report.metrics.routes.jpeg_decode_fallback_frames, 0);
         if cfg!(all(feature = "metal", target_os = "macos")) {
-            assert_eq!(report.metrics.routes.cpu_input_frames, 0);
-            assert_eq!(report.metrics.routes.gpu_input_decode_frames, 2);
+            assert_eq!(report.metrics.routes.cpu_input_frames, 2);
+            assert_eq!(report.metrics.routes.gpu_input_decode_frames, 0);
             assert_eq!(report.metrics.routes.gpu_encode_frames, 2);
             assert_eq!(report.metrics.routes.gpu_transcode_frames, 2);
-            assert_eq!(report.metrics.routes.resident_gpu_transcode_frames, 2);
-            assert_eq!(report.metrics.routes.partial_gpu_transcode_frames, 0);
+            assert_eq!(report.metrics.routes.resident_gpu_transcode_frames, 0);
+            assert_eq!(report.metrics.routes.partial_gpu_transcode_frames, 2);
             assert_eq!(report.metrics.routes.cpu_fallback_frames, 0);
+            assert!(report.metrics.gpu_encode.gpu_encode_wall_micros > 0);
         } else {
             assert_eq!(report.metrics.routes.cpu_input_frames, 2);
             assert_eq!(report.metrics.routes.gpu_input_decode_frames, 0);
