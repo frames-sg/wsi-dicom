@@ -87,7 +87,7 @@ impl<'a> DirectJpegPassthroughFrameWriter<'a> {
 pub(super) fn try_plan_direct_jpeg_passthrough_frames(
     slide: &Slide,
     location: JpegBaselineFrameLocation,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     geometry: JpegBaselineFrameGeometry,
 ) -> Result<Option<Vec<DirectJpegPassthroughFrame>>, Error> {
     let frame_count = geometry

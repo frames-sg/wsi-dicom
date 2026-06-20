@@ -1,8 +1,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use statumen::{ColorSpace, CpuTile, CpuTileData, CpuTileLayout};
 use wsi_dicom::bench_support::prepare_tile_samples_summary;
+use wsi_rs::{ColorSpace, CpuTile, CpuTileData, CpuTileLayout};
 
 fuzz_target!(|data: &[u8]| {
     if data.len() < 5 {

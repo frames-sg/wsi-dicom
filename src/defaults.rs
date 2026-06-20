@@ -1,6 +1,6 @@
 //! Source-aware default selection for export options.
 
-use statumen::Slide;
+use wsi_rs::Slide;
 
 use crate::error::Error;
 use crate::export::{
@@ -119,7 +119,7 @@ pub fn default_transfer_syntax_for_source(
 
 fn jpeg_baseline_passthrough_available_for_default(
     slide: &Slide,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     location: JpegBaselineFrameLocation,
     fallback_tile_size: u32,
 ) -> Result<bool, Error> {
@@ -143,7 +143,7 @@ fn jpeg_baseline_passthrough_available_for_default(
 
 fn j2k_passthrough_status_for_default(
     slide: &Slide,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     location: JpegBaselineFrameLocation,
     fallback_tile_size: u32,
 ) -> Result<J2kDefaultPassthroughStatus, Error> {

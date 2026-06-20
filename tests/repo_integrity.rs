@@ -9,19 +9,19 @@ fn in_source_checkout() -> bool {
 }
 
 #[test]
-fn source_does_not_import_signinum_j2k_native_directly() {
+fn source_does_not_import_j2k_native_directly() {
     let mut offenders = Vec::new();
     for path in rust_sources(&crate_root().join("src")) {
         let source = fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
-        if source.contains("signinum_j2k_native") {
+        if source.contains("j2k_native") {
             offenders.push(relative_path(&path));
         }
     }
 
     assert!(
         offenders.is_empty(),
-        "wsi-dicom must call signinum-j2k encode APIs instead of importing signinum_j2k_native:\n{}",
+        "wsi-dicom must call j2k encode APIs instead of importing j2k_native:\n{}",
         offenders.join("\n")
     );
 }
@@ -92,7 +92,7 @@ fn cli_report_module_does_not_call_export_internals_directly() {
 }
 
 #[test]
-fn lockfile_has_no_duplicate_signinum_package_sources() {
+fn lockfile_has_no_duplicate_j2k_compat_package_sources() {
     let lockfile = fs::read_to_string(crate_root().join("Cargo.lock")).expect("read Cargo.lock");
     let mut duplicates = Vec::new();
 
@@ -113,7 +113,7 @@ fn lockfile_has_no_duplicate_signinum_package_sources() {
 
     assert!(
         duplicates.is_empty(),
-        "Cargo.lock must not contain duplicate signinum package identities:\n{}",
+        "Cargo.lock must not contain duplicate j2k compatibility package identities:\n{}",
         duplicates.join("\n")
     );
 }
@@ -240,17 +240,18 @@ fn manifest_patch_crates(manifest: &str) -> Vec<&str> {
 }
 
 #[test]
-fn jpeg_dependencies_are_limited_to_signinum_crates() {
+fn jpeg_dependencies_are_limited_to_j2k_crates() {
     let manifest = fs::read_to_string(crate_root().join("Cargo.toml")).expect("read Cargo.toml");
     let lockfile = fs::read_to_string(crate_root().join("Cargo.lock")).expect("read Cargo.lock");
     for dependency in ["jpeg-encoder", "turbojpeg", "mozjpeg", "zune-jpeg"] {
         assert!(
             !manifest.contains(dependency),
-            "wsi-dicom must use signinum JPEG APIs, not direct {dependency} dependencies"
+            "wsi-dicom must use j2k JPEG APIs, not direct {dependency} dependencies"
         );
         assert!(
-            !lockfile_package_dependencies(&lockfile, "wsi-dicom").contains(&dependency.to_string()),
-            "wsi-dicom package must not depend directly on non-signinum JPEG dependency {dependency}"
+            !lockfile_package_dependencies(&lockfile, "wsi-dicom")
+                .contains(&dependency.to_string()),
+            "wsi-dicom package must not depend directly on non-j2k JPEG dependency {dependency}"
         );
     }
 }
@@ -287,19 +288,19 @@ fn lockfile_package_dependencies(lockfile: &str, package: &str) -> Vec<String> {
 }
 
 #[test]
-fn metal_feature_enables_statumen_metal_decode_plumbing() {
+fn metal_feature_enables_wsi_rs_metal_decode_plumbing() {
     let manifest = fs::read_to_string(crate_root().join("Cargo.toml")).expect("read Cargo.toml");
     assert!(
         !manifest.contains("gpu = ["),
         "wsi-dicom must not expose a non-portable aggregate gpu feature; use cuda or metal explicitly"
     );
     assert!(
-        manifest.contains("\"statumen/metal\""),
-        "wsi-dicom's metal feature must enable statumen/metal for input decode plumbing"
+        manifest.contains("\"wsi-rs/metal\""),
+        "wsi-dicom's metal feature must enable wsi-rs/metal for input decode plumbing"
     );
     assert!(
-        manifest.contains("\"dep:signinum-jpeg-metal\""),
-        "wsi-dicom's metal feature must include signinum-jpeg-metal so statumen can decode JPEG WSI tiles on Metal"
+        manifest.contains("\"dep:j2k-jpeg-metal\""),
+        "wsi-dicom's metal feature must include j2k-jpeg-metal so wsi-rs can decode JPEG WSI tiles on Metal"
     );
     assert!(
         manifest.contains("\"dep:metal\""),
@@ -311,8 +312,8 @@ fn metal_feature_enables_statumen_metal_decode_plumbing() {
 fn cuda_feature_keeps_published_encode_plumbing_and_documents_blockers() {
     let manifest = fs::read_to_string(crate_root().join("Cargo.toml")).expect("read Cargo.toml");
     assert!(
-        manifest.contains("cuda = [\"dep:signinum-j2k-cuda\"]"),
-        "wsi-dicom's cuda feature must keep published signinum-j2k-cuda encode acceleration buildable"
+        manifest.contains("cuda = [\"dep:j2k-cuda\"]"),
+        "wsi-dicom's cuda feature must keep j2k-cuda encode acceleration buildable"
     );
     let readme = fs::read_to_string(crate_root().join("README.md")).expect("read README");
     assert!(
@@ -320,11 +321,11 @@ fn cuda_feature_keeps_published_encode_plumbing_and_documents_blockers() {
         "README.md must document cuda/metal features explicitly instead of a non-portable gpu aggregate"
     );
     assert!(
-        readme.contains("statumen CUDA tile decode waits on a published statumen 0.4.x crate/API"),
-        "README.md must document why statumen CUDA tile decode is not yet wired"
+        readme.contains("wsi-rs CUDA tile decode waits on a published wsi-rs crate/API"),
+        "README.md must document why wsi-rs CUDA tile decode is not yet wired"
     );
     assert!(
-        readme.contains("Direct JPEG-to-HTJ2K CUDA acceleration waits on a published `signinum-transcode-cuda` crate/API"),
+        readme.contains("Direct JPEG-to-HTJ2K CUDA acceleration waits on a published `j2k-transcode-cuda` crate/API"),
         "README.md must document why direct CUDA transcode is not yet wired"
     );
 }
@@ -460,7 +461,7 @@ fn pre_1_0_public_api_hardening_is_enforced() {
 }
 
 #[test]
-fn advanced_frame_encode_api_does_not_expose_signinum_sample_types() {
+fn advanced_frame_encode_api_does_not_expose_j2k_sample_types() {
     let request = fs::read_to_string(crate_root().join("src/request.rs")).expect("read request.rs");
 
     for required in [
@@ -477,7 +478,7 @@ fn advanced_frame_encode_api_does_not_expose_signinum_sample_types() {
 
     assert!(
         !request.contains("pub samples: J2kLosslessSamples"),
-        "J2kFrameEncodeRequest must not expose signinum_j2k::J2kLosslessSamples directly"
+        "J2kFrameEncodeRequest must not expose j2k::J2kLosslessSamples directly"
     );
 }
 
@@ -860,7 +861,7 @@ fn tracked_text_files_from_git(root: &Path) -> Vec<std::path::PathBuf> {
         .filter_map(|path| {
             let relative = Path::new(path);
             let absolute = root.join(relative);
-            (absolute.is_file() && is_text_file(relative)).then_some(absolute)
+            (absolute.is_file() && is_first_party_text_file(relative)).then_some(absolute)
         })
         .collect()
 }
@@ -872,7 +873,7 @@ fn visit_text_files(path: &Path, out: &mut Vec<std::path::PathBuf>) {
         .unwrap_or_default();
     if matches!(
         file_name,
-        ".git" | "target" | ".venv" | ".venv-bench" | "__pycache__"
+        ".git" | "target" | ".venv" | ".venv-bench" | "__pycache__" | "vendor"
     ) {
         return;
     }
@@ -894,6 +895,10 @@ fn is_text_file(path: &Path) -> bool {
         path.extension().and_then(|value| value.to_str()),
         Some("md" | "rs" | "toml" | "yaml" | "yml" | "sh" | "txt")
     ) || path.file_name().and_then(|value| value.to_str()) == Some(".gitignore")
+}
+
+fn is_first_party_text_file(path: &Path) -> bool {
+    is_text_file(path) && !path.starts_with("vendor")
 }
 
 fn visit_rust_sources(path: &Path, out: &mut Vec<std::path::PathBuf>) {

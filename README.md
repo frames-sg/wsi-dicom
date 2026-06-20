@@ -2,11 +2,11 @@
 
 # wsi-dicom
 
-`wsi-dicom` converts whole-slide imaging files that `statumen` can open into
+`wsi-dicom` converts whole-slide imaging files that `wsi-rs` can open into
 DICOM VL Whole Slide Microscopy instances. It provides a Rust API, a CLI, and an
 optional native GUI.
 
-`signinum` supplies JPEG, JPEG 2000, and HTJ2K codec primitives. `statumen`
+`j2k` supplies JPEG, JPEG 2000, and HTJ2K codec primitives. `wsi-rs`
 opens vendor WSI formats such as SVS and NDPI. `wsi-dicom` owns DICOM export,
 metadata validation, transfer-syntax routing, reports, and writer errors.
 
@@ -39,8 +39,8 @@ Feature flags:
 | Feature | Effect |
 | --- | --- |
 | `default` | CPU-only DICOM export. |
-| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. statumen CUDA tile decode waits on a published statumen 0.4.x crate/API. Direct JPEG-to-HTJ2K CUDA acceleration waits on a published `signinum-transcode-cuda` crate/API. |
-| `metal` | Enables Metal JPEG 2000 encode acceleration on macOS, Metal codestream validation decode, and statumen Metal tile decode plumbing. |
+| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. wsi-rs CUDA tile decode waits on a published wsi-rs crate/API. Direct JPEG-to-HTJ2K CUDA acceleration waits on a published `j2k-transcode-cuda` crate/API. |
+| `metal` | Enables Metal JPEG 2000 encode acceleration on macOS, Metal codestream validation decode, and wsi-rs Metal tile decode plumbing. |
 
 For local maximum CPU throughput:
 

@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-//! DICOM whole-slide export for `statumen` datasets.
+//! DICOM whole-slide export for `wsi-rs` datasets.
 //!
 //! The crate facade intentionally stays small: public types and functions are
 //! re-exported from focused internal modules, while implementation details live

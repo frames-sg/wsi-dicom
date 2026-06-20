@@ -1,5 +1,5 @@
 use super::*;
-use statumen::TileRequest;
+use wsi_rs::TileRequest;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) static DEVICE_DECODE_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -44,7 +44,7 @@ pub(super) fn test_lossless_j2k_planned_frame(col: u64) -> LosslessJ2kPlannedFra
 }
 
 pub(super) fn assert_j2k_facade_roundtrip(samples: J2kLosslessSamples<'_>, codestream: &[u8]) {
-    let mut decoder = signinum_j2k::J2kDecoder::new(codestream).expect("parse encoded J2K");
+    let mut decoder = j2k::J2kDecoder::new(codestream).expect("parse encoded J2K");
     let bytes_per_sample = if samples.bit_depth <= 8 {
         1usize
     } else {
@@ -53,10 +53,10 @@ pub(super) fn assert_j2k_facade_roundtrip(samples: J2kLosslessSamples<'_>, codes
     let stride = samples.width as usize * samples.components as usize * bytes_per_sample;
     let mut decoded = vec![0; stride * samples.height as usize];
     let fmt = match (samples.components, samples.bit_depth) {
-        (1, 8) => signinum_j2k::PixelFormat::Gray8,
-        (3, 8) => signinum_j2k::PixelFormat::Rgb8,
-        (1, 16) => signinum_j2k::PixelFormat::Gray16,
-        (3, 16) => signinum_j2k::PixelFormat::Rgb16,
+        (1, 8) => j2k::PixelFormat::Gray8,
+        (3, 8) => j2k::PixelFormat::Rgb8,
+        (1, 16) => j2k::PixelFormat::Gray16,
+        (3, 16) => j2k::PixelFormat::Rgb16,
         _ => panic!(
             "unsupported test sample profile: components={} bit_depth={}",
             samples.components, samples.bit_depth
@@ -312,17 +312,17 @@ pub(super) fn decode_j2k_frame_for_test(
     bits_allocated: u16,
 ) -> Vec<u8> {
     let fmt = match (components, bits_allocated) {
-        (1, 8) => signinum_j2k::PixelFormat::Gray8,
-        (3, 8) => signinum_j2k::PixelFormat::Rgb8,
-        (1, 16) => signinum_j2k::PixelFormat::Gray16,
-        (3, 16) => signinum_j2k::PixelFormat::Rgb16,
+        (1, 8) => j2k::PixelFormat::Gray8,
+        (3, 8) => j2k::PixelFormat::Rgb8,
+        (1, 16) => j2k::PixelFormat::Gray16,
+        (3, 16) => j2k::PixelFormat::Rgb16,
         other => panic!("unsupported frame profile: {other:?}"),
     };
     let bytes_per_sample = if bits_allocated <= 8 { 1usize } else { 2usize };
     let stride = width as usize * components as usize * bytes_per_sample;
-    let mut decoder = signinum_j2k::J2kDecoder::new(codestream).unwrap_or_else(|err| {
+    let mut decoder = j2k::J2kDecoder::new(codestream).unwrap_or_else(|err| {
         if codestream.last() == Some(&0) {
-            signinum_j2k::J2kDecoder::new(&codestream[..codestream.len() - 1])
+            j2k::J2kDecoder::new(&codestream[..codestream.len() - 1])
                 .unwrap_or_else(|_| panic!("parse frame: {err}"))
         } else {
             panic!("parse frame: {err}");
@@ -339,19 +339,19 @@ pub(super) fn metal_test_tile(
     bytes: &[u8],
     width: u32,
     height: u32,
-    format: SigninumPixelFormat,
-) -> statumen::output::metal::MetalDeviceTile {
+    format: J2kPixelFormat,
+) -> wsi_rs::output::metal::MetalDeviceTile {
     let buffer = device.new_buffer_with_data(
         bytes.as_ptr().cast(),
         bytes.len() as u64,
         metal::MTLResourceOptions::StorageModeShared,
     );
-    statumen::output::metal::MetalDeviceTile {
+    wsi_rs::output::metal::MetalDeviceTile {
         width,
         height,
         pitch_bytes: width as usize * format.bytes_per_pixel(),
         format,
-        storage: statumen::output::metal::MetalDeviceStorage::Buffer {
+        storage: wsi_rs::output::metal::MetalDeviceStorage::Buffer {
             buffer,
             byte_offset: 0,
         },

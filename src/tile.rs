@@ -1,4 +1,4 @@
-use statumen::{ColorSpace, CpuTile, CpuTileData, CpuTileLayout, SampleType};
+use wsi_rs::{ColorSpace, CpuTile, CpuTileData, CpuTileLayout, SampleType};
 
 use crate::Error;
 
@@ -108,34 +108,32 @@ fn prepared_tile_len(
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(crate) fn pixel_profile_from_device_format(
-    format: signinum_j2k::PixelFormat,
+    format: j2k::PixelFormat,
 ) -> Result<PixelProfile, Error> {
     match format {
-        signinum_j2k::PixelFormat::Gray8 => Ok(PixelProfile {
+        j2k::PixelFormat::Gray8 => Ok(PixelProfile {
             components: 1,
             bits_allocated: 8,
             photometric_interpretation: "MONOCHROME2",
         }),
-        signinum_j2k::PixelFormat::Rgb8 => Ok(PixelProfile {
+        j2k::PixelFormat::Rgb8 => Ok(PixelProfile {
             components: 3,
             bits_allocated: 8,
             photometric_interpretation: "RGB",
         }),
-        signinum_j2k::PixelFormat::Gray16 => Ok(PixelProfile {
+        j2k::PixelFormat::Gray16 => Ok(PixelProfile {
             components: 1,
             bits_allocated: 16,
             photometric_interpretation: "MONOCHROME2",
         }),
-        signinum_j2k::PixelFormat::Rgb16 => Ok(PixelProfile {
+        j2k::PixelFormat::Rgb16 => Ok(PixelProfile {
             components: 3,
             bits_allocated: 16,
             photometric_interpretation: "RGB",
         }),
-        signinum_j2k::PixelFormat::Rgba8 | signinum_j2k::PixelFormat::Rgba16 => {
-            Err(Error::UnsupportedPixelData {
-                reason: "Metal RGBA tiles require an explicit alpha composite policy".into(),
-            })
-        }
+        j2k::PixelFormat::Rgba8 | j2k::PixelFormat::Rgba16 => Err(Error::UnsupportedPixelData {
+            reason: "Metal RGBA tiles require an explicit alpha composite policy".into(),
+        }),
         _ => Err(Error::UnsupportedPixelData {
             reason: "unsupported Metal tile pixel format".into(),
         }),

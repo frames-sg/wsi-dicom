@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use signinum_jpeg::{JpegBackend, JpegSamples, JpegSubsampling};
+use j2k_jpeg::{JpegBackend, JpegSamples, JpegSubsampling};
 
 use super::*;
 
@@ -583,13 +583,13 @@ fn encode_restart_test_jpeg(width: u32, height: u32) -> Vec<u8> {
             pixels[idx + 2] = 96u8.saturating_add(((x + y) % 96) as u8);
         }
     }
-    signinum_jpeg::encode_jpeg_baseline(
+    j2k_jpeg::encode_jpeg_baseline(
         JpegSamples::Rgb8 {
             data: &pixels,
             width,
             height,
         },
-        signinum_jpeg::JpegEncodeOptions {
+        j2k_jpeg::JpegEncodeOptions {
             quality: 90,
             subsampling: JpegSubsampling::Ybr422,
             restart_interval: Some(8),

@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use signinum_jpeg::{JpegBackend, JpegSamples, JpegSubsampling};
+use j2k_jpeg::{JpegBackend, JpegSamples, JpegSubsampling};
 
 pub(crate) fn find_command_for_test(name: &str) -> Option<String> {
     std::env::var_os("PATH")
@@ -48,13 +48,13 @@ pub(crate) fn encode_test_jpeg(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8>
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
-    signinum_jpeg::encode_jpeg_baseline(
+    j2k_jpeg::encode_jpeg_baseline(
         JpegSamples::Rgb8 {
             data: &pixels,
             width,
             height,
         },
-        signinum_jpeg::JpegEncodeOptions {
+        j2k_jpeg::JpegEncodeOptions {
             quality: 90,
             subsampling: JpegSubsampling::Ybr422,
             restart_interval: None,

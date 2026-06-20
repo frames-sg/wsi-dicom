@@ -13,7 +13,7 @@ pub(super) fn export_instance(
     z: u32,
     c: u32,
     t: u32,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
 ) -> Result<InstanceReport, Error> {
     prepare_lossless_j2k_instance(
         slide,
@@ -109,7 +109,7 @@ pub(super) fn prepare_lossless_j2k_instance(
     z: u32,
     c: u32,
     t: u32,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
 ) -> Result<PendingLosslessJ2kInstance, Error> {
     let tile_size = j2k_route_tile_size(&request.options, level)?;
     let (matrix_columns, matrix_rows) = level.dimensions;

@@ -41,7 +41,7 @@ fn encode_dicom_j2k_frame_returns_finished_dicom_frame_bytes() {
     assert!(!frame.used_device_encode);
     assert!(!frame.used_device_validation);
     assert_transfer_syntax_codestream(TransferSyntax::Htj2kLosslessRpcl, &frame.bytes);
-    assert_j2k_facade_roundtrip(samples.to_signinum().unwrap(), &frame.bytes);
+    assert_j2k_facade_roundtrip(samples.to_j2k().unwrap(), &frame.bytes);
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -74,7 +74,7 @@ fn encode_dicom_j2k_frame_can_return_metal_finished_bytes_when_required() {
     assert!(frame.validation_micros > 0);
     assert!(!frame.bytes.is_empty());
     assert_transfer_syntax_codestream(TransferSyntax::Htj2kLosslessRpcl, &frame.bytes);
-    assert_j2k_facade_roundtrip(samples.to_signinum().unwrap(), &frame.bytes);
+    assert_j2k_facade_roundtrip(samples.to_j2k().unwrap(), &frame.bytes);
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -102,7 +102,7 @@ fn encode_dicom_j2k_frame_can_skip_runtime_codec_validation() {
     assert!(!frame.used_device_validation);
     assert_eq!(frame.validation_micros, 0);
     assert_transfer_syntax_codestream(TransferSyntax::Htj2kLosslessRpcl, &frame.bytes);
-    assert_j2k_facade_roundtrip(samples.to_signinum().unwrap(), &frame.bytes);
+    assert_j2k_facade_roundtrip(samples.to_j2k().unwrap(), &frame.bytes);
 }
 
 #[test]

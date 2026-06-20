@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use statumen::{PlaneSelection, RawCompressedTile, Slide, TileViewRequest, WsiError};
+use wsi_rs::{PlaneSelection, RawCompressedTile, Slide, TileViewRequest, WsiError};
 
 use super::{raw_jpeg_matches_frame_geometry, JpegBaselineFrameLocation};
 use crate::error::Error;
@@ -88,7 +88,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn raw_jpeg_retile_error_classification_uses_statumen_error_variants() {
+    fn raw_jpeg_retile_error_classification_uses_wsi_rs_error_variants() {
         assert_eq!(
             classify_raw_jpeg_retile_error(&WsiError::TileRead {
                 col: 0,

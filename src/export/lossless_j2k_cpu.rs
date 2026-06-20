@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
+use j2k::{J2kLosslessSamples, ReversibleTransform};
 use rayon::prelude::*;
-use signinum_j2k::{J2kLosslessSamples, ReversibleTransform};
-use statumen::{PlaneSelection, Slide, TileLayout, TileOutputPreference, TilePixels, TileRequest};
+use wsi_rs::{PlaneSelection, Slide, TileLayout, TileOutputPreference, TilePixels, TileRequest};
 
 use crate::encode::{self, EncodedDicomJ2kFrame};
 use crate::error::Error;
@@ -47,7 +47,7 @@ pub(super) struct LosslessJ2kCpuBatchOutcome {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn encode_cpu_input_lossless_j2k_tile_batch(
     slide: &Slide,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     settings: LosslessJ2kCpuBatchSettings,
     scene_idx: usize,
     series_idx: usize,
@@ -97,7 +97,7 @@ pub(super) fn encode_cpu_input_lossless_j2k_tile_batch(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn encode_cpu_input_lossless_j2k_planned_batch(
     slide: &Slide,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     settings: LosslessJ2kCpuBatchSettings,
     scene_idx: usize,
     series_idx: usize,
@@ -123,7 +123,7 @@ pub(super) fn encode_cpu_input_lossless_j2k_planned_batch(
 }
 
 fn native_lossless_j2k_cpu_tile_requests(
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     location: SourceTileBatchLocation,
     frames: &[LosslessJ2kCpuBatchFrame],
     tile_size: u32,
@@ -192,7 +192,7 @@ fn prepare_native_cpu_input_lossless_j2k_tile_batch(
     if tiles.len() != requests.len() {
         return Err(Error::SlideRead {
             message: format!(
-                "statumen read_tiles returned {} tile(s), expected {}",
+                "wsi-rs read_tiles returned {} tile(s), expected {}",
                 tiles.len(),
                 requests.len()
             ),
@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn native_cpu_tile_batch_requests_require_exact_source_tile_geometry() {
-        let level = statumen::Level {
+        let level = wsi_rs::Level {
             dimensions: (2048, 1024),
             downsample: 1.0,
             tile_layout: TileLayout::Regular {
@@ -435,7 +435,7 @@ mod tests {
         };
 
         let requests = native_lossless_j2k_cpu_tile_requests(&level, location, &frames, 512)
-            .expect("exact regular source tiles should use statumen batch reads");
+            .expect("exact regular source tiles should use wsi_rs batch reads");
 
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].scene, 1);

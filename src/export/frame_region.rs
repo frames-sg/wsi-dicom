@@ -1,4 +1,4 @@
-use statumen::{PlaneSelection, TileRequest};
+use wsi_rs::{PlaneSelection, TileRequest};
 
 use crate::error::Error;
 

@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
-use signinum_jpeg::{EncodedJpeg, JpegBackend, JpegSamples, JpegSubsampling};
-use statumen::TileLayout;
-use statumen::{Compression, EncodedTilePhotometricInterpretation, RawCompressedTile, Slide};
+use j2k_jpeg::{EncodedJpeg, JpegBackend, JpegSamples, JpegSubsampling};
+use wsi_rs::TileLayout;
+use wsi_rs::{Compression, EncodedTilePhotometricInterpretation, RawCompressedTile, Slide};
 
 use crate::error::Error;
 use crate::tile::PixelProfile;
@@ -51,7 +51,7 @@ pub(super) struct JpegBaselineMetalEncodedRun {
 }
 
 pub(super) fn jpeg_baseline_frame_geometry(
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     fallback_tile_size: u32,
 ) -> Result<JpegBaselineFrameGeometry, Error> {
     if fallback_tile_size == 0 {
@@ -133,7 +133,7 @@ pub(super) fn jpeg_baseline_frame_geometry(
 
 pub(crate) fn jpeg_baseline_route_frame_geometry(
     slide: &Slide,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     location: JpegBaselineFrameLocation,
     fallback_tile_size: u32,
 ) -> Result<JpegBaselineFrameGeometry, Error> {
@@ -150,7 +150,7 @@ pub(crate) fn jpeg_baseline_route_frame_geometry(
 
 fn jpeg_baseline_native_regular_passthrough_geometry(
     slide: &Slide,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     location: JpegBaselineFrameLocation,
     fallback_tile_size: u32,
 ) -> Result<Option<JpegBaselineFrameGeometry>, Error> {
@@ -314,10 +314,10 @@ pub(crate) fn raw_jpeg_matches_frame_geometry(
 
 const STATUMEN_EMPTY_TIFF_TILE_REASON: &str = "empty TIFF tiles";
 
-pub(super) fn raw_compressed_error_is_empty_tile(err: &statumen::WsiError) -> bool {
+pub(super) fn raw_compressed_error_is_empty_tile(err: &wsi_rs::WsiError) -> bool {
     matches!(
         err,
-        statumen::WsiError::Unsupported { reason }
+        wsi_rs::WsiError::Unsupported { reason }
             if reason.contains(STATUMEN_EMPTY_TIFF_TILE_REASON)
     )
 }
@@ -368,7 +368,7 @@ pub(super) fn blank_jpeg_baseline_frame(
 }
 
 pub(crate) fn raw_rgb_passthrough_has_no_geometry_fallback(
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     geometry: JpegBaselineFrameGeometry,
 ) -> bool {
     let full_frame_grid = level
@@ -447,9 +447,9 @@ pub(super) fn encode_jpeg_baseline_cpu_fragment(
     subsampling: JpegSubsampling,
     restart_interval: Option<u16>,
 ) -> Result<EncodedJpeg, Error> {
-    signinum_jpeg::encode_jpeg_baseline(
+    j2k_jpeg::encode_jpeg_baseline(
         samples,
-        signinum_jpeg::JpegEncodeOptions {
+        j2k_jpeg::JpegEncodeOptions {
             quality: jpeg_quality,
             subsampling,
             restart_interval,
@@ -482,14 +482,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_tile_detection_is_limited_to_statumen_unsupported_reason() {
+    fn empty_tile_detection_is_limited_to_wsi_rs_unsupported_reason() {
         assert!(raw_compressed_error_is_empty_tile(
-            &statumen::WsiError::Unsupported {
+            &wsi_rs::WsiError::Unsupported {
                 reason: "JPEG passthrough does not support empty TIFF tiles".into(),
             }
         ));
         assert!(!raw_compressed_error_is_empty_tile(
-            &statumen::WsiError::TileRead {
+            &wsi_rs::WsiError::TileRead {
                 col: 0,
                 row: 0,
                 level: 0,

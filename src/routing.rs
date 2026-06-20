@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use signinum_core::CompressedTransferSyntax;
-use statumen::{LevelSourceKind, Slide, TileLayout};
+use j2k_core::CompressedTransferSyntax;
+use wsi_rs::{LevelSourceKind, Slide, TileLayout};
 
 use crate::error::Error;
 use crate::options::{EncodeBackendPreference, ExportOptions, TransferSyntax};
@@ -11,7 +11,7 @@ use crate::tile::PixelProfile;
 
 pub(crate) fn j2k_route_tile_size(
     options: &ExportOptions,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
 ) -> Result<u32, Error> {
     if options.tile_size == 0 {
         return Err(Error::InvalidOptions {
@@ -167,8 +167,8 @@ mod tests {
 
     use super::*;
 
-    fn level_with_layout(tile_layout: TileLayout) -> statumen::Level {
-        statumen::Level {
+    fn level_with_layout(tile_layout: TileLayout) -> wsi_rs::Level {
+        wsi_rs::Level {
             dimensions: (2048, 2048),
             downsample: 1.0,
             tile_layout,

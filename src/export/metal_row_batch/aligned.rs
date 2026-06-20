@@ -6,7 +6,7 @@ pub(in crate::export) fn try_encode_metal_aligned_tile_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
     j2k_encoder: &mut DicomJ2kEncoder,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     scene_idx: usize,
     series_idx: usize,
     level_idx: u32,
@@ -20,11 +20,11 @@ pub(in crate::export) fn try_encode_metal_aligned_tile_run(
     matrix_rows: u64,
     tile_size: u32,
 ) -> Result<MetalEncodedTileRun, Error> {
-    if !output_tile_maps_to_statumen_tile(level, tile_size) {
+    if !output_tile_maps_to_wsi_rs_tile(level, tile_size) {
         if metal_input.preference == EncodeBackendPreference::RequireDevice {
             return Err(Error::Unsupported {
                 reason:
-                    "requested Metal input tile decode requires the DICOM tile grid to align with statumen source tiles"
+                    "requested Metal input tile decode requires the DICOM tile grid to align with wsi-rs source tiles"
                         .into(),
             });
         }

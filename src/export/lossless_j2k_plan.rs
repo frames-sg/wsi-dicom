@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use signinum_core::CompressedTransferSyntax;
-use statumen::{Compression, PlaneSelection, Slide, TileRequest};
+use j2k_core::CompressedTransferSyntax;
+use wsi_rs::{Compression, PlaneSelection, Slide, TileRequest};
 
 use super::frame_region::{FrameRectGrid, FrameRectOverflowReasons, OutputFrameRect};
 use super::j2k_policy::{j2k_passthrough_frame, j2k_raw_frame_syntax_and_profile};

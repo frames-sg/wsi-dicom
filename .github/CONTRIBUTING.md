@@ -1,7 +1,7 @@
 # Contributing
 
 Contributions should keep `wsi-dicom` focused on reliable DICOM VL Whole Slide
-Microscopy export from `statumen` datasets.
+Microscopy export from `wsi-rs` datasets.
 
 ## Development Setup
 

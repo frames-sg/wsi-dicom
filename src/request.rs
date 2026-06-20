@@ -11,7 +11,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct ExportRequest {
-    /// Path to the source slide readable by `statumen`.
+    /// Path to the source slide readable by `wsi-rs`.
     pub source_path: PathBuf,
     /// Directory where generated DICOM instances are written.
     pub output_dir: PathBuf,
@@ -83,12 +83,12 @@ impl<'a> FrameSamples<'a> {
             bit_depth,
             signed,
         };
-        samples.to_signinum()?;
+        samples.to_j2k()?;
         Ok(samples)
     }
 
-    pub(crate) fn to_signinum(self) -> Result<signinum_j2k::J2kLosslessSamples<'a>, Error> {
-        signinum_j2k::J2kLosslessSamples::new(
+    pub(crate) fn to_j2k(self) -> Result<j2k::J2kLosslessSamples<'a>, Error> {
+        j2k::J2kLosslessSamples::new(
             self.data,
             self.width,
             self.height,
@@ -137,7 +137,7 @@ impl<'a> J2kFrameEncodeRequest<'a> {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct RouteProfileRequest {
-    /// Path to the source slide readable by `statumen`.
+    /// Path to the source slide readable by `wsi-rs`.
     pub source_path: PathBuf,
     /// Export options used for route planning.
     pub options: ExportOptions,
@@ -172,7 +172,7 @@ impl RouteProfileRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DefaultTransferSyntaxRequest {
-    /// Path to the source slide readable by `statumen`.
+    /// Path to the source slide readable by `wsi-rs`.
     pub source_path: PathBuf,
     /// Requested fallback DICOM tile size.
     pub tile_size: u32,

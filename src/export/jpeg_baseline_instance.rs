@@ -13,7 +13,7 @@ pub(super) fn export_jpeg_passthrough_instance(
     z: u32,
     c: u32,
     t: u32,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
 ) -> Result<InstanceReport, Error> {
     let tile_size = request.options.tile_size;
     let (matrix_columns, matrix_rows) = level.dimensions;

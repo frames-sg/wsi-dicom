@@ -1,8 +1,8 @@
 use std::time::Instant;
 
+use j2k::{J2kProgressionOrder, J2kToHtj2kOptions};
+use j2k_core::CompressedPayloadKind;
 use rayon::prelude::*;
-use signinum_core::CompressedPayloadKind;
-use signinum_j2k::{J2kProgressionOrder, J2kToHtj2kOptions};
 
 use super::{
     ensure_consistent_pixel_profile, CodecValidation, Compression, Error, ExportMetrics,
@@ -109,7 +109,7 @@ fn encode_frame_refs_batch(
         .par_iter()
         .map(|frame| {
             let started = Instant::now();
-            signinum_j2k::recode_j2k_to_htj2k_lossless(&frame.data, options).map_or_else(
+            j2k::recode_j2k_to_htj2k_lossless(&frame.data, options).map_or_else(
                 |err| Err(to_wsi_error(err)),
                 |recoded| {
                     Ok(BatchOutcome {
@@ -144,7 +144,7 @@ fn options(
     })
 }
 
-fn to_wsi_error(source: signinum_j2k::J2kError) -> Error {
+fn to_wsi_error(source: j2k::J2kError) -> Error {
     Error::Encode {
         message: format!("direct J2K to HTJ2K recode failed: {source}"),
     }
@@ -153,7 +153,7 @@ fn to_wsi_error(source: signinum_j2k::J2kError) -> Error {
 #[cfg(test)]
 mod tests {
     use dicom_dictionary_std::tags;
-    use signinum_j2k::J2kLosslessSamples;
+    use j2k::J2kLosslessSamples;
 
     use crate::encode::encode_dicom_lossless;
     use crate::metadata::MetadataSource;
@@ -247,15 +247,15 @@ mod tests {
         bits_allocated: u16,
     ) -> Vec<u8> {
         let fmt = match (components, bits_allocated) {
-            (1, 8) => signinum_j2k::PixelFormat::Gray8,
-            (3, 8) => signinum_j2k::PixelFormat::Rgb8,
-            (1, 16) => signinum_j2k::PixelFormat::Gray16,
-            (3, 16) => signinum_j2k::PixelFormat::Rgb16,
+            (1, 8) => j2k::PixelFormat::Gray8,
+            (3, 8) => j2k::PixelFormat::Rgb8,
+            (1, 16) => j2k::PixelFormat::Gray16,
+            (3, 16) => j2k::PixelFormat::Rgb16,
             other => panic!("unsupported frame profile: {other:?}"),
         };
         let bytes_per_sample = if bits_allocated <= 8 { 1usize } else { 2usize };
         let stride = width as usize * components as usize * bytes_per_sample;
-        let mut decoder = signinum_j2k::J2kDecoder::new(codestream).unwrap();
+        let mut decoder = j2k::J2kDecoder::new(codestream).unwrap();
         let mut decoded = vec![0; stride * height as usize];
         decoder.decode_into(&mut decoded, stride, fmt).unwrap();
         decoded

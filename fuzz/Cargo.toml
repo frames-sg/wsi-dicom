@@ -10,7 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 serde_json = "1"
-statumen = "0.3.1"
+wsi-rs = { package = "statumen", version = "0.3.1" }
 wsi-dicom = { path = "..", features = ["bench-internals"] }
 
 [workspace]

@@ -1,14 +1,14 @@
 use std::time::{Duration, Instant};
 
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use rayon::prelude::*;
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use signinum_core::DeviceSubmission;
-use signinum_j2k::{
+use j2k::{
     encode_j2k_lossless, encode_j2k_lossless_with_accelerator, BackendKind, J2kBlockCodingMode,
     J2kEncodeStageAccelerator, J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples,
     J2kProgressionOrder, ReversibleTransform,
 };
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use j2k_core::DeviceSubmission;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use rayon::prelude::*;
 
 use crate::{CodecValidation, EncodeBackendPreference, Error, TransferSyntax};
 
@@ -21,11 +21,11 @@ pub(crate) struct DicomJ2kEncoder {
     gpu_encode_inflight_tiles: Option<usize>,
     gpu_encode_memory_mib: Option<u64>,
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    metal: Option<signinum_j2k_metal::MetalEncodeStageAccelerator>,
+    metal: Option<j2k_metal::MetalEncodeStageAccelerator>,
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    metal_session: Option<signinum_j2k_metal::MetalBackendSession>,
+    metal_session: Option<j2k_metal::MetalBackendSession>,
     #[cfg(feature = "cuda")]
-    cuda: Option<signinum_j2k_cuda::CudaEncodeStageAccelerator>,
+    cuda: Option<j2k_cuda::CudaEncodeStageAccelerator>,
 }
 
 pub(crate) struct EncodedDicomJ2kFrame {
@@ -41,7 +41,7 @@ pub(crate) struct EncodedDicomJ2kFrame {
 pub(crate) enum EncodedDicomJ2kCodestream {
     Host(Vec<u8>),
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    Metal(signinum_j2k_metal::MetalEncodedJ2k),
+    Metal(j2k_metal::MetalEncodedJ2k),
 }
 
 #[cfg_attr(
@@ -62,7 +62,7 @@ pub(crate) struct DicomJ2kGpuEncodeBatchStats {
     pub(crate) configured_memory_mib: Option<u64>,
     pub(crate) effective_memory_mib: u64,
     pub(crate) encode_wall_duration: Duration,
-    pub(crate) stage_stats: signinum_j2k_metal::MetalLosslessEncodeStageStats,
+    pub(crate) stage_stats: j2k_metal::MetalLosslessEncodeStageStats,
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -129,11 +129,11 @@ pub(crate) struct EncodedDicomJ2kMetalTileBatch {
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(crate) struct SubmittedDicomJ2kMetalTileBatch {
-    tiles: Vec<statumen::output::metal::MetalDeviceTile>,
+    tiles: Vec<wsi_rs::output::metal::MetalDeviceTile>,
     output_width: u32,
     output_height: u32,
     options: J2kLosslessEncodeOptions,
-    session: Option<signinum_j2k_metal::MetalBackendSession>,
+    session: Option<j2k_metal::MetalBackendSession>,
     preference: EncodeBackendPreference,
     used_device_validation: bool,
     configured_inflight_tiles: Option<usize>,
@@ -146,7 +146,7 @@ enum SubmittedDicomJ2kMetalTileGroup {
     Submitted {
         start: usize,
         end: usize,
-        submission: Box<signinum_j2k_metal::SubmittedJ2kLosslessMetalBufferEncodeBatch>,
+        submission: Box<j2k_metal::SubmittedJ2kLosslessMetalBufferEncodeBatch>,
     },
     HostFallback {
         start: usize,
@@ -443,7 +443,7 @@ impl DicomJ2kEncoder {
         if codec_validation_enabled {
             if let Some(encoded) = &encoded {
                 let validation_started = Instant::now();
-                signinum_j2k_metal::validate_lossless_roundtrip_on_metal_with_session(
+                j2k_metal::validate_lossless_roundtrip_on_metal_with_session(
                     samples,
                     &encoded.codestream,
                     &session,
@@ -512,7 +512,7 @@ impl DicomJ2kEncoder {
     #[cfg(all(feature = "metal", target_os = "macos"))]
     pub(crate) fn encode_metal_tiles(
         &mut self,
-        tiles: &[statumen::output::metal::MetalDeviceTile],
+        tiles: &[wsi_rs::output::metal::MetalDeviceTile],
         output_width: u32,
         output_height: u32,
     ) -> Result<EncodedDicomJ2kMetalTileBatch, Error> {
@@ -523,7 +523,7 @@ impl DicomJ2kEncoder {
     #[cfg(all(feature = "metal", target_os = "macos"))]
     pub(crate) fn submit_metal_tiles_owned(
         &mut self,
-        tiles: Vec<statumen::output::metal::MetalDeviceTile>,
+        tiles: Vec<wsi_rs::output::metal::MetalDeviceTile>,
         output_width: u32,
         output_height: u32,
     ) -> Result<SubmittedDicomJ2kMetalTileBatch, Error> {
@@ -574,7 +574,7 @@ impl DicomJ2kEncoder {
                 output_width,
                 output_height,
             );
-            let config = signinum_j2k_metal::MetalLosslessEncodeConfig {
+            let config = j2k_metal::MetalLosslessEncodeConfig {
                 gpu_encode_inflight_tiles: self.gpu_encode_inflight_tiles,
                 gpu_encode_memory_budget_bytes: self
                     .gpu_encode_memory_mib
@@ -582,7 +582,7 @@ impl DicomJ2kEncoder {
                     .and_then(|mib| mib.checked_mul(1024 * 1024)),
             };
             if padded {
-                match signinum_j2k_metal::submit_lossless_from_padded_metal_buffers_to_metal_batch(
+                match j2k_metal::submit_lossless_from_padded_metal_buffers_to_metal_batch(
                     &requests, &options, &session, config,
                 ) {
                     Ok(submission) => groups.push(SubmittedDicomJ2kMetalTileGroup::Submitted {
@@ -600,7 +600,7 @@ impl DicomJ2kEncoder {
                     }
                 }
             } else {
-                match signinum_j2k_metal::submit_lossless_from_metal_buffers_to_metal_batch(
+                match j2k_metal::submit_lossless_from_metal_buffers_to_metal_batch(
                     &requests, &options, &session, config,
                 ) {
                     Ok(submission) => groups.push(SubmittedDicomJ2kMetalTileGroup::Submitted {
@@ -636,15 +636,13 @@ impl DicomJ2kEncoder {
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    fn ensure_metal_session(&mut self) -> Result<&signinum_j2k_metal::MetalBackendSession, Error> {
+    fn ensure_metal_session(&mut self) -> Result<&j2k_metal::MetalBackendSession, Error> {
         if self.metal_session.is_none() {
-            self.metal_session = Some(
-                signinum_j2k_metal::MetalBackendSession::system_default().map_err(|err| {
-                    Error::Encode {
-                        message: format!("JPEG 2000 Metal session unavailable: {err}"),
-                    }
-                })?,
-            );
+            self.metal_session = Some(j2k_metal::MetalBackendSession::system_default().map_err(
+                |err| Error::Encode {
+                    message: format!("JPEG 2000 Metal session unavailable: {err}"),
+                },
+            )?);
         }
         self.metal_session.as_ref().ok_or_else(|| Error::Encode {
             message: "JPEG 2000 Metal session was not initialized".into(),
@@ -654,17 +652,17 @@ impl DicomJ2kEncoder {
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 fn metal_encode_requests_from_device_tiles(
-    tiles: &[statumen::output::metal::MetalDeviceTile],
+    tiles: &[wsi_rs::output::metal::MetalDeviceTile],
     output_width: u32,
     output_height: u32,
-) -> Vec<signinum_j2k_metal::MetalLosslessEncodeTile<'_>> {
+) -> Vec<j2k_metal::MetalLosslessEncodeTile<'_>> {
     let mut requests = Vec::with_capacity(tiles.len());
     for tile in tiles {
-        let statumen::output::metal::MetalDeviceStorage::Buffer {
+        let wsi_rs::output::metal::MetalDeviceStorage::Buffer {
             buffer,
             byte_offset,
         } = &tile.storage;
-        requests.push(signinum_j2k_metal::MetalLosslessEncodeTile {
+        requests.push(j2k_metal::MetalLosslessEncodeTile {
             buffer,
             byte_offset: *byte_offset,
             width: tile.width,
@@ -680,9 +678,9 @@ fn metal_encode_requests_from_device_tiles(
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 fn encode_metal_tiles_to_host_with_settings(
-    requests: &[signinum_j2k_metal::MetalLosslessEncodeTile<'_>],
+    requests: &[j2k_metal::MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
-    session: &signinum_j2k_metal::MetalBackendSession,
+    session: &j2k_metal::MetalBackendSession,
     preference: EncodeBackendPreference,
     used_device_validation: bool,
     configured_inflight_tiles: Option<usize>,
@@ -710,7 +708,7 @@ fn encode_metal_tiles_to_host_with_settings(
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 fn dicom_gpu_encode_stats_from_metal(
-    stats: signinum_j2k_metal::MetalLosslessEncodeBatchStats,
+    stats: j2k_metal::MetalLosslessEncodeBatchStats,
     configured_memory_mib: Option<u64>,
 ) -> DicomJ2kGpuEncodeBatchStats {
     DicomJ2kGpuEncodeBatchStats {
@@ -743,25 +741,25 @@ fn metal_host_fallback_parallel_chunk_size(
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 fn encode_metal_tile_chunk_to_host(
-    requests: &[signinum_j2k_metal::MetalLosslessEncodeTile<'_>],
+    requests: &[j2k_metal::MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
-    session: &signinum_j2k_metal::MetalBackendSession,
+    session: &j2k_metal::MetalBackendSession,
     preference: EncodeBackendPreference,
     used_device_validation: bool,
 ) -> Result<Vec<Option<EncodedDicomJ2kFrame>>, Error> {
-    let outcomes = match signinum_j2k_metal::encode_lossless_from_metal_buffers_with_report(
-        requests, options, session,
-    ) {
-        Ok(outcomes) => outcomes,
-        Err(_) if preference != EncodeBackendPreference::RequireDevice => {
-            return Ok((0..requests.len()).map(|_| None).collect());
-        }
-        Err(err) => {
-            return Err(Error::Encode {
-                message: format!("JPEG 2000 Metal tile batch encode failed: {err}"),
-            });
-        }
-    };
+    let outcomes =
+        match j2k_metal::encode_lossless_from_metal_buffers_with_report(requests, options, session)
+        {
+            Ok(outcomes) => outcomes,
+            Err(_) if preference != EncodeBackendPreference::RequireDevice => {
+                return Ok((0..requests.len()).map(|_| None).collect());
+            }
+            Err(err) => {
+                return Err(Error::Encode {
+                    message: format!("JPEG 2000 Metal tile batch encode failed: {err}"),
+                });
+            }
+        };
 
     outcomes
         .into_iter()
@@ -865,7 +863,7 @@ pub(crate) fn encode_lossless_cpu(
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(crate) fn metal_tile_is_padded_contiguous(
-    tile: &statumen::output::metal::MetalDeviceTile,
+    tile: &wsi_rs::output::metal::MetalDeviceTile,
     output_width: u32,
     output_height: u32,
 ) -> bool {
@@ -946,7 +944,7 @@ fn lossless_encode_options(
     };
 
     Ok(J2kLosslessEncodeOptions {
-        backend: backend.to_signinum(),
+        backend: backend.to_j2k(),
         block_coding_mode,
         progression,
         max_decomposition_levels: j2k_decomposition_levels,
@@ -957,18 +955,18 @@ fn lossless_encode_options(
 
 #[cfg(test)]
 pub(crate) fn dicom_j2k_decomposition_levels(samples: J2kLosslessSamples<'_>) -> u8 {
-    signinum_j2k::j2k_lossless_decomposition_levels(samples)
+    j2k::j2k_lossless_decomposition_levels(samples)
 }
 
 #[cfg(test)]
 mod cpu_tests {
     use super::{encode_j2k_lossless_with_device_accelerator, DicomJ2kEncoder};
     use crate::{CodecValidation, EncodeBackendPreference, TransferSyntax};
-    use signinum_core::BackendKind;
-    use signinum_j2k::{
+    use j2k::{
         J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kEncodeValidation,
         J2kForwardDwt53Job, J2kForwardDwt53Output, J2kLosslessSamples, ReversibleTransform,
     };
+    use j2k_core::BackendKind;
 
     #[derive(Default)]
     struct DwtOnlyAccelerator {
@@ -1055,12 +1053,12 @@ mod tests {
     use super::{metal_host_fallback_parallel_chunk_size, DicomJ2kEncoder};
     use crate::test_support::{find_command_for_test, read_binary_ppm_for_test};
     use crate::{CodecValidation, EncodeBackendPreference, TransferSyntax};
-    use signinum_core::PixelFormat;
-    use signinum_j2k::{
+    use j2k::{
         j2k_lossless_decomposition_levels_for_options, J2kBlockCodingMode,
         J2kLosslessEncodeOptions, J2kLosslessSamples, J2kProgressionOrder,
     };
-    use statumen::output::metal::{MetalDeviceStorage, MetalDeviceTile};
+    use j2k_core::PixelFormat;
+    use wsi_rs::output::metal::{MetalDeviceStorage, MetalDeviceTile};
 
     #[test]
     fn auto_j2k_encoder_can_be_demoted_after_cpu_input_probe_wins() {
@@ -1093,8 +1091,7 @@ mod tests {
         let pixels: Vec<u8> = (0..8 * 8 * 3)
             .map(|idx| ((idx * 29) & 0xFF) as u8)
             .collect();
-        let session =
-            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
         let buffer = session.device().new_buffer_with_data(
             pixels.as_ptr().cast(),
             pixels.len() as u64,
@@ -1130,7 +1127,7 @@ mod tests {
         let codestream = frame.codestream_bytes().expect("codestream bytes");
         assert!(codestream.starts_with(&[0xFF, 0x4F]));
         let mut decoded = vec![0u8; pixels.len()];
-        signinum_j2k::J2kDecoder::new(codestream)
+        j2k::J2kDecoder::new(codestream)
             .expect("parse J2K")
             .decode_into(&mut decoded, 8 * 3, PixelFormat::Rgb8)
             .expect("decode J2K");
@@ -1142,8 +1139,7 @@ mod tests {
         let pixels: Vec<u8> = (0..8 * 8 * 3)
             .map(|idx| ((idx * 29) & 0xFF) as u8)
             .collect();
-        let session =
-            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
         let buffer = session.device().new_buffer_with_data(
             pixels.as_ptr().cast(),
             pixels.len() as u64,
@@ -1182,7 +1178,7 @@ mod tests {
         let codestream = frame.codestream_bytes().expect("codestream bytes");
         assert!(codestream.starts_with(&[0xFF, 0x4F]));
         let mut decoded = vec![0u8; pixels.len()];
-        signinum_j2k::J2kDecoder::new(codestream)
+        j2k::J2kDecoder::new(codestream)
             .expect("parse J2K")
             .decode_into(&mut decoded, 8 * 3, PixelFormat::Rgb8)
             .expect("decode J2K");
@@ -1194,8 +1190,7 @@ mod tests {
         let pixels: Vec<u8> = (0..7 * 5 * 3)
             .map(|idx| ((idx * 31) & 0xFF) as u8)
             .collect();
-        let session =
-            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
         let buffer = session.device().new_buffer_with_data(
             pixels.as_ptr().cast(),
             pixels.len() as u64,
@@ -1231,7 +1226,7 @@ mod tests {
         let codestream = frame.codestream_bytes().expect("codestream bytes");
         assert!(codestream.starts_with(&[0xFF, 0x4F]));
         let mut decoded = vec![0u8; 8 * 8 * 3];
-        signinum_j2k::J2kDecoder::new(codestream)
+        j2k::J2kDecoder::new(codestream)
             .expect("parse J2K")
             .decode_into(&mut decoded, 8 * 3, PixelFormat::Rgb8)
             .expect("decode J2K");
@@ -1251,8 +1246,7 @@ mod tests {
     #[test]
     fn metal_tile_encode_returns_buffer_backed_codestream_for_htj2k_tiles() {
         let pixels: Vec<u8> = (0..8 * 8).map(|idx| ((idx * 37) & 0xFF) as u8).collect();
-        let session =
-            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
         let buffer = session.device().new_buffer_with_data(
             pixels.as_ptr().cast(),
             pixels.len() as u64,
@@ -1293,7 +1287,7 @@ mod tests {
             .expect("COD marker");
         assert_eq!(codestream[cod_marker + 12], 0x40);
         let mut decoded = vec![0u8; pixels.len()];
-        signinum_j2k::J2kDecoder::new(codestream)
+        j2k::J2kDecoder::new(codestream)
             .expect("parse HTJ2K")
             .decode_into(&mut decoded, 8, PixelFormat::Gray8)
             .expect("decode HTJ2K");
@@ -1305,8 +1299,7 @@ mod tests {
         let pixels: Vec<u8> = (0..256 * 256 * 3)
             .map(|idx| ((idx * 41) & 0xFF) as u8)
             .collect();
-        let session =
-            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
         let buffer = session.device().new_buffer_with_data(
             pixels.as_ptr().cast(),
             pixels.len() as u64,
@@ -1350,7 +1343,7 @@ mod tests {
         assert_eq!(j2k_cod_decomposition_levels(codestream), 1);
         assert_eq!(codestream[cod_marker + 12], 0x40);
         let mut decoded = vec![0u8; pixels.len()];
-        signinum_j2k::J2kDecoder::new(codestream)
+        j2k::J2kDecoder::new(codestream)
             .expect("parse HTJ2K")
             .decode_into(&mut decoded, 256 * 3, PixelFormat::Rgb8)
             .expect("decode HTJ2K");
@@ -1374,8 +1367,7 @@ mod tests {
         );
         assert_eq!(expected_levels, 3);
 
-        let session =
-            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
         let buffer = session.device().new_buffer_with_data(
             pixels.as_ptr().cast(),
             pixels.len() as u64,
@@ -1411,7 +1403,7 @@ mod tests {
         let codestream = frame.codestream_bytes().expect("codestream bytes");
         assert_eq!(j2k_cod_decomposition_levels(codestream), expected_levels);
         let mut decoded = vec![0u8; pixels.len()];
-        signinum_j2k::J2kDecoder::new(codestream)
+        j2k::J2kDecoder::new(codestream)
             .expect("parse HTJ2K")
             .decode_into(&mut decoded, 512 * 3, PixelFormat::Rgb8)
             .expect("decode HTJ2K");
@@ -1436,8 +1428,7 @@ mod tests {
         let pixels: Vec<u8> = (0..7 * 5 * 3)
             .map(|idx| ((idx * 43 + 17) & 0xFF) as u8)
             .collect();
-        let session =
-            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
         let buffer = session.device().new_buffer_with_data(
             pixels.as_ptr().cast(),
             pixels.len() as u64,
@@ -1513,8 +1504,7 @@ mod tests {
         let pixels: Vec<u8> = (0..256 * 256 * 3)
             .map(|idx| ((idx * 41) & 0xFF) as u8)
             .collect();
-        let session =
-            signinum_j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
         let buffer = session.device().new_buffer_with_data(
             pixels.as_ptr().cast(),
             pixels.len() as u64,

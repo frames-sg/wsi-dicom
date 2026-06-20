@@ -1004,7 +1004,7 @@ impl ExportMetrics {
 
     pub(crate) fn record_jpeg_direct_htj2k_timings(
         &mut self,
-        timings: signinum_transcode::TranscodeTimingReport,
+        timings: j2k_transcode::TranscodeTimingReport,
     ) {
         self.jpeg_direct_htj2k.jpeg_direct_htj2k_extract_micros = self
             .jpeg_direct_htj2k
@@ -1469,7 +1469,7 @@ mod tests {
         JpegRetileRejectionReason, RouteCounters,
     };
     use crate::tile::PixelProfile;
-    use signinum_transcode::TranscodeTimingReport;
+    use j2k_transcode::TranscodeTimingReport;
     use std::time::Duration;
 
     #[test]

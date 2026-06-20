@@ -14,7 +14,7 @@ enum TransferSyntaxSelection {
     Explicit,
 }
 
-/// Builder for exporting one statumen-readable whole-slide image to DICOM VL WSI.
+/// Builder for exporting one wsi-rs-readable whole-slide image to DICOM VL WSI.
 #[derive(Debug, Clone)]
 #[must_use = "Export is a builder; call run() to execute the export"]
 pub struct Export {

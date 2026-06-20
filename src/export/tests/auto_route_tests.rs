@@ -30,7 +30,7 @@ fn auto_metal_input_routing_ignores_device_decode_env_until_explicitly_preferred
     std::env::remove_var(STATUMEN_JPEG_DEVICE_DECODE_ENV);
     std::env::remove_var(STATUMEN_JP2K_DEVICE_DECODE_ENV);
 
-    assert!(!statumen_device_decode_opted_in());
+    assert!(!wsi_rs_device_decode_opted_in());
     assert!(!MetalInputTileReader::new(EncodeBackendPreference::Auto, false).enabled());
     assert!(!lossless_j2k_auto_allows_metal_input(
         EncodeBackendPreference::Auto,
@@ -106,7 +106,7 @@ fn auto_metal_input_routing_ignores_device_decode_env_until_explicitly_preferred
     ));
 
     std::env::set_var(STATUMEN_JP2K_DEVICE_DECODE_ENV, "1");
-    assert!(statumen_device_decode_opted_in());
+    assert!(wsi_rs_device_decode_opted_in());
     assert!(!MetalInputTileReader::new(EncodeBackendPreference::Auto, false).enabled());
     assert!(!lossless_j2k_auto_allows_metal_input(
         EncodeBackendPreference::Auto,
