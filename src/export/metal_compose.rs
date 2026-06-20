@@ -10,7 +10,7 @@ pub(super) struct PackedMetalStrips {
     pub(super) tile_height: u32,
     pub(super) slot_stride: usize,
     pub(super) tile_slot_bytes: usize,
-    pub(super) format: SigninumPixelFormat,
+    pub(super) format: J2kPixelFormat,
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -79,7 +79,7 @@ impl MetalStripComposer {
 
     pub(super) fn pack_tiles(
         &self,
-        tiles: &[statumen::output::metal::MetalDeviceTile],
+        tiles: &[wsi_rs::output::metal::MetalDeviceTile],
         layout: WholeLevelStripLayout,
         first_col: i64,
         first_row: i64,
@@ -164,7 +164,7 @@ impl MetalStripComposer {
                     reason: "Metal WholeLevel source tile pitch is smaller than row bytes".into(),
                 });
             }
-            let statumen::output::metal::MetalDeviceStorage::Buffer {
+            let wsi_rs::output::metal::MetalDeviceStorage::Buffer {
                 buffer,
                 byte_offset,
             } = &tile.storage;
@@ -229,7 +229,7 @@ impl MetalStripComposer {
         &self,
         packed: &PackedMetalStrips,
         requests: &[MetalComposeTileRequest],
-    ) -> Result<Vec<statumen::output::metal::MetalDeviceTile>, Error> {
+    ) -> Result<Vec<wsi_rs::output::metal::MetalDeviceTile>, Error> {
         if requests.is_empty() {
             return Ok(Vec::new());
         }
@@ -336,12 +336,12 @@ impl MetalStripComposer {
 
         Ok(dispatches
             .into_iter()
-            .map(|dispatch| statumen::output::metal::MetalDeviceTile {
+            .map(|dispatch| wsi_rs::output::metal::MetalDeviceTile {
                 width: dispatch.request.output_width,
                 height: dispatch.request.output_height,
                 pitch_bytes: dispatch.dst_stride,
                 format: packed.format,
-                storage: statumen::output::metal::MetalDeviceStorage::Buffer {
+                storage: wsi_rs::output::metal::MetalDeviceStorage::Buffer {
                     buffer: dispatch.dst_buffer,
                     byte_offset: 0,
                 },

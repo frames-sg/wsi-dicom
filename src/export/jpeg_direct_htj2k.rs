@@ -1,13 +1,13 @@
 use std::time::Duration;
 
-use rayon::prelude::*;
-use signinum_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
-use signinum_transcode::dct97_2d::{
+use j2k_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
+use j2k_transcode::dct97_2d::{
     dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch, Dwt97TwoDimensional,
 };
-use signinum_transcode::{
+use j2k_transcode::{
     EncodeProgressionOrder, JpegTileBatchInput, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
 };
+use rayon::prelude::*;
 
 use super::{
     ensure_consistent_pixel_profile, pixel_profile_from_raw_jpeg_tile,
@@ -19,7 +19,7 @@ use crate::{EncodeBackendPreference, JpegDirectHtj2kProfile};
 pub(super) struct BatchOutcome {
     pub(super) codestream: Vec<u8>,
     pub(super) profile: PixelProfile,
-    timings: Option<signinum_transcode::TranscodeTimingReport>,
+    timings: Option<j2k_transcode::TranscodeTimingReport>,
     transcode_micros: u128,
 }
 
@@ -212,9 +212,9 @@ pub(super) struct BatchEncoder {
     options: JpegToHtj2kOptions,
     transcoder: JpegToHtj2kTranscoder,
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    metal_accelerator: Option<signinum_transcode_metal::MetalDctToWaveletStageAccelerator>,
+    metal_accelerator: Option<j2k_transcode_metal::MetalDctToWaveletStageAccelerator>,
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    metal_encode_accelerator: Option<signinum_j2k_metal::MetalEncodeStageAccelerator>,
+    metal_encode_accelerator: Option<j2k_metal::MetalEncodeStageAccelerator>,
 }
 
 impl BatchEncoder {
@@ -287,7 +287,7 @@ impl BatchEncoder {
     fn transcode_batch(
         &mut self,
         inputs: &[JpegTileBatchInput<'_>],
-    ) -> Result<signinum_transcode::EncodedTranscodeBatch, Error> {
+    ) -> Result<j2k_transcode::EncodedTranscodeBatch, Error> {
         transcode_batch_with_encoder(self, inputs)
     }
 }
@@ -295,9 +295,9 @@ impl BatchEncoder {
 fn transcode_batch_with_encoder(
     encoder: &mut BatchEncoder,
     inputs: &[JpegTileBatchInput<'_>],
-) -> Result<signinum_transcode::EncodedTranscodeBatch, Error> {
+) -> Result<j2k_transcode::EncodedTranscodeBatch, Error> {
     let is_float_97 = encoder.options.coefficient_path
-        == signinum_transcode::JpegToHtj2kCoefficientPath::FloatDirectLinear97;
+        == j2k_transcode::JpegToHtj2kCoefficientPath::FloatDirectLinear97;
     if encoder.backend == EncodeBackendPreference::CpuOnly {
         if is_float_97 {
             let mut accelerator = RayonDwt97BatchAccelerator;
@@ -318,18 +318,18 @@ fn transcode_batch_with_encoder(
             .metal_accelerator
             .get_or_insert_with(|| match encoder.backend {
                 EncodeBackendPreference::RequireDevice => {
-                    signinum_transcode_metal::MetalDctToWaveletStageAccelerator::new_explicit()
+                    j2k_transcode_metal::MetalDctToWaveletStageAccelerator::new_explicit()
                 }
                 EncodeBackendPreference::Auto | EncodeBackendPreference::PreferDevice => {
-                    signinum_transcode_metal::MetalDctToWaveletStageAccelerator::for_auto()
+                    j2k_transcode_metal::MetalDctToWaveletStageAccelerator::for_auto()
                 }
                 EncodeBackendPreference::CpuOnly => {
                     unreachable!("CpuOnly backend returned before Metal accelerator setup")
                 }
             });
-        let encode_accelerator = encoder.metal_encode_accelerator.get_or_insert_with(
-            signinum_j2k_metal::MetalEncodeStageAccelerator::for_ht_code_block_encode,
-        );
+        let encode_accelerator = encoder
+            .metal_encode_accelerator
+            .get_or_insert_with(j2k_metal::MetalEncodeStageAccelerator::for_ht_code_block_encode);
         encoder
             .transcoder
             .transcode_batch_with_accelerators(
@@ -412,7 +412,7 @@ fn options_97(
     Ok(options)
 }
 
-fn to_wsi_error(source: signinum_transcode::JpegToHtj2kError) -> Error {
+fn to_wsi_error(source: j2k_transcode::JpegToHtj2kError) -> Error {
     Error::Encode {
         message: format!("direct JPEG to HTJ2K transcode failed: {source}"),
     }

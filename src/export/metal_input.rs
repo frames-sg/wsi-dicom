@@ -116,8 +116,8 @@ pub(super) struct MetalInputTileReader {
     pub(super) auto_decision: AutoLosslessJ2kRouteDecision,
     pub(super) auto_cache_key: Option<AutoMetalInputRouteCacheKey>,
     pub(super) device: Option<metal::Device>,
-    pub(super) sessions: Option<statumen::output::metal::MetalBackendSessions>,
-    pub(super) jpeg_encode_session: Option<signinum_jpeg_metal::MetalBackendSession>,
+    pub(super) sessions: Option<wsi_rs::output::metal::MetalBackendSessions>,
+    pub(super) jpeg_encode_session: Option<j2k_jpeg_metal::MetalBackendSession>,
     pub(super) strip_composer: Option<MetalStripComposer>,
     pub(super) whole_level_cache: MetalSourceTileCache,
     pub(super) encoded_row_runs: HashMap<MetalEncodedRowRunKey, MetalEncodedTileRun>,
@@ -265,15 +265,15 @@ impl MetalInputTileReader {
         }
     }
 
-    fn sessions(&mut self) -> Result<statumen::output::metal::MetalBackendSessions, Error> {
+    fn sessions(&mut self) -> Result<wsi_rs::output::metal::MetalBackendSessions, Error> {
         if self.sessions.is_none() {
             let device = metal::Device::system_default().ok_or_else(|| Error::Unsupported {
                 reason: "Metal is unavailable for WSI input tile decode".into(),
             })?;
             self.device = Some(device.clone());
-            let sessions = statumen::output::metal::MetalBackendSessions::new(
-                signinum_jpeg_metal::MetalBackendSession::new(device.clone()),
-                signinum_j2k_metal::MetalBackendSession::new(device),
+            let sessions = wsi_rs::output::metal::MetalBackendSessions::new(
+                j2k_jpeg_metal::MetalBackendSession::new(device.clone()),
+                j2k_metal::MetalBackendSession::new(device),
             );
             self.sessions = Some(if self.private_jpeg_decode {
                 sessions.with_private_jpeg_decode()
@@ -322,7 +322,7 @@ impl MetalInputTileReader {
 
     pub(super) fn jpeg_encode_session(
         &mut self,
-    ) -> Result<&signinum_jpeg_metal::MetalBackendSession, Error> {
+    ) -> Result<&j2k_jpeg_metal::MetalBackendSession, Error> {
         if self.jpeg_encode_session.is_none() {
             let _ = self.sessions()?;
             let device = self
@@ -332,7 +332,7 @@ impl MetalInputTileReader {
                 .ok_or_else(|| Error::Unsupported {
                     reason: "Metal input device was not initialized".into(),
                 })?;
-            self.jpeg_encode_session = Some(signinum_jpeg_metal::MetalBackendSession::new(device));
+            self.jpeg_encode_session = Some(j2k_jpeg_metal::MetalBackendSession::new(device));
         }
         self.jpeg_encode_session
             .as_ref()
@@ -343,7 +343,7 @@ impl MetalInputTileReader {
 }
 
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
-pub(super) fn statumen_device_decode_opted_in() -> bool {
+pub(super) fn wsi_rs_device_decode_opted_in() -> bool {
     env_flag_enabled(STATUMEN_JPEG_DEVICE_DECODE_ENV)
         || env_flag_enabled(STATUMEN_JP2K_DEVICE_DECODE_ENV)
 }
@@ -415,7 +415,7 @@ impl Default for MetalSourceTileCache {
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) struct MetalSourceTileCacheEntry {
-    pub(super) tile: statumen::output::metal::MetalDeviceTile,
+    pub(super) tile: wsi_rs::output::metal::MetalDeviceTile,
     pub(super) generation: u64,
 }
 
@@ -424,7 +424,7 @@ impl MetalSourceTileCache {
     pub(super) fn get(
         &mut self,
         key: MetalSourceTileKey,
-    ) -> Option<statumen::output::metal::MetalDeviceTile> {
+    ) -> Option<wsi_rs::output::metal::MetalDeviceTile> {
         let tile = self.entries.get(&key)?.tile.clone();
         self.touch(key);
         Some(tile)
@@ -433,7 +433,7 @@ impl MetalSourceTileCache {
     pub(super) fn insert(
         &mut self,
         key: MetalSourceTileKey,
-        tile: statumen::output::metal::MetalDeviceTile,
+        tile: wsi_rs::output::metal::MetalDeviceTile,
     ) {
         if self.capacity == 0 {
             return;
@@ -491,7 +491,7 @@ pub(super) fn try_encode_metal_input_tile_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
     j2k_encoder: &mut DicomJ2kEncoder,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     scene_idx: usize,
     series_idx: usize,
     level_idx: u32,
@@ -558,7 +558,7 @@ pub(super) fn try_encode_metal_input_tile_run(
             return Ok(run);
         }
 
-        if output_tile_maps_to_statumen_tile(level, tile_size) {
+        if output_tile_maps_to_wsi_rs_tile(level, tile_size) {
             return try_encode_metal_aligned_tile_run(
                 slide,
                 metal_input,
@@ -624,7 +624,7 @@ pub(super) fn try_encode_metal_input_tile_run(
         if metal_input.preference == EncodeBackendPreference::RequireDevice {
             return Err(Error::Unsupported {
                 reason:
-                    "requested Metal input tile decode requires a DICOM tile grid that can be sourced from aligned statumen tiles, regular tiled composition, or WholeLevel strip tiles"
+                    "requested Metal input tile decode requires a DICOM tile grid that can be sourced from aligned wsi-rs tiles, regular tiled composition, or WholeLevel strip tiles"
                         .into(),
             });
         }
@@ -638,7 +638,7 @@ pub(super) fn probe_auto_metal_input_tile_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
     j2k_encoder: &mut DicomJ2kEncoder,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     scene_idx: usize,
     series_idx: usize,
     level_idx: u32,
@@ -1006,7 +1006,7 @@ pub(super) fn empty_metal_tile_run(tile_count: usize) -> MetalEncodedTileRun {
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) fn metal_j2k_encode_batch_count(
-    tiles: &[statumen::output::metal::MetalDeviceTile],
+    tiles: &[wsi_rs::output::metal::MetalDeviceTile],
     output_width: u32,
     output_height: u32,
 ) -> u64 {

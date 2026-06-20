@@ -11,7 +11,7 @@ use whole_level::{
     try_encode_metal_whole_level_strip_grid_run, try_submit_metal_whole_level_strip_grid_run,
 };
 
-type MetalDeviceTile = statumen::output::metal::MetalDeviceTile;
+type MetalDeviceTile = wsi_rs::output::metal::MetalDeviceTile;
 type MetalTileEntry = Option<(MetalDeviceTile, PixelProfile)>;
 
 struct EncodedMetalTileEntries {
@@ -26,7 +26,7 @@ pub(super) fn try_encode_metal_input_tile_grid_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
     j2k_encoder: &mut DicomJ2kEncoder,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     scene_idx: usize,
     series_idx: usize,
     level_idx: u32,
@@ -56,7 +56,7 @@ pub(super) fn try_encode_metal_input_tile_grid_run(
         return Ok(None);
     }
 
-    let grid_run = if output_tile_maps_to_statumen_tile(level, tile_size) {
+    let grid_run = if output_tile_maps_to_wsi_rs_tile(level, tile_size) {
         try_encode_metal_aligned_tile_grid_run(
             slide,
             metal_input,
@@ -131,7 +131,7 @@ pub(super) fn try_encode_metal_input_tile_grid_pipeline_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
     j2k_encoder: &mut DicomJ2kEncoder,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     scene_idx: usize,
     series_idx: usize,
     level_idx: u32,
@@ -403,7 +403,7 @@ fn try_submit_metal_input_tile_grid_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
     j2k_encoder: &mut DicomJ2kEncoder,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     scene_idx: usize,
     series_idx: usize,
     level_idx: u32,
@@ -417,7 +417,7 @@ fn try_submit_metal_input_tile_grid_run(
     matrix_rows: u64,
     tile_size: u32,
 ) -> Result<Option<PendingMetalEncodedTileRun>, Error> {
-    if output_tile_maps_to_statumen_tile(level, tile_size) {
+    if output_tile_maps_to_wsi_rs_tile(level, tile_size) {
         return try_submit_metal_aligned_tile_grid_run(
             slide,
             metal_input,

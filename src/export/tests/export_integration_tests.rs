@@ -681,8 +681,8 @@ fn export_dicom_jpeg_baseline_reencodes_non_passthrough_source() {
         let fragment = dicom_fragment_jpeg_payload(fragment);
         assert!(fragment.starts_with(&[0xFF, 0xD8]));
         assert!(fragment.ends_with(&[0xFF, 0xD9]));
-        let decoder = signinum_jpeg::Decoder::new(fragment).unwrap();
-        let (_rgb, outcome) = decoder.decode(signinum_jpeg::PixelFormat::Rgb8).unwrap();
+        let decoder = j2k_jpeg::Decoder::new(fragment).unwrap();
+        let (_rgb, outcome) = decoder.decode(j2k_jpeg::PixelFormat::Rgb8).unwrap();
         assert_eq!((outcome.decoded.w, outcome.decoded.h), (2, 2));
     }
 }
@@ -757,7 +757,7 @@ fn external_djpeg_decodes_jpeg_baseline_fallback_when_available() {
 
 #[test]
 fn jpeg_baseline_whole_level_pathological_strip_uses_requested_tile_geometry() {
-    let level = statumen::Level {
+    let level = wsi_rs::Level {
         dimensions: (130, 31),
         downsample: 1.0,
         tile_layout: TileLayout::WholeLevel {
@@ -778,7 +778,7 @@ fn jpeg_baseline_whole_level_pathological_strip_uses_requested_tile_geometry() {
 
 #[test]
 fn jpeg_baseline_regular_fallback_uses_requested_tile_geometry() {
-    let level = statumen::Level {
+    let level = wsi_rs::Level {
         dimensions: (17, 9),
         downsample: 1.0,
         tile_layout: TileLayout::Regular {

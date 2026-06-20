@@ -31,12 +31,12 @@ impl EncodeBackendPreference {
         }
     }
 
-    pub(crate) fn to_signinum(self) -> signinum_j2k::EncodeBackendPreference {
+    pub(crate) fn to_j2k(self) -> j2k::EncodeBackendPreference {
         match self {
-            Self::Auto => signinum_j2k::EncodeBackendPreference::Auto,
-            Self::CpuOnly => signinum_j2k::EncodeBackendPreference::CpuOnly,
-            Self::PreferDevice => signinum_j2k::EncodeBackendPreference::PreferDevice,
-            Self::RequireDevice => signinum_j2k::EncodeBackendPreference::RequireDevice,
+            Self::Auto => j2k::EncodeBackendPreference::Auto,
+            Self::CpuOnly => j2k::EncodeBackendPreference::CpuOnly,
+            Self::PreferDevice => j2k::EncodeBackendPreference::PreferDevice,
+            Self::RequireDevice => j2k::EncodeBackendPreference::RequireDevice,
         }
     }
 }
@@ -52,10 +52,10 @@ pub enum CodecValidation {
 }
 
 impl CodecValidation {
-    pub(crate) fn to_j2k_validation(self) -> signinum_j2k::J2kEncodeValidation {
+    pub(crate) fn to_j2k_validation(self) -> j2k::J2kEncodeValidation {
         match self {
-            Self::Disabled => signinum_j2k::J2kEncodeValidation::External,
-            Self::RoundTrip => signinum_j2k::J2kEncodeValidation::CpuRoundTrip,
+            Self::Disabled => j2k::J2kEncodeValidation::External,
+            Self::RoundTrip => j2k::J2kEncodeValidation::CpuRoundTrip,
         }
     }
 }

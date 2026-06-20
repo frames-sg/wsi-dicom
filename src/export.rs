@@ -7,36 +7,34 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+use j2k::J2kLosslessSamples;
+#[cfg(test)]
+use j2k::{J2kView, ReversibleTransform};
+#[cfg(test)]
+use j2k_core::CompressedTransferSyntax;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use j2k_core::PixelFormat as J2kPixelFormat;
+use j2k_jpeg::{EncodedJpeg, JpegBackend, JpegSamples, JpegSubsampling};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use j2k_jpeg_metal::{encode_jpeg_baseline_batch_from_metal_buffers, JpegBaselineMetalEncodeTile};
 use rayon::prelude::*;
-#[cfg(test)]
-use signinum_core::CompressedTransferSyntax;
 #[cfg(all(feature = "metal", target_os = "macos"))]
-use signinum_core::PixelFormat as SigninumPixelFormat;
+use wsi_rs::DeviceTile;
 #[cfg(test)]
-use signinum_j2k::J2kLosslessSamples;
+use wsi_rs::EncodedTilePhotometricInterpretation;
 #[cfg(test)]
-use signinum_j2k::{J2kView, ReversibleTransform};
-use signinum_jpeg::{EncodedJpeg, JpegBackend, JpegSamples, JpegSubsampling};
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use signinum_jpeg_metal::{
-    encode_jpeg_baseline_batch_from_metal_buffers, JpegBaselineMetalEncodeTile,
-};
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use statumen::DeviceTile;
-#[cfg(test)]
-use statumen::EncodedTilePhotometricInterpretation;
-#[cfg(test)]
-use statumen::LevelSourceKind;
+use wsi_rs::LevelSourceKind;
 #[cfg(any(test, all(feature = "metal", target_os = "macos")))]
-use statumen::TileLayout;
+use wsi_rs::TileLayout;
 #[cfg(all(feature = "metal", target_os = "macos"))]
-use statumen::TileRequest;
-use statumen::{
+use wsi_rs::TileRequest;
+use wsi_rs::{
     Compression, LevelIdx, PlaneIdx, PlaneSelection, RawCompressedTile, RegionRequest, SceneId,
     SeriesId, Slide,
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
-use statumen::{TileOutputPreference, TilePixels};
+use wsi_rs::{TileOutputPreference, TilePixels};
 
 #[cfg(test)]
 use crate::api::Export;
@@ -115,7 +113,7 @@ use self::metal_compose::{MetalComposeTileRequest, MetalStripComposer};
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 use self::metal_input::{
     cpu_input_device_encode_auto_allowed, cpu_input_device_encode_auto_probe_allowed,
-    select_auto_lossless_j2k_probe_route, statumen_device_decode_opted_in,
+    select_auto_lossless_j2k_probe_route, wsi_rs_device_decode_opted_in,
     AutoLosslessJ2kRouteCandidate, CpuEncodedTileRun,
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -127,8 +125,8 @@ use self::metal_input::{
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use metal_route::{
-    output_frame_maps_to_statumen_tile, output_tile_maps_to_statumen_tile,
-    regular_tiled_source_layout, whole_level_strip_layout,
+    output_frame_maps_to_wsi_rs_tile, output_tile_maps_to_wsi_rs_tile, regular_tiled_source_layout,
+    whole_level_strip_layout,
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use metal_row_batch::{
@@ -203,7 +201,7 @@ struct DicomExportInstanceJob<'a> {
     z: u32,
     c: u32,
     t: u32,
-    level: &'a statumen::Level,
+    level: &'a wsi_rs::Level,
 }
 
 #[derive(Clone, Copy)]
@@ -214,7 +212,7 @@ struct DicomRouteProfileJob<'a> {
     z: u32,
     c: u32,
     t: u32,
-    level: &'a statumen::Level,
+    level: &'a wsi_rs::Level,
 }
 
 impl DicomRouteProfileJob<'_> {
@@ -360,7 +358,7 @@ fn lossless_j2k_use_direct_pixel_data(
     estimated_bytes <= lossless_j2k_direct_pixel_data_memory_bytes(rayon_threads)
 }
 
-fn level_pixel_spacing_mm(slide: &Slide, level: &statumen::Level) -> Option<(f64, f64)> {
+fn level_pixel_spacing_mm(slide: &Slide, level: &wsi_rs::Level) -> Option<(f64, f64)> {
     let (mpp_x, mpp_y) = slide.dataset().properties.mpp()?;
     let downsample = level.downsample;
     if !(mpp_x.is_finite() && mpp_y.is_finite() && downsample.is_finite()) {
@@ -381,7 +379,7 @@ fn require_pixel_spacing_mm(pixel_spacing_mm: Option<(f64, f64)>) -> Result<(f64
 fn route_profile_available_frames(
     slide: &Slide,
     options: &ExportOptions,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     location: JpegBaselineFrameLocation,
 ) -> Result<u64, Error> {
     if options.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
@@ -418,7 +416,7 @@ pub fn encode_dicom_j2k_frame(request: J2kFrameEncodeRequest<'_>) -> Result<Enco
         request.transfer_syntax,
         request.codec_validation,
     );
-    let encoded = encoder.encode(request.samples.to_signinum()?)?;
+    let encoded = encoder.encode(request.samples.to_j2k()?)?;
     let bytes = encoded.codestream_bytes()?.to_vec();
 
     Ok(EncodedFrame {
@@ -431,7 +429,7 @@ pub fn encode_dicom_j2k_frame(request: J2kFrameEncodeRequest<'_>) -> Result<Enco
     })
 }
 
-/// Export a statumen-readable WSI into DICOM VL Whole Slide Microscopy files.
+/// Export a wsi-rs-readable WSI into DICOM VL Whole Slide Microscopy files.
 pub fn export_dicom(request: ExportRequest) -> Result<ExportReport, Error> {
     request.validate()?;
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -1463,7 +1461,7 @@ fn profile_lossless_j2k_routes(
     slide: &Slide,
     _source_path: &Path,
     options: ExportOptions,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     location: JpegBaselineFrameLocation,
     max_frames: u64,
     deadline: Option<RouteLevelDeadline>,
@@ -2120,7 +2118,7 @@ fn profile_lossless_j2k_routes(
 fn profile_jpeg_baseline_routes(
     slide: &Slide,
     options: ExportOptions,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     location: JpegBaselineFrameLocation,
     max_frames: u64,
 ) -> Result<ExportMetrics, Error> {
@@ -2327,7 +2325,7 @@ fn profile_jpeg_baseline_routes(
 fn coverage_jpeg_baseline_routes(
     slide: &Slide,
     options: ExportOptions,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     location: JpegBaselineFrameLocation,
     max_frames: u64,
     deadline: Option<RouteLevelDeadline>,
@@ -2923,7 +2921,7 @@ fn auto_metal_input_route_cache_key(
 fn try_encode_jpeg_baseline_metal_input_tile_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
     location: JpegBaselineFrameLocation,
     row: u64,
     frames: &[JpegBaselineFallbackFrame],
@@ -2942,11 +2940,11 @@ fn try_encode_jpeg_baseline_metal_input_tile_run(
         ) {
             return Ok(empty_jpeg_baseline_metal_run(frames.len()));
         }
-        if !output_frame_maps_to_statumen_tile(level, frame_columns, frame_rows) {
+        if !output_frame_maps_to_wsi_rs_tile(level, frame_columns, frame_rows) {
             if metal_input.preference == EncodeBackendPreference::RequireDevice {
                 return Err(Error::Unsupported {
                     reason:
-                        "requested JPEG Baseline Metal fallback requires the DICOM frame grid to align with statumen source tiles"
+                        "requested JPEG Baseline Metal fallback requires the DICOM frame grid to align with wsi-rs source tiles"
                             .into(),
                 });
             }
@@ -3107,7 +3105,7 @@ fn jpeg_baseline_metal_tile_entries(
     pixels: Vec<TilePixels>,
     frames: &[JpegBaselineFallbackFrame],
     preference: EncodeBackendPreference,
-) -> Result<Vec<Option<statumen::output::metal::MetalDeviceTile>>, Error> {
+) -> Result<Vec<Option<wsi_rs::output::metal::MetalDeviceTile>>, Error> {
     let mut entries = Vec::with_capacity(frames.len());
     for (pixels, frame) in pixels.into_iter().zip(frames.iter()) {
         let TilePixels::Device(DeviceTile::Metal(tile)) = pixels else {
@@ -3140,11 +3138,11 @@ fn jpeg_baseline_metal_tile_entries(
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 fn encode_jpeg_baseline_metal_device_tile_batch(
-    tiles: &[statumen::output::metal::MetalDeviceTile],
+    tiles: &[wsi_rs::output::metal::MetalDeviceTile],
     frame_columns: u32,
     frame_rows: u32,
     jpeg_quality: u8,
-    session: &signinum_jpeg_metal::MetalBackendSession,
+    session: &j2k_jpeg_metal::MetalBackendSession,
 ) -> Result<Vec<(EncodedJpeg, PixelProfile)>, Error> {
     let first = tiles.first().ok_or_else(|| Error::Unsupported {
         reason: "JPEG Baseline Metal tile batch is empty".into(),
@@ -3158,7 +3156,7 @@ fn encode_jpeg_baseline_metal_device_tile_batch(
                 reason: "JPEG Baseline Metal tile batch changed pixel profile".into(),
             });
         }
-        let statumen::output::metal::MetalDeviceStorage::Buffer {
+        let wsi_rs::output::metal::MetalDeviceStorage::Buffer {
             buffer,
             byte_offset,
         } = &tile.storage;
@@ -3175,7 +3173,7 @@ fn encode_jpeg_baseline_metal_device_tile_batch(
     }
     let encoded = encode_jpeg_baseline_batch_from_metal_buffers(
         &requests,
-        signinum_jpeg::JpegEncodeOptions {
+        j2k_jpeg::JpegEncodeOptions {
             quality: jpeg_quality,
             subsampling,
             restart_interval: None,

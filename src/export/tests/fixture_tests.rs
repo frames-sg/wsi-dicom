@@ -436,7 +436,7 @@ fn ndpi_fixture_exports_jpeg_baseline_passthrough_pyramid_subset_for_qupath() {
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
 #[ignore = "requires WSI_DICOM_METAL_INPUT_FIXTURE"]
-fn fixture_first_mappable_tiles_use_batched_statumen_metal_input_decode_and_metal_encode() {
+fn fixture_first_mappable_tiles_use_batched_wsi_rs_metal_input_decode_and_metal_encode() {
     let Some(source) = std::env::var_os("WSI_DICOM_METAL_INPUT_FIXTURE").map(PathBuf::from) else {
         return;
     };
@@ -792,8 +792,8 @@ fn metal_strip_composer_returns_ordered_tiles_from_batched_compose() {
     };
     let source_a = [1u8; 16];
     let source_b = [2u8; 16];
-    let tile_a = metal_test_tile(&device, &source_a, 4, 4, SigninumPixelFormat::Gray8);
-    let tile_b = metal_test_tile(&device, &source_b, 4, 4, SigninumPixelFormat::Gray8);
+    let tile_a = metal_test_tile(&device, &source_a, 4, 4, J2kPixelFormat::Gray8);
+    let tile_b = metal_test_tile(&device, &source_b, 4, 4, J2kPixelFormat::Gray8);
     let packed = composer
         .pack_tiles(&[tile_a, tile_b], layout, 0, 0, 2)
         .expect("pack test tiles");
@@ -835,9 +835,9 @@ fn jpeg_baseline_metal_tile_entries_keep_full_tiles_when_edge_geometry_falls_bac
     let Some(device) = metal::Device::system_default() else {
         return;
     };
-    let full_a = metal_test_tile(&device, &[1u8; 16], 4, 4, SigninumPixelFormat::Gray8);
-    let edge = metal_test_tile(&device, &[2u8; 12], 3, 4, SigninumPixelFormat::Gray8);
-    let full_b = metal_test_tile(&device, &[3u8; 16], 4, 4, SigninumPixelFormat::Gray8);
+    let full_a = metal_test_tile(&device, &[1u8; 16], 4, 4, J2kPixelFormat::Gray8);
+    let edge = metal_test_tile(&device, &[2u8; 12], 3, 4, J2kPixelFormat::Gray8);
+    let full_b = metal_test_tile(&device, &[3u8; 16], 4, 4, J2kPixelFormat::Gray8);
     let frames = [
         JpegBaselineFallbackFrame {
             x: 0,

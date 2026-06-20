@@ -1,4 +1,4 @@
-use statumen::{Compression, PlaneSelection, Slide, TileLayout, TileRequest};
+use wsi_rs::{Compression, PlaneSelection, Slide, TileLayout, TileRequest};
 
 use crate::options::IccProfilePolicy;
 use crate::report::IccProfileSource;
@@ -20,7 +20,7 @@ pub(super) fn resolve_icc_profile(
     scene_idx: usize,
     series_idx: usize,
     level_idx: u32,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
 ) -> Result<ResolvedIccProfile, Error> {
     if let Some(profile) = slide
         .dataset()
@@ -68,7 +68,7 @@ fn sampled_jpeg_icc_profile(
     scene_idx: usize,
     series_idx: usize,
     level_idx: u32,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
 ) -> Result<Option<Vec<u8>>, Error> {
     let mut profile = None;
     for request in icc_probe_tile_requests(scene_idx, series_idx, level_idx, level) {
@@ -100,7 +100,7 @@ fn icc_probe_tile_requests(
     scene_idx: usize,
     series_idx: usize,
     level_idx: u32,
-    level: &statumen::Level,
+    level: &wsi_rs::Level,
 ) -> Vec<TileRequest> {
     let mut coords = Vec::new();
     match &level.tile_layout {

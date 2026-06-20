@@ -1,8 +1,6 @@
 use super::*;
 
-pub(super) fn regular_tiled_source_layout(
-    level: &statumen::Level,
-) -> Option<WholeLevelStripLayout> {
+pub(super) fn regular_tiled_source_layout(level: &wsi_rs::Level) -> Option<WholeLevelStripLayout> {
     let TileLayout::Regular {
         tile_width,
         tile_height,
@@ -14,7 +12,7 @@ pub(super) fn regular_tiled_source_layout(
     nonzero_strip_layout(tile_width, tile_height)
 }
 
-pub(super) fn whole_level_strip_layout(level: &statumen::Level) -> Option<WholeLevelStripLayout> {
+pub(super) fn whole_level_strip_layout(level: &wsi_rs::Level) -> Option<WholeLevelStripLayout> {
     let TileLayout::WholeLevel {
         virtual_tile_width,
         virtual_tile_height,
@@ -33,12 +31,12 @@ fn nonzero_strip_layout(width: u32, height: u32) -> Option<WholeLevelStripLayout
     Some(WholeLevelStripLayout { width, height })
 }
 
-pub(super) fn output_tile_maps_to_statumen_tile(level: &statumen::Level, tile_size: u32) -> bool {
-    output_frame_maps_to_statumen_tile(level, tile_size, tile_size)
+pub(super) fn output_tile_maps_to_wsi_rs_tile(level: &wsi_rs::Level, tile_size: u32) -> bool {
+    output_frame_maps_to_wsi_rs_tile(level, tile_size, tile_size)
 }
 
-pub(super) fn output_frame_maps_to_statumen_tile(
-    level: &statumen::Level,
+pub(super) fn output_frame_maps_to_wsi_rs_tile(
+    level: &wsi_rs::Level,
     frame_columns: u32,
     frame_rows: u32,
 ) -> bool {

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use statumen::CpuTile;
+use wsi_rs::CpuTile;
 
 use crate::instance_context::DicomInstanceContext;
 use crate::options::TransferSyntax;

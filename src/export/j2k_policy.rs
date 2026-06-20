@@ -1,6 +1,6 @@
-use signinum_core::{Colorspace, CompressedPayloadKind, PassthroughRequirements};
-use signinum_j2k::{J2kView, ReversibleTransform};
-use statumen::{Compression, EncodedTilePhotometricInterpretation, RawCompressedTile};
+use j2k::{J2kView, ReversibleTransform};
+use j2k_core::{Colorspace, CompressedPayloadKind, PassthroughRequirements};
+use wsi_rs::{Compression, EncodedTilePhotometricInterpretation, RawCompressedTile};
 
 use super::{J2kPassthroughFrame, LosslessJ2kPlannedFrame};
 use crate::error::Error;
@@ -177,7 +177,7 @@ pub(super) fn j2k_passthrough_frame(
 pub(super) fn j2k_raw_frame_syntax_and_profile(
     raw: &RawCompressedTile,
 ) -> (
-    Option<signinum_core::CompressedTransferSyntax>,
+    Option<j2k_core::CompressedTransferSyntax>,
     Option<PixelProfile>,
 ) {
     if !matches!(
@@ -213,7 +213,7 @@ pub(super) fn j2k_raw_frame_syntax_and_profile(
 
 fn j2k_passthrough_photometric_interpretation(
     raw_photometric: EncodedTilePhotometricInterpretation,
-    info: &signinum_core::Info,
+    info: &j2k_core::Info,
 ) -> Option<&'static str> {
     match (info.components, raw_photometric) {
         (1, EncodedTilePhotometricInterpretation::Monochrome2) => Some("MONOCHROME2"),

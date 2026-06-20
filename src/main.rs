@@ -23,7 +23,7 @@ use cli_report::{
 
 #[derive(Debug, Parser)]
 #[command(name = "wsi-dicom")]
-#[command(about = "Convert statumen-readable whole-slide images to DICOM VL WSI")]
+#[command(about = "Convert wsi-rs-readable whole-slide images to DICOM VL WSI")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

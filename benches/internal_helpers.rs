@@ -2,10 +2,10 @@ use std::hint::black_box;
 use std::path::Path;
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
-use statumen::{ColorSpace, CpuTile, CpuTileData, CpuTileLayout};
 use wsi_dicom::bench_support::{
     instance_context_summary, pixel_data_offsets_for_bench, prepare_tile_samples_summary,
 };
+use wsi_rs::{ColorSpace, CpuTile, CpuTileData, CpuTileLayout};
 
 fn rgb8_tile(width: u32, height: u32) -> CpuTile {
     let mut data = Vec::with_capacity(width as usize * height as usize * 3);

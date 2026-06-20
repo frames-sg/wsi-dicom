@@ -55,7 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Bumped the crate to `0.4.0`; `0.3.0` was an unpublished in-repository
   development version.
-- Relaxed exact `signinum` and `statumen` dependency pins to compatible
+- Relaxed exact `j2k` and `wsi-rs` dependency pins to compatible
   published release requirements while preserving the current lockfile graph.
 - Profile and route coverage metrics no longer report synthetic DICOM write
   duration for code paths that do not write DICOM files.
@@ -154,7 +154,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added strict pre-1.0 release gates for missing docs, package-scoped coverage,
   public API compatibility checks, and CUDA/Metal feature builds.
 - Added crate-owned `FrameSamples` for advanced per-frame encoding so the
-  public API is not coupled to signinum sample enums.
+  public API is not coupled to j2k sample enums.
 
 ### Changed
 
@@ -173,7 +173,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added the public `Export` builder for converting statumen-readable
+- Added the public `Export` builder for converting wsi-rs-readable
   whole-slide images into DICOM VL Whole Slide Microscopy output directories.
 - Added source-aware default transfer syntax selection so eligible JPEG and
   JPEG 2000 source frames can be preserved without decode/re-encode.
@@ -182,12 +182,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added profile, coverage, corpus coverage, and sustained-run CLI commands for
   route validation and throughput evidence.
 - Added optional Metal/CUDA feature plumbing for JPEG 2000 encode acceleration
-  and statumen Metal tile decode integration on supported hosts.
+  and wsi-rs Metal tile decode integration on supported hosts.
 
 ### Changed
 
 - Moved export behavior behind the `frames-sg/wsi-dicom` public repository and
-  aligned dependencies with `statumen` 0.3 and `signinum` 0.4.
+  aligned dependencies with `wsi-rs` 0.3 and `j2k` 0.4.
 
 ## [0.1.0] - 2026-05-09
 
