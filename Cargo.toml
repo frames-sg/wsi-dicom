@@ -2,7 +2,7 @@
 name = "wsi-dicom"
 version = "0.4.0"
 edition = "2021"
-license = "Apache-2.0"
+license = "MIT OR Apache-2.0"
 description = "Convert whole-slide imaging files to DICOM VL Whole Slide Microscopy"
 rust-version = "1.96"
 readme = "README.md"
