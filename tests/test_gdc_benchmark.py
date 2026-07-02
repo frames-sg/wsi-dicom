@@ -17,6 +17,25 @@ def load_benchmark_module():
     return module
 
 
+def write_benchmark_slide(bench, root):
+    source = root / "slide.svs"
+    source.write_bytes(b"svs")
+    slide = bench.Slide(
+        slide_id="tcga-a",
+        display_name="TCGA-A.svs",
+        path=source,
+        download_dir=root,
+        relative_path="slide.svs",
+        gdc_file_id="file-id",
+        manifest_filename="file-id/TCGA-A.svs",
+        manifest_md5="abc",
+        manifest_size=3,
+        manifest_state="validated",
+        bytes_on_disk=3,
+    )
+    return source, slide
+
+
 class GdcBenchmarkTests(unittest.TestCase):
     def test_discovers_gdc_slides_and_maps_manifest_by_file_id(self):
         bench = load_benchmark_module()
@@ -319,21 +338,7 @@ class GdcBenchmarkTests(unittest.TestCase):
             root = Path(tmp)
             output_dir = root / "nested" / "tool-output"
             artifact_dir = root / "artifacts"
-            source = root / "slide.svs"
-            source.write_bytes(b"svs")
-            slide = bench.Slide(
-                slide_id="tcga-a",
-                display_name="TCGA-A.svs",
-                path=source,
-                download_dir=root,
-                relative_path="slide.svs",
-                gdc_file_id="file-id",
-                manifest_filename="file-id/TCGA-A.svs",
-                manifest_md5="abc",
-                manifest_size=3,
-                manifest_state="validated",
-                bytes_on_disk=3,
-            )
+            _, slide = write_benchmark_slide(bench, root)
             command = [
                 sys.executable,
                 "-c",
@@ -372,8 +377,6 @@ class GdcBenchmarkTests(unittest.TestCase):
             root = Path(tmp)
             output_dir = root / "nested" / "tool-output"
             artifact_dir = root / "artifacts"
-            source = root / "slide.svs"
-            source.write_bytes(b"svs")
             fake_wsi_dicom = root / "fake_wsi_dicom.py"
             fake_wsi_dicom.write_text(
                 "import json\n"
@@ -387,19 +390,7 @@ class GdcBenchmarkTests(unittest.TestCase):
                 "raise SystemExit(1)\n",
                 encoding="utf-8",
             )
-            slide = bench.Slide(
-                slide_id="tcga-a",
-                display_name="TCGA-A.svs",
-                path=source,
-                download_dir=root,
-                relative_path="slide.svs",
-                gdc_file_id="file-id",
-                manifest_filename="file-id/TCGA-A.svs",
-                manifest_md5="abc",
-                manifest_size=3,
-                manifest_state="validated",
-                bytes_on_disk=3,
-            )
+            _, slide = write_benchmark_slide(bench, root)
             command = [
                 sys.executable,
                 "-c",
