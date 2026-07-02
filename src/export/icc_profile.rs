@@ -1,4 +1,4 @@
-use wsi_rs::{Compression, PlaneSelection, Slide, TileLayout, TileRequest};
+use wsi_rs::{Compression, IccProfileKey, PlaneSelection, Slide, TileLayout, TileRequest};
 
 use crate::options::IccProfilePolicy;
 use crate::report::IccProfileSource;
@@ -25,7 +25,7 @@ pub(super) fn resolve_icc_profile(
     if let Some(profile) = slide
         .dataset()
         .icc_profiles
-        .get(&(scene_idx, series_idx))
+        .get(&IccProfileKey::new(scene_idx.into(), series_idx.into()))
         .filter(|profile| !profile.is_empty())
     {
         return Ok(ResolvedIccProfile {
@@ -75,10 +75,10 @@ fn sampled_jpeg_icc_profile(
         let Ok(raw) = slide.read_raw_compressed_tile(&request) else {
             continue;
         };
-        if raw.compression != Compression::Jpeg {
+        if raw.compression() != Compression::Jpeg {
             continue;
         }
-        let Some(raw_profile) = jpeg_icc_profile(&raw.data)? else {
+        let Some(raw_profile) = jpeg_icc_profile(raw.data())? else {
             continue;
         };
         if let Some(existing) = &profile {
@@ -148,18 +148,15 @@ fn icc_probe_tile_requests(
                 push_unique_coord(&mut coords, coord.0, coord.1);
             }
         }
+        _ => {}
     }
 
     coords
         .into_iter()
         .take(JPEG_ICC_SAMPLE_TILE_LIMIT)
-        .map(|(col, row)| TileRequest {
-            scene: scene_idx,
-            series: series_idx,
-            level: level_idx,
-            plane: PlaneSelection::default(),
-            col,
-            row,
+        .map(|(col, row)| {
+            TileRequest::new(scene_idx, series_idx, level_idx, col, row)
+                .with_plane(PlaneSelection::default())
         })
         .collect()
 }

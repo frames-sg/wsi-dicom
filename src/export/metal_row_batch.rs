@@ -4,7 +4,9 @@ mod aligned;
 mod whole_level;
 
 pub(super) use aligned::try_encode_metal_aligned_tile_run;
-pub(super) use whole_level::{try_encode_metal_whole_level_strip_run, WholeLevelStripLayout};
+pub(super) use whole_level::{
+    try_encode_metal_whole_level_strip_run, WholeLevelStripGridRunRequest, WholeLevelStripLayout,
+};
 
 use aligned::{try_encode_metal_aligned_tile_grid_run, try_submit_metal_aligned_tile_grid_run};
 use whole_level::{
@@ -21,96 +23,112 @@ struct EncodedMetalTileEntries {
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+pub(super) struct MetalTileGridRunRequest<'a> {
+    pub(super) level: &'a wsi_rs::Level,
+    pub(super) scene_idx: usize,
+    pub(super) series_idx: usize,
+    pub(super) level_idx: u32,
+    pub(super) z: u32,
+    pub(super) c: u32,
+    pub(super) t: u32,
+    pub(super) row: u64,
+    pub(super) start_col: u64,
+    pub(super) tile_count: usize,
+    pub(super) matrix_columns: u64,
+    pub(super) matrix_rows: u64,
+    pub(super) tile_size: u32,
+    pub(super) first_row_key: MetalEncodedRowRunKey,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl MetalTileGridRunRequest<'_> {
+    fn full_row_tiles_across(self) -> Option<u64> {
+        let tiles_across = self.matrix_columns.div_ceil(u64::from(self.tile_size));
+        (self.start_col == 0 && u64::try_from(self.tile_count).ok() == Some(tiles_across))
+            .then_some(tiles_across)
+    }
+
+    fn row_batch_rows(self, metal_input: &MetalInputTileReader) -> Result<usize, Error> {
+        metal_row_batch_rows(
+            self.row,
+            self.matrix_rows.div_ceil(u64::from(self.tile_size)),
+            self.tile_count,
+            metal_input.row_batch_rows,
+            metal_input.row_batch_target_tiles,
+        )
+    }
+
+    fn whole_level_request(
+        self,
+        strip_layout: WholeLevelStripLayout,
+        row_count: usize,
+    ) -> WholeLevelStripGridRunRequest {
+        WholeLevelStripGridRunRequest {
+            strip_layout,
+            scene_idx: self.scene_idx,
+            series_idx: self.series_idx,
+            level_idx: self.level_idx,
+            z: self.z,
+            c: self.c,
+            t: self.t,
+            start_row: self.row,
+            tiles_across: self.tile_count,
+            row_count,
+            matrix_columns: self.matrix_columns,
+            matrix_rows: self.matrix_rows,
+            tile_size: self.tile_size,
+        }
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) fn try_encode_metal_input_tile_grid_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
     j2k_encoder: &mut DicomJ2kEncoder,
-    level: &wsi_rs::Level,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-    row: u64,
-    start_col: u64,
-    tile_count: usize,
-    matrix_columns: u64,
-    matrix_rows: u64,
-    tile_size: u32,
-    first_row_key: MetalEncodedRowRunKey,
+    request: MetalTileGridRunRequest<'_>,
 ) -> Result<Option<MetalEncodedTileRun>, Error> {
-    let tiles_across = matrix_columns.div_ceil(u64::from(tile_size));
-    if start_col != 0 || u64::try_from(tile_count).ok() != Some(tiles_across) {
+    if request.full_row_tiles_across().is_none() {
         return Ok(None);
     }
-    let row_count = metal_row_batch_rows(
-        row,
-        matrix_rows.div_ceil(u64::from(tile_size)),
-        tile_count,
-        metal_input.row_batch_rows,
-        metal_input.row_batch_target_tiles,
-    )?;
+    let row_count = request.row_batch_rows(metal_input)?;
     if row_count <= 1 {
         return Ok(None);
     }
+    let whole_level_request = |strip_layout| request.whole_level_request(strip_layout, row_count);
 
-    let grid_run = if output_tile_maps_to_wsi_rs_tile(level, tile_size) {
+    let grid_run = if output_tile_maps_to_wsi_rs_tile(request.level, request.tile_size) {
         try_encode_metal_aligned_tile_grid_run(
             slide,
             metal_input,
             j2k_encoder,
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-            row,
-            tile_count,
+            request.scene_idx,
+            request.series_idx,
+            request.level_idx,
+            request.z,
+            request.c,
+            request.t,
+            request.row,
+            request.tile_count,
             row_count,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
+            request.matrix_columns,
+            request.matrix_rows,
+            request.tile_size,
         )?
-    } else if let Some(source_layout) = regular_tiled_source_layout(level) {
+    } else if let Some(source_layout) = regular_tiled_source_layout(request.level) {
         try_encode_metal_whole_level_strip_grid_run(
             slide,
             metal_input,
             j2k_encoder,
-            source_layout,
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-            row,
-            tile_count,
-            row_count,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
+            whole_level_request(source_layout),
         )?
-    } else if let Some(strip_layout) = whole_level_strip_layout(level) {
+    } else if let Some(strip_layout) = whole_level_strip_layout(request.level) {
         try_encode_metal_whole_level_strip_grid_run(
             slide,
             metal_input,
             j2k_encoder,
-            strip_layout,
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-            row,
-            tile_count,
-            row_count,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
+            whole_level_request(strip_layout),
         )?
     } else {
         return Ok(None);
@@ -118,66 +136,33 @@ pub(super) fn try_encode_metal_input_tile_grid_run(
 
     Ok(Some(cache_split_metal_grid_run(
         metal_input,
-        first_row_key,
+        request.first_row_key,
         grid_run,
-        tile_count,
+        request.tile_count,
         row_count,
     )?))
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
 pub(super) fn try_encode_metal_input_tile_grid_pipeline_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
     j2k_encoder: &mut DicomJ2kEncoder,
-    level: &wsi_rs::Level,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-    row: u64,
-    start_col: u64,
-    tile_count: usize,
-    matrix_columns: u64,
-    matrix_rows: u64,
-    tile_size: u32,
-    first_row_key: MetalEncodedRowRunKey,
+    request: MetalTileGridRunRequest<'_>,
 ) -> Result<Option<MetalEncodedTileRun>, Error> {
-    let tiles_across = matrix_columns.div_ceil(u64::from(tile_size));
-    if start_col != 0 || u64::try_from(tile_count).ok() != Some(tiles_across) {
+    if request.full_row_tiles_across().is_none() {
         return Ok(None);
     }
     if metal_input.pipeline_depth <= 1 {
-        return try_encode_metal_input_tile_grid_run(
-            slide,
-            metal_input,
-            j2k_encoder,
-            level,
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-            row,
-            start_col,
-            tile_count,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
-            first_row_key,
-        );
+        return try_encode_metal_input_tile_grid_run(slide, metal_input, j2k_encoder, request);
     }
 
-    let tiles_down = matrix_rows.div_ceil(u64::from(tile_size));
+    let tiles_down = request.matrix_rows.div_ceil(u64::from(request.tile_size));
     if metal_input
         .next_grid_pipeline_row
-        .is_none_or(|next| next < row)
+        .is_none_or(|next| next < request.row)
     {
-        metal_input.next_grid_pipeline_row = Some(row);
+        metal_input.next_grid_pipeline_row = Some(request.row);
     }
 
     while metal_input.pending_encoded_grid_runs.len() < metal_input.pipeline_depth {
@@ -190,7 +175,7 @@ pub(super) fn try_encode_metal_input_tile_grid_pipeline_run(
         let row_count = metal_row_batch_rows(
             submit_row,
             tiles_down,
-            tile_count,
+            request.tile_count,
             metal_input.row_batch_rows,
             metal_input.row_batch_target_tiles,
         )?;
@@ -198,18 +183,18 @@ pub(super) fn try_encode_metal_input_tile_grid_pipeline_run(
             break;
         }
         let submit_key = MetalEncodedRowRunKey {
-            scene: scene_idx,
-            series: series_idx,
-            level: level_idx,
-            z,
-            c,
-            t,
+            scene: request.scene_idx,
+            series: request.series_idx,
+            level: request.level_idx,
+            z: request.z,
+            c: request.c,
+            t: request.t,
             row: submit_row,
-            start_col,
-            tile_count,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
+            start_col: request.start_col,
+            tile_count: request.tile_count,
+            matrix_columns: request.matrix_columns,
+            matrix_rows: request.matrix_rows,
+            tile_size: request.tile_size,
         };
         if metal_input
             .pending_encoded_grid_runs
@@ -224,19 +209,19 @@ pub(super) fn try_encode_metal_input_tile_grid_pipeline_run(
             slide,
             metal_input,
             j2k_encoder,
-            level,
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
+            request.level,
+            request.scene_idx,
+            request.series_idx,
+            request.level_idx,
+            request.z,
+            request.c,
+            request.t,
             submit_row,
-            tile_count,
+            request.tile_count,
             row_count,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
+            request.matrix_columns,
+            request.matrix_rows,
+            request.tile_size,
         )?
         else {
             break;
@@ -246,7 +231,7 @@ pub(super) fn try_encode_metal_input_tile_grid_pipeline_run(
             PendingMetalEncodedGridRun {
                 run,
                 first_row_key: submit_key,
-                tiles_per_row: tile_count,
+                tiles_per_row: request.tile_count,
                 row_count,
             },
         );
@@ -254,7 +239,10 @@ pub(super) fn try_encode_metal_input_tile_grid_pipeline_run(
             Some(next_metal_grid_pipeline_row(submit_row, row_count)?);
     }
 
-    let Some(pending) = metal_input.pending_encoded_grid_runs.remove(&first_row_key) else {
+    let Some(pending) = metal_input
+        .pending_encoded_grid_runs
+        .remove(&request.first_row_key)
+    else {
         return Ok(None);
     };
     let grid_run = pending.run.wait()?;
@@ -437,24 +425,27 @@ fn try_submit_metal_input_tile_grid_run(
         )
         .map(Some);
     }
+    let whole_level_request = |strip_layout| WholeLevelStripGridRunRequest {
+        strip_layout,
+        scene_idx,
+        series_idx,
+        level_idx,
+        z,
+        c,
+        t,
+        start_row,
+        tiles_across,
+        row_count,
+        matrix_columns,
+        matrix_rows,
+        tile_size,
+    };
     if let Some(source_layout) = regular_tiled_source_layout(level) {
         return try_submit_metal_whole_level_strip_grid_run(
             slide,
             metal_input,
             j2k_encoder,
-            source_layout,
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-            start_row,
-            tiles_across,
-            row_count,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
+            whole_level_request(source_layout),
         )
         .map(Some);
     }
@@ -463,19 +454,7 @@ fn try_submit_metal_input_tile_grid_run(
             slide,
             metal_input,
             j2k_encoder,
-            strip_layout,
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-            start_row,
-            tiles_across,
-            row_count,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
+            whole_level_request(strip_layout),
         )
         .map(Some);
     }

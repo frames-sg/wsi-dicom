@@ -112,7 +112,7 @@ pub(super) fn try_plan_direct_jpeg_passthrough_frames(
                 return Ok(None);
             }
             let compressed_bytes =
-                u64::try_from(raw.data.len()).map_err(|_| Error::Unsupported {
+                u64::try_from(raw.data().len()).map_err(|_| Error::Unsupported {
                     reason: "JPEG passthrough frame length exceeds u64".into(),
                 })?;
             Ok(Some(DirectJpegPassthroughFrame {
@@ -145,7 +145,7 @@ fn read_direct_jpeg_passthrough_frame(
             "direct JPEG passthrough frame is no longer passthrough-eligible",
         ));
     }
-    Ok(raw.data)
+    Ok(raw.into_data())
 }
 
 pub(crate) fn read_raw_jpeg_passthrough_tile(

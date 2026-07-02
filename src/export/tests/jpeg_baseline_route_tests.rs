@@ -4,6 +4,56 @@ use j2k_jpeg::{JpegBackend, JpegSamples, JpegSubsampling};
 
 use super::*;
 
+fn export_jpeg_baseline_native_geometry_for_test(
+    source_path: std::path::PathBuf,
+    output_dir: std::path::PathBuf,
+) -> ExportReport {
+    export_dicom(ExportRequest {
+        source_path,
+        output_dir,
+        options: ExportOptions {
+            tile_size: 512,
+            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: false,
+            ..ExportOptions::default()
+        },
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: Some(0),
+    })
+    .unwrap()
+}
+
+fn assert_dicom_instance_geometry_for_test(
+    path: &std::path::Path,
+    rows: u32,
+    columns: u32,
+    frames: u32,
+) {
+    let object = dicom_object::open_file(path).unwrap();
+    assert_eq!(
+        object.element(tags::ROWS).unwrap().to_int::<u32>().unwrap(),
+        rows
+    );
+    assert_eq!(
+        object
+            .element(tags::COLUMNS)
+            .unwrap()
+            .to_int::<u32>()
+            .unwrap(),
+        columns
+    );
+    assert_eq!(
+        object
+            .element(tags::NUMBER_OF_FRAMES)
+            .unwrap()
+            .to_int::<u32>()
+            .unwrap(),
+        frames
+    );
+}
+
 #[test]
 fn export_dicom_passthrough_writes_jpeg_baseline_vl_wsi_instance() {
     let tmp = tempfile::tempdir().unwrap();
@@ -380,50 +430,15 @@ fn export_jpeg_baseline_preserves_viewer_friendly_native_regular_geometry() {
     let jpeg_b = encode_test_jpeg(512, 512, [20, 160, 40]);
     let source = tmp.path().join("source.tiff");
     write_tiled_jpeg_tiff(&source, 1024, 512, 512, 512, &[jpeg_a, jpeg_b]);
-    let out = tmp.path().join("out");
 
-    let report = export_dicom(ExportRequest {
-        source_path: source,
-        output_dir: out,
-        options: ExportOptions {
-            tile_size: 512,
-            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
-            encode_backend: EncodeBackendPreference::CpuOnly,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: false,
-            ..ExportOptions::default()
-        },
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: Some(0),
-    })
-    .unwrap();
+    let report = export_jpeg_baseline_native_geometry_for_test(source, tmp.path().join("out"));
 
     assert_eq!(report.instances[0].frame_count, 2);
     assert_eq!(report.metrics.routes.total_frames, 2);
     assert_eq!(report.metrics.routes.jpeg_passthrough_frames, 2);
     assert_eq!(report.metrics.routes.cpu_fallback_frames, 0);
 
-    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-    assert_eq!(
-        object.element(tags::ROWS).unwrap().to_int::<u32>().unwrap(),
-        512
-    );
-    assert_eq!(
-        object
-            .element(tags::COLUMNS)
-            .unwrap()
-            .to_int::<u32>()
-            .unwrap(),
-        512
-    );
-    assert_eq!(
-        object
-            .element(tags::NUMBER_OF_FRAMES)
-            .unwrap()
-            .to_int::<u32>()
-            .unwrap(),
-        2
-    );
+    assert_dicom_instance_geometry_for_test(&report.instances[0].path, 512, 512, 2);
 }
 
 #[test]
@@ -441,49 +456,14 @@ fn export_jpeg_baseline_preserves_native_geometry_when_first_tile_is_empty() {
         512,
         &[Vec::new(), jpeg_a, jpeg_b, jpeg_c],
     );
-    let out = tmp.path().join("out");
 
-    let report = export_dicom(ExportRequest {
-        source_path: source,
-        output_dir: out,
-        options: ExportOptions {
-            tile_size: 512,
-            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
-            encode_backend: EncodeBackendPreference::CpuOnly,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: false,
-            ..ExportOptions::default()
-        },
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: Some(0),
-    })
-    .unwrap();
+    let report = export_jpeg_baseline_native_geometry_for_test(source, tmp.path().join("out"));
 
     assert_eq!(report.instances[0].frame_count, 4);
     assert_eq!(report.metrics.routes.jpeg_passthrough_frames, 3);
     assert_eq!(report.metrics.routes.cpu_fallback_frames, 1);
 
-    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-    assert_eq!(
-        object.element(tags::ROWS).unwrap().to_int::<u32>().unwrap(),
-        512
-    );
-    assert_eq!(
-        object
-            .element(tags::COLUMNS)
-            .unwrap()
-            .to_int::<u32>()
-            .unwrap(),
-        512
-    );
-    assert_eq!(
-        object
-            .element(tags::NUMBER_OF_FRAMES)
-            .unwrap()
-            .to_int::<u32>()
-            .unwrap(),
-        4
-    );
+    assert_dicom_instance_geometry_for_test(&report.instances[0].path, 512, 512, 4);
 }
 
 #[test]
@@ -492,49 +472,14 @@ fn export_jpeg_baseline_retiles_oversized_native_regular_geometry() {
     let jpeg = encode_test_jpeg(1024, 1024, [160, 20, 40]);
     let source = tmp.path().join("source.tiff");
     write_tiled_jpeg_tiff(&source, 1024, 1024, 1024, 1024, &[jpeg]);
-    let out = tmp.path().join("out");
 
-    let report = export_dicom(ExportRequest {
-        source_path: source,
-        output_dir: out,
-        options: ExportOptions {
-            tile_size: 512,
-            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
-            encode_backend: EncodeBackendPreference::CpuOnly,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: false,
-            ..ExportOptions::default()
-        },
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: Some(0),
-    })
-    .unwrap();
+    let report = export_jpeg_baseline_native_geometry_for_test(source, tmp.path().join("out"));
 
     assert_eq!(report.instances[0].frame_count, 4);
     assert_eq!(report.metrics.routes.jpeg_passthrough_frames, 0);
     assert_eq!(report.metrics.routes.cpu_fallback_frames, 4);
 
-    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-    assert_eq!(
-        object.element(tags::ROWS).unwrap().to_int::<u32>().unwrap(),
-        512
-    );
-    assert_eq!(
-        object
-            .element(tags::COLUMNS)
-            .unwrap()
-            .to_int::<u32>()
-            .unwrap(),
-        512
-    );
-    assert_eq!(
-        object
-            .element(tags::NUMBER_OF_FRAMES)
-            .unwrap()
-            .to_int::<u32>()
-            .unwrap(),
-        4
-    );
+    assert_dicom_instance_geometry_for_test(&report.instances[0].path, 512, 512, 4);
 }
 
 #[test]

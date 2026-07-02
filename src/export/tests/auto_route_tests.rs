@@ -25,10 +25,10 @@ fn require_device_lossless_j2k_metal_input_requires_source_device_decode_opt_in(
 #[test]
 fn auto_metal_input_routing_ignores_device_decode_env_until_explicitly_preferred() {
     let _guard = DEVICE_DECODE_ENV_MUTEX.lock().unwrap();
-    let old_jpeg = std::env::var_os(STATUMEN_JPEG_DEVICE_DECODE_ENV);
-    let old_jp2k = std::env::var_os(STATUMEN_JP2K_DEVICE_DECODE_ENV);
-    std::env::remove_var(STATUMEN_JPEG_DEVICE_DECODE_ENV);
-    std::env::remove_var(STATUMEN_JP2K_DEVICE_DECODE_ENV);
+    let old_jpeg = std::env::var_os(WSI_RS_JPEG_DEVICE_DECODE_ENV);
+    let old_jp2k = std::env::var_os(WSI_RS_JP2K_DEVICE_DECODE_ENV);
+    std::env::remove_var(WSI_RS_JPEG_DEVICE_DECODE_ENV);
+    std::env::remove_var(WSI_RS_JP2K_DEVICE_DECODE_ENV);
 
     assert!(!wsi_rs_device_decode_opted_in());
     assert!(!MetalInputTileReader::new(EncodeBackendPreference::Auto, false).enabled());
@@ -105,7 +105,7 @@ fn auto_metal_input_routing_ignores_device_decode_env_until_explicitly_preferred
         false
     ));
 
-    std::env::set_var(STATUMEN_JP2K_DEVICE_DECODE_ENV, "1");
+    std::env::set_var(WSI_RS_JP2K_DEVICE_DECODE_ENV, "1");
     assert!(wsi_rs_device_decode_opted_in());
     assert!(!MetalInputTileReader::new(EncodeBackendPreference::Auto, false).enabled());
     assert!(!lossless_j2k_auto_allows_metal_input(
@@ -177,12 +177,12 @@ fn auto_metal_input_routing_ignores_device_decode_env_until_explicitly_preferred
     ));
 
     match old_jpeg {
-        Some(value) => std::env::set_var(STATUMEN_JPEG_DEVICE_DECODE_ENV, value),
-        None => std::env::remove_var(STATUMEN_JPEG_DEVICE_DECODE_ENV),
+        Some(value) => std::env::set_var(WSI_RS_JPEG_DEVICE_DECODE_ENV, value),
+        None => std::env::remove_var(WSI_RS_JPEG_DEVICE_DECODE_ENV),
     }
     match old_jp2k {
-        Some(value) => std::env::set_var(STATUMEN_JP2K_DEVICE_DECODE_ENV, value),
-        None => std::env::remove_var(STATUMEN_JP2K_DEVICE_DECODE_ENV),
+        Some(value) => std::env::set_var(WSI_RS_JP2K_DEVICE_DECODE_ENV, value),
+        None => std::env::remove_var(WSI_RS_JP2K_DEVICE_DECODE_ENV),
     }
 }
 

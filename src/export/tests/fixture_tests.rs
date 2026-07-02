@@ -180,21 +180,20 @@ fn ndpi_fixture_exports_all_lossless_j2k_transfer_syntaxes_and_tile_sizes() {
         let width = (matrix_columns - x).min(tile_size_u64) as u32;
         let height = (matrix_rows - y).min(tile_size_u64) as u32;
         let region = slide
-            .read_region(&RegionRequest {
-                scene: SceneId(0),
-                series: SeriesId(0),
-                level: LevelIdx(0),
-                plane: PlaneIdx(PlaneSelection { z: 0, c: 0, t: 0 }),
-                origin_px: (x as i64, y as i64),
-                size_px: (width, height),
-            })
+            .read_region(&RegionRequest::new(
+                0usize,
+                0usize,
+                0u32,
+                (x as i64, y as i64),
+                (width, height),
+            ))
             .unwrap();
         let prepared = prepare_tile_samples(&region, tile_size, tile_size).unwrap();
         let samples = J2kLosslessSamples::new(
             &prepared.bytes,
             tile_size,
             tile_size,
-            prepared.profile.components,
+            u16::from(prepared.profile.components),
             prepared.profile.bits_allocated as u8,
             false,
         )
@@ -440,8 +439,8 @@ fn fixture_first_mappable_tiles_use_batched_wsi_rs_metal_input_decode_and_metal_
     let Some(source) = std::env::var_os("WSI_DICOM_METAL_INPUT_FIXTURE").map(PathBuf::from) else {
         return;
     };
-    std::env::set_var("STATUMEN_JPEG_DEVICE_DECODE", "1");
-    std::env::set_var("STATUMEN_JP2K_DEVICE_DECODE", "1");
+    std::env::set_var("WSI_RS_JPEG_DEVICE_DECODE", "1");
+    std::env::set_var("WSI_RS_JP2K_DEVICE_DECODE", "1");
 
     let slide = Slide::open(&source).unwrap();
     let level = &slide.dataset().scenes[0].series[0].levels[0];
@@ -541,21 +540,20 @@ fn real_aperio_jp2k_problem_tile_round_trips() {
     };
     let slide = Slide::open(&source).unwrap();
     let region = slide
-        .read_region(&RegionRequest {
-            scene: SceneId(0),
-            series: SeriesId(0),
-            level: LevelIdx(0),
-            plane: PlaneIdx(PlaneSelection { z: 0, c: 0, t: 0 }),
-            origin_px: (24 * 512, 12 * 512),
-            size_px: (512, 512),
-        })
+        .read_region(&RegionRequest::new(
+            0usize,
+            0usize,
+            0u32,
+            (24 * 512, 12 * 512),
+            (512, 512),
+        ))
         .unwrap();
     let prepared = prepare_tile_samples(&region, 512, 512).unwrap();
     let samples = J2kLosslessSamples::new(
         &prepared.bytes,
         512,
         512,
-        prepared.profile.components,
+        u16::from(prepared.profile.components),
         prepared.profile.bits_allocated as u8,
         false,
     )
@@ -647,7 +645,7 @@ fn ndpi_whole_level_metal_rows_do_not_turn_black_after_reused_encoder_state() {
     let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
         return;
     };
-    std::env::set_var("STATUMEN_JPEG_DEVICE_DECODE", "1");
+    std::env::set_var("WSI_RS_JPEG_DEVICE_DECODE", "1");
     let slide = Slide::open(&source).unwrap();
     let level = &slide.dataset().scenes[0].series[0].levels[0];
     let (matrix_columns, matrix_rows) = level.dimensions;
@@ -697,14 +695,13 @@ fn ndpi_whole_level_metal_rows_do_not_turn_black_after_reused_encoder_state() {
     let valid_width = (matrix_columns - x).min(u64::from(tile_size)) as u32;
     let valid_height = (matrix_rows - y).min(u64::from(tile_size)) as u32;
     let cpu_region = slide
-        .read_region(&RegionRequest {
-            scene: SceneId(0),
-            series: SeriesId(0),
-            level: LevelIdx(0),
-            plane: PlaneIdx(PlaneSelection { z: 0, c: 0, t: 0 }),
-            origin_px: (x as i64, y as i64),
-            size_px: (valid_width, valid_height),
-        })
+        .read_region(&RegionRequest::new(
+            0usize,
+            0usize,
+            0u32,
+            (x as i64, y as i64),
+            (valid_width, valid_height),
+        ))
         .unwrap();
     let expected = prepare_tile_samples(&cpu_region, tile_size, tile_size).unwrap();
     let actual = decode_j2k_frame_for_test(
@@ -732,7 +729,7 @@ fn ndpi_whole_level_metal_composes_multi_tile_run_in_one_batch() {
     let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
         return;
     };
-    std::env::set_var("STATUMEN_JPEG_DEVICE_DECODE", "1");
+    std::env::set_var("WSI_RS_JPEG_DEVICE_DECODE", "1");
     let slide = Slide::open(&source).unwrap();
     let level = &slide.dataset().scenes[0].series[0].levels[0];
     let Some(strip_layout) = whole_level_strip_layout(level) else {

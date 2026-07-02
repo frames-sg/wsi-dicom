@@ -92,7 +92,7 @@ impl<'a> FrameSamples<'a> {
             self.data,
             self.width,
             self.height,
-            self.components,
+            u16::from(self.components),
             self.bit_depth,
             self.signed,
         )

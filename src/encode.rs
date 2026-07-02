@@ -1,15 +1,18 @@
 use std::time::{Duration, Instant};
 
+use j2k::adapter::encode_stage::J2kEncodeStageAccelerator;
 use j2k::{
     encode_j2k_lossless, encode_j2k_lossless_with_accelerator, BackendKind, J2kBlockCodingMode,
-    J2kEncodeStageAccelerator, J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples,
-    J2kProgressionOrder, ReversibleTransform,
+    J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples, J2kProgressionOrder,
+    ReversibleTransform,
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use j2k_core::DeviceSubmission;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use rayon::prelude::*;
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use crate::tile::j2k_pixel_format_from_wsi;
 use crate::{CodecValidation, EncodeBackendPreference, Error, TransferSyntax};
 
 pub(crate) struct DicomJ2kEncoder {
@@ -245,7 +248,7 @@ impl SubmittedDicomJ2kMetalTileBatch {
                             &tiles[start..end],
                             output_width,
                             output_height,
-                        );
+                        )?;
                         encoded.extend(encode_metal_tiles_to_host_with_settings(
                             &requests,
                             &options,
@@ -261,7 +264,7 @@ impl SubmittedDicomJ2kMetalTileBatch {
                         &tiles[start..end],
                         output_width,
                         output_height,
-                    );
+                    )?;
                     encoded.extend(encode_metal_tiles_to_host_with_settings(
                         &requests,
                         &options,
@@ -573,7 +576,7 @@ impl DicomJ2kEncoder {
                 &tiles[start..end],
                 output_width,
                 output_height,
-            );
+            )?;
             let config = j2k_metal::MetalLosslessEncodeConfig {
                 gpu_encode_inflight_tiles: self.gpu_encode_inflight_tiles,
                 gpu_encode_memory_budget_bytes: self
@@ -581,42 +584,28 @@ impl DicomJ2kEncoder {
                     .and_then(|mib| usize::try_from(mib).ok())
                     .and_then(|mib| mib.checked_mul(1024 * 1024)),
             };
-            if padded {
-                match j2k_metal::submit_lossless_from_padded_metal_buffers_to_metal_batch(
-                    &requests, &options, &session, config,
-                ) {
-                    Ok(submission) => groups.push(SubmittedDicomJ2kMetalTileGroup::Submitted {
-                        start,
-                        end,
-                        submission: Box::new(submission),
-                    }),
-                    Err(err) if self.preference == EncodeBackendPreference::RequireDevice => {
-                        return Err(Error::Encode {
-                            message: format!("JPEG 2000 Metal tile batch submit failed: {err}"),
-                        });
-                    }
-                    Err(_) => {
-                        groups.push(SubmittedDicomJ2kMetalTileGroup::HostFallback { start, end })
-                    }
-                }
+            let staging = if padded {
+                j2k_metal::MetalEncodeInputStaging::AlreadyPaddedContiguous
             } else {
-                match j2k_metal::submit_lossless_from_metal_buffers_to_metal_batch(
-                    &requests, &options, &session, config,
-                ) {
-                    Ok(submission) => groups.push(SubmittedDicomJ2kMetalTileGroup::Submitted {
-                        start,
-                        end,
-                        submission: Box::new(submission),
-                    }),
-                    Err(err) if self.preference == EncodeBackendPreference::RequireDevice => {
-                        return Err(Error::Encode {
-                            message: format!("JPEG 2000 Metal tile batch submit failed: {err}"),
-                        });
-                    }
-                    Err(_) => {
-                        groups.push(SubmittedDicomJ2kMetalTileGroup::HostFallback { start, end })
-                    }
+                j2k_metal::MetalEncodeInputStaging::CopyAndPad
+            };
+            let request = j2k_metal::MetalLosslessEncodeBatchRequest {
+                tiles: &requests,
+                staging,
+                config,
+            };
+            match j2k_metal::submit_lossless_batch_to_metal(request, &options, &session) {
+                Ok(submission) => groups.push(SubmittedDicomJ2kMetalTileGroup::Submitted {
+                    start,
+                    end,
+                    submission: Box::new(submission),
+                }),
+                Err(err) if self.preference == EncodeBackendPreference::RequireDevice => {
+                    return Err(Error::Encode {
+                        message: format!("JPEG 2000 Metal tile batch submit failed: {err}"),
+                    });
                 }
+                Err(_) => groups.push(SubmittedDicomJ2kMetalTileGroup::HostFallback { start, end }),
             }
             start = end;
         }
@@ -655,13 +644,19 @@ fn metal_encode_requests_from_device_tiles(
     tiles: &[wsi_rs::output::metal::MetalDeviceTile],
     output_width: u32,
     output_height: u32,
-) -> Vec<j2k_metal::MetalLosslessEncodeTile<'_>> {
+) -> Result<Vec<j2k_metal::MetalLosslessEncodeTile<'_>>, Error> {
     let mut requests = Vec::with_capacity(tiles.len());
     for tile in tiles {
         let wsi_rs::output::metal::MetalDeviceStorage::Buffer {
             buffer,
             byte_offset,
-        } = &tile.storage;
+        } = &tile.storage
+        else {
+            return Err(Error::Unsupported {
+                reason: "JPEG 2000 Metal encode requires buffer-backed device tiles".into(),
+            });
+        };
+        let format = j2k_pixel_format_from_wsi(tile.format)?;
         requests.push(j2k_metal::MetalLosslessEncodeTile {
             buffer,
             byte_offset: *byte_offset,
@@ -670,10 +665,10 @@ fn metal_encode_requests_from_device_tiles(
             pitch_bytes: tile.pitch_bytes,
             output_width,
             output_height,
-            format: tile.format,
+            format,
         });
     }
-    requests
+    Ok(requests)
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -747,19 +742,22 @@ fn encode_metal_tile_chunk_to_host(
     preference: EncodeBackendPreference,
     used_device_validation: bool,
 ) -> Result<Vec<Option<EncodedDicomJ2kFrame>>, Error> {
-    let outcomes =
-        match j2k_metal::encode_lossless_from_metal_buffers_with_report(requests, options, session)
-        {
-            Ok(outcomes) => outcomes,
-            Err(_) if preference != EncodeBackendPreference::RequireDevice => {
-                return Ok((0..requests.len()).map(|_| None).collect());
-            }
-            Err(err) => {
-                return Err(Error::Encode {
-                    message: format!("JPEG 2000 Metal tile batch encode failed: {err}"),
-                });
-            }
-        };
+    let request = j2k_metal::MetalLosslessEncodeBatchRequest {
+        tiles: requests,
+        staging: j2k_metal::MetalEncodeInputStaging::CopyAndPad,
+        config: j2k_metal::MetalLosslessEncodeConfig::default(),
+    };
+    let outcomes = match j2k_metal::encode_lossless_batch_with_report(request, options, session) {
+        Ok(outcomes) => outcomes,
+        Err(_) if preference != EncodeBackendPreference::RequireDevice => {
+            return Ok((0..requests.len()).map(|_| None).collect());
+        }
+        Err(err) => {
+            return Err(Error::Encode {
+                message: format!("JPEG 2000 Metal tile batch encode failed: {err}"),
+            });
+        }
+    };
 
     outcomes
         .into_iter()
@@ -886,24 +884,25 @@ fn encode_j2k_lossless_with_device_accelerator(
     reversible_transform: ReversibleTransform,
 ) -> Result<Option<DeviceEncodedCodestream>, Error> {
     let before_dispatch = accelerator.dispatch_report();
-    let encoded = encode_j2k_lossless_with_accelerator(
-        samples,
-        &J2kLosslessEncodeOptions {
-            validation,
-            ..lossless_encode_options(
-                transfer_syntax,
-                EncodeBackendPreference::PreferDevice,
-                CodecValidation::RoundTrip,
-                j2k_decomposition_levels,
-                reversible_transform,
-            )?
-        },
-        backend,
-        accelerator,
-    )
-    .map_err(|err| Error::Encode {
-        message: format!("JPEG 2000 device encode failed: {err}"),
-    })?;
+    let options = lossless_encode_options(
+        transfer_syntax,
+        EncodeBackendPreference::PreferDevice,
+        CodecValidation::RoundTrip,
+        j2k_decomposition_levels,
+        reversible_transform,
+    )?;
+    let options = J2kLosslessEncodeOptions::new(
+        options.backend,
+        options.block_coding_mode,
+        options.progression,
+        options.max_decomposition_levels,
+        options.reversible_transform,
+        validation,
+    );
+    let encoded = encode_j2k_lossless_with_accelerator(samples, &options, backend, accelerator)
+        .map_err(|err| Error::Encode {
+            message: format!("JPEG 2000 device encode failed: {err}"),
+        })?;
     let dispatch = accelerator
         .dispatch_report()
         .saturating_delta(before_dispatch);
@@ -943,14 +942,14 @@ fn lossless_encode_options(
         }
     };
 
-    Ok(J2kLosslessEncodeOptions {
-        backend: backend.to_j2k(),
+    Ok(J2kLosslessEncodeOptions::new(
+        backend.to_j2k(),
         block_coding_mode,
         progression,
-        max_decomposition_levels: j2k_decomposition_levels,
+        j2k_decomposition_levels,
         reversible_transform,
-        validation: codec_validation.to_j2k_validation(),
-    })
+        codec_validation.to_j2k_validation(),
+    ))
 }
 
 #[cfg(test)]
@@ -962,10 +961,11 @@ pub(crate) fn dicom_j2k_decomposition_levels(samples: J2kLosslessSamples<'_>) ->
 mod cpu_tests {
     use super::{encode_j2k_lossless_with_device_accelerator, DicomJ2kEncoder};
     use crate::{CodecValidation, EncodeBackendPreference, TransferSyntax};
-    use j2k::{
-        J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kEncodeValidation,
-        J2kForwardDwt53Job, J2kForwardDwt53Output, J2kLosslessSamples, ReversibleTransform,
+    use j2k::adapter::encode_stage::{
+        J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardDwt53Job,
+        J2kForwardDwt53Output,
     };
+    use j2k::{J2kEncodeValidation, J2kLosslessSamples, ReversibleTransform};
     use j2k_core::BackendKind;
 
     #[derive(Default)]
@@ -1050,15 +1050,65 @@ mod cpu_tests {
 
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 mod tests {
-    use super::{metal_host_fallback_parallel_chunk_size, DicomJ2kEncoder};
+    use super::{metal_host_fallback_parallel_chunk_size, DicomJ2kEncoder, EncodedDicomJ2kFrame};
     use crate::test_support::{find_command_for_test, read_binary_ppm_for_test};
     use crate::{CodecValidation, EncodeBackendPreference, TransferSyntax};
     use j2k::{
         j2k_lossless_decomposition_levels_for_options, J2kBlockCodingMode,
         J2kLosslessEncodeOptions, J2kLosslessSamples, J2kProgressionOrder,
     };
-    use j2k_core::PixelFormat;
-    use wsi_rs::output::metal::{MetalDeviceStorage, MetalDeviceTile};
+    use j2k_core::PixelFormat as J2kPixelFormat;
+    use wsi_rs::output::metal::MetalDeviceTile;
+    use wsi_rs::PixelFormat as WsiPixelFormat;
+
+    fn rgb8_pixels_for_test(width: u32, height: u32, multiplier: u32) -> Vec<u8> {
+        (0..width * height * 3)
+            .map(|idx| ((idx * multiplier) & 0xFF) as u8)
+            .collect()
+    }
+
+    fn metal_rgb8_tile_for_test(pixels: &[u8], width: u32, height: u32) -> MetalDeviceTile {
+        let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
+        let buffer = session.device().new_buffer_with_data(
+            pixels.as_ptr().cast(),
+            pixels.len() as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        MetalDeviceTile::from_buffer(
+            buffer,
+            0,
+            width,
+            height,
+            width as usize * 3,
+            WsiPixelFormat::Rgb8,
+        )
+    }
+
+    fn first_metal_frame_for_test(
+        encoded: Vec<Option<EncodedDicomJ2kFrame>>,
+    ) -> EncodedDicomJ2kFrame {
+        encoded
+            .into_iter()
+            .next()
+            .expect("one frame")
+            .expect("Metal frame")
+    }
+
+    fn assert_rgb8_j2k_frame_matches_pixels_for_test(
+        frame: EncodedDicomJ2kFrame,
+        pixels: &[u8],
+        width: u32,
+    ) {
+        assert!(frame.codestream_is_metal_buffer_backed());
+        let codestream = frame.codestream_bytes().expect("codestream bytes");
+        assert!(codestream.starts_with(&[0xFF, 0x4F]));
+        let mut decoded = vec![0u8; pixels.len()];
+        j2k::J2kDecoder::new(codestream)
+            .expect("parse J2K")
+            .decode_into(&mut decoded, width as usize * 3, J2kPixelFormat::Rgb8)
+            .expect("decode J2K");
+        assert_eq!(decoded, pixels);
+    }
 
     #[test]
     fn auto_j2k_encoder_can_be_demoted_after_cpu_input_probe_wins() {
@@ -1088,25 +1138,8 @@ mod tests {
 
     #[test]
     fn metal_tile_encode_returns_buffer_backed_codestream_for_padded_tiles() {
-        let pixels: Vec<u8> = (0..8 * 8 * 3)
-            .map(|idx| ((idx * 29) & 0xFF) as u8)
-            .collect();
-        let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
-        let buffer = session.device().new_buffer_with_data(
-            pixels.as_ptr().cast(),
-            pixels.len() as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        );
-        let tile = MetalDeviceTile {
-            width: 8,
-            height: 8,
-            pitch_bytes: 8 * 3,
-            format: PixelFormat::Rgb8,
-            storage: MetalDeviceStorage::Buffer {
-                buffer,
-                byte_offset: 0,
-            },
-        };
+        let pixels = rgb8_pixels_for_test(8, 8, 29);
+        let tile = metal_rgb8_tile_for_test(&pixels, 8, 8);
         let mut encoder = DicomJ2kEncoder::new(
             EncodeBackendPreference::RequireDevice,
             TransferSyntax::Jpeg2000Lossless,
@@ -1117,44 +1150,15 @@ mod tests {
             .encode_metal_tiles(&[tile], 8, 8)
             .expect("Metal DICOM tile encode")
             .frames;
-        let frame = encoded
-            .into_iter()
-            .next()
-            .expect("one frame")
-            .expect("Metal frame");
+        let frame = first_metal_frame_for_test(encoded);
 
-        assert!(frame.codestream_is_metal_buffer_backed());
-        let codestream = frame.codestream_bytes().expect("codestream bytes");
-        assert!(codestream.starts_with(&[0xFF, 0x4F]));
-        let mut decoded = vec![0u8; pixels.len()];
-        j2k::J2kDecoder::new(codestream)
-            .expect("parse J2K")
-            .decode_into(&mut decoded, 8 * 3, PixelFormat::Rgb8)
-            .expect("decode J2K");
-        assert_eq!(decoded, pixels);
+        assert_rgb8_j2k_frame_matches_pixels_for_test(frame, &pixels, 8);
     }
 
     #[test]
     fn submitted_metal_tile_batch_wait_returns_buffer_backed_codestream() {
-        let pixels: Vec<u8> = (0..8 * 8 * 3)
-            .map(|idx| ((idx * 29) & 0xFF) as u8)
-            .collect();
-        let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
-        let buffer = session.device().new_buffer_with_data(
-            pixels.as_ptr().cast(),
-            pixels.len() as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        );
-        let tile = MetalDeviceTile {
-            width: 8,
-            height: 8,
-            pitch_bytes: 8 * 3,
-            format: PixelFormat::Rgb8,
-            storage: MetalDeviceStorage::Buffer {
-                buffer,
-                byte_offset: 0,
-            },
-        };
+        let pixels = rgb8_pixels_for_test(8, 8, 29);
+        let tile = metal_rgb8_tile_for_test(&pixels, 8, 8);
         let mut encoder = DicomJ2kEncoder::new(
             EncodeBackendPreference::RequireDevice,
             TransferSyntax::Jpeg2000Lossless,
@@ -1168,21 +1172,9 @@ mod tests {
             .wait()
             .expect("wait submitted Metal encode")
             .frames;
-        let frame = encoded
-            .into_iter()
-            .next()
-            .expect("one frame")
-            .expect("Metal frame");
+        let frame = first_metal_frame_for_test(encoded);
 
-        assert!(frame.codestream_is_metal_buffer_backed());
-        let codestream = frame.codestream_bytes().expect("codestream bytes");
-        assert!(codestream.starts_with(&[0xFF, 0x4F]));
-        let mut decoded = vec![0u8; pixels.len()];
-        j2k::J2kDecoder::new(codestream)
-            .expect("parse J2K")
-            .decode_into(&mut decoded, 8 * 3, PixelFormat::Rgb8)
-            .expect("decode J2K");
-        assert_eq!(decoded, pixels);
+        assert_rgb8_j2k_frame_matches_pixels_for_test(frame, &pixels, 8);
     }
 
     #[test]
@@ -1196,16 +1188,7 @@ mod tests {
             pixels.len() as u64,
             metal::MTLResourceOptions::StorageModeShared,
         );
-        let tile = MetalDeviceTile {
-            width: 7,
-            height: 5,
-            pitch_bytes: 7 * 3,
-            format: PixelFormat::Rgb8,
-            storage: MetalDeviceStorage::Buffer {
-                buffer,
-                byte_offset: 0,
-            },
-        };
+        let tile = MetalDeviceTile::from_buffer(buffer, 0, 7, 5, 7 * 3, WsiPixelFormat::Rgb8);
         let mut encoder = DicomJ2kEncoder::new(
             EncodeBackendPreference::RequireDevice,
             TransferSyntax::Jpeg2000Lossless,
@@ -1228,7 +1211,7 @@ mod tests {
         let mut decoded = vec![0u8; 8 * 8 * 3];
         j2k::J2kDecoder::new(codestream)
             .expect("parse J2K")
-            .decode_into(&mut decoded, 8 * 3, PixelFormat::Rgb8)
+            .decode_into(&mut decoded, 8 * 3, J2kPixelFormat::Rgb8)
             .expect("decode J2K");
         for y in 0..8usize {
             for x in 0..8usize {
@@ -1252,16 +1235,7 @@ mod tests {
             pixels.len() as u64,
             metal::MTLResourceOptions::StorageModeShared,
         );
-        let tile = MetalDeviceTile {
-            width: 8,
-            height: 8,
-            pitch_bytes: 8,
-            format: PixelFormat::Gray8,
-            storage: MetalDeviceStorage::Buffer {
-                buffer,
-                byte_offset: 0,
-            },
-        };
+        let tile = MetalDeviceTile::from_buffer(buffer, 0, 8, 8, 8, WsiPixelFormat::Gray8);
         let mut encoder = DicomJ2kEncoder::new(
             EncodeBackendPreference::RequireDevice,
             TransferSyntax::Htj2kLossless,
@@ -1289,7 +1263,7 @@ mod tests {
         let mut decoded = vec![0u8; pixels.len()];
         j2k::J2kDecoder::new(codestream)
             .expect("parse HTJ2K")
-            .decode_into(&mut decoded, 8, PixelFormat::Gray8)
+            .decode_into(&mut decoded, 8, J2kPixelFormat::Gray8)
             .expect("decode HTJ2K");
         assert_eq!(decoded, pixels);
     }
@@ -1305,16 +1279,7 @@ mod tests {
             pixels.len() as u64,
             metal::MTLResourceOptions::StorageModeShared,
         );
-        let tile = MetalDeviceTile {
-            width: 256,
-            height: 256,
-            pitch_bytes: 256 * 3,
-            format: PixelFormat::Rgb8,
-            storage: MetalDeviceStorage::Buffer {
-                buffer,
-                byte_offset: 0,
-            },
-        };
+        let tile = MetalDeviceTile::from_buffer(buffer, 0, 256, 256, 256 * 3, WsiPixelFormat::Rgb8);
         let mut encoder = DicomJ2kEncoder::new(
             EncodeBackendPreference::RequireDevice,
             TransferSyntax::Htj2kLosslessRpcl,
@@ -1345,7 +1310,7 @@ mod tests {
         let mut decoded = vec![0u8; pixels.len()];
         j2k::J2kDecoder::new(codestream)
             .expect("parse HTJ2K")
-            .decode_into(&mut decoded, 256 * 3, PixelFormat::Rgb8)
+            .decode_into(&mut decoded, 256 * 3, J2kPixelFormat::Rgb8)
             .expect("decode HTJ2K");
         assert_eq!(decoded, pixels);
     }
@@ -1359,11 +1324,14 @@ mod tests {
             J2kLosslessSamples::new(&pixels, 512, 512, 3, 8, false).expect("valid RGB samples");
         let expected_levels = j2k_lossless_decomposition_levels_for_options(
             samples,
-            J2kLosslessEncodeOptions {
-                block_coding_mode: J2kBlockCodingMode::HighThroughput,
-                progression: J2kProgressionOrder::Rpcl,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            J2kLosslessEncodeOptions::new(
+                J2kLosslessEncodeOptions::default().backend,
+                J2kBlockCodingMode::HighThroughput,
+                J2kProgressionOrder::Rpcl,
+                J2kLosslessEncodeOptions::default().max_decomposition_levels,
+                J2kLosslessEncodeOptions::default().reversible_transform,
+                J2kLosslessEncodeOptions::default().validation,
+            ),
         );
         assert_eq!(expected_levels, 3);
 
@@ -1373,16 +1341,7 @@ mod tests {
             pixels.len() as u64,
             metal::MTLResourceOptions::StorageModeShared,
         );
-        let tile = MetalDeviceTile {
-            width: 512,
-            height: 512,
-            pitch_bytes: 512 * 3,
-            format: PixelFormat::Rgb8,
-            storage: MetalDeviceStorage::Buffer {
-                buffer,
-                byte_offset: 0,
-            },
-        };
+        let tile = MetalDeviceTile::from_buffer(buffer, 0, 512, 512, 512 * 3, WsiPixelFormat::Rgb8);
         let mut encoder = DicomJ2kEncoder::new(
             EncodeBackendPreference::RequireDevice,
             TransferSyntax::Htj2kLosslessRpcl,
@@ -1405,7 +1364,7 @@ mod tests {
         let mut decoded = vec![0u8; pixels.len()];
         j2k::J2kDecoder::new(codestream)
             .expect("parse HTJ2K")
-            .decode_into(&mut decoded, 512 * 3, PixelFormat::Rgb8)
+            .decode_into(&mut decoded, 512 * 3, J2kPixelFormat::Rgb8)
             .expect("decode HTJ2K");
         assert_eq!(decoded, pixels);
     }
@@ -1434,16 +1393,7 @@ mod tests {
             pixels.len() as u64,
             metal::MTLResourceOptions::StorageModeShared,
         );
-        let tile = MetalDeviceTile {
-            width: 7,
-            height: 5,
-            pitch_bytes: 7 * 3,
-            format: PixelFormat::Rgb8,
-            storage: MetalDeviceStorage::Buffer {
-                buffer,
-                byte_offset: 0,
-            },
-        };
+        let tile = MetalDeviceTile::from_buffer(buffer, 0, 7, 5, 7 * 3, WsiPixelFormat::Rgb8);
         let mut encoder = DicomJ2kEncoder::new(
             EncodeBackendPreference::RequireDevice,
             TransferSyntax::Htj2kLosslessRpcl,
@@ -1510,16 +1460,7 @@ mod tests {
             pixels.len() as u64,
             metal::MTLResourceOptions::StorageModeShared,
         );
-        let tile = MetalDeviceTile {
-            width: 256,
-            height: 256,
-            pitch_bytes: 256 * 3,
-            format: PixelFormat::Rgb8,
-            storage: MetalDeviceStorage::Buffer {
-                buffer,
-                byte_offset: 0,
-            },
-        };
+        let tile = MetalDeviceTile::from_buffer(buffer, 0, 256, 256, 256 * 3, WsiPixelFormat::Rgb8);
         let mut encoder = DicomJ2kEncoder::new(
             EncodeBackendPreference::PreferDevice,
             TransferSyntax::Htj2kLosslessRpcl,

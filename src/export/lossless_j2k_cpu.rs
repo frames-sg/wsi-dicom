@@ -138,17 +138,13 @@ fn native_lossless_j2k_cpu_tile_requests(
             tiles_across,
             tiles_down,
         } => (*tile_width, *tile_height, *tiles_across, *tiles_down),
-        TileLayout::WholeLevel { .. } | TileLayout::Irregular { .. } => return None,
+        TileLayout::WholeLevel { .. } | TileLayout::Irregular { .. } | _ => return None,
     };
     if tile_width == 0 || tile_height == 0 || tile_width != tile_size || tile_height != tile_size {
         return None;
     }
     let tile_size_u64 = u64::from(tile_size);
-    let plane = PlaneSelection {
-        z: location.z,
-        c: location.c,
-        t: location.t,
-    };
+    let plane = PlaneSelection::new(location.z, location.c, location.t);
     frames
         .iter()
         .map(|frame| {
@@ -164,14 +160,16 @@ fn native_lossless_j2k_cpu_tile_requests(
             if col >= tiles_across || row >= tiles_down {
                 return None;
             }
-            Some(TileRequest {
-                scene: location.scene_idx,
-                series: location.series_idx,
-                level: location.level_idx,
-                plane,
-                col: i64::try_from(col).ok()?,
-                row: i64::try_from(row).ok()?,
-            })
+            Some(
+                TileRequest::new(
+                    location.scene_idx,
+                    location.series_idx,
+                    location.level_idx,
+                    i64::try_from(col).ok()?,
+                    i64::try_from(row).ok()?,
+                )
+                .with_plane(plane),
+            )
         })
         .collect()
 }
@@ -363,7 +361,7 @@ pub(super) fn lossless_j2k_samples_from_prepared_region<'a>(
         &prepared.bytes,
         tile_size,
         tile_size,
-        prepared.profile.components,
+        u16::from(prepared.profile.components),
         prepared.profile.bits_allocated as u8,
         false,
     )
@@ -401,16 +399,16 @@ mod tests {
 
     #[test]
     fn native_cpu_tile_batch_requests_require_exact_source_tile_geometry() {
-        let level = wsi_rs::Level {
-            dimensions: (2048, 1024),
-            downsample: 1.0,
-            tile_layout: TileLayout::Regular {
+        let level = wsi_rs::Level::new(
+            (2048, 1024),
+            1.0,
+            TileLayout::Regular {
                 tile_width: 512,
                 tile_height: 512,
                 tiles_across: 4,
                 tiles_down: 2,
             },
-        };
+        );
         let frames = [
             LosslessJ2kCpuBatchFrame {
                 x: 0,
@@ -438,10 +436,13 @@ mod tests {
             .expect("exact regular source tiles should use wsi_rs batch reads");
 
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].scene, 1);
-        assert_eq!(requests[0].series, 2);
-        assert_eq!(requests[0].level, 3);
-        assert_eq!(requests[0].plane, PlaneSelection { z: 4, c: 5, t: 6 });
+        assert_eq!(requests[0].scene.get(), 1);
+        assert_eq!(requests[0].series.get(), 2);
+        assert_eq!(requests[0].level.get(), 3);
+        assert_eq!(
+            requests[0].plane,
+            wsi_rs::PlaneIdx::new(PlaneSelection::new(4, 5, 6))
+        );
         assert_eq!((requests[0].col, requests[0].row), (0, 0));
         assert_eq!((requests[1].col, requests[1].row), (1, 1));
 

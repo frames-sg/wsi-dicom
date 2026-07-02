@@ -271,15 +271,7 @@ impl MetalInputTileReader {
                 reason: "Metal is unavailable for WSI input tile decode".into(),
             })?;
             self.device = Some(device.clone());
-            let sessions = wsi_rs::output::metal::MetalBackendSessions::new(
-                j2k_jpeg_metal::MetalBackendSession::new(device.clone()),
-                j2k_metal::MetalBackendSession::new(device),
-            );
-            self.sessions = Some(if self.private_jpeg_decode {
-                sessions.with_private_jpeg_decode()
-            } else {
-                sessions
-            });
+            self.sessions = Some(wsi_rs::output::metal::MetalBackendSessions::new(device));
         }
         self.sessions
             .as_ref()
@@ -344,8 +336,8 @@ impl MetalInputTileReader {
 
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 pub(super) fn wsi_rs_device_decode_opted_in() -> bool {
-    env_flag_enabled(STATUMEN_JPEG_DEVICE_DECODE_ENV)
-        || env_flag_enabled(STATUMEN_JP2K_DEVICE_DECODE_ENV)
+    env_flag_enabled(WSI_RS_JPEG_DEVICE_DECODE_ENV)
+        || env_flag_enabled(WSI_RS_JP2K_DEVICE_DECODE_ENV)
 }
 
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
@@ -540,20 +532,22 @@ pub(super) fn try_encode_metal_input_tile_run(
             slide,
             metal_input,
             j2k_encoder,
-            level,
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-            row,
-            start_col,
-            tile_count,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
-            row_run_key,
+            metal_row_batch::MetalTileGridRunRequest {
+                level,
+                scene_idx,
+                series_idx,
+                level_idx,
+                z,
+                c,
+                t,
+                row,
+                start_col,
+                tile_count,
+                matrix_columns,
+                matrix_rows,
+                tile_size,
+                first_row_key: row_run_key,
+            },
         )? {
             return Ok(run);
         }

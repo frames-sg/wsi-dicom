@@ -259,65 +259,22 @@ fn external_openjpeg_decodes_jpeg2000_exported_frame_when_available() {
         return;
     };
     let tmp = tempfile::tempdir().unwrap();
-    let source = tmp.path().join("source.dcm");
-    let out = tmp.path().join("out");
-    let expected = vec![
-        255u8, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0, 0, 255, 255, 255, 0, 255,
-    ];
-    write_source_dicom_with_pixels(
-        &source,
+    let frame = write_external_j2k_decoder_frame_for_test(
+        tmp.path(),
         "1.2.826.0.1.3680043.10.999.91",
-        3,
-        2,
-        expected.clone(),
+        TransferSyntax::Jpeg2000Lossless,
     );
 
-    let report = export_dicom(ExportRequest {
-        source_path: source,
-        output_dir: out,
-        options: ExportOptions {
-            tile_size: 3,
-            transfer_syntax: TransferSyntax::Jpeg2000Lossless,
-            encode_backend: EncodeBackendPreference::CpuOnly,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: false,
-            ..ExportOptions::default()
-        },
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: None,
-    })
-    .unwrap();
-    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-    let fragments = object
-        .element(tags::PIXEL_DATA)
-        .unwrap()
-        .value()
-        .fragments()
-        .unwrap();
-    assert_eq!(fragments.len(), 1);
-
-    let codestream_path = tmp.path().join("frame.j2k");
-    let ppm_path = tmp.path().join("frame.ppm");
-    std::fs::write(
-        &codestream_path,
-        dicom_fragment_payload_without_padding(&fragments[0]),
-    )
-    .unwrap();
     let status = std::process::Command::new(opj_decompress)
         .args(["-i"])
-        .arg(&codestream_path)
+        .arg(&frame.codestream_path)
         .args(["-o"])
-        .arg(&ppm_path)
+        .arg(&frame.ppm_path)
         .status()
         .unwrap();
     assert!(status.success(), "opj_decompress failed with {status}");
 
-    let decoded = read_binary_ppm_for_test(&ppm_path);
-
-    assert_eq!(decoded.0, 3);
-    assert_eq!(decoded.1, 3);
-    assert_eq!(&decoded.2[..expected.len()], expected.as_slice());
-    assert_eq!(&decoded.2[expected.len()..], &[0; 9]);
+    assert_external_decoder_ppm_matches_source_for_test(&frame.ppm_path, &frame.expected_pixels);
 }
 
 #[test]
@@ -349,35 +306,10 @@ fn external_dicom_validators_accept_jpeg_baseline_passthrough_when_available() {
 #[test]
 fn external_dicom_validators_accept_general_j2k_passthrough_when_available() {
     let tmp = tempfile::tempdir().unwrap();
-    let bytes: Vec<u8> = (0..2 * 2 * 3)
-        .map(|value| ((value * 17) & 0xFF) as u8)
-        .collect();
-    let samples = J2kLosslessSamples::new(&bytes, 2, 2, 3, 8, false).expect("valid samples");
-    let codestream = encode_dicom_lossless(
-        samples,
-        TransferSyntax::Jpeg2000Lossless,
-        EncodeBackendPreference::CpuOnly,
-        CodecValidation::RoundTrip,
-    )
-    .unwrap();
     let source = tmp.path().join("source.svs");
-    write_tiled_jp2k_ycbcr_tiff(&source, 2, 2, 2, 2, std::slice::from_ref(&codestream));
+    write_general_j2k_ycbcr_passthrough_tiff_for_test(&source, 17);
 
-    let report = export_dicom(ExportRequest {
-        source_path: source,
-        output_dir: tmp.path().join("out"),
-        options: ExportOptions {
-            tile_size: 512,
-            transfer_syntax: TransferSyntax::Jpeg2000,
-            encode_backend: EncodeBackendPreference::RequireDevice,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: true,
-            ..ExportOptions::default()
-        },
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: None,
-    })
-    .unwrap();
+    let report = export_general_j2k_passthrough_for_test(source, tmp.path().join("out"));
 
     run_dicom_validators_for_test(&report.instances[0].path);
 }
@@ -757,16 +689,16 @@ fn external_djpeg_decodes_jpeg_baseline_fallback_when_available() {
 
 #[test]
 fn jpeg_baseline_whole_level_pathological_strip_uses_requested_tile_geometry() {
-    let level = wsi_rs::Level {
-        dimensions: (130, 31),
-        downsample: 1.0,
-        tile_layout: TileLayout::WholeLevel {
+    let level = wsi_rs::Level::new(
+        (130, 31),
+        1.0,
+        TileLayout::WholeLevel {
             width: 130,
             height: 31,
             virtual_tile_width: 64,
             virtual_tile_height: 8,
         },
-    };
+    );
 
     let geometry = jpeg_baseline_frame_geometry(&level, 512).unwrap();
 
@@ -778,16 +710,16 @@ fn jpeg_baseline_whole_level_pathological_strip_uses_requested_tile_geometry() {
 
 #[test]
 fn jpeg_baseline_regular_fallback_uses_requested_tile_geometry() {
-    let level = wsi_rs::Level {
-        dimensions: (17, 9),
-        downsample: 1.0,
-        tile_layout: TileLayout::Regular {
+    let level = wsi_rs::Level::new(
+        (17, 9),
+        1.0,
+        TileLayout::Regular {
             tile_width: 8,
             tile_height: 8,
             tiles_across: 3,
             tiles_down: 2,
         },
-    };
+    );
 
     let geometry = jpeg_baseline_frame_geometry(&level, 16).unwrap();
 
@@ -799,18 +731,24 @@ fn jpeg_baseline_regular_fallback_uses_requested_tile_geometry() {
 
 #[test]
 fn jpeg_baseline_raw_passthrough_requires_jpeg_compression_and_matching_geometry() {
-    let mut raw = RawCompressedTile {
-        compression: Compression::Jp2kRgb,
-        width: 512,
-        height: 512,
-        bits_allocated: 8,
-        samples_per_pixel: 3,
-        photometric_interpretation: EncodedTilePhotometricInterpretation::Rgb,
-        data: vec![0xFF, 0x4F],
-    };
+    let raw_j2k = RawCompressedTile::builder(Compression::Jp2kRgb)
+        .dimensions(512, 512)
+        .bits_allocated(8)
+        .samples_per_pixel(3)
+        .photometric_interpretation(EncodedTilePhotometricInterpretation::Rgb)
+        .data(vec![0xFF, 0x4F])
+        .build()
+        .unwrap();
+    let raw_jpeg = RawCompressedTile::builder(Compression::Jpeg)
+        .dimensions(512, 512)
+        .bits_allocated(8)
+        .samples_per_pixel(3)
+        .photometric_interpretation(EncodedTilePhotometricInterpretation::Rgb)
+        .data(vec![0xFF, 0xD8])
+        .build()
+        .unwrap();
 
-    assert!(!raw_jpeg_matches_frame_geometry(&raw, 512, 512));
-    raw.compression = Compression::Jpeg;
-    assert!(raw_jpeg_matches_frame_geometry(&raw, 512, 512));
-    assert!(!raw_jpeg_matches_frame_geometry(&raw, 256, 512));
+    assert!(!raw_jpeg_matches_frame_geometry(&raw_j2k, 512, 512));
+    assert!(raw_jpeg_matches_frame_geometry(&raw_jpeg, 512, 512));
+    assert!(!raw_jpeg_matches_frame_geometry(&raw_jpeg, 256, 512));
 }

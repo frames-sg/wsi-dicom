@@ -31,20 +31,18 @@ pub(super) fn read_raw_jpeg_retile_display_tile(
         reason: "JPEG retile tile row exceeds i64".into(),
     })?;
     let started = Instant::now();
-    let raw = match slide.read_raw_compressed_display_tile(&TileViewRequest {
-        scene: location.scene_idx,
-        series: location.series_idx,
-        level: location.level_idx,
-        plane: PlaneSelection {
-            z: location.z,
-            c: location.c,
-            t: location.t,
-        },
-        col: col_i64,
-        row: row_i64,
-        tile_width: frame_columns,
-        tile_height: frame_rows,
-    }) {
+    let raw = match slide.read_raw_compressed_display_tile(
+        &TileViewRequest::new(
+            location.scene_idx,
+            location.series_idx,
+            location.level_idx,
+            col_i64,
+            row_i64,
+            frame_columns,
+            frame_rows,
+        )
+        .with_plane(PlaneSelection::new(location.z, location.c, location.t)),
+    ) {
         Ok(raw) => raw,
         Err(err) => {
             return Ok(RawJpegRetileProbe::Rejected(
@@ -64,7 +62,7 @@ pub(super) fn read_raw_jpeg_retile_display_tile(
     }
 }
 
-const STATUMEN_RAW_JPEG_RETILE_ERROR_MARKERS: [&str; 3] = ["mcu", "restart", "dct"];
+const WSI_RS_RAW_JPEG_RETILE_ERROR_MARKERS: [&str; 3] = ["mcu", "restart", "dct"];
 
 fn classify_raw_jpeg_retile_error(err: &WsiError) -> JpegRetileRejectionReason {
     let message = match err {
@@ -73,7 +71,7 @@ fn classify_raw_jpeg_retile_error(err: &WsiError) -> JpegRetileRejectionReason {
         _ => return JpegRetileRejectionReason::SourceUnsupported,
     };
     let message = message.to_ascii_lowercase();
-    if STATUMEN_RAW_JPEG_RETILE_ERROR_MARKERS
+    if WSI_RS_RAW_JPEG_RETILE_ERROR_MARKERS
         .iter()
         .any(|marker| message.contains(marker))
     {
