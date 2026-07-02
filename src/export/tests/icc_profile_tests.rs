@@ -1,25 +1,33 @@
 use super::*;
 
-#[test]
-fn export_dicom_defaults_missing_icc_to_assumed_srgb() {
-    let tmp = tempfile::tempdir().unwrap();
-    let jpeg = encode_test_jpeg(8, 8, [160, 20, 40]);
-    let source = tmp.path().join("source.svs");
+fn export_jpeg_baseline_icc_tiff_for_test(
+    work_dir: &std::path::Path,
+    jpeg: Vec<u8>,
+    icc_profile_policy: IccProfilePolicy,
+) -> Result<ExportReport, Error> {
+    let source = work_dir.join("source.svs");
     write_tiled_jpeg_tiff(&source, 8, 8, 8, 8, std::slice::from_ref(&jpeg));
-    let out = tmp.path().join("out");
-
-    let report = export_dicom(ExportRequest {
+    export_dicom(ExportRequest {
         source_path: source,
-        output_dir: out,
+        output_dir: work_dir.join("out"),
         options: ExportOptions {
             tile_size: 8,
             transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+            icc_profile_policy,
             ..ExportOptions::default()
         },
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
-    .unwrap();
+}
+
+#[test]
+fn export_dicom_defaults_missing_icc_to_assumed_srgb() {
+    let tmp = tempfile::tempdir().unwrap();
+    let jpeg = encode_test_jpeg(8, 8, [160, 20, 40]);
+    let report =
+        export_jpeg_baseline_icc_tiff_for_test(tmp.path(), jpeg, IccProfilePolicy::FallbackSrgb)
+            .unwrap();
 
     assert_eq!(
         report.instances[0].icc_profile_source,
@@ -35,22 +43,11 @@ fn export_dicom_defaults_missing_icc_to_assumed_srgb() {
 fn export_dicom_can_assume_display_p3_when_icc_is_missing() {
     let tmp = tempfile::tempdir().unwrap();
     let jpeg = encode_test_jpeg(8, 8, [160, 20, 40]);
-    let source = tmp.path().join("source.svs");
-    write_tiled_jpeg_tiff(&source, 8, 8, 8, 8, std::slice::from_ref(&jpeg));
-    let out = tmp.path().join("out");
-
-    let report = export_dicom(ExportRequest {
-        source_path: source,
-        output_dir: out,
-        options: ExportOptions {
-            tile_size: 8,
-            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
-            icc_profile_policy: IccProfilePolicy::FallbackDisplayP3,
-            ..ExportOptions::default()
-        },
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: None,
-    })
+    let report = export_jpeg_baseline_icc_tiff_for_test(
+        tmp.path(),
+        jpeg,
+        IccProfilePolicy::FallbackDisplayP3,
+    )
     .unwrap();
 
     assert_eq!(
@@ -67,23 +64,8 @@ fn export_dicom_can_assume_display_p3_when_icc_is_missing() {
 fn export_dicom_strict_icc_fails_when_source_has_no_icc() {
     let tmp = tempfile::tempdir().unwrap();
     let jpeg = encode_test_jpeg(8, 8, [160, 20, 40]);
-    let source = tmp.path().join("source.svs");
-    write_tiled_jpeg_tiff(&source, 8, 8, 8, 8, std::slice::from_ref(&jpeg));
-    let out = tmp.path().join("out");
-
-    let err = export_dicom(ExportRequest {
-        source_path: source,
-        output_dir: out,
-        options: ExportOptions {
-            tile_size: 8,
-            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
-            icc_profile_policy: IccProfilePolicy::Strict,
-            ..ExportOptions::default()
-        },
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: None,
-    })
-    .unwrap_err();
+    let err = export_jpeg_baseline_icc_tiff_for_test(tmp.path(), jpeg, IccProfilePolicy::Strict)
+        .unwrap_err();
 
     assert!(err.to_string().contains("ICC"), "unexpected error: {err}");
 }
@@ -92,23 +74,9 @@ fn export_dicom_strict_icc_fails_when_source_has_no_icc() {
 fn export_dicom_can_omit_missing_icc_when_requested() {
     let tmp = tempfile::tempdir().unwrap();
     let jpeg = encode_test_jpeg(8, 8, [160, 20, 40]);
-    let source = tmp.path().join("source.svs");
-    write_tiled_jpeg_tiff(&source, 8, 8, 8, 8, std::slice::from_ref(&jpeg));
-    let out = tmp.path().join("out");
-
-    let report = export_dicom(ExportRequest {
-        source_path: source,
-        output_dir: out,
-        options: ExportOptions {
-            tile_size: 8,
-            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
-            icc_profile_policy: IccProfilePolicy::OmitIfMissing,
-            ..ExportOptions::default()
-        },
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: None,
-    })
-    .unwrap();
+    let report =
+        export_jpeg_baseline_icc_tiff_for_test(tmp.path(), jpeg, IccProfilePolicy::OmitIfMissing)
+            .unwrap();
 
     assert_eq!(
         report.instances[0].icc_profile_source,
@@ -122,22 +90,9 @@ fn export_dicom_uses_embedded_jpeg_icc_when_available() {
     let tmp = tempfile::tempdir().unwrap();
     let icc_profile = synthetic_display_p3_icc_profile_for_test();
     let jpeg = jpeg_with_icc_profile(encode_test_jpeg(8, 8, [160, 20, 40]), &icc_profile);
-    let source = tmp.path().join("source.svs");
-    write_tiled_jpeg_tiff(&source, 8, 8, 8, 8, std::slice::from_ref(&jpeg));
-    let out = tmp.path().join("out");
-
-    let report = export_dicom(ExportRequest {
-        source_path: source,
-        output_dir: out,
-        options: ExportOptions {
-            tile_size: 8,
-            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
-            ..ExportOptions::default()
-        },
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: None,
-    })
-    .unwrap();
+    let report =
+        export_jpeg_baseline_icc_tiff_for_test(tmp.path(), jpeg, IccProfilePolicy::FallbackSrgb)
+            .unwrap();
 
     assert_eq!(
         report.instances[0].icc_profile_source,

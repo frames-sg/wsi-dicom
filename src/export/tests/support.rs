@@ -69,6 +69,224 @@ pub(super) fn assert_j2k_facade_roundtrip(samples: J2kLosslessSamples<'_>, codes
     assert_eq!(decoded, samples.data);
 }
 
+pub(super) fn write_general_j2k_ycbcr_passthrough_tiff_for_test(
+    source_path: &std::path::Path,
+    sample_multiplier: u32,
+) -> Vec<u8> {
+    let bytes = (0..12u32)
+        .map(|value| ((value * sample_multiplier) & 0xFF) as u8)
+        .collect::<Vec<_>>();
+    let samples = J2kLosslessSamples::new(&bytes, 2, 2, 3, 8, false).expect("valid samples");
+    let codestream = encode_dicom_lossless(
+        samples,
+        TransferSyntax::Jpeg2000Lossless,
+        EncodeBackendPreference::CpuOnly,
+        CodecValidation::RoundTrip,
+    )
+    .unwrap();
+    write_tiled_jp2k_ycbcr_tiff(source_path, 2, 2, 2, 2, std::slice::from_ref(&codestream));
+    codestream
+}
+
+pub(super) fn export_general_j2k_passthrough_for_test(
+    source_path: std::path::PathBuf,
+    output_dir: std::path::PathBuf,
+) -> ExportReport {
+    export_dicom(ExportRequest {
+        source_path,
+        output_dir,
+        options: ExportOptions {
+            tile_size: 512,
+            transfer_syntax: TransferSyntax::Jpeg2000,
+            encode_backend: EncodeBackendPreference::RequireDevice,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: true,
+            ..ExportOptions::default()
+        },
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: None,
+    })
+    .unwrap()
+}
+
+pub(super) fn assert_single_j2k_passthrough_avoids_gpu_for_test(report: &ExportReport) {
+    assert_eq!(report.metrics.routes.total_frames, 1);
+    assert_eq!(report.metrics.routes.j2k_passthrough_frames, 1);
+    assert_eq!(report.metrics.routes.cpu_input_frames, 0);
+    assert_eq!(report.metrics.routes.gpu_input_decode_frames, 0);
+    assert_eq!(report.metrics.routes.gpu_encode_frames, 0);
+    assert_eq!(report.metrics.routes.gpu_input_decode_batches, 0);
+    assert_eq!(report.metrics.routes.gpu_compose_batches, 0);
+    assert_eq!(report.metrics.routes.gpu_encode_batches, 0);
+    assert_eq!(report.metrics.routes.cpu_fallback_frames, 0);
+}
+
+pub(super) struct J2kEdgeFallbackCodestreamsForTest {
+    pub(super) interior: Vec<u8>,
+    pub(super) edge: Vec<u8>,
+}
+
+pub(super) fn j2k_edge_fallback_codestreams_for_test() -> J2kEdgeFallbackCodestreamsForTest {
+    let interior_bytes: Vec<u8> = (0..2 * 2 * 3)
+        .map(|value| ((value * 7) & 0xFF) as u8)
+        .collect();
+    let interior_samples =
+        J2kLosslessSamples::new(&interior_bytes, 2, 2, 3, 8, false).expect("valid samples");
+    let interior = encode_dicom_lossless(
+        interior_samples,
+        TransferSyntax::Jpeg2000Lossless,
+        EncodeBackendPreference::CpuOnly,
+        CodecValidation::RoundTrip,
+    )
+    .unwrap();
+
+    let edge_bytes: Vec<u8> = (0..6).map(|value| ((value * 11) & 0xFF) as u8).collect();
+    let edge_samples =
+        J2kLosslessSamples::new(&edge_bytes, 1, 2, 3, 8, false).expect("valid edge samples");
+    let edge = encode_dicom_lossless(
+        edge_samples,
+        TransferSyntax::Jpeg2000Lossless,
+        EncodeBackendPreference::CpuOnly,
+        CodecValidation::RoundTrip,
+    )
+    .unwrap();
+
+    J2kEdgeFallbackCodestreamsForTest { interior, edge }
+}
+
+pub(super) struct Htj2kRpclDicomSourceForTest {
+    pub(super) path: std::path::PathBuf,
+    pub(super) fragments: Vec<Vec<u8>>,
+}
+
+pub(super) fn write_htj2k_rpcl_dicom_source_for_test(
+    work_dir: &std::path::Path,
+    sop_instance_uid: &str,
+    width: u32,
+    height: u32,
+) -> Htj2kRpclDicomSourceForTest {
+    let raw_source = work_dir.join("source.dcm");
+    write_source_dicom_with_dimensions(&raw_source, sop_instance_uid, width, height);
+
+    let source_report = export_dicom(ExportRequest {
+        source_path: raw_source,
+        output_dir: work_dir.join("source-dicom"),
+        options: ExportOptions {
+            tile_size: 2,
+            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: false,
+            ..ExportOptions::default()
+        },
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: None,
+    })
+    .unwrap();
+    let path = source_report.instances[0].path.clone();
+    let object = dicom_object::open_file(&path).unwrap();
+    let fragments = object
+        .element(tags::PIXEL_DATA)
+        .unwrap()
+        .value()
+        .fragments()
+        .unwrap()
+        .iter()
+        .map(|fragment| dicom_fragment_payload_without_padding(fragment).to_vec())
+        .collect::<Vec<_>>();
+
+    Htj2kRpclDicomSourceForTest { path, fragments }
+}
+
+pub(super) fn export_htj2k_rpcl_dicom_passthrough_for_test(
+    source: &Htj2kRpclDicomSourceForTest,
+    output_dir: std::path::PathBuf,
+) -> ExportReport {
+    export_dicom(ExportRequest {
+        source_path: source.path.clone(),
+        output_dir,
+        options: ExportOptions {
+            tile_size: 2,
+            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+            encode_backend: EncodeBackendPreference::RequireDevice,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: false,
+            ..ExportOptions::default()
+        },
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: None,
+    })
+    .unwrap()
+}
+
+pub(super) struct ExternalJ2kDecoderFrameForTest {
+    pub(super) expected_pixels: Vec<u8>,
+    pub(super) codestream_path: std::path::PathBuf,
+    pub(super) ppm_path: std::path::PathBuf,
+}
+
+pub(super) fn write_external_j2k_decoder_frame_for_test(
+    work_dir: &std::path::Path,
+    sop_instance_uid: &str,
+    transfer_syntax: TransferSyntax,
+) -> ExternalJ2kDecoderFrameForTest {
+    let source = work_dir.join("source.dcm");
+    let expected_pixels = vec![
+        255u8, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0, 0, 255, 255, 255, 0, 255,
+    ];
+    write_source_dicom_with_pixels(&source, sop_instance_uid, 3, 2, expected_pixels.clone());
+
+    let report = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: work_dir.join("out"),
+        options: ExportOptions {
+            tile_size: 3,
+            transfer_syntax,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: false,
+            ..ExportOptions::default()
+        },
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: None,
+    })
+    .unwrap();
+    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+    let fragments = object
+        .element(tags::PIXEL_DATA)
+        .unwrap()
+        .value()
+        .fragments()
+        .unwrap();
+    assert_eq!(fragments.len(), 1);
+
+    let codestream_path = work_dir.join("frame.j2k");
+    let ppm_path = work_dir.join("frame.ppm");
+    std::fs::write(
+        &codestream_path,
+        dicom_fragment_payload_without_padding(&fragments[0]),
+    )
+    .unwrap();
+
+    ExternalJ2kDecoderFrameForTest {
+        expected_pixels,
+        codestream_path,
+        ppm_path,
+    }
+}
+
+pub(super) fn assert_external_decoder_ppm_matches_source_for_test(
+    ppm_path: &std::path::Path,
+    expected_pixels: &[u8],
+) {
+    let decoded = read_binary_ppm_for_test(ppm_path);
+
+    assert_eq!(decoded.0, 3);
+    assert_eq!(decoded.1, 3);
+    assert_eq!(&decoded.2[..expected_pixels.len()], expected_pixels);
+    assert_eq!(&decoded.2[expected_pixels.len()..], &[0; 9]);
+}
+
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) fn auto_route_candidate(complete: bool, micros: u64) -> AutoLosslessJ2kRouteCandidate {
     AutoLosslessJ2kRouteCandidate {
@@ -94,14 +312,13 @@ pub(super) fn ndpi_jpeg_passthrough_level(
         else {
             continue;
         };
-        let Ok(raw) = slide.read_raw_compressed_tile(&TileRequest {
-            scene: 0,
-            series: 0,
-            level: level_idx as u32,
-            plane: PlaneSelection { z: 0, c: 0, t: 0 },
-            col: 0,
-            row: 0,
-        }) else {
+        let Ok(raw) = slide.read_raw_compressed_tile(&TileRequest::new(
+            0usize,
+            0usize,
+            level_idx as u32,
+            0,
+            0,
+        )) else {
             continue;
         };
         if !raw_jpeg_matches_frame_geometry(&raw, geometry.frame_columns, geometry.frame_rows) {
@@ -140,14 +357,13 @@ pub(super) fn ndpi_jpeg_passthrough_levels(
         let Ok(geometry) = jpeg_baseline_frame_geometry(level, tile_size) else {
             continue;
         };
-        let Ok(raw) = slide.read_raw_compressed_tile(&TileRequest {
-            scene: 0,
-            series: 0,
-            level: level_idx as u32,
-            plane: PlaneSelection { z: 0, c: 0, t: 0 },
-            col: 0,
-            row: 0,
-        }) else {
+        let Ok(raw) = slide.read_raw_compressed_tile(&TileRequest::new(
+            0usize,
+            0usize,
+            level_idx as u32,
+            0,
+            0,
+        )) else {
             continue;
         };
         if !raw_jpeg_matches_frame_geometry(&raw, geometry.frame_columns, geometry.frame_rows) {
@@ -171,7 +387,7 @@ pub(super) fn assert_aperio_jp2k_metal_input_tile_matches_cpu(tile_size: u32) {
     let Some(source) = std::env::var_os("WSI_DICOM_APERIO_JP2K_FIXTURE").map(PathBuf::from) else {
         return;
     };
-    std::env::set_var("STATUMEN_JP2K_DEVICE_DECODE", "1");
+    std::env::set_var("WSI_RS_JP2K_DEVICE_DECODE", "1");
 
     let slide = Slide::open(&source).unwrap();
     let level = &slide.dataset().scenes[0].series[0].levels[0];
@@ -230,14 +446,13 @@ pub(super) fn assert_aperio_jp2k_metal_input_tile_matches_cpu(tile_size: u32) {
     );
 
     let cpu_region = slide
-        .read_region(&RegionRequest {
-            scene: SceneId(0),
-            series: SeriesId(0),
-            level: LevelIdx(0),
-            plane: PlaneIdx(PlaneSelection { z: 0, c: 0, t: 0 }),
-            origin_px: (0, 0),
-            size_px: (tile_size, tile_size),
-        })
+        .read_region(&RegionRequest::new(
+            0usize,
+            0usize,
+            0u32,
+            (0, 0),
+            (tile_size, tile_size),
+        ))
         .unwrap();
     let expected = prepare_tile_samples(&cpu_region, tile_size, tile_size).unwrap();
     let actual = decode_j2k_frame_for_test(
@@ -346,16 +561,14 @@ pub(super) fn metal_test_tile(
         bytes.len() as u64,
         metal::MTLResourceOptions::StorageModeShared,
     );
-    wsi_rs::output::metal::MetalDeviceTile {
+    wsi_rs::output::metal::MetalDeviceTile::from_buffer(
+        buffer,
+        0,
         width,
         height,
-        pitch_bytes: width as usize * format.bytes_per_pixel(),
-        format,
-        storage: wsi_rs::output::metal::MetalDeviceStorage::Buffer {
-            buffer,
-            byte_offset: 0,
-        },
-    }
+        width as usize * format.bytes_per_pixel(),
+        wsi_pixel_format_from_j2k(format).expect("supported test pixel format"),
+    )
 }
 
 pub(super) fn write_source_dicom(path: &std::path::Path) {
@@ -376,14 +589,7 @@ pub(super) fn write_source_dicom_with_dimensions(
     width: u32,
     height: u32,
 ) {
-    let mut pixels = Vec::with_capacity((width as usize) * (height as usize) * 3);
-    for y in 0..height {
-        for x in 0..width {
-            pixels.push((x * 37 + y * 11) as u8);
-            pixels.push((x * 17 + y * 29) as u8);
-            pixels.push((x * 7 + y * 43) as u8);
-        }
-    }
+    let pixels = crate::synthetic_source::deterministic_rgb_pixels(width, height);
     write_source_dicom_with_pixels(path, sop_instance_uid, width, height, pixels);
 }
 
@@ -395,107 +601,15 @@ pub(super) fn write_source_dicom_with_pixels(
     pixels: Vec<u8>,
 ) {
     assert_eq!(pixels.len(), (width as usize) * (height as usize) * 3);
-    let mut object = InMemDicomObject::new_empty();
-    object.put(DataElement::new(
-        tags::SOP_CLASS_UID,
-        VR::UI,
-        uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE,
-    ));
-    object.put(DataElement::new(
-        tags::SOP_INSTANCE_UID,
-        VR::UI,
+    crate::synthetic_source::write_rgb_source_dicom(
+        path,
         sop_instance_uid,
-    ));
-    object.put(DataElement::new(
-        tags::SERIES_INSTANCE_UID,
-        VR::UI,
         "1.2.826.0.1.3680043.10.999",
-    ));
-    object.put(DataElement::new(
-        tags::IMAGE_TYPE,
-        VR::CS,
-        "ORIGINAL\\PRIMARY\\VOLUME\\NONE",
-    ));
-    object.put(DataElement::new(
-        tags::ROWS,
-        VR::US,
-        PrimitiveValue::from(height as u16),
-    ));
-    object.put(DataElement::new(
-        tags::COLUMNS,
-        VR::US,
-        PrimitiveValue::from(width as u16),
-    ));
-    object.put(DataElement::new(
-        tags::TOTAL_PIXEL_MATRIX_ROWS,
-        VR::UL,
-        PrimitiveValue::from(height),
-    ));
-    object.put(DataElement::new(
-        tags::TOTAL_PIXEL_MATRIX_COLUMNS,
-        VR::UL,
-        PrimitiveValue::from(width),
-    ));
-    object.put(DataElement::new(
-        tags::PIXEL_SPACING,
-        VR::DS,
-        "0.0005\\0.0005",
-    ));
-    object.put(DataElement::new(
-        tags::NUMBER_OF_FRAMES,
-        VR::IS,
-        PrimitiveValue::from(1u32),
-    ));
-    object.put(DataElement::new(
-        tags::SAMPLES_PER_PIXEL,
-        VR::US,
-        PrimitiveValue::from(3u16),
-    ));
-    object.put(DataElement::new(
-        tags::PHOTOMETRIC_INTERPRETATION,
-        VR::CS,
-        "RGB",
-    ));
-    object.put(DataElement::new(
-        tags::PLANAR_CONFIGURATION,
-        VR::US,
-        PrimitiveValue::from(0u16),
-    ));
-    object.put(DataElement::new(
-        tags::BITS_ALLOCATED,
-        VR::US,
-        PrimitiveValue::from(8u16),
-    ));
-    object.put(DataElement::new(
-        tags::BITS_STORED,
-        VR::US,
-        PrimitiveValue::from(8u16),
-    ));
-    object.put(DataElement::new(
-        tags::HIGH_BIT,
-        VR::US,
-        PrimitiveValue::from(7u16),
-    ));
-    object.put(DataElement::new(
-        tags::PIXEL_REPRESENTATION,
-        VR::US,
-        PrimitiveValue::from(0u16),
-    ));
-    object.put(DataElement::new(
-        tags::PIXEL_DATA,
-        VR::OB,
-        PrimitiveValue::from(pixels),
-    ));
-    object
-        .with_meta(
-            FileMetaTableBuilder::new()
-                .media_storage_sop_class_uid(uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE)
-                .media_storage_sop_instance_uid(sop_instance_uid)
-                .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN),
-        )
-        .unwrap()
-        .write_to_file(path)
-        .unwrap();
+        width,
+        height,
+        pixels,
+    )
+    .unwrap();
 }
 
 pub(super) fn j2k_view_dimensions(codestream: &[u8]) -> (u32, u32) {

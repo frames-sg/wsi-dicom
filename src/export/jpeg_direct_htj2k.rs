@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use j2k_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
+use j2k_transcode::accelerator::{
+    DctGridToDwt97Job, DctToWaveletStageAccelerator, TranscodeStageError,
+};
 use j2k_transcode::dct97_2d::{
     dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch, Dwt97TwoDimensional,
 };
@@ -34,7 +36,7 @@ impl DctToWaveletStageAccelerator for RayonDwt97BatchAccelerator {
     fn dct_grid_to_dwt97_batch(
         &mut self,
         jobs: &[DctGridToDwt97Job<'_>],
-    ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, &'static str> {
+    ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, TranscodeStageError> {
         jobs.par_iter()
             .map(|job| {
                 let mut scratch = Dct97GridScratch::default();
@@ -46,7 +48,7 @@ impl DctToWaveletStageAccelerator for RayonDwt97BatchAccelerator {
                     job.height,
                     &mut scratch,
                 )
-                .map_err(|_| "CPU 9/7 batch transform failed")
+                .map_err(|_| TranscodeStageError::from("CPU 9/7 batch transform failed"))
             })
             .collect::<Result<Vec<_>, _>>()
             .map(Some)
@@ -97,7 +99,7 @@ pub(super) fn frame(
         return None;
     }
     Some(Frame {
-        data: raw.data.clone(),
+        data: raw.data().to_vec(),
         profile,
     })
 }

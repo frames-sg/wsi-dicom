@@ -117,25 +117,25 @@ pub(super) fn j2k_passthrough_frame(
     frame_rows: u32,
     transfer_syntax: TransferSyntax,
 ) -> Result<Option<J2kPassthroughFrame>, Error> {
-    if raw.width != frame_columns || raw.height != frame_rows {
+    if raw.width() != frame_columns || raw.height() != frame_rows {
         return Ok(None);
     }
     if !matches!(
-        raw.compression,
+        raw.compression(),
         Compression::Jp2kRgb | Compression::Jp2kYcbcr
     ) {
         return Ok(None);
     }
-    if raw.bits_allocated > u8::MAX as u16 || raw.samples_per_pixel > u8::MAX as u16 {
+    if raw.bits_allocated() > u8::MAX as u16 || raw.samples_per_pixel() > u8::MAX as u16 {
         return Ok(None);
     }
     let (passthrough_syntax, photometric_interpretation) = {
-        let view = match J2kView::parse(&raw.data) {
+        let view = match J2kView::parse(raw.data()) {
             Ok(view) => view,
             Err(_) => return Ok(None),
         };
         if transfer_syntax == TransferSyntax::Htj2kLosslessRpcl
-            && !j2k_codestream_is_rpcl(&raw.data)
+            && !j2k_codestream_is_rpcl(raw.data())
         {
             return Ok(None);
         }
@@ -147,27 +147,30 @@ pub(super) fn j2k_passthrough_frame(
         else {
             return Ok(None);
         };
-        let Some(photometric_interpretation) =
-            j2k_passthrough_photometric_interpretation(raw.photometric_interpretation, view.info())
-        else {
+        let Some(photometric_interpretation) = j2k_passthrough_photometric_interpretation(
+            raw.photometric_interpretation(),
+            view.info(),
+        ) else {
             return Ok(None);
         };
         let requirements =
             PassthroughRequirements::new(source_syntax, CompressedPayloadKind::Jpeg2000Codestream)
                 .with_dimensions((frame_columns, frame_rows))
-                .with_components(raw.samples_per_pixel as u8)
-                .with_bit_depth(raw.bits_allocated as u8);
+                .with_components(raw.samples_per_pixel() as u8)
+                .with_bit_depth(raw.bits_allocated() as u8);
         if candidate.copy_bytes_if_eligible(&requirements).is_err() {
             return Ok(None);
         }
         (candidate_syntax, photometric_interpretation)
     };
 
+    let components = raw.samples_per_pixel() as u8;
+    let bits_allocated = raw.bits_allocated();
     Ok(Some(J2kPassthroughFrame {
-        codestream: raw.data,
+        codestream: raw.into_data(),
         profile: PixelProfile {
-            components: raw.samples_per_pixel as u8,
-            bits_allocated: raw.bits_allocated,
+            components,
+            bits_allocated,
             photometric_interpretation,
         },
         transfer_syntax: passthrough_syntax,
@@ -181,31 +184,31 @@ pub(super) fn j2k_raw_frame_syntax_and_profile(
     Option<PixelProfile>,
 ) {
     if !matches!(
-        raw.compression,
+        raw.compression(),
         Compression::Jp2kRgb | Compression::Jp2kYcbcr
     ) {
         return (None, None);
     }
-    let Ok(view) = J2kView::parse(&raw.data) else {
+    let Ok(view) = J2kView::parse(raw.data()) else {
         return (None, None);
     };
     let Some(candidate) = view.passthrough_candidate() else {
         return (None, None);
     };
     let syntax = candidate.transfer_syntax();
-    if raw.bits_allocated > u8::MAX as u16 || raw.samples_per_pixel > u8::MAX as u16 {
+    if raw.bits_allocated() > u8::MAX as u16 || raw.samples_per_pixel() > u8::MAX as u16 {
         return (Some(syntax), None);
     }
     let Some(photometric_interpretation) =
-        j2k_passthrough_photometric_interpretation(raw.photometric_interpretation, view.info())
+        j2k_passthrough_photometric_interpretation(raw.photometric_interpretation(), view.info())
     else {
         return (Some(syntax), None);
     };
     (
         Some(syntax),
         Some(PixelProfile {
-            components: raw.samples_per_pixel as u8,
-            bits_allocated: raw.bits_allocated,
+            components: raw.samples_per_pixel() as u8,
+            bits_allocated: raw.bits_allocated(),
             photometric_interpretation,
         }),
     )

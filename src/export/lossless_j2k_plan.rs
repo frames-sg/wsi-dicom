@@ -177,17 +177,11 @@ pub(crate) fn plan_lossless_j2k_row(
             source_raw_probe_failed,
             passthrough,
         ) = if allow_raw_probe {
-            let tile_request = TileRequest {
-                scene: scene_idx,
-                series: series_idx,
-                level: level_idx,
-                plane: PlaneSelection { z, c, t },
-                col: col_i64,
-                row: row_i64,
-            };
+            let tile_request = TileRequest::new(scene_idx, series_idx, level_idx, col_i64, row_i64)
+                .with_plane(PlaneSelection::new(z, c, t));
             match slide.read_raw_compressed_tile(&tile_request) {
                 Ok(raw) => {
-                    let source_j2k_dimensions = Some((raw.width, raw.height));
+                    let source_j2k_dimensions = Some((raw.width(), raw.height()));
                     let (source_j2k_syntax, source_j2k_profile) =
                         j2k_raw_frame_syntax_and_profile(&raw);
                     let source_j2k = j2k_direct_htj2k::frame(
@@ -201,7 +195,7 @@ pub(crate) fn plan_lossless_j2k_row(
                         jpeg_direct_htj2k::frame(&raw, tile_size, tile_size, transfer_syntax);
                     let source_jpeg_direct_rejected =
                         jpeg_direct_htj2k::transfer_syntax(transfer_syntax)
-                            && raw.compression == Compression::Jpeg
+                            && raw.compression() == Compression::Jpeg
                             && source_jpeg.is_none();
                     let passthrough = if allow_passthrough_probe {
                         j2k_passthrough_frame(raw, tile_size, tile_size, transfer_syntax)?

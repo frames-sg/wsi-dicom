@@ -1,5 +1,24 @@
 use super::*;
 
+fn raw_compressed_tile(
+    compression: Compression,
+    width: u32,
+    height: u32,
+    bits_allocated: u16,
+    samples_per_pixel: u16,
+    photometric_interpretation: EncodedTilePhotometricInterpretation,
+    data: Vec<u8>,
+) -> RawCompressedTile {
+    RawCompressedTile::builder(compression)
+        .dimensions(width, height)
+        .bits_allocated(bits_allocated)
+        .samples_per_pixel(samples_per_pixel)
+        .photometric_interpretation(photometric_interpretation)
+        .data(data)
+        .build()
+        .expect("valid raw compressed tile")
+}
+
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
 fn require_device_uses_metal_j2k_encode_for_wsi_sized_tile() {
@@ -223,15 +242,15 @@ fn raw_j2k_lossless_tile_can_passthrough_when_geometry_matches() {
         CodecValidation::RoundTrip,
     )
     .unwrap();
-    let raw = RawCompressedTile {
-        compression: Compression::Jp2kRgb,
-        width: 2,
-        height: 2,
-        bits_allocated: 8,
-        samples_per_pixel: 3,
-        photometric_interpretation: EncodedTilePhotometricInterpretation::Rgb,
-        data: codestream.clone(),
-    };
+    let raw = raw_compressed_tile(
+        Compression::Jp2kRgb,
+        2,
+        2,
+        8,
+        3,
+        EncodedTilePhotometricInterpretation::Rgb,
+        codestream.clone(),
+    );
 
     let passed = j2k_passthrough_frame(raw, 2, 2, TransferSyntax::Jpeg2000Lossless)
         .unwrap()
@@ -265,15 +284,15 @@ fn raw_j2k_ycbcr_tile_can_passthrough_to_general_jpeg2000() {
         CodecValidation::RoundTrip,
     )
     .unwrap();
-    let raw = RawCompressedTile {
-        compression: Compression::Jp2kYcbcr,
-        width: 2,
-        height: 2,
-        bits_allocated: 8,
-        samples_per_pixel: 3,
-        photometric_interpretation: EncodedTilePhotometricInterpretation::YbrFull422,
-        data: codestream.clone(),
-    };
+    let raw = raw_compressed_tile(
+        Compression::Jp2kYcbcr,
+        2,
+        2,
+        8,
+        3,
+        EncodedTilePhotometricInterpretation::YbrFull422,
+        codestream.clone(),
+    );
 
     let passed = j2k_passthrough_frame(raw, 2, 2, TransferSyntax::Jpeg2000)
         .unwrap()
@@ -327,15 +346,7 @@ fn export_j2k_passthrough_does_not_touch_gpu_even_when_device_required() {
     })
     .unwrap();
 
-    assert_eq!(report.metrics.routes.total_frames, 1);
-    assert_eq!(report.metrics.routes.j2k_passthrough_frames, 1);
-    assert_eq!(report.metrics.routes.cpu_input_frames, 0);
-    assert_eq!(report.metrics.routes.gpu_input_decode_frames, 0);
-    assert_eq!(report.metrics.routes.gpu_encode_frames, 0);
-    assert_eq!(report.metrics.routes.gpu_input_decode_batches, 0);
-    assert_eq!(report.metrics.routes.gpu_compose_batches, 0);
-    assert_eq!(report.metrics.routes.gpu_encode_batches, 0);
-    assert_eq!(report.metrics.routes.cpu_fallback_frames, 0);
+    assert_single_j2k_passthrough_avoids_gpu_for_test(&report);
 
     let object = dicom_object::open_file(&report.instances[0].path).unwrap();
     let fragments = object
@@ -354,45 +365,12 @@ fn export_j2k_passthrough_does_not_touch_gpu_even_when_device_required() {
 #[test]
 fn export_general_j2k_passthrough_accepts_ycbcr_source_without_gpu_work() {
     let tmp = tempfile::tempdir().unwrap();
-    let bytes: Vec<u8> = (0..2 * 2 * 3)
-        .map(|value| ((value * 13) & 0xFF) as u8)
-        .collect();
-    let samples = J2kLosslessSamples::new(&bytes, 2, 2, 3, 8, false).expect("valid samples");
-    let codestream = encode_dicom_lossless(
-        samples,
-        TransferSyntax::Jpeg2000Lossless,
-        EncodeBackendPreference::CpuOnly,
-        CodecValidation::RoundTrip,
-    )
-    .unwrap();
     let source = tmp.path().join("source.svs");
-    write_tiled_jp2k_ycbcr_tiff(&source, 2, 2, 2, 2, std::slice::from_ref(&codestream));
+    let codestream = write_general_j2k_ycbcr_passthrough_tiff_for_test(&source, 13);
 
-    let report = export_dicom(ExportRequest {
-        source_path: source,
-        output_dir: tmp.path().join("out"),
-        options: ExportOptions {
-            tile_size: 512,
-            transfer_syntax: TransferSyntax::Jpeg2000,
-            encode_backend: EncodeBackendPreference::RequireDevice,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: true,
-            ..ExportOptions::default()
-        },
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: None,
-    })
-    .unwrap();
+    let report = export_general_j2k_passthrough_for_test(source, tmp.path().join("out"));
 
-    assert_eq!(report.metrics.routes.total_frames, 1);
-    assert_eq!(report.metrics.routes.j2k_passthrough_frames, 1);
-    assert_eq!(report.metrics.routes.cpu_input_frames, 0);
-    assert_eq!(report.metrics.routes.gpu_input_decode_frames, 0);
-    assert_eq!(report.metrics.routes.gpu_encode_frames, 0);
-    assert_eq!(report.metrics.routes.gpu_input_decode_batches, 0);
-    assert_eq!(report.metrics.routes.gpu_compose_batches, 0);
-    assert_eq!(report.metrics.routes.gpu_encode_batches, 0);
-    assert_eq!(report.metrics.routes.cpu_fallback_frames, 0);
+    assert_single_j2k_passthrough_avoids_gpu_for_test(&report);
 
     let object = dicom_object::open_file(&report.instances[0].path).unwrap();
     assert_eq!(
@@ -436,28 +414,7 @@ fn export_general_j2k_passthrough_accepts_ycbcr_source_without_gpu_work() {
 #[test]
 fn export_general_j2k_edge_fallback_preserves_interior_passthrough() {
     let tmp = tempfile::tempdir().unwrap();
-    let interior_bytes: Vec<u8> = (0..2 * 2 * 3)
-        .map(|value| ((value * 7) & 0xFF) as u8)
-        .collect();
-    let interior_samples =
-        J2kLosslessSamples::new(&interior_bytes, 2, 2, 3, 8, false).expect("valid samples");
-    let interior_codestream = encode_dicom_lossless(
-        interior_samples,
-        TransferSyntax::Jpeg2000Lossless,
-        EncodeBackendPreference::CpuOnly,
-        CodecValidation::RoundTrip,
-    )
-    .unwrap();
-    let edge_bytes: Vec<u8> = (0..6).map(|value| ((value * 11) & 0xFF) as u8).collect();
-    let edge_samples =
-        J2kLosslessSamples::new(&edge_bytes, 1, 2, 3, 8, false).expect("valid edge samples");
-    let edge_codestream = encode_dicom_lossless(
-        edge_samples,
-        TransferSyntax::Jpeg2000Lossless,
-        EncodeBackendPreference::CpuOnly,
-        CodecValidation::RoundTrip,
-    )
-    .unwrap();
+    let codestreams = j2k_edge_fallback_codestreams_for_test();
     let source = tmp.path().join("source.svs");
     write_tiled_jp2k_ycbcr_tiff(
         &source,
@@ -465,7 +422,7 @@ fn export_general_j2k_edge_fallback_preserves_interior_passthrough() {
         2,
         2,
         2,
-        &[interior_codestream.clone(), edge_codestream.clone()],
+        &[codestreams.interior.clone(), codestreams.edge.clone()],
     );
 
     let report = export_dicom(ExportRequest {
@@ -504,10 +461,10 @@ fn export_general_j2k_edge_fallback_preserves_interior_passthrough() {
     assert_eq!(fragments.len(), 2);
     assert_eq!(
         dicom_fragment_payload_without_padding(&fragments[0]),
-        interior_codestream
+        codestreams.interior
     );
     let edge_payload = dicom_fragment_payload_without_padding(&fragments[1]);
-    assert_ne!(edge_payload, edge_codestream);
+    assert_ne!(edge_payload, codestreams.edge);
     assert_eq!(j2k_view_dimensions(edge_payload), (2, 2));
     assert_eq!(j2k_cod_decomposition_levels(edge_payload), 0);
 }
@@ -515,28 +472,7 @@ fn export_general_j2k_edge_fallback_preserves_interior_passthrough() {
 #[test]
 fn export_general_j2k_rgb_edge_fallback_matches_passthrough_profile() {
     let tmp = tempfile::tempdir().unwrap();
-    let interior_bytes: Vec<u8> = (0..2 * 2 * 3)
-        .map(|value| ((value * 7) & 0xFF) as u8)
-        .collect();
-    let interior_samples =
-        J2kLosslessSamples::new(&interior_bytes, 2, 2, 3, 8, false).expect("valid samples");
-    let interior_codestream = encode_dicom_lossless(
-        interior_samples,
-        TransferSyntax::Jpeg2000Lossless,
-        EncodeBackendPreference::CpuOnly,
-        CodecValidation::RoundTrip,
-    )
-    .unwrap();
-    let edge_bytes: Vec<u8> = (0..6).map(|value| ((value * 11) & 0xFF) as u8).collect();
-    let edge_samples =
-        J2kLosslessSamples::new(&edge_bytes, 1, 2, 3, 8, false).expect("valid edge samples");
-    let edge_codestream = encode_dicom_lossless(
-        edge_samples,
-        TransferSyntax::Jpeg2000Lossless,
-        EncodeBackendPreference::CpuOnly,
-        CodecValidation::RoundTrip,
-    )
-    .unwrap();
+    let codestreams = j2k_edge_fallback_codestreams_for_test();
     let source = tmp.path().join("source.svs");
     write_tiled_jp2k_rgb_tiff(
         &source,
@@ -544,7 +480,7 @@ fn export_general_j2k_rgb_edge_fallback_matches_passthrough_profile() {
         2,
         2,
         2,
-        &[interior_codestream.clone(), edge_codestream],
+        &[codestreams.interior.clone(), codestreams.edge],
     );
 
     let report = export_dicom(ExportRequest {
@@ -584,7 +520,7 @@ fn export_general_j2k_rgb_edge_fallback_matches_passthrough_profile() {
         .unwrap();
     assert_eq!(
         dicom_fragment_payload_without_padding(&fragments[0]),
-        interior_codestream
+        codestreams.interior
     );
     let edge_payload = dicom_fragment_payload_without_padding(&fragments[1]);
     assert_eq!(j2k_cod_mct(edge_payload), 0);
@@ -648,36 +584,22 @@ fn dicom_roundtrip_lossless_pixel_identical() {
 #[test]
 fn export_general_j2k_lossy_passthrough_writes_compression_ratio() {
     let tmp = tempfile::tempdir().unwrap();
-    let interior_bytes: Vec<u8> = (0..2 * 2 * 3)
-        .map(|value| ((value * 7) & 0xFF) as u8)
-        .collect();
-    let interior_samples =
-        J2kLosslessSamples::new(&interior_bytes, 2, 2, 3, 8, false).expect("valid samples");
-    let mut interior_codestream = encode_dicom_lossless(
-        interior_samples,
-        TransferSyntax::Jpeg2000Lossless,
-        EncodeBackendPreference::CpuOnly,
-        CodecValidation::RoundTrip,
-    )
-    .unwrap();
-    patch_j2k_cod_wavelet_transform(&mut interior_codestream, 0);
+    let mut codestreams = j2k_edge_fallback_codestreams_for_test();
+    patch_j2k_cod_wavelet_transform(&mut codestreams.interior, 0);
     assert_eq!(
-        j2k_passthrough_transfer_syntax(&interior_codestream),
+        j2k_passthrough_transfer_syntax(&codestreams.interior),
         CompressedTransferSyntax::Jpeg2000Lossy
     );
-    let edge_bytes: Vec<u8> = (0..6).map(|value| ((value * 11) & 0xFF) as u8).collect();
-    let edge_samples =
-        J2kLosslessSamples::new(&edge_bytes, 1, 2, 3, 8, false).expect("valid edge samples");
-    let mut edge_codestream = encode_dicom_lossless(
-        edge_samples,
-        TransferSyntax::Jpeg2000Lossless,
-        EncodeBackendPreference::CpuOnly,
-        CodecValidation::RoundTrip,
-    )
-    .unwrap();
-    patch_j2k_cod_wavelet_transform(&mut edge_codestream, 0);
+    patch_j2k_cod_wavelet_transform(&mut codestreams.edge, 0);
     let source = tmp.path().join("source.svs");
-    write_tiled_jp2k_rgb_tiff(&source, 3, 2, 2, 2, &[interior_codestream, edge_codestream]);
+    write_tiled_jp2k_rgb_tiff(
+        &source,
+        3,
+        2,
+        2,
+        2,
+        &[codestreams.interior, codestreams.edge],
+    );
 
     let report = export_dicom(ExportRequest {
         source_path: source,
@@ -726,35 +648,21 @@ fn export_general_j2k_lossy_passthrough_writes_compression_ratio() {
 #[test]
 fn jpeg2000_lossless_rejects_lossy_edge_fallback() {
     let tmp = tempfile::tempdir().unwrap();
-    let interior_bytes: Vec<u8> = (0..2 * 2 * 3)
-        .map(|value| ((value * 7) & 0xFF) as u8)
-        .collect();
-    let interior_samples =
-        J2kLosslessSamples::new(&interior_bytes, 2, 2, 3, 8, false).expect("valid samples");
-    let interior_codestream = encode_dicom_lossless(
-        interior_samples,
-        TransferSyntax::Jpeg2000Lossless,
-        EncodeBackendPreference::CpuOnly,
-        CodecValidation::RoundTrip,
-    )
-    .unwrap();
-    let edge_bytes: Vec<u8> = (0..6).map(|value| ((value * 11) & 0xFF) as u8).collect();
-    let edge_samples =
-        J2kLosslessSamples::new(&edge_bytes, 1, 2, 3, 8, false).expect("valid edge samples");
-    let mut edge_codestream = encode_dicom_lossless(
-        edge_samples,
-        TransferSyntax::Jpeg2000Lossless,
-        EncodeBackendPreference::CpuOnly,
-        CodecValidation::RoundTrip,
-    )
-    .unwrap();
-    patch_j2k_cod_wavelet_transform(&mut edge_codestream, 0);
+    let mut codestreams = j2k_edge_fallback_codestreams_for_test();
+    patch_j2k_cod_wavelet_transform(&mut codestreams.edge, 0);
     assert_eq!(
-        j2k_passthrough_transfer_syntax(&edge_codestream),
+        j2k_passthrough_transfer_syntax(&codestreams.edge),
         CompressedTransferSyntax::Jpeg2000Lossy
     );
     let source = tmp.path().join("source.svs");
-    write_tiled_jp2k_ycbcr_tiff(&source, 3, 2, 2, 2, &[interior_codestream, edge_codestream]);
+    write_tiled_jp2k_ycbcr_tiff(
+        &source,
+        3,
+        2,
+        2,
+        2,
+        &[codestreams.interior, codestreams.edge],
+    );
 
     let err = export_dicom(ExportRequest {
         source_path: source,
@@ -778,61 +686,13 @@ fn jpeg2000_lossless_rejects_lossy_edge_fallback() {
 #[test]
 fn export_htj2k_rpcl_passthrough_does_not_touch_gpu_even_when_device_required() {
     let tmp = tempfile::tempdir().unwrap();
-    let raw_source = tmp.path().join("source.dcm");
-    write_source_dicom_with_dimensions(&raw_source, "1.2.826.0.1.3680043.10.999.43", 2, 2);
+    let source =
+        write_htj2k_rpcl_dicom_source_for_test(tmp.path(), "1.2.826.0.1.3680043.10.999.43", 2, 2);
+    assert_eq!(source.fragments.len(), 1);
 
-    let source_report = export_dicom(ExportRequest {
-        source_path: raw_source,
-        output_dir: tmp.path().join("source-dicom"),
-        options: ExportOptions {
-            tile_size: 2,
-            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
-            encode_backend: EncodeBackendPreference::CpuOnly,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: false,
-            ..ExportOptions::default()
-        },
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: None,
-    })
-    .unwrap();
-    let source_object = dicom_object::open_file(&source_report.instances[0].path).unwrap();
-    let source_fragments = source_object
-        .element(tags::PIXEL_DATA)
-        .unwrap()
-        .value()
-        .fragments()
-        .unwrap()
-        .iter()
-        .map(|fragment| dicom_fragment_payload_without_padding(fragment).to_vec())
-        .collect::<Vec<_>>();
-    assert_eq!(source_fragments.len(), 1);
+    let report = export_htj2k_rpcl_dicom_passthrough_for_test(&source, tmp.path().join("out"));
 
-    let report = export_dicom(ExportRequest {
-        source_path: source_report.instances[0].path.clone(),
-        output_dir: tmp.path().join("out"),
-        options: ExportOptions {
-            tile_size: 2,
-            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
-            encode_backend: EncodeBackendPreference::RequireDevice,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: false,
-            ..ExportOptions::default()
-        },
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: None,
-    })
-    .unwrap();
-
-    assert_eq!(report.metrics.routes.total_frames, 1);
-    assert_eq!(report.metrics.routes.j2k_passthrough_frames, 1);
-    assert_eq!(report.metrics.routes.cpu_input_frames, 0);
-    assert_eq!(report.metrics.routes.gpu_input_decode_frames, 0);
-    assert_eq!(report.metrics.routes.gpu_encode_frames, 0);
-    assert_eq!(report.metrics.routes.gpu_input_decode_batches, 0);
-    assert_eq!(report.metrics.routes.gpu_compose_batches, 0);
-    assert_eq!(report.metrics.routes.gpu_encode_batches, 0);
-    assert_eq!(report.metrics.routes.cpu_fallback_frames, 0);
+    assert_single_j2k_passthrough_avoids_gpu_for_test(&report);
 
     let object = dicom_object::open_file(&report.instances[0].path).unwrap();
     assert_eq!(
@@ -848,58 +708,18 @@ fn export_htj2k_rpcl_passthrough_does_not_touch_gpu_even_when_device_required() 
     assert_eq!(fragments.len(), 1);
     assert_eq!(
         dicom_fragment_payload_without_padding(&fragments[0]),
-        source_fragments[0]
+        source.fragments[0]
     );
 }
 
 #[test]
 fn export_htj2k_rpcl_dicom_edge_passthrough_keeps_padded_source_frame() {
     let tmp = tempfile::tempdir().unwrap();
-    let raw_source = tmp.path().join("source.dcm");
-    write_source_dicom_with_dimensions(&raw_source, "1.2.826.0.1.3680043.10.999.53", 3, 2);
+    let source =
+        write_htj2k_rpcl_dicom_source_for_test(tmp.path(), "1.2.826.0.1.3680043.10.999.53", 3, 2);
+    assert_eq!(source.fragments.len(), 2);
 
-    let source_report = export_dicom(ExportRequest {
-        source_path: raw_source,
-        output_dir: tmp.path().join("source-dicom"),
-        options: ExportOptions {
-            tile_size: 2,
-            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
-            encode_backend: EncodeBackendPreference::CpuOnly,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: false,
-            ..ExportOptions::default()
-        },
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: None,
-    })
-    .unwrap();
-    let source_object = dicom_object::open_file(&source_report.instances[0].path).unwrap();
-    let source_fragments = source_object
-        .element(tags::PIXEL_DATA)
-        .unwrap()
-        .value()
-        .fragments()
-        .unwrap()
-        .iter()
-        .map(|fragment| dicom_fragment_payload_without_padding(fragment).to_vec())
-        .collect::<Vec<_>>();
-    assert_eq!(source_fragments.len(), 2);
-
-    let report = export_dicom(ExportRequest {
-        source_path: source_report.instances[0].path.clone(),
-        output_dir: tmp.path().join("out"),
-        options: ExportOptions {
-            tile_size: 2,
-            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
-            encode_backend: EncodeBackendPreference::RequireDevice,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: false,
-            ..ExportOptions::default()
-        },
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: None,
-    })
-    .unwrap();
+    let report = export_htj2k_rpcl_dicom_passthrough_for_test(&source, tmp.path().join("out"));
 
     assert_eq!(report.metrics.routes.total_frames, 2);
     assert_eq!(report.metrics.routes.j2k_passthrough_frames, 2);
@@ -919,11 +739,11 @@ fn export_htj2k_rpcl_dicom_edge_passthrough_keeps_padded_source_frame() {
     assert_eq!(fragments.len(), 2);
     assert_eq!(
         dicom_fragment_payload_without_padding(&fragments[0]),
-        source_fragments[0]
+        source.fragments[0]
     );
     assert_eq!(
         dicom_fragment_payload_without_padding(&fragments[1]),
-        source_fragments[1]
+        source.fragments[1]
     );
 }
 
@@ -940,15 +760,15 @@ fn raw_j2k_passthrough_rejects_geometry_or_syntax_mismatch() {
         CodecValidation::RoundTrip,
     )
     .unwrap();
-    let raw = RawCompressedTile {
-        compression: Compression::Jp2kRgb,
-        width: 2,
-        height: 2,
-        bits_allocated: 8,
-        samples_per_pixel: 3,
-        photometric_interpretation: EncodedTilePhotometricInterpretation::Rgb,
-        data: codestream,
-    };
+    let raw = raw_compressed_tile(
+        Compression::Jp2kRgb,
+        2,
+        2,
+        8,
+        3,
+        EncodedTilePhotometricInterpretation::Rgb,
+        codestream,
+    );
 
     assert!(
         j2k_passthrough_frame(raw.clone(), 1, 2, TransferSyntax::Jpeg2000Lossless)
@@ -975,15 +795,15 @@ fn raw_htj2k_rpcl_tile_can_passthrough_when_geometry_matches() {
         CodecValidation::RoundTrip,
     )
     .unwrap();
-    let raw = RawCompressedTile {
-        compression: Compression::Jp2kRgb,
-        width: 2,
-        height: 2,
-        bits_allocated: 8,
-        samples_per_pixel: 3,
-        photometric_interpretation: EncodedTilePhotometricInterpretation::Rgb,
-        data: codestream.clone(),
-    };
+    let raw = raw_compressed_tile(
+        Compression::Jp2kRgb,
+        2,
+        2,
+        8,
+        3,
+        EncodedTilePhotometricInterpretation::Rgb,
+        codestream.clone(),
+    );
 
     let passed = j2k_passthrough_frame(raw, 2, 2, TransferSyntax::Htj2kLosslessRpcl)
         .unwrap()
@@ -1013,15 +833,15 @@ fn raw_htj2k_lrcp_tile_rejects_rpcl_passthrough() {
         CodecValidation::RoundTrip,
     )
     .unwrap();
-    let raw = RawCompressedTile {
-        compression: Compression::Jp2kRgb,
-        width: 2,
-        height: 2,
-        bits_allocated: 8,
-        samples_per_pixel: 3,
-        photometric_interpretation: EncodedTilePhotometricInterpretation::Rgb,
-        data: codestream,
-    };
+    let raw = raw_compressed_tile(
+        Compression::Jp2kRgb,
+        2,
+        2,
+        8,
+        3,
+        EncodedTilePhotometricInterpretation::Rgb,
+        codestream,
+    );
 
     assert!(
         j2k_passthrough_frame(raw, 2, 2, TransferSyntax::Htj2kLosslessRpcl)

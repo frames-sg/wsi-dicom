@@ -32,7 +32,8 @@ pub(crate) fn j2k_route_tile_size(
             } if tile_width == tile_height && tile_width > 0 => Some(tile_width),
             TileLayout::Regular { .. }
             | TileLayout::WholeLevel { .. }
-            | TileLayout::Irregular { .. } => None,
+            | TileLayout::Irregular { .. }
+            | _ => None,
         };
         if let Some(tile_size) = native_square {
             return Ok(tile_size.min(options.tile_size));
@@ -168,11 +169,7 @@ mod tests {
     use super::*;
 
     fn level_with_layout(tile_layout: TileLayout) -> wsi_rs::Level {
-        wsi_rs::Level {
-            dimensions: (2048, 2048),
-            downsample: 1.0,
-            tile_layout,
-        }
+        wsi_rs::Level::new((2048, 2048), 1.0, tile_layout)
     }
 
     #[test]

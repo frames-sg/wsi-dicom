@@ -44,7 +44,7 @@ pub(super) fn metal_profile_stages_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         matches!(
-            std::env::var("SIGNINUM_J2K_METAL_PROFILE_STAGES"),
+            std::env::var("J2K_METAL_PROFILE_STAGES"),
             Ok(value) if value == "1"
         )
     })
@@ -89,6 +89,7 @@ impl MetalStripComposer {
             reason: "Metal WholeLevel composition requires at least one source tile".into(),
         })?;
         let format = first.format;
+        let j2k_format = j2k_pixel_format_from_wsi(format)?;
         let bytes_per_pixel = format.bytes_per_pixel();
         let slot_stride = (layout.width as usize)
             .checked_mul(bytes_per_pixel)
@@ -167,7 +168,13 @@ impl MetalStripComposer {
             let wsi_rs::output::metal::MetalDeviceStorage::Buffer {
                 buffer,
                 byte_offset,
-            } = &tile.storage;
+            } = &tile.storage
+            else {
+                return Err(Error::Unsupported {
+                    reason: "Metal WholeLevel composition requires buffer-backed source tiles"
+                        .into(),
+                });
+            };
             let slot_offset =
                 idx.checked_mul(tile_slot_bytes)
                     .ok_or_else(|| Error::Unsupported {
@@ -221,7 +228,7 @@ impl MetalStripComposer {
             tile_height: layout.height,
             slot_stride,
             tile_slot_bytes,
-            format,
+            format: j2k_format,
         })
     }
 
@@ -334,17 +341,18 @@ impl MetalStripComposer {
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
+        let format = wsi_pixel_format_from_j2k(packed.format)?;
         Ok(dispatches
             .into_iter()
-            .map(|dispatch| wsi_rs::output::metal::MetalDeviceTile {
-                width: dispatch.request.output_width,
-                height: dispatch.request.output_height,
-                pitch_bytes: dispatch.dst_stride,
-                format: packed.format,
-                storage: wsi_rs::output::metal::MetalDeviceStorage::Buffer {
-                    buffer: dispatch.dst_buffer,
-                    byte_offset: 0,
-                },
+            .map(|dispatch| {
+                wsi_rs::output::metal::MetalDeviceTile::from_buffer(
+                    dispatch.dst_buffer,
+                    0,
+                    dispatch.request.output_width,
+                    dispatch.request.output_height,
+                    dispatch.dst_stride,
+                    format,
+                )
             })
             .collect())
     }

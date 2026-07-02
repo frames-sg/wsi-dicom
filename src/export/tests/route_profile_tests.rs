@@ -2,18 +2,23 @@ use super::*;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-#[test]
-fn profile_dicom_route_coverage_aggregates_all_levels_without_writing_dicom() {
-    let tmp = tempfile::tempdir().unwrap();
-    let source_dir = tmp.path().join("source");
+fn write_route_profile_source_levels_for_test(
+    work_dir: &std::path::Path,
+    level0_uid: &str,
+    level1_uid: &str,
+) -> PathBuf {
+    let source_dir = work_dir.join("source");
     std::fs::create_dir_all(&source_dir).unwrap();
     let source_level0 = source_dir.join("level0.dcm");
     let source_level1 = source_dir.join("level1.dcm");
-    write_source_dicom_with_dimensions(&source_level0, "1.2.826.0.1.3680043.10.999.31", 4, 4);
-    write_source_dicom_with_dimensions(&source_level1, "1.2.826.0.1.3680043.10.999.32", 2, 2);
+    write_source_dicom_with_dimensions(&source_level0, level0_uid, 4, 4);
+    write_source_dicom_with_dimensions(&source_level1, level1_uid, 2, 2);
+    source_level0
+}
 
-    let report = profile_dicom_route_coverage(RouteCoverageRequest {
-        target: RouteCoverageTarget::Source(source_level0),
+fn route_coverage_request_for_test(target: PathBuf) -> RouteCoverageRequest {
+    RouteCoverageRequest {
+        target: RouteCoverageTarget::Source(target),
         options: ExportOptions {
             tile_size: 2,
             transfer_syntax: TransferSyntax::Htj2kLossless,
@@ -29,8 +34,20 @@ fn profile_dicom_route_coverage_aggregates_all_levels_without_writing_dicom() {
         progress: None,
         max_sources: 100_000,
         max_depth: 64,
-    })
-    .unwrap();
+    }
+}
+
+#[test]
+fn profile_dicom_route_coverage_aggregates_all_levels_without_writing_dicom() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source_level0 = write_route_profile_source_levels_for_test(
+        tmp.path(),
+        "1.2.826.0.1.3680043.10.999.31",
+        "1.2.826.0.1.3680043.10.999.32",
+    );
+
+    let report =
+        profile_dicom_route_coverage(route_coverage_request_for_test(source_level0)).unwrap();
 
     assert_eq!(report.requested_frames_per_level, 1);
     assert_eq!(report.levels.len(), 2);
@@ -52,32 +69,15 @@ fn profile_dicom_route_coverage_aggregates_all_levels_without_writing_dicom() {
 #[test]
 fn profile_dicom_route_coverage_can_limit_levels_for_bounded_real_checks() {
     let tmp = tempfile::tempdir().unwrap();
-    let source_dir = tmp.path().join("source");
-    std::fs::create_dir_all(&source_dir).unwrap();
-    let source_level0 = source_dir.join("level0.dcm");
-    let source_level1 = source_dir.join("level1.dcm");
-    write_source_dicom_with_dimensions(&source_level0, "1.2.826.0.1.3680043.10.999.41", 4, 4);
-    write_source_dicom_with_dimensions(&source_level1, "1.2.826.0.1.3680043.10.999.42", 2, 2);
+    let source_level0 = write_route_profile_source_levels_for_test(
+        tmp.path(),
+        "1.2.826.0.1.3680043.10.999.41",
+        "1.2.826.0.1.3680043.10.999.42",
+    );
 
-    let report = profile_dicom_route_coverage(RouteCoverageRequest {
-        target: RouteCoverageTarget::Source(source_level0),
-        options: ExportOptions {
-            tile_size: 2,
-            transfer_syntax: TransferSyntax::Htj2kLossless,
-            encode_backend: EncodeBackendPreference::CpuOnly,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: false,
-            ..ExportOptions::default()
-        },
-        source_aware_transfer_syntax: false,
-        max_frames_per_level: 1,
-        max_levels: Some(1),
-        max_level_elapsed: None,
-        progress: None,
-        max_sources: 100_000,
-        max_depth: 64,
-    })
-    .unwrap();
+    let mut request = route_coverage_request_for_test(source_level0);
+    request.max_levels = Some(1);
+    let report = profile_dicom_route_coverage(request).unwrap();
 
     assert_eq!(report.levels.len(), 1);
     assert_eq!(report.levels[0].level, 0);
@@ -88,25 +88,10 @@ fn profile_dicom_route_coverage_can_limit_levels_for_bounded_real_checks() {
 
 #[test]
 fn profile_dicom_route_coverage_rejects_zero_level_elapsed_limit() {
-    let err = profile_dicom_route_coverage(RouteCoverageRequest {
-        target: RouteCoverageTarget::Source(PathBuf::from("source.dcm")),
-        options: ExportOptions {
-            tile_size: 2,
-            transfer_syntax: TransferSyntax::Htj2kLossless,
-            encode_backend: EncodeBackendPreference::CpuOnly,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: false,
-            ..ExportOptions::default()
-        },
-        source_aware_transfer_syntax: false,
-        max_frames_per_level: 1,
-        max_levels: Some(1),
-        max_level_elapsed: Some(Duration::ZERO),
-        progress: None,
-        max_sources: 100_000,
-        max_depth: 64,
-    })
-    .unwrap_err();
+    let mut request = route_coverage_request_for_test(PathBuf::from("source.dcm"));
+    request.max_levels = Some(1);
+    request.max_level_elapsed = Some(Duration::ZERO);
+    let err = profile_dicom_route_coverage(request).unwrap_err();
 
     assert!(
         err.to_string().contains("max_level_elapsed"),

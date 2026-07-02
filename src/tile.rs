@@ -1,3 +1,5 @@
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use wsi_rs::PixelFormat as WsiPixelFormat;
 use wsi_rs::{ColorSpace, CpuTile, CpuTileData, CpuTileLayout, SampleType};
 
 use crate::Error;
@@ -30,17 +32,20 @@ pub(crate) fn prepare_tile_samples_with_limit(
     output_height: u32,
     max_prepared_bytes: usize,
 ) -> Result<PreparedTile, Error> {
-    if tile.layout != CpuTileLayout::Interleaved {
+    if tile.layout() != CpuTileLayout::Interleaved {
         return Err(Error::UnsupportedPixelData {
             reason: "only interleaved CPU tiles are supported".into(),
         });
     }
     let profile = pixel_profile(tile)?;
-    if tile.width > output_width || tile.height > output_height {
+    if tile.width() > output_width || tile.height() > output_height {
         return Err(Error::UnsupportedPixelData {
             reason: format!(
                 "source tile {}x{} exceeds requested output tile {}x{}",
-                tile.width, tile.height, output_width, output_height
+                tile.width(),
+                tile.height(),
+                output_width,
+                output_height
             ),
         });
     }
@@ -68,14 +73,21 @@ pub(crate) fn prepare_tile_samples_with_limit(
         });
     }
     let mut out = vec![0u8; out_len];
-    match &tile.data {
-        CpuTileData::U8(bytes) => copy_u8_tile(tile, bytes, profile, output_width, &mut out)?,
+    match tile.data() {
+        CpuTileData::U8(bytes) => {
+            copy_u8_tile(tile, bytes.as_slice(), profile, output_width, &mut out)?
+        }
         CpuTileData::U16(samples) => {
-            copy_u16_tile(tile, samples, profile, output_width, &mut out)?;
+            copy_u16_tile(tile, samples.as_slice(), profile, output_width, &mut out)?;
         }
         CpuTileData::F32(_) => {
             return Err(Error::UnsupportedPixelData {
                 reason: "Float32 requires an explicit windowing/conversion policy".into(),
+            });
+        }
+        _ => {
+            return Err(Error::UnsupportedPixelData {
+                reason: "unsupported CPU tile sample storage".into(),
             });
         }
     }
@@ -140,8 +152,45 @@ pub(crate) fn pixel_profile_from_device_format(
     }
 }
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(crate) fn j2k_pixel_format_from_wsi(format: WsiPixelFormat) -> Result<j2k::PixelFormat, Error> {
+    match format {
+        WsiPixelFormat::Gray8 => Ok(j2k::PixelFormat::Gray8),
+        WsiPixelFormat::Rgb8 => Ok(j2k::PixelFormat::Rgb8),
+        WsiPixelFormat::Rgba8 => Ok(j2k::PixelFormat::Rgba8),
+        WsiPixelFormat::Gray16 => Ok(j2k::PixelFormat::Gray16),
+        WsiPixelFormat::Rgb16 => Ok(j2k::PixelFormat::Rgb16),
+        WsiPixelFormat::Rgba16 => Ok(j2k::PixelFormat::Rgba16),
+        other => Err(Error::UnsupportedPixelData {
+            reason: format!("unsupported WSI device pixel format {other:?}"),
+        }),
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(crate) fn wsi_pixel_format_from_j2k(format: j2k::PixelFormat) -> Result<WsiPixelFormat, Error> {
+    match format {
+        j2k::PixelFormat::Gray8 => Ok(WsiPixelFormat::Gray8),
+        j2k::PixelFormat::Rgb8 => Ok(WsiPixelFormat::Rgb8),
+        j2k::PixelFormat::Rgba8 => Ok(WsiPixelFormat::Rgba8),
+        j2k::PixelFormat::Gray16 => Ok(WsiPixelFormat::Gray16),
+        j2k::PixelFormat::Rgb16 => Ok(WsiPixelFormat::Rgb16),
+        j2k::PixelFormat::Rgba16 => Ok(WsiPixelFormat::Rgba16),
+        other => Err(Error::UnsupportedPixelData {
+            reason: format!("unsupported Metal device pixel format {other:?}"),
+        }),
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(crate) fn pixel_profile_from_wsi_device_format(
+    format: WsiPixelFormat,
+) -> Result<PixelProfile, Error> {
+    pixel_profile_from_device_format(j2k_pixel_format_from_wsi(format)?)
+}
+
 fn pixel_profile(tile: &CpuTile) -> Result<PixelProfile, Error> {
-    let bits_allocated = match tile.data.sample_type() {
+    let bits_allocated = match tile.data().sample_type() {
         SampleType::Uint8 => 8,
         SampleType::Uint16 => 16,
         SampleType::Float32 => {
@@ -149,8 +198,13 @@ fn pixel_profile(tile: &CpuTile) -> Result<PixelProfile, Error> {
                 reason: "Float32 requires an explicit windowing/conversion policy".into(),
             });
         }
+        _ => {
+            return Err(Error::UnsupportedPixelData {
+                reason: "unsupported CPU tile sample type".into(),
+            });
+        }
     };
-    match (&tile.color_space, tile.channels) {
+    match (tile.color_space(), tile.channels()) {
         (ColorSpace::Grayscale, 1) | (_, 1) => Ok(PixelProfile {
             components: 1,
             bits_allocated,
@@ -169,7 +223,8 @@ fn pixel_profile(tile: &CpuTile) -> Result<PixelProfile, Error> {
         _ => Err(Error::UnsupportedPixelData {
             reason: format!(
                 "unsupported color space {:?} with {} channels",
-                tile.color_space, tile.channels
+                tile.color_space(),
+                tile.channels()
             ),
         }),
     }
@@ -181,41 +236,48 @@ fn exact_size_u8_tile_bytes(
     output_height: u32,
     profile: PixelProfile,
 ) -> Option<&[u8]> {
-    if tile.width != output_width
-        || tile.height != output_height
+    if tile.width() != output_width
+        || tile.height() != output_height
         || profile.bits_allocated != 8
-        || tile.channels != u16::from(profile.components)
+        || tile.channels() != u16::from(profile.components)
         || !matches!(profile.components, 1 | 3)
     {
         return None;
     }
-    let CpuTileData::U8(bytes) = &tile.data else {
+    let CpuTileData::U8(bytes) = tile.data() else {
         return None;
     };
-    let expected_len = usize::try_from(tile.width)
+    let expected_len = usize::try_from(tile.width())
         .ok()
         .and_then(|width| {
-            usize::try_from(tile.height)
+            usize::try_from(tile.height())
                 .ok()
                 .and_then(|height| width.checked_mul(height))
         })
-        .and_then(|pixels| pixels.checked_mul(usize::from(tile.channels)))?;
+        .and_then(|pixels| pixels.checked_mul(usize::from(tile.channels())))?;
     (bytes.len() == expected_len).then_some(bytes.as_slice())
 }
 
-fn copy_u8_tile(
+struct TileCopyGeometry {
+    src_components: usize,
+    dst_components: usize,
+    tile_width: usize,
+    tile_height: usize,
+    output_width: usize,
+    expected_src: usize,
+}
+
+fn tile_copy_geometry(
     tile: &CpuTile,
-    bytes: &[u8],
     profile: PixelProfile,
     output_width: u32,
-    out: &mut [u8],
-) -> Result<(), Error> {
-    let src_components = usize::from(tile.channels);
+) -> Result<TileCopyGeometry, Error> {
+    let src_components = usize::from(tile.channels());
     let dst_components = usize::from(profile.components);
-    let tile_width = usize::try_from(tile.width).map_err(|_| Error::UnsupportedPixelData {
+    let tile_width = usize::try_from(tile.width()).map_err(|_| Error::UnsupportedPixelData {
         reason: "tile width exceeds platform addressable memory".into(),
     })?;
-    let tile_height = usize::try_from(tile.height).map_err(|_| Error::UnsupportedPixelData {
+    let tile_height = usize::try_from(tile.height()).map_err(|_| Error::UnsupportedPixelData {
         reason: "tile height exceeds platform addressable memory".into(),
     })?;
     let output_width = usize::try_from(output_width).map_err(|_| Error::UnsupportedPixelData {
@@ -227,31 +289,51 @@ fn copy_u8_tile(
         .ok_or_else(|| Error::UnsupportedPixelData {
             reason: "source tile buffer length overflow".into(),
         })?;
-    if bytes.len() < expected_src {
+
+    Ok(TileCopyGeometry {
+        src_components,
+        dst_components,
+        tile_width,
+        tile_height,
+        output_width,
+        expected_src,
+    })
+}
+
+fn copy_u8_tile(
+    tile: &CpuTile,
+    bytes: &[u8],
+    profile: PixelProfile,
+    output_width: u32,
+    out: &mut [u8],
+) -> Result<(), Error> {
+    let geometry = tile_copy_geometry(tile, profile, output_width)?;
+    if bytes.len() < geometry.expected_src {
         return Err(Error::UnsupportedPixelData {
             reason: format!(
                 "source tile buffer is shorter than expected: {} < {expected_src}",
-                bytes.len()
+                bytes.len(),
+                expected_src = geometry.expected_src
             ),
         });
     }
-    for y in 0..tile_height {
-        for x in 0..tile_width {
+    for y in 0..geometry.tile_height {
+        for x in 0..geometry.tile_width {
             let src = y
-                .checked_mul(tile_width)
+                .checked_mul(geometry.tile_width)
                 .and_then(|row| row.checked_add(x))
-                .and_then(|pixel| pixel.checked_mul(src_components))
+                .and_then(|pixel| pixel.checked_mul(geometry.src_components))
                 .ok_or_else(|| Error::UnsupportedPixelData {
                     reason: "source tile index overflow".into(),
                 })?;
             let dst = y
-                .checked_mul(output_width)
+                .checked_mul(geometry.output_width)
                 .and_then(|row| row.checked_add(x))
-                .and_then(|pixel| pixel.checked_mul(dst_components))
+                .and_then(|pixel| pixel.checked_mul(geometry.dst_components))
                 .ok_or_else(|| Error::UnsupportedPixelData {
                     reason: "prepared tile index overflow".into(),
                 })?;
-            if src_components == 4 {
+            if geometry.src_components == 4 {
                 if bytes[src + 3] != u8::MAX {
                     return Err(Error::UnsupportedPixelData {
                         reason: "non-opaque alpha requires an explicit composite policy".into(),
@@ -259,7 +341,8 @@ fn copy_u8_tile(
                 }
                 out[dst..dst + 3].copy_from_slice(&bytes[src..src + 3]);
             } else {
-                out[dst..dst + dst_components].copy_from_slice(&bytes[src..src + dst_components]);
+                out[dst..dst + geometry.dst_components]
+                    .copy_from_slice(&bytes[src..src + geometry.dst_components]);
             }
         }
     }
@@ -273,54 +356,39 @@ fn copy_u16_tile(
     output_width: u32,
     out: &mut [u8],
 ) -> Result<(), Error> {
-    let src_components = usize::from(tile.channels);
-    let dst_components = usize::from(profile.components);
-    let tile_width = usize::try_from(tile.width).map_err(|_| Error::UnsupportedPixelData {
-        reason: "tile width exceeds platform addressable memory".into(),
-    })?;
-    let tile_height = usize::try_from(tile.height).map_err(|_| Error::UnsupportedPixelData {
-        reason: "tile height exceeds platform addressable memory".into(),
-    })?;
-    let output_width = usize::try_from(output_width).map_err(|_| Error::UnsupportedPixelData {
-        reason: "output tile width exceeds platform addressable memory".into(),
-    })?;
-    let expected_src = tile_width
-        .checked_mul(tile_height)
-        .and_then(|pixels| pixels.checked_mul(src_components))
-        .ok_or_else(|| Error::UnsupportedPixelData {
-            reason: "source tile buffer length overflow".into(),
-        })?;
-    if samples.len() < expected_src {
+    let geometry = tile_copy_geometry(tile, profile, output_width)?;
+    if samples.len() < geometry.expected_src {
         return Err(Error::UnsupportedPixelData {
             reason: format!(
                 "source tile sample buffer is shorter than expected: {} < {expected_src}",
-                samples.len()
+                samples.len(),
+                expected_src = geometry.expected_src
             ),
         });
     }
-    for y in 0..tile_height {
-        for x in 0..tile_width {
+    for y in 0..geometry.tile_height {
+        for x in 0..geometry.tile_width {
             let src = y
-                .checked_mul(tile_width)
+                .checked_mul(geometry.tile_width)
                 .and_then(|row| row.checked_add(x))
-                .and_then(|pixel| pixel.checked_mul(src_components))
+                .and_then(|pixel| pixel.checked_mul(geometry.src_components))
                 .ok_or_else(|| Error::UnsupportedPixelData {
                     reason: "source tile sample index overflow".into(),
                 })?;
             let dst = y
-                .checked_mul(output_width)
+                .checked_mul(geometry.output_width)
                 .and_then(|row| row.checked_add(x))
-                .and_then(|pixel| pixel.checked_mul(dst_components))
+                .and_then(|pixel| pixel.checked_mul(geometry.dst_components))
                 .and_then(|offset| offset.checked_mul(2))
                 .ok_or_else(|| Error::UnsupportedPixelData {
                     reason: "prepared tile byte index overflow".into(),
                 })?;
-            if src_components == 4 && samples[src + 3] != u16::MAX {
+            if geometry.src_components == 4 && samples[src + 3] != u16::MAX {
                 return Err(Error::UnsupportedPixelData {
                     reason: "non-opaque alpha requires an explicit composite policy".into(),
                 });
             }
-            for c in 0..dst_components {
+            for c in 0..geometry.dst_components {
                 out[dst + c * 2..dst + c * 2 + 2].copy_from_slice(&samples[src + c].to_le_bytes());
             }
         }

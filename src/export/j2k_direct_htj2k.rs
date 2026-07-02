@@ -36,17 +36,17 @@ pub(super) fn frame(
     profile: Option<PixelProfile>,
 ) -> Option<Frame> {
     if !self::transfer_syntax(transfer_syntax)
-        || raw.width != frame_columns
-        || raw.height != frame_rows
+        || raw.width() != frame_columns
+        || raw.height() != frame_rows
         || !matches!(
-            raw.compression,
+            raw.compression(),
             Compression::Jp2kRgb | Compression::Jp2kYcbcr
         )
     {
         return None;
     }
     Some(Frame {
-        data: raw.data.clone(),
+        data: raw.data().to_vec(),
         profile: profile?,
     })
 }
@@ -137,11 +137,11 @@ fn options(
     } else {
         J2kProgressionOrder::Lrcp
     };
-    Ok(J2kToHtj2kOptions {
-        output_payload_kind: CompressedPayloadKind::Jpeg2000Codestream,
+    Ok(J2kToHtj2kOptions::new(
+        CompressedPayloadKind::Jpeg2000Codestream,
         progression,
-        validation: codec_validation.to_j2k_validation(),
-    })
+        codec_validation.to_j2k_validation(),
+    ))
 }
 
 fn to_wsi_error(source: j2k::J2kError) -> Error {

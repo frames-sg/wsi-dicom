@@ -26,18 +26,8 @@ impl FrameLocation {
     }
 
     pub(super) fn tile_request(self, col: i64, row: i64) -> TileRequest {
-        TileRequest {
-            scene: self.scene_idx,
-            series: self.series_idx,
-            level: self.level_idx,
-            plane: PlaneSelection {
-                z: self.z,
-                c: self.c,
-                t: self.t,
-            },
-            col,
-            row,
-        }
+        TileRequest::new(self.scene_idx, self.series_idx, self.level_idx, col, row)
+            .with_plane(PlaneSelection::new(self.z, self.c, self.t))
     }
 }
 

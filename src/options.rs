@@ -35,7 +35,7 @@ impl EncodeBackendPreference {
         match self {
             Self::Auto => j2k::EncodeBackendPreference::Auto,
             Self::CpuOnly => j2k::EncodeBackendPreference::CpuOnly,
-            Self::PreferDevice => j2k::EncodeBackendPreference::PreferDevice,
+            Self::PreferDevice => j2k::EncodeBackendPreference::Auto,
             Self::RequireDevice => j2k::EncodeBackendPreference::RequireDevice,
         }
     }

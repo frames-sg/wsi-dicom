@@ -243,19 +243,6 @@ pub(super) fn prepare_lossless_j2k_instance(
             request.options.transfer_syntax,
             allow_passthrough_probe,
         )?;
-        let mut direct_jpeg_results =
-            if let Some(jpeg_direct_encoder) = jpeg_direct_encoder.as_mut() {
-                jpeg_direct_htj2k::encode_planned_batch_with_encoder(&planned, jpeg_direct_encoder)?
-            } else {
-                (0..planned.len()).map(|_| None).collect()
-            };
-        let mut direct_j2k_results = j2k_direct_htj2k::encode_planned_batch(
-            &planned,
-            request.options.transfer_syntax,
-            request.options.codec_validation,
-        )?;
-        let mut generated_jpeg_direct_results: Vec<Option<GeneratedJpegDirectHtj2kOutcome>> =
-            (0..planned.len()).map(|_| None).collect();
         #[cfg(all(feature = "metal", target_os = "macos"))]
         let generated_jpeg_direct_allowed = jpeg_direct_encoder.is_some()
             && generated_jpeg_direct_htj2k_allowed_for_route(
@@ -264,317 +251,101 @@ pub(super) fn prepare_lossless_j2k_instance(
             );
         #[cfg(not(all(feature = "metal", target_os = "macos")))]
         let generated_jpeg_direct_allowed = jpeg_direct_encoder.is_some();
-        if generated_jpeg_direct_allowed {
-            let generated_indices = generated_jpeg_direct_htj2k_indices(
-                &planned,
-                request.options.transfer_syntax,
-                |idx| direct_jpeg_results[idx].as_ref().is_some_and(Result::is_ok),
-            );
-            scatter_indexed_results(
-                &mut generated_jpeg_direct_results,
-                encode_generated_jpeg_direct_htj2k_planned_batch(
-                    slide,
-                    jpeg_direct_encoder.as_mut().ok_or_else(|| Error::Encode {
-                        message: "generated JPEG direct route missing HTJ2K encoder".into(),
-                    })?,
-                    location,
-                    &planned,
-                    &generated_indices,
-                    tile_size,
-                    request.options.jpeg_quality,
-                    request.options.max_prepared_frame_bytes,
-                )?,
-            )?;
-        }
+        let mut direct_routes = encode_direct_lossless_j2k_routes(
+            slide,
+            &mut jpeg_direct_encoder,
+            &planned,
+            &request.options,
+            location,
+            tile_size,
+            generated_jpeg_direct_allowed,
+        )?;
         #[cfg(all(feature = "metal", target_os = "macos"))]
-        {
-            let mut routed_tiles: Vec<Option<RoutedLosslessJ2kTile>> =
-                (0..planned.len()).map(|_| None).collect();
-            let mut run_start = 0usize;
-            while run_start < planned.len() {
-                if planned[run_start].passthrough.is_some()
-                    || jpeg_direct_htj2k_result_is_ok(
-                        &direct_jpeg_results,
-                        &generated_jpeg_direct_results,
-                        run_start,
-                    )
-                    || j2k_direct_htj2k_result_is_ok(&direct_j2k_results, run_start)
+        let mut routed_tiles = route_lossless_j2k_metal_input_runs(
+            slide,
+            &mut metal_input,
+            &mut j2k_encoder,
+            level,
+            location,
+            row,
+            &planned,
+            &direct_routes,
+            request.options.transfer_syntax,
+            frame_count as usize,
+            matrix_columns,
+            matrix_rows,
+            tile_size,
+            &mut metrics,
+        )?;
+        let mut cpu_batch_results = encode_lossless_j2k_cpu_fallback_after_routes(
+            slide,
+            level,
+            &j2k_encoder,
+            &planned,
+            &request.options,
+            location,
+            tile_size,
+            &direct_routes,
+            |idx| {
+                #[cfg(all(feature = "metal", target_os = "macos"))]
                 {
-                    run_start += 1;
-                    continue;
+                    routed_tiles[idx].is_some()
                 }
-                let mut run_end = run_start + 1;
-                while run_end < planned.len()
-                    && planned[run_end].passthrough.is_none()
-                    && !jpeg_direct_htj2k_result_is_ok(
-                        &direct_jpeg_results,
-                        &generated_jpeg_direct_results,
-                        run_end,
-                    )
-                    && !j2k_direct_htj2k_result_is_ok(&direct_j2k_results, run_end)
+                #[cfg(not(all(feature = "metal", target_os = "macos")))]
                 {
-                    run_end += 1;
+                    let _ = idx;
+                    false
                 }
-                if request
-                    .options
-                    .transfer_syntax
-                    .is_jpeg2000_passthrough_only()
-                {
-                    run_start = run_end;
-                    continue;
-                }
-                if metal_input.auto_input_probe_pending() {
-                    let probe_end =
-                        (run_start + LOSSLESS_J2K_AUTO_ROUTE_PROBE_MAX_FRAMES).min(run_end);
-                    let probe_run = probe_auto_metal_input_tile_run(
-                        slide,
-                        &mut metal_input,
-                        &mut j2k_encoder,
-                        level,
-                        scene_idx,
-                        series_idx,
-                        level_idx,
-                        z,
-                        c,
-                        t,
-                        row,
-                        &planned[run_start..probe_end],
-                        frame_count as usize,
-                        matrix_columns,
-                        matrix_rows,
-                        tile_size,
-                    )?;
-                    let selected_gpu_input =
-                        probe_run.route == AutoLosslessJ2kRouteDecision::GpuInputDeviceEncode;
-                    if selected_gpu_input {
-                        metrics.record_gpu_input_decode_duration(probe_run.input_decode_duration);
-                        metrics.record_gpu_compose_duration(probe_run.compose_duration);
-                    } else {
-                        metrics.record_input_decode_duration(probe_run.input_decode_duration);
-                        metrics.record_compose_duration(probe_run.compose_duration);
-                    }
-                    metrics.record_gpu_batches(
-                        probe_run.gpu_input_decode_batches,
-                        probe_run.gpu_compose_batches,
-                        probe_run.gpu_encode_batches,
-                    );
-                    metrics.record_gpu_encode_batch_stats(probe_run.gpu_encode_stats);
-                    metrics.record_auto_route_probe(
-                        u64::try_from(probe_end - run_start).map_err(|_| Error::Unsupported {
-                            reason: "auto route probe frame count exceeds u64".into(),
-                        })?,
-                        probe_run.probe_cpu_duration,
-                        probe_run.probe_gpu_duration,
-                        probe_run.probe_gpu_batches,
-                        selected_gpu_input,
-                    );
-                    for (slot, encoded) in routed_tiles[run_start..probe_end]
-                        .iter_mut()
-                        .zip(probe_run.tiles.into_iter())
-                    {
-                        *slot = encoded;
-                    }
-                    run_start = probe_end;
-                    continue;
-                }
-                if metal_input.enabled() {
-                    let metal_run = try_encode_metal_input_tile_run(
-                        slide,
-                        &mut metal_input,
-                        &mut j2k_encoder,
-                        level,
-                        scene_idx,
-                        series_idx,
-                        level_idx,
-                        z,
-                        c,
-                        t,
-                        row,
-                        planned[run_start].col,
-                        (run_end - run_start) as u64,
-                        matrix_columns,
-                        matrix_rows,
-                        tile_size,
-                    )?;
-                    metrics.record_gpu_input_decode_duration(metal_run.input_decode_duration);
-                    metrics.record_gpu_compose_duration(metal_run.compose_duration);
-                    metrics.record_gpu_batches(
-                        metal_run.input_decode_batches,
-                        metal_run.compose_batches,
-                        metal_run.encode_batches,
-                    );
-                    metrics.record_gpu_encode_batch_stats(metal_run.gpu_encode_stats);
-                    metrics.record_gpu_row_batch_config(
-                        metal_run.row_batch_rows,
-                        metal_run.row_batch_target_tiles,
-                    );
-                    for (slot, encoded) in routed_tiles[run_start..run_end]
-                        .iter_mut()
-                        .zip(metal_run.tiles.into_iter())
-                    {
-                        *slot = encoded.map(|(encoded, profile)| RoutedLosslessJ2kTile {
-                            encoded: Ok(encoded),
-                            profile,
-                            used_gpu_input: true,
-                        });
-                    }
-                }
-                run_start = run_end;
+            },
+        )?;
+        for (idx, planned_frame) in planned.into_iter().enumerate() {
+            let encode_allowed = j2k_non_passthrough_encode_allowed(
+                &planned_frame,
+                request.options.transfer_syntax,
+                tile_size,
+            );
+            if try_write_existing_lossless_j2k_frame(
+                idx,
+                &planned_frame,
+                &mut direct_routes,
+                &request.options,
+                &mut metrics,
+                &mut pixel_profile,
+                &mut pixel_data,
+                &mut j2k_passthrough_lossy,
+            )? {
+                continue;
             }
-
-            let mut cpu_batch_results: Vec<Option<LosslessJ2kCpuBatchOutcome>> =
-                (0..planned.len()).map(|_| None).collect();
-            if let Some((
-                transfer_syntax,
-                codec_validation,
-                j2k_decomposition_levels,
-                reversible_transform,
-            )) = (request.options.transfer_syntax != TransferSyntax::Jpeg2000)
-                .then(|| j2k_encoder.cpu_batch_settings())
-                .flatten()
-            {
-                let cpu_indices = lossless_j2k_cpu_fallback_indices(
-                    &planned,
-                    request.options.transfer_syntax,
-                    tile_size,
-                    |idx| {
-                        routed_tiles[idx].is_some()
-                            || jpeg_direct_htj2k_result_is_ok(
-                                &direct_jpeg_results,
-                                &generated_jpeg_direct_results,
-                                idx,
-                            )
-                            || j2k_direct_htj2k_result_is_ok(&direct_j2k_results, idx)
-                    },
-                );
-                scatter_indexed_results(
-                    &mut cpu_batch_results,
-                    encode_cpu_input_lossless_j2k_planned_batch(
-                        slide,
-                        level,
-                        LosslessJ2kCpuBatchSettings {
-                            transfer_syntax,
-                            codec_validation,
-                            j2k_decomposition_levels,
-                            reversible_transform,
-                            max_prepared_frame_bytes: request.options.max_prepared_frame_bytes,
-                        },
-                        scene_idx,
-                        series_idx,
-                        level_idx,
-                        z,
-                        c,
-                        t,
-                        &planned,
-                        &cpu_indices,
-                        tile_size,
-                    )?,
-                )?;
-            }
-
-            for (idx, planned_frame) in planned.into_iter().enumerate() {
-                let encode_allowed = j2k_non_passthrough_encode_allowed(
-                    &planned_frame,
-                    request.options.transfer_syntax,
-                    tile_size,
-                );
-                if try_write_existing_lossless_j2k_frame(
-                    idx,
-                    &planned_frame,
-                    &mut direct_j2k_results,
-                    &mut generated_jpeg_direct_results,
-                    &mut direct_jpeg_results,
-                    &request.options,
-                    &mut metrics,
-                    &mut pixel_profile,
-                    &mut pixel_data,
-                    &mut j2k_passthrough_lossy,
-                )? {
-                    continue;
-                }
-                if !encode_allowed {
-                    return Err(unsupported_j2k_route_error(
-                        request.options.transfer_syntax,
-                        planned_frame.row,
-                        planned_frame.col,
-                    ));
-                }
-                reject_lossy_j2k_lossless_fallback(
-                    &planned_frame,
+            if !encode_allowed {
+                return Err(unsupported_j2k_route_error(
                     request.options.transfer_syntax,
                     planned_frame.row,
-                )?;
+                    planned_frame.col,
+                ));
+            }
+            reject_lossy_j2k_lossless_fallback(
+                &planned_frame,
+                request.options.transfer_syntax,
+                planned_frame.row,
+            )?;
 
-                let routed_encoded = routed_tiles[idx].take();
-                let (encoded, profile, used_gpu_input, input_decode_duration, compose_duration) =
-                    match routed_encoded {
-                        Some(routed) => (
-                            routed.encoded,
-                            routed.profile,
-                            routed.used_gpu_input,
-                            Duration::ZERO,
-                            Duration::ZERO,
-                        ),
-                        None if cpu_batch_results[idx].is_some() => {
-                            let outcome =
-                                cpu_batch_results[idx].take().ok_or_else(|| Error::Encode {
-                                    message:
-                                        "CPU JPEG 2000 batch result missing for fallback frame"
-                                            .into(),
-                                })?;
-                            (
-                                outcome.encoded,
-                                outcome.profile,
-                                false,
-                                outcome.input_decode_duration,
-                                outcome.compose_duration,
-                            )
-                        }
-                        None => {
-                            j2k_encoder.set_reversible_transform(
-                                j2k_fallback_reversible_transform(
-                                    &planned_frame,
-                                    request.options.transfer_syntax,
-                                ),
-                            );
-                            let (encoded, profile, input_decode_duration, compose_duration) =
-                                encode_cpu_input_tile(
-                                    slide,
-                                    &mut j2k_encoder,
-                                    location,
-                                    planned_frame.x,
-                                    planned_frame.y,
-                                    planned_frame.width,
-                                    planned_frame.height,
-                                    tile_size,
-                                )?;
-                            (
-                                encoded,
-                                profile,
-                                false,
-                                input_decode_duration,
-                                compose_duration,
-                            )
-                        }
-                    };
-                let profile =
-                    j2k_fallback_profile(&planned_frame, profile, request.options.transfer_syntax);
-                if used_gpu_input {
-                    metrics.record_gpu_input();
-                } else {
-                    metrics.record_cpu_input();
-                    metrics.record_input_decode_duration(input_decode_duration);
-                    metrics.record_compose_duration(compose_duration);
-                }
-                metrics.record_pixel_profile(profile);
-
-                ensure_consistent_pixel_profile(
-                    &mut pixel_profile,
-                    profile,
-                    "pixel profile changed across frames",
-                )?;
-
-                let encoded = encoded.map_err(|err| match err {
+            let resolved = resolve_lossless_j2k_fallback_frame(
+                slide,
+                &mut j2k_encoder,
+                location,
+                &planned_frame,
+                &mut cpu_batch_results[idx],
+                #[cfg(all(feature = "metal", target_os = "macos"))]
+                routed_tiles[idx].take(),
+                request.options.transfer_syntax,
+                tile_size,
+            )?;
+            let encoded = record_resolved_lossless_j2k_fallback_frame(
+                &mut metrics,
+                &mut pixel_profile,
+                resolved,
+                "pixel profile changed across frames",
+                |err| match err {
                     Error::Encode { message } => Error::FrameEncode {
                         level: level_idx,
                         row: planned_frame.row,
@@ -582,148 +353,11 @@ pub(super) fn prepare_lossless_j2k_instance(
                         message,
                     },
                     other => other,
-                })?;
-                metrics.record_encoded_frame(&encoded);
-                metrics.record_transcode_route(used_gpu_input, encoded.used_device_encode);
-                let byte_started = Instant::now();
-                pixel_data.push_owned_frame(encoded.into_codestream()?)?;
-                metrics.record_write_duration(byte_started.elapsed());
-            }
-        }
-        #[cfg(not(all(feature = "metal", target_os = "macos")))]
-        {
-            let mut cpu_batch_results: Vec<Option<LosslessJ2kCpuBatchOutcome>> =
-                (0..planned.len()).map(|_| None).collect();
-            if let Some((
-                transfer_syntax,
-                codec_validation,
-                j2k_decomposition_levels,
-                reversible_transform,
-            )) = (request.options.transfer_syntax != TransferSyntax::Jpeg2000)
-                .then(|| j2k_encoder.cpu_batch_settings())
-                .flatten()
-            {
-                let cpu_indices = lossless_j2k_cpu_fallback_indices(
-                    &planned,
-                    request.options.transfer_syntax,
-                    tile_size,
-                    |idx| {
-                        jpeg_direct_htj2k_result_is_ok(
-                            &direct_jpeg_results,
-                            &generated_jpeg_direct_results,
-                            idx,
-                        ) || j2k_direct_htj2k_result_is_ok(&direct_j2k_results, idx)
-                    },
-                );
-                scatter_indexed_results(
-                    &mut cpu_batch_results,
-                    encode_cpu_input_lossless_j2k_planned_batch(
-                        slide,
-                        level,
-                        LosslessJ2kCpuBatchSettings {
-                            transfer_syntax,
-                            codec_validation,
-                            j2k_decomposition_levels,
-                            reversible_transform,
-                            max_prepared_frame_bytes: request.options.max_prepared_frame_bytes,
-                        },
-                        scene_idx,
-                        series_idx,
-                        level_idx,
-                        z,
-                        c,
-                        t,
-                        &planned,
-                        &cpu_indices,
-                        tile_size,
-                    )?,
-                )?;
-            }
-            for (idx, planned_frame) in planned.into_iter().enumerate() {
-                let encode_allowed = j2k_non_passthrough_encode_allowed(
-                    &planned_frame,
-                    request.options.transfer_syntax,
-                    tile_size,
-                );
-                if try_write_existing_lossless_j2k_frame(
-                    idx,
-                    &planned_frame,
-                    &mut direct_j2k_results,
-                    &mut generated_jpeg_direct_results,
-                    &mut direct_jpeg_results,
-                    &request.options,
-                    &mut metrics,
-                    &mut pixel_profile,
-                    &mut pixel_data,
-                    &mut j2k_passthrough_lossy,
-                )? {
-                    continue;
-                }
-                if !encode_allowed {
-                    return Err(unsupported_j2k_route_error(
-                        request.options.transfer_syntax,
-                        planned_frame.row,
-                        planned_frame.col,
-                    ));
-                }
-                reject_lossy_j2k_lossless_fallback(
-                    &planned_frame,
-                    request.options.transfer_syntax,
-                    planned_frame.row,
-                )?;
-
-                let (encoded, profile, input_decode_duration, compose_duration) =
-                    if let Some(outcome) = cpu_batch_results[idx].take() {
-                        (
-                            outcome.encoded,
-                            outcome.profile,
-                            outcome.input_decode_duration,
-                            outcome.compose_duration,
-                        )
-                    } else {
-                        j2k_encoder.set_reversible_transform(j2k_fallback_reversible_transform(
-                            &planned_frame,
-                            request.options.transfer_syntax,
-                        ));
-                        encode_cpu_input_tile(
-                            slide,
-                            &mut j2k_encoder,
-                            location,
-                            planned_frame.x,
-                            planned_frame.y,
-                            planned_frame.width,
-                            planned_frame.height,
-                            tile_size,
-                        )?
-                    };
-                let profile =
-                    j2k_fallback_profile(&planned_frame, profile, request.options.transfer_syntax);
-                metrics.record_input_decode_duration(input_decode_duration);
-                metrics.record_compose_duration(compose_duration);
-                metrics.record_cpu_input();
-                metrics.record_pixel_profile(profile);
-
-                ensure_consistent_pixel_profile(
-                    &mut pixel_profile,
-                    profile,
-                    "pixel profile changed across frames",
-                )?;
-
-                let encoded = encoded.map_err(|err| match err {
-                    Error::Encode { message } => Error::FrameEncode {
-                        level: level_idx,
-                        row: planned_frame.row,
-                        col: planned_frame.col,
-                        message,
-                    },
-                    other => other,
-                })?;
-                metrics.record_encoded_frame(&encoded);
-                metrics.record_transcode_route(false, encoded.used_device_encode);
-                let byte_started = Instant::now();
-                pixel_data.push_owned_frame(encoded.into_codestream()?)?;
-                metrics.record_write_duration(byte_started.elapsed());
-            }
+                },
+            )?;
+            let byte_started = Instant::now();
+            pixel_data.push_owned_frame(encoded.into_codestream()?)?;
+            metrics.record_write_duration(byte_started.elapsed());
         }
         row = row
             .checked_add(planned_row_count)

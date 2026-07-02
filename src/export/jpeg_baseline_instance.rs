@@ -225,57 +225,22 @@ pub(super) fn export_jpeg_passthrough_instance(
                     let (next_index, fallback_frames) = jpeg_baseline_fallback_run(&planned, index);
                     index = next_index;
 
-                    #[cfg(all(feature = "metal", target_os = "macos"))]
-                    let mut metal_run = try_encode_jpeg_baseline_metal_input_tile_run(
+                    let mut fallback_batch = prepare_jpeg_baseline_fallback_batch_for_options(
                         slide,
+                        #[cfg(all(feature = "metal", target_os = "macos"))]
                         &mut metal_input,
                         level,
                         location,
                         row,
                         &fallback_frames,
+                        &request.options,
                         frame_columns,
                         frame_rows,
-                        request.options.jpeg_quality,
-                        request.options.max_prepared_frame_bytes,
-                    )?;
-                    #[cfg(not(all(feature = "metal", target_os = "macos")))]
-                    let mut metal_run =
-                        empty_jpeg_baseline_metal_run_for_non_metal(fallback_frames.len());
-
-                    metrics.record_gpu_input_decode_duration(metal_run.input_decode_duration);
-                    metrics.record_jpeg_metal_batch_encode(
-                        metal_run
-                            .frames
-                            .iter()
-                            .filter(|frame| frame.is_some())
-                            .count() as u64,
-                        metal_run.encode_duration,
-                    );
-                    metrics.record_gpu_batches(
-                        metal_run.input_decode_batches,
-                        0,
-                        metal_run.encode_batches,
-                    );
-
-                    let mut cpu_batch_results = encode_jpeg_baseline_cpu_metal_misses(
-                        slide,
-                        location,
-                        &fallback_frames,
-                        &metal_run,
-                        request.options.encode_backend,
-                        JpegBaselineCpuEncodeSettings {
-                            frame_columns,
-                            frame_rows,
-                            jpeg_quality: request.options.jpeg_quality,
-                            max_prepared_frame_bytes: request.options.max_prepared_frame_bytes,
-                        },
+                        &mut metrics,
                     )?;
 
-                    for (idx, (_frame, metal_encoded)) in fallback_frames
-                        .iter()
-                        .copied()
-                        .zip(metal_run.frames.iter_mut())
-                        .enumerate()
+                    for (idx, metal_encoded) in
+                        fallback_batch.metal_run.frames.iter_mut().enumerate()
                     {
                         let (
                             encoded,
@@ -283,31 +248,11 @@ pub(super) fn export_jpeg_passthrough_instance(
                             input_decode_duration,
                             compose_duration,
                             encode_duration,
-                        ) = if let Some((encoded, profile)) = metal_encoded.take() {
-                            (
-                                encoded,
-                                profile,
-                                Duration::ZERO,
-                                Duration::ZERO,
-                                Duration::ZERO,
-                            )
-                        } else {
-                            if request.options.encode_backend
-                                == EncodeBackendPreference::RequireDevice
-                            {
-                                return Err(Error::Unsupported {
-                                        reason:
-                                            "requested JPEG Baseline device encode backend is unavailable or unsupported"
-                                                .into(),
-                                    });
-                            }
-                            cpu_batch_results[idx].take().ok_or_else(|| Error::Encode {
-                                message: "CPU JPEG batch result missing for non-Metal frame".into(),
-                            })?
-                        };
-                        ensure_consistent_pixel_profile(
+                        ) = take_consistent_jpeg_baseline_fallback_frame(
+                            metal_encoded,
+                            &mut fallback_batch.cpu_batch_results[idx],
+                            request.options.encode_backend,
                             &mut pixel_profile,
-                            profile,
                             "JPEG Baseline pixel profile changed across frames",
                         )?;
                         compressed_bytes = compressed_bytes
@@ -322,16 +267,14 @@ pub(super) fn export_jpeg_passthrough_instance(
                         let byte_started = Instant::now();
                         pixel_spool.push_frame(&encoded.data)?;
                         metrics.record_write_duration(byte_started.elapsed());
-                        if encoded.backend == JpegBackend::Metal {
+                        let encoded_on_device = jpeg_backend_uses_device(encoded.backend);
+                        if encoded_on_device {
                             metrics.record_gpu_input();
                         } else {
                             metrics.record_cpu_input();
                         }
                         metrics.record_pixel_profile(profile);
-                        metrics.record_transcode_route(
-                            encoded.backend == JpegBackend::Metal,
-                            encoded.backend == JpegBackend::Metal,
-                        );
+                        metrics.record_transcode_route(encoded_on_device, encoded_on_device);
                         metrics.record_jpeg_decode_fallback();
                         metrics.record_input_decode_duration(input_decode_duration);
                         metrics.record_compose_duration(compose_duration);
@@ -339,7 +282,7 @@ pub(super) fn export_jpeg_passthrough_instance(
                             JpegBackend::Cpu | JpegBackend::Auto => {
                                 metrics.record_jpeg_cpu_encode(encode_duration);
                             }
-                            JpegBackend::Metal => {}
+                            JpegBackend::Metal | JpegBackend::Cuda => {}
                         }
                     }
                 }

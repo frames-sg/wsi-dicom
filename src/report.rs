@@ -8,6 +8,22 @@ use serde::{ser::SerializeStruct, Serialize};
 use crate::encode;
 use crate::tile::PixelProfile;
 
+macro_rules! saturating_add_fields {
+    ($target:expr, $source:expr, [$($field:ident),+ $(,)?]) => {
+        $(
+            $target.$field = $target.$field.saturating_add($source.$field);
+        )+
+    };
+}
+
+macro_rules! saturating_add_values {
+    ($target:expr, [$($field:ident => $value:expr),+ $(,)?]) => {
+        $(
+            $target.$field = $target.$field.saturating_add($value);
+        )+
+    };
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum JpegRetileRejectionReason {
     SourceUnsupported,
@@ -286,6 +302,18 @@ pub struct JpegDirectHtj2kMetrics {
     pub jpeg_direct_htj2k_dwt97_column_lift_micros: u128,
     /// Direct JPEG-to-HTJ2K 9/7 quantization time in microseconds.
     pub jpeg_direct_htj2k_dwt97_quantize_codeblock_micros: u128,
+    /// Direct JPEG-to-HTJ2K 9/7 HT encode time in microseconds.
+    pub jpeg_direct_htj2k_dwt97_ht_encode_micros: u128,
+    /// Direct JPEG-to-HTJ2K 9/7 HT kernel time in microseconds.
+    pub jpeg_direct_htj2k_dwt97_ht_kernel_micros: u128,
+    /// Direct JPEG-to-HTJ2K 9/7 HT status readback time in microseconds.
+    pub jpeg_direct_htj2k_dwt97_ht_status_readback_micros: u128,
+    /// Direct JPEG-to-HTJ2K 9/7 HT compaction time in microseconds.
+    pub jpeg_direct_htj2k_dwt97_ht_compact_micros: u128,
+    /// Direct JPEG-to-HTJ2K 9/7 HT output readback time in microseconds.
+    pub jpeg_direct_htj2k_dwt97_ht_output_readback_micros: u128,
+    /// Direct JPEG-to-HTJ2K 9/7 HT code-block dispatch count.
+    pub jpeg_direct_htj2k_dwt97_ht_codeblock_dispatches: u64,
     /// Direct JPEG-to-HTJ2K 9/7 readback time in microseconds.
     pub jpeg_direct_htj2k_dwt97_readback_micros: u128,
     /// Direct JPEG-to-HTJ2K HTJ2K encode time in microseconds.
@@ -492,7 +520,7 @@ impl GpuEncodeMetrics {
 
 impl ExportMetrics {
     /// Number of fields emitted by the public serialized metrics object.
-    pub const SERIALIZED_FIELD_COUNT: usize = 93;
+    pub const SERIALIZED_FIELD_COUNT: usize = 99;
 
     /// Total frames emitted by compressed passthrough routes.
     pub fn route_passthrough_frames(&self) -> u64 {
@@ -630,174 +658,43 @@ impl ExportMetrics {
             .routes
             .j2k_direct_htj2k_frames
             .saturating_add(other.routes.j2k_direct_htj2k_frames);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_53_frames = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_53_frames
-            .saturating_add(other.jpeg_direct_htj2k.jpeg_direct_htj2k_53_frames);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_97_frames = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_97_frames
-            .saturating_add(other.jpeg_direct_htj2k.jpeg_direct_htj2k_97_frames);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_rejected_frames = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_rejected_frames
-            .saturating_add(other.jpeg_direct_htj2k.jpeg_direct_htj2k_rejected_frames);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_extract_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_extract_micros
-            .saturating_add(other.jpeg_direct_htj2k.jpeg_direct_htj2k_extract_micros);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_repack_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_repack_micros
-            .saturating_add(other.jpeg_direct_htj2k.jpeg_direct_htj2k_repack_micros);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_transform_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_transform_micros
-            .saturating_add(other.jpeg_direct_htj2k.jpeg_direct_htj2k_transform_micros);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_accelerator_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_micros
-            .saturating_add(other.jpeg_direct_htj2k.jpeg_direct_htj2k_accelerator_micros);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_cpu_fallback_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_cpu_fallback_micros
-            .saturating_add(
-                other
-                    .jpeg_direct_htj2k
-                    .jpeg_direct_htj2k_cpu_fallback_micros,
-            );
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt_decompose_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt_decompose_micros
-            .saturating_add(
-                other
-                    .jpeg_direct_htj2k
-                    .jpeg_direct_htj2k_dwt_decompose_micros,
-            );
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_pack_upload_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_pack_upload_micros
-            .saturating_add(
-                other
-                    .jpeg_direct_htj2k
-                    .jpeg_direct_htj2k_dwt97_pack_upload_micros,
-            );
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_idct_row_lift_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_idct_row_lift_micros
-            .saturating_add(
-                other
-                    .jpeg_direct_htj2k
-                    .jpeg_direct_htj2k_dwt97_idct_row_lift_micros,
-            );
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_column_lift_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_column_lift_micros
-            .saturating_add(
-                other
-                    .jpeg_direct_htj2k
-                    .jpeg_direct_htj2k_dwt97_column_lift_micros,
-            );
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_quantize_codeblock_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_quantize_codeblock_micros
-            .saturating_add(
-                other
-                    .jpeg_direct_htj2k
-                    .jpeg_direct_htj2k_dwt97_quantize_codeblock_micros,
-            );
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_readback_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_readback_micros
-            .saturating_add(
-                other
-                    .jpeg_direct_htj2k
-                    .jpeg_direct_htj2k_dwt97_readback_micros,
-            );
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_htj2k_encode_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_htj2k_encode_micros
-            .saturating_add(
-                other
-                    .jpeg_direct_htj2k
-                    .jpeg_direct_htj2k_htj2k_encode_micros,
-            );
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_encode_accelerator_dispatches = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_encode_accelerator_dispatches
-            .saturating_add(
-                other
-                    .jpeg_direct_htj2k
-                    .jpeg_direct_htj2k_encode_accelerator_dispatches,
-            );
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_encode_ht_code_block_dispatches = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_encode_ht_code_block_dispatches
-            .saturating_add(
-                other
-                    .jpeg_direct_htj2k
-                    .jpeg_direct_htj2k_encode_ht_code_block_dispatches,
-            );
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_encode_packetization_dispatches = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_encode_packetization_dispatches
-            .saturating_add(
-                other
-                    .jpeg_direct_htj2k
-                    .jpeg_direct_htj2k_encode_packetization_dispatches,
-            );
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_batch_count = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_batch_count
-            .saturating_add(other.jpeg_direct_htj2k.jpeg_direct_htj2k_batch_count);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_batch_jobs = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_batch_jobs
-            .saturating_add(other.jpeg_direct_htj2k.jpeg_direct_htj2k_batch_jobs);
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_attempts = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_attempts
-            .saturating_add(
-                other
-                    .jpeg_direct_htj2k
-                    .jpeg_direct_htj2k_accelerator_attempts,
-            );
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_accelerator_jobs = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_jobs
-            .saturating_add(other.jpeg_direct_htj2k.jpeg_direct_htj2k_accelerator_jobs);
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_dispatches = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_dispatches
-            .saturating_add(
-                other
-                    .jpeg_direct_htj2k
-                    .jpeg_direct_htj2k_accelerator_dispatches,
-            );
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_dispatched_jobs = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_dispatched_jobs
-            .saturating_add(
-                other
-                    .jpeg_direct_htj2k
-                    .jpeg_direct_htj2k_accelerator_dispatched_jobs,
-            );
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_cpu_fallback_jobs = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_cpu_fallback_jobs
-            .saturating_add(other.jpeg_direct_htj2k.jpeg_direct_htj2k_cpu_fallback_jobs);
+        saturating_add_fields!(
+            self.jpeg_direct_htj2k,
+            other.jpeg_direct_htj2k,
+            [
+                jpeg_direct_htj2k_53_frames,
+                jpeg_direct_htj2k_97_frames,
+                jpeg_direct_htj2k_rejected_frames,
+                jpeg_direct_htj2k_extract_micros,
+                jpeg_direct_htj2k_repack_micros,
+                jpeg_direct_htj2k_transform_micros,
+                jpeg_direct_htj2k_accelerator_micros,
+                jpeg_direct_htj2k_cpu_fallback_micros,
+                jpeg_direct_htj2k_dwt_decompose_micros,
+                jpeg_direct_htj2k_dwt97_pack_upload_micros,
+                jpeg_direct_htj2k_dwt97_idct_row_lift_micros,
+                jpeg_direct_htj2k_dwt97_column_lift_micros,
+                jpeg_direct_htj2k_dwt97_quantize_codeblock_micros,
+                jpeg_direct_htj2k_dwt97_ht_encode_micros,
+                jpeg_direct_htj2k_dwt97_ht_kernel_micros,
+                jpeg_direct_htj2k_dwt97_ht_status_readback_micros,
+                jpeg_direct_htj2k_dwt97_ht_compact_micros,
+                jpeg_direct_htj2k_dwt97_ht_output_readback_micros,
+                jpeg_direct_htj2k_dwt97_ht_codeblock_dispatches,
+                jpeg_direct_htj2k_dwt97_readback_micros,
+                jpeg_direct_htj2k_htj2k_encode_micros,
+                jpeg_direct_htj2k_encode_accelerator_dispatches,
+                jpeg_direct_htj2k_encode_ht_code_block_dispatches,
+                jpeg_direct_htj2k_encode_packetization_dispatches,
+                jpeg_direct_htj2k_batch_count,
+                jpeg_direct_htj2k_batch_jobs,
+                jpeg_direct_htj2k_accelerator_attempts,
+                jpeg_direct_htj2k_accelerator_jobs,
+                jpeg_direct_htj2k_accelerator_dispatches,
+                jpeg_direct_htj2k_accelerator_dispatched_jobs,
+                jpeg_direct_htj2k_cpu_fallback_jobs,
+            ]
+        );
         self.routes.jpeg_retile_frames = self
             .routes
             .jpeg_retile_frames
@@ -1006,106 +903,39 @@ impl ExportMetrics {
         &mut self,
         timings: j2k_transcode::TranscodeTimingReport,
     ) {
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_extract_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_extract_micros
-            .saturating_add(timings.jpeg_dct_extract_us);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_repack_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_repack_micros
-            .saturating_add(timings.jpeg_dct_repack_us);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_transform_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_transform_micros
-            .saturating_add(timings.dct_to_wavelet_total_us);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_accelerator_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_micros
-            .saturating_add(timings.dct_to_wavelet_accelerator_us);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_cpu_fallback_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_cpu_fallback_micros
-            .saturating_add(timings.dct_to_wavelet_cpu_fallback_us);
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt_decompose_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt_decompose_micros
-            .saturating_add(timings.dwt_decompose_us);
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_pack_upload_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_pack_upload_micros
-            .saturating_add(timings.dwt97_batch_pack_upload_us);
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_idct_row_lift_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_idct_row_lift_micros
-            .saturating_add(timings.dwt97_batch_idct_row_lift_us);
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_column_lift_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_column_lift_micros
-            .saturating_add(timings.dwt97_batch_column_lift_us);
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_quantize_codeblock_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_quantize_codeblock_micros
-            .saturating_add(timings.dwt97_batch_quantize_codeblock_us);
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_readback_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_dwt97_readback_micros
-            .saturating_add(timings.dwt97_batch_readback_us);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_htj2k_encode_micros = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_htj2k_encode_micros
-            .saturating_add(timings.htj2k_encode_us);
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_encode_accelerator_dispatches = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_encode_accelerator_dispatches
-            .saturating_add(timings.htj2k_encode_accelerator_dispatches as u64);
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_encode_ht_code_block_dispatches = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_encode_ht_code_block_dispatches
-            .saturating_add(timings.htj2k_encode_ht_code_block_dispatches as u64);
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_encode_packetization_dispatches = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_encode_packetization_dispatches
-            .saturating_add(timings.htj2k_encode_packetization_dispatches as u64);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_batch_count = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_batch_count
-            .saturating_add(timings.batch_count as u64);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_batch_jobs = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_batch_jobs
-            .saturating_add(timings.batch_jobs as u64);
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_attempts = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_attempts
-            .saturating_add(timings.accelerator_attempts as u64);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_accelerator_jobs = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_jobs
-            .saturating_add(timings.accelerator_jobs as u64);
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_dispatches = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_dispatches
-            .saturating_add(timings.accelerator_dispatches as u64);
-        self.jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_dispatched_jobs = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_accelerator_dispatched_jobs
-            .saturating_add(timings.accelerator_dispatched_jobs as u64);
-        self.jpeg_direct_htj2k.jpeg_direct_htj2k_cpu_fallback_jobs = self
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_cpu_fallback_jobs
-            .saturating_add(timings.cpu_fallback_jobs as u64);
+        saturating_add_values!(
+            self.jpeg_direct_htj2k,
+            [
+                jpeg_direct_htj2k_extract_micros => timings.jpeg_dct_extract_us,
+                jpeg_direct_htj2k_repack_micros => timings.jpeg_dct_repack_us,
+                jpeg_direct_htj2k_transform_micros => timings.dct_to_wavelet_total_us,
+                jpeg_direct_htj2k_accelerator_micros => timings.dct_to_wavelet_accelerator_us,
+                jpeg_direct_htj2k_cpu_fallback_micros => timings.dct_to_wavelet_cpu_fallback_us,
+                jpeg_direct_htj2k_dwt_decompose_micros => timings.dwt_decompose_us,
+                jpeg_direct_htj2k_dwt97_pack_upload_micros => timings.dwt97_batch_pack_upload_us,
+                jpeg_direct_htj2k_dwt97_idct_row_lift_micros => timings.dwt97_batch_idct_row_lift_us,
+                jpeg_direct_htj2k_dwt97_column_lift_micros => timings.dwt97_batch_column_lift_us,
+                jpeg_direct_htj2k_dwt97_quantize_codeblock_micros => timings.dwt97_batch_quantize_codeblock_us,
+                jpeg_direct_htj2k_dwt97_ht_encode_micros => timings.dwt97_batch_ht_encode_us,
+                jpeg_direct_htj2k_dwt97_ht_kernel_micros => timings.dwt97_batch_ht_kernel_us,
+                jpeg_direct_htj2k_dwt97_ht_status_readback_micros => timings.dwt97_batch_ht_status_readback_us,
+                jpeg_direct_htj2k_dwt97_ht_compact_micros => timings.dwt97_batch_ht_compact_us,
+                jpeg_direct_htj2k_dwt97_ht_output_readback_micros => timings.dwt97_batch_ht_output_readback_us,
+                jpeg_direct_htj2k_dwt97_ht_codeblock_dispatches => timings.dwt97_batch_ht_codeblock_dispatches as u64,
+                jpeg_direct_htj2k_dwt97_readback_micros => timings.dwt97_batch_readback_us,
+                jpeg_direct_htj2k_htj2k_encode_micros => timings.htj2k_encode_us,
+                jpeg_direct_htj2k_encode_accelerator_dispatches => timings.htj2k_encode_accelerator_dispatches as u64,
+                jpeg_direct_htj2k_encode_ht_code_block_dispatches => timings.htj2k_encode_ht_code_block_dispatches as u64,
+                jpeg_direct_htj2k_encode_packetization_dispatches => timings.htj2k_encode_packetization_dispatches as u64,
+                jpeg_direct_htj2k_batch_count => timings.batch_count as u64,
+                jpeg_direct_htj2k_batch_jobs => timings.batch_jobs as u64,
+                jpeg_direct_htj2k_accelerator_attempts => timings.accelerator_attempts as u64,
+                jpeg_direct_htj2k_accelerator_jobs => timings.accelerator_jobs as u64,
+                jpeg_direct_htj2k_accelerator_dispatches => timings.accelerator_dispatches as u64,
+                jpeg_direct_htj2k_accelerator_dispatched_jobs => timings.accelerator_dispatched_jobs as u64,
+                jpeg_direct_htj2k_cpu_fallback_jobs => timings.cpu_fallback_jobs as u64,
+            ]
+        );
     }
 
     pub(crate) fn record_jpeg_retile_baseline_frame(&mut self, duration: Duration) {
@@ -1597,25 +1427,41 @@ mod tests {
             dct_to_wavelet_cpu_fallback_us: 5,
             dwt_decompose_us: 6,
             dwt97_batch_pack_upload_us: 7,
+            dwt97_batch_pack_upload_transfers: 0,
+            dwt97_batch_pack_upload_bytes: 0,
+            dwt97_batch_resident_dct_handoff_count: 0,
             dwt97_batch_idct_row_lift_us: 8,
             dwt97_batch_column_lift_us: 9,
+            dwt97_batch_resident_dwt_handoff_count: 0,
             dwt97_batch_quantize_codeblock_us: 10,
-            dwt97_batch_readback_us: 11,
-            htj2k_encode_us: 12,
-            htj2k_encode_accelerator_dispatches: 13,
-            htj2k_encode_ht_code_block_dispatches: 14,
-            htj2k_encode_packetization_dispatches: 15,
+            dwt97_batch_ht_encode_us: 11,
+            dwt97_batch_ht_kernel_us: 12,
+            dwt97_batch_ht_status_readback_us: 13,
+            dwt97_batch_ht_status_readback_transfers: 0,
+            dwt97_batch_ht_status_readback_bytes: 0,
+            dwt97_batch_ht_compact_us: 14,
+            dwt97_batch_ht_output_readback_us: 15,
+            dwt97_batch_ht_output_readback_transfers: 0,
+            dwt97_batch_ht_output_readback_bytes: 0,
+            dwt97_batch_ht_codeblock_dispatches: 16,
+            dwt97_batch_readback_us: 17,
+            dwt97_batch_readback_transfers: 0,
+            dwt97_batch_readback_bytes: 0,
+            htj2k_encode_us: 18,
+            htj2k_encode_accelerator_dispatches: 19,
+            htj2k_encode_ht_code_block_dispatches: 20,
+            htj2k_encode_packetization_dispatches: 21,
             dicom_spool_write_us: 0,
             dicom_final_write_us: 0,
             tile_count: 0,
             component_count: 0,
-            batch_count: 16,
-            batch_jobs: 17,
-            accelerator_attempts: 18,
-            accelerator_jobs: 19,
-            accelerator_dispatches: 20,
-            accelerator_dispatched_jobs: 21,
-            cpu_fallback_jobs: 22,
+            batch_count: 22,
+            batch_jobs: 23,
+            accelerator_attempts: 24,
+            accelerator_jobs: 25,
+            accelerator_dispatches: 26,
+            accelerator_dispatched_jobs: 27,
+            cpu_fallback_jobs: 28,
         });
 
         assert_eq!(metrics.routes.total_frames, 10);
@@ -1659,13 +1505,49 @@ mod tests {
             metrics
                 .jpeg_direct_htj2k
                 .jpeg_direct_htj2k_encode_packetization_dispatches,
+            21
+        );
+        assert_eq!(
+            metrics
+                .jpeg_direct_htj2k
+                .jpeg_direct_htj2k_dwt97_ht_encode_micros,
+            11
+        );
+        assert_eq!(
+            metrics
+                .jpeg_direct_htj2k
+                .jpeg_direct_htj2k_dwt97_ht_kernel_micros,
+            12
+        );
+        assert_eq!(
+            metrics
+                .jpeg_direct_htj2k
+                .jpeg_direct_htj2k_dwt97_ht_status_readback_micros,
+            13
+        );
+        assert_eq!(
+            metrics
+                .jpeg_direct_htj2k
+                .jpeg_direct_htj2k_dwt97_ht_compact_micros,
+            14
+        );
+        assert_eq!(
+            metrics
+                .jpeg_direct_htj2k
+                .jpeg_direct_htj2k_dwt97_ht_output_readback_micros,
             15
         );
         assert_eq!(
             metrics
                 .jpeg_direct_htj2k
+                .jpeg_direct_htj2k_dwt97_ht_codeblock_dispatches,
+            16
+        );
+        assert_eq!(
+            metrics
+                .jpeg_direct_htj2k
                 .jpeg_direct_htj2k_cpu_fallback_jobs,
-            22
+            28
         );
         assert_eq!(metrics.gpu_encode.gpu_encode_wall_micros, 69);
         assert_eq!(metrics.gpu_encode.gpu_encode_hardware_micros, 61);

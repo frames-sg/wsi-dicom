@@ -104,7 +104,7 @@ pub(super) fn jpeg_baseline_frame_geometry(
             tiles_across,
             tiles_down,
         ),
-        TileLayout::Regular { .. } | TileLayout::Irregular { .. } => (
+        TileLayout::Regular { .. } | TileLayout::Irregular { .. } | _ => (
             fallback_tile_size,
             fallback_tile_size,
             matrix_columns.div_ceil(u64::from(fallback_tile_size)),
@@ -262,37 +262,42 @@ fn native_jpeg_frame_geometry_is_viewer_friendly(
 pub(crate) fn pixel_profile_from_raw_jpeg_tile(
     raw: &RawCompressedTile,
 ) -> Result<PixelProfile, Error> {
-    if raw.compression != Compression::Jpeg {
+    if raw.compression() != Compression::Jpeg {
         return Err(Error::Unsupported {
             reason: format!(
                 "JPEG passthrough requires JPEG compression, got {:?}",
-                raw.compression
+                raw.compression()
             ),
         });
     }
-    if raw.bits_allocated != 8 {
+    if raw.bits_allocated() != 8 {
         return Err(Error::UnsupportedPixelData {
             reason: format!(
                 "JPEG passthrough requires 8-bit samples, got {}",
-                raw.bits_allocated
+                raw.bits_allocated()
             ),
         });
     }
-    let photometric_interpretation = match raw.photometric_interpretation {
+    let photometric_interpretation = match raw.photometric_interpretation() {
         EncodedTilePhotometricInterpretation::Monochrome2 => "MONOCHROME2",
         EncodedTilePhotometricInterpretation::Rgb => "RGB",
         EncodedTilePhotometricInterpretation::YbrFull422 => "YBR_FULL_422",
+        _ => {
+            return Err(Error::UnsupportedPixelData {
+                reason: "JPEG passthrough tile has unsupported photometric interpretation".into(),
+            });
+        }
     };
     let components =
-        u8::try_from(raw.samples_per_pixel).map_err(|_| Error::UnsupportedPixelData {
+        u8::try_from(raw.samples_per_pixel()).map_err(|_| Error::UnsupportedPixelData {
             reason: format!(
                 "JPEG passthrough component count exceeds u8: {}",
-                raw.samples_per_pixel
+                raw.samples_per_pixel()
             ),
         })?;
     Ok(PixelProfile {
         components,
-        bits_allocated: raw.bits_allocated,
+        bits_allocated: raw.bits_allocated(),
         photometric_interpretation,
     })
 }
@@ -309,16 +314,18 @@ pub(crate) fn raw_jpeg_matches_frame_geometry(
     frame_columns: u32,
     frame_rows: u32,
 ) -> bool {
-    raw.compression == Compression::Jpeg && raw.width == frame_columns && raw.height == frame_rows
+    raw.compression() == Compression::Jpeg
+        && raw.width() == frame_columns
+        && raw.height() == frame_rows
 }
 
-const STATUMEN_EMPTY_TIFF_TILE_REASON: &str = "empty TIFF tiles";
+const WSI_RS_EMPTY_TIFF_TILE_REASON: &str = "empty TIFF tiles";
 
 pub(super) fn raw_compressed_error_is_empty_tile(err: &wsi_rs::WsiError) -> bool {
     matches!(
         err,
         wsi_rs::WsiError::Unsupported { reason }
-            if reason.contains(STATUMEN_EMPTY_TIFF_TILE_REASON)
+            if reason.contains(WSI_RS_EMPTY_TIFF_TILE_REASON)
     )
 }
 
@@ -397,16 +404,16 @@ pub(crate) fn raw_rgb_passthrough_has_no_geometry_fallback(
             virtual_tile_width == geometry.frame_columns
                 && virtual_tile_height == geometry.frame_rows
         }
-        TileLayout::Irregular { .. } => false,
+        TileLayout::Irregular { .. } | _ => false,
     }
 }
 
 pub(super) fn uncompressed_frame_bytes(raw: &RawCompressedTile) -> Result<u64, Error> {
     checked_uncompressed_byte_count(
-        u64::from(raw.width),
-        u64::from(raw.height),
-        u64::from(raw.samples_per_pixel),
-        raw.bits_allocated,
+        u64::from(raw.width()),
+        u64::from(raw.height()),
+        u64::from(raw.samples_per_pixel()),
+        raw.bits_allocated(),
     )
     .ok_or_else(|| Error::Unsupported {
         reason: "JPEG passthrough uncompressed frame byte count overflow".into(),
