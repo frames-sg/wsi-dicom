@@ -28,6 +28,7 @@ mod passthrough;
 mod report;
 mod request;
 mod routing;
+mod synthetic_source;
 mod tile;
 mod uid;
 mod validation;
