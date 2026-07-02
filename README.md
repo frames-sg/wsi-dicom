@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 
 # wsi-dicom
 
@@ -220,4 +220,5 @@ provided.
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Dual-licensed under either [MIT](LICENSE-MIT) or
+[Apache-2.0](LICENSE-APACHE), at your option.

@@ -97,13 +97,16 @@ fn lockfile_has_no_duplicate_j2k_compat_package_sources() {
     let mut duplicates = Vec::new();
 
     for package in [
-        "signinum-core",
-        "signinum-j2k",
-        "signinum-j2k-metal",
-        "signinum-j2k-native",
-        "signinum-jpeg",
-        "signinum-jpeg-metal",
-        "signinum-tilecodec",
+        "j2k",
+        "j2k-core",
+        "j2k-jpeg",
+        "j2k-jpeg-metal",
+        "j2k-metal",
+        "j2k-native",
+        "j2k-tilecodec",
+        "j2k-transcode",
+        "j2k-transcode-metal",
+        "wsi-rs",
     ] {
         let count = lockfile_package_name_count(&lockfile, package);
         if count > 1 {
@@ -154,7 +157,7 @@ fn lockfile_package_name_count(lockfile: &str, package: &str) -> usize {
 }
 
 #[test]
-fn release_build_uses_only_approved_local_metal_patches() {
+fn manifest_uses_renamed_local_codec_dependencies() {
     if !in_source_checkout() {
         return;
     }
@@ -163,17 +166,28 @@ fn release_build_uses_only_approved_local_metal_patches() {
     let workflow =
         fs::read_to_string(crate_root().join(".github/workflows/ci.yml")).expect("read CI");
 
-    let expected_patches = [
-        r#"statumen = { path = "vendor/metal-0.33-patches/statumen-0.3.1" }"#,
-        r#"signinum-j2k-metal = { path = "vendor/metal-0.33-patches/signinum-j2k-metal-0.4.4" }"#,
-        r#"signinum-jpeg-metal = { path = "vendor/metal-0.33-patches/signinum-jpeg-metal-0.4.4" }"#,
-        r#"signinum-transcode-metal = { path = "vendor/metal-0.33-patches/signinum-transcode-metal-0.4.4" }"#,
-    ];
     assert_eq!(
         manifest_patch_crates(&manifest),
-        expected_patches,
-        "Cargo.toml must only carry the approved local Metal 0.33 patch set"
+        LOCAL_J2K_PATCHES,
+        "Cargo.toml must patch crates.io j2k crates only to the local checkout"
     );
+
+    for required in [
+        r#"j2k-core = { path = "../j2k/crates/j2k-core", version = "=0.6.2" }"#,
+        r#"j2k = { path = "../j2k/crates/j2k", version = "=0.6.2" }"#,
+        r#"j2k-metal = { path = "../j2k/crates/j2k-metal", version = "=0.6.2", optional = true }"#,
+        r#"j2k-jpeg = { path = "../j2k/crates/j2k-jpeg", version = "=0.6.2" }"#,
+        r#"j2k-jpeg-metal = { path = "../j2k/crates/j2k-jpeg-metal", version = "=0.6.2", optional = true }"#,
+        r#"j2k-transcode = { path = "../j2k/crates/j2k-transcode", version = "=0.6.2" }"#,
+        r#"j2k-transcode-metal = { path = "../j2k/crates/j2k-transcode-metal", version = "=0.6.2", optional = true }"#,
+        r#"wsi-rs = { path = "../wsi-rs", version = "=0.5.0" }"#,
+    ] {
+        assert!(
+            manifest.contains(required),
+            "Cargo.toml must retain renamed local dependency `{required}`"
+        );
+    }
+
     for required in [
         "path: wsi-dicom",
         "working-directory: wsi-dicom",
@@ -184,38 +198,34 @@ fn release_build_uses_only_approved_local_metal_patches() {
             "CI must keep workspace checkout metadata `{required}`"
         );
     }
-    for forbidden in [
-        "repository: frames-sg/signinum",
-        "path: signinum",
-        "repository: frames-sg/statumen",
-        "path: statumen",
-    ] {
-        assert!(
-            !workflow.contains(forbidden),
-            "CI must not check out unused local patches; found `{forbidden}`"
-        );
+    for legacy_name in [concat!("sign", "inum"), concat!("stat", "umen")] {
+        for forbidden in [
+            format!("repository: frames-sg/{legacy_name}"),
+            format!("path: {legacy_name}"),
+            format!("{legacy_name}-"),
+            legacy_name.to_owned(),
+        ] {
+            assert!(
+                !workflow.contains(&forbidden) && !manifest.contains(&forbidden),
+                "CI and manifest must not reference legacy crate metadata; found `{forbidden}`"
+            );
+        }
     }
 }
 
 #[test]
-fn vendored_metal_patches_pin_new_metal_version() {
-    for manifest_path in [
-        "vendor/metal-0.33-patches/statumen-0.3.1/Cargo.toml",
-        "vendor/metal-0.33-patches/signinum-j2k-metal-0.4.4/Cargo.toml",
-        "vendor/metal-0.33-patches/signinum-jpeg-metal-0.4.4/Cargo.toml",
-        "vendor/metal-0.33-patches/signinum-transcode-metal-0.4.4/Cargo.toml",
-    ] {
-        let manifest = fs::read_to_string(crate_root().join(manifest_path))
-            .unwrap_or_else(|err| panic!("read {manifest_path}: {err}"));
-        assert!(
-            manifest.contains("version = \"=0.33.0\""),
-            "{manifest_path} must pin metal to =0.33.0"
-        );
-        assert!(
-            !manifest.contains("version = \"0.31\""),
-            "{manifest_path} must not retain metal 0.31"
-        );
-    }
+fn manifest_does_not_use_legacy_vendor_patch_table() {
+    let manifest = fs::read_to_string(crate_root().join("Cargo.toml")).expect("read Cargo.toml");
+
+    assert_eq!(
+        manifest_patch_crates(&manifest),
+        LOCAL_J2K_PATCHES,
+        "Cargo.toml must use only local j2k patches, not legacy vendored patch crates"
+    );
+    assert!(
+        !manifest.contains("vendor/metal-0.33-patches"),
+        "Cargo.toml must not depend on the legacy vendored patch tree"
+    );
 }
 
 fn manifest_patch_crates(manifest: &str) -> Vec<&str> {
@@ -238,6 +248,23 @@ fn manifest_patch_crates(manifest: &str) -> Vec<&str> {
 
     patches
 }
+
+const LOCAL_J2K_PATCHES: &[&str] = &[
+    r#"j2k = { path = "../j2k/crates/j2k" }"#,
+    r#"j2k-core = { path = "../j2k/crates/j2k-core" }"#,
+    r#"j2k-cuda = { path = "../j2k/crates/j2k-cuda" }"#,
+    r#"j2k-cuda-runtime = { path = "../j2k/crates/j2k-cuda-runtime" }"#,
+    r#"j2k-jpeg = { path = "../j2k/crates/j2k-jpeg" }"#,
+    r#"j2k-jpeg-metal = { path = "../j2k/crates/j2k-jpeg-metal" }"#,
+    r#"j2k-metal = { path = "../j2k/crates/j2k-metal" }"#,
+    r#"j2k-metal-support = { path = "../j2k/crates/j2k-metal-support" }"#,
+    r#"j2k-native = { path = "../j2k/crates/j2k-native" }"#,
+    r#"j2k-profile = { path = "../j2k/crates/j2k-profile" }"#,
+    r#"j2k-tilecodec = { path = "../j2k/crates/j2k-tilecodec" }"#,
+    r#"j2k-transcode = { path = "../j2k/crates/j2k-transcode" }"#,
+    r#"j2k-transcode-metal = { path = "../j2k/crates/j2k-transcode-metal" }"#,
+    r#"j2k-types = { path = "../j2k/crates/j2k-types" }"#,
+];
 
 #[test]
 fn jpeg_dependencies_are_limited_to_j2k_crates() {

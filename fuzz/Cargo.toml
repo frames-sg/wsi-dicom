@@ -10,8 +10,18 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 serde_json = "1"
-wsi-rs = { package = "statumen", version = "0.3.1" }
+wsi-rs = { path = "../../wsi-rs", version = "=0.5.0" }
 wsi-dicom = { path = "..", features = ["bench-internals"] }
+
+[patch.crates-io]
+j2k = { path = "../../j2k/crates/j2k" }
+j2k-core = { path = "../../j2k/crates/j2k-core" }
+j2k-jpeg = { path = "../../j2k/crates/j2k-jpeg" }
+j2k-native = { path = "../../j2k/crates/j2k-native" }
+j2k-profile = { path = "../../j2k/crates/j2k-profile" }
+j2k-tilecodec = { path = "../../j2k/crates/j2k-tilecodec" }
+j2k-transcode = { path = "../../j2k/crates/j2k-transcode" }
+j2k-types = { path = "../../j2k/crates/j2k-types" }
 
 [workspace]
 
