@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use j2k::{J2kLosslessSamples, ReversibleTransform};
 use rayon::prelude::*;
-use wsi_rs::{PlaneSelection, Slide, TileLayout, TileOutputPreference, TilePixels, TileRequest};
+use wsi_rs::{Slide, TileLayout, TileOutputPreference, TilePixels, TileRequest};
 
 use crate::encode::{self, EncodedDicomJ2kFrame};
 use crate::error::Error;
@@ -27,16 +27,6 @@ pub(super) struct LosslessJ2kCpuBatchSettings {
 
 pub(super) type LosslessJ2kCpuBatchFrame = OutputFrameRect;
 
-#[derive(Clone, Copy, Debug)]
-struct SourceTileBatchLocation {
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-}
-
 pub(super) struct LosslessJ2kCpuBatchOutcome {
     pub(super) encoded: Result<EncodedDicomJ2kFrame, Error>,
     pub(super) profile: PixelProfile,
@@ -44,33 +34,17 @@ pub(super) struct LosslessJ2kCpuBatchOutcome {
     pub(super) compose_duration: Duration,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn encode_cpu_input_lossless_j2k_tile_batch(
     slide: &Slide,
     level: &wsi_rs::Level,
     settings: LosslessJ2kCpuBatchSettings,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
+    location: JpegBaselineFrameLocation,
     frames: &[LosslessJ2kCpuBatchFrame],
     tile_size: u32,
 ) -> Result<Vec<LosslessJ2kCpuBatchOutcome>, Error> {
-    let prepared = if let Some(requests) = native_lossless_j2k_cpu_tile_requests(
-        level,
-        SourceTileBatchLocation {
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-        },
-        frames,
-        tile_size,
-    ) {
+    let prepared = if let Some(requests) =
+        native_lossless_j2k_cpu_tile_requests(level, location, frames, tile_size)
+    {
         prepare_native_cpu_input_lossless_j2k_tile_batch(
             slide,
             &requests,
@@ -80,12 +54,7 @@ pub(super) fn encode_cpu_input_lossless_j2k_tile_batch(
     } else {
         prepare_region_cpu_input_lossless_j2k_tile_batch(
             slide,
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
+            location,
             frames,
             tile_size,
             settings.max_prepared_frame_bytes,
@@ -94,17 +63,11 @@ pub(super) fn encode_cpu_input_lossless_j2k_tile_batch(
     encode_prepared_lossless_j2k_cpu_batch(settings, prepared, tile_size)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn encode_cpu_input_lossless_j2k_planned_batch(
     slide: &Slide,
     level: &wsi_rs::Level,
     settings: LosslessJ2kCpuBatchSettings,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
+    location: JpegBaselineFrameLocation,
     planned: &[LosslessJ2kPlannedFrame],
     indices: &[usize],
     tile_size: u32,
@@ -117,14 +80,14 @@ pub(super) fn encode_cpu_input_lossless_j2k_planned_batch(
         })
         .collect::<Vec<_>>();
     let outcomes = encode_cpu_input_lossless_j2k_tile_batch(
-        slide, level, settings, scene_idx, series_idx, level_idx, z, c, t, &frames, tile_size,
+        slide, level, settings, location, &frames, tile_size,
     )?;
     Ok(indices.iter().copied().zip(outcomes).collect())
 }
 
 fn native_lossless_j2k_cpu_tile_requests(
     level: &wsi_rs::Level,
-    location: SourceTileBatchLocation,
+    location: JpegBaselineFrameLocation,
     frames: &[LosslessJ2kCpuBatchFrame],
     tile_size: u32,
 ) -> Option<Vec<TileRequest>> {
@@ -144,7 +107,6 @@ fn native_lossless_j2k_cpu_tile_requests(
         return None;
     }
     let tile_size_u64 = u64::from(tile_size);
-    let plane = PlaneSelection::new(location.z, location.c, location.t);
     frames
         .iter()
         .map(|frame| {
@@ -160,16 +122,7 @@ fn native_lossless_j2k_cpu_tile_requests(
             if col >= tiles_across || row >= tiles_down {
                 return None;
             }
-            Some(
-                TileRequest::new(
-                    location.scene_idx,
-                    location.series_idx,
-                    location.level_idx,
-                    i64::try_from(col).ok()?,
-                    i64::try_from(row).ok()?,
-                )
-                .with_plane(plane),
-            )
+            Some(location.tile_request(i64::try_from(col).ok()?, i64::try_from(row).ok()?))
         })
         .collect()
 }
@@ -234,15 +187,9 @@ fn prepare_native_cpu_input_lossless_j2k_tile_batch(
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn prepare_region_cpu_input_lossless_j2k_tile_batch(
     slide: &Slide,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
+    location: JpegBaselineFrameLocation,
     frames: &[LosslessJ2kCpuBatchFrame],
     tile_size: u32,
     max_prepared_frame_bytes: u64,
@@ -252,16 +199,8 @@ fn prepare_region_cpu_input_lossless_j2k_tile_batch(
         .map(|frame| {
             prepare_cpu_input_lossless_j2k_tile(
                 slide,
-                scene_idx,
-                series_idx,
-                level_idx,
-                z,
-                c,
-                t,
-                frame.x,
-                frame.y,
-                frame.width,
-                frame.height,
+                location,
+                *frame,
                 tile_size,
                 max_prepared_frame_bytes,
             )
@@ -317,36 +256,20 @@ fn encode_prepared_lossless_j2k_cpu_tile(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn prepare_cpu_input_lossless_j2k_tile(
     slide: &Slide,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-    x: u64,
-    y: u64,
-    width: u32,
-    height: u32,
+    location: JpegBaselineFrameLocation,
+    frame: OutputFrameRect,
     tile_size: u32,
     max_prepared_frame_bytes: u64,
 ) -> Result<PreparedCpuRegion, Error> {
     read_and_prepare_region(
         slide,
-        JpegBaselineFrameLocation {
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-        },
-        x,
-        y,
-        width,
-        height,
+        location,
+        frame.x,
+        frame.y,
+        frame.width,
+        frame.height,
         tile_size,
         tile_size,
         max_prepared_frame_bytes,
@@ -423,14 +346,7 @@ mod tests {
                 height: 512,
             },
         ];
-        let location = SourceTileBatchLocation {
-            scene_idx: 1,
-            series_idx: 2,
-            level_idx: 3,
-            z: 4,
-            c: 5,
-            t: 6,
-        };
+        let location = JpegBaselineFrameLocation::new(1, 2, 3, 4, 5, 6);
 
         let requests = native_lossless_j2k_cpu_tile_requests(&level, location, &frames, 512)
             .expect("exact regular source tiles should use wsi_rs batch reads");
@@ -441,7 +357,7 @@ mod tests {
         assert_eq!(requests[0].level.get(), 3);
         assert_eq!(
             requests[0].plane,
-            wsi_rs::PlaneIdx::new(PlaneSelection::new(4, 5, 6))
+            wsi_rs::PlaneIdx::new(wsi_rs::PlaneSelection::new(4, 5, 6))
         );
         assert_eq!((requests[0].col, requests[0].row), (0, 0));
         assert_eq!((requests[1].col, requests[1].row), (1, 1));

@@ -1,12 +1,13 @@
 use std::time::Duration;
 
 use j2k_core::CompressedTransferSyntax;
-use wsi_rs::{Compression, PlaneSelection, Slide, TileRequest};
+use wsi_rs::{Compression, Slide};
 
 use super::frame_region::{FrameRectGrid, FrameRectOverflowReasons, OutputFrameRect};
 use super::j2k_policy::{j2k_passthrough_frame, j2k_raw_frame_syntax_and_profile};
 use super::jpeg_retile::{read_raw_jpeg_retile_display_tile, RawJpegRetileProbe};
-use super::{j2k_direct_htj2k, jpeg_direct_htj2k, JpegBaselineFrameLocation};
+use super::{j2k_direct_htj2k, jpeg_direct_htj2k};
+use crate::coordinate::InstanceCoordinate;
 use crate::error::Error;
 use crate::options::TransferSyntax;
 use crate::report::JpegRetileRejectionReason;
@@ -62,78 +63,47 @@ impl J2kPassthroughFrame {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn plan_lossless_j2k_rows(
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LosslessJ2kPlanRequest {
+    pub(crate) location: InstanceCoordinate,
+    pub(crate) start_row: u64,
+    pub(crate) row_count: u64,
+    pub(crate) start_col: u64,
+    pub(crate) tile_count: u64,
+    pub(crate) grid: FrameRectGrid,
+    pub(crate) transfer_syntax: TransferSyntax,
+    pub(crate) allow_passthrough_probe: bool,
+}
+
+pub(crate) fn plan_lossless_j2k_frames(
     slide: &Slide,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-    start_row: u64,
-    row_count: u64,
-    start_col: u64,
-    tile_count: u64,
-    matrix_columns: u64,
-    matrix_rows: u64,
-    tile_size: u32,
-    transfer_syntax: TransferSyntax,
-    allow_passthrough_probe: bool,
+    request: LosslessJ2kPlanRequest,
 ) -> Result<Vec<LosslessJ2kPlannedFrame>, Error> {
-    let rows = usize::try_from(row_count).map_err(|_| Error::Unsupported {
+    let rows = usize::try_from(request.row_count).map_err(|_| Error::Unsupported {
         reason: "J2K row planning row count exceeds platform addressable memory".into(),
     })?;
-    let tiles = usize::try_from(tile_count).map_err(|_| Error::Unsupported {
+    let tiles = usize::try_from(request.tile_count).map_err(|_| Error::Unsupported {
         reason: "J2K row planning tile count exceeds platform addressable memory".into(),
     })?;
     let mut planned = Vec::with_capacity(rows.saturating_mul(tiles));
-    for offset in 0..row_count {
-        let row = start_row
+    for offset in 0..request.row_count {
+        let row = request
+            .start_row
             .checked_add(offset)
             .ok_or_else(|| Error::Unsupported {
                 reason: "J2K row planning tile row overflow".into(),
             })?;
-        planned.extend(plan_lossless_j2k_row(
-            slide,
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-            row,
-            start_col,
-            tile_count,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
-            transfer_syntax,
-            allow_passthrough_probe,
-        )?);
+        planned.extend(plan_lossless_j2k_row_at(slide, request, row)?);
     }
     Ok(planned)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn plan_lossless_j2k_row(
+fn plan_lossless_j2k_row_at(
     slide: &Slide,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
+    request: LosslessJ2kPlanRequest,
     row: u64,
-    start_col: u64,
-    tile_count: u64,
-    matrix_columns: u64,
-    matrix_rows: u64,
-    tile_size: u32,
-    transfer_syntax: TransferSyntax,
-    allow_passthrough_probe: bool,
 ) -> Result<Vec<LosslessJ2kPlannedFrame>, Error> {
-    let tile_count = usize::try_from(tile_count).map_err(|_| Error::Unsupported {
+    let tile_count = usize::try_from(request.tile_count).map_err(|_| Error::Unsupported {
         reason: "J2K row planning tile count exceeds platform addressable memory".into(),
     })?;
     let row_i64 = i64::try_from(row).map_err(|_| Error::Unsupported {
@@ -141,7 +111,8 @@ pub(crate) fn plan_lossless_j2k_row(
     })?;
     let mut planned = Vec::with_capacity(tile_count);
     for offset in 0..tile_count {
-        let col = start_col
+        let col = request
+            .start_col
             .checked_add(u64::try_from(offset).map_err(|_| Error::Unsupported {
                 reason: "J2K row planning tile offset exceeds u64".into(),
             })?)
@@ -154,19 +125,14 @@ pub(crate) fn plan_lossless_j2k_row(
         let rect = OutputFrameRect::clamped(
             col,
             row,
-            FrameRectGrid {
-                matrix_columns,
-                matrix_rows,
-                frame_columns: tile_size,
-                frame_rows: tile_size,
-            },
+            request.grid,
             FrameRectOverflowReasons {
                 x: "J2K row planning tile x offset overflow",
                 y: "J2K row planning tile y offset overflow",
             },
         )?;
-        let allow_raw_probe =
-            allow_passthrough_probe || jpeg_direct_htj2k::transfer_syntax(transfer_syntax);
+        let allow_raw_probe = request.allow_passthrough_probe
+            || jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax);
         let (
             source_j2k_dimensions,
             source_j2k_syntax,
@@ -177,8 +143,7 @@ pub(crate) fn plan_lossless_j2k_row(
             source_raw_probe_failed,
             passthrough,
         ) = if allow_raw_probe {
-            let tile_request = TileRequest::new(scene_idx, series_idx, level_idx, col_i64, row_i64)
-                .with_plane(PlaneSelection::new(z, c, t));
+            let tile_request = request.location.tile_request(col_i64, row_i64);
             match slide.read_raw_compressed_tile(&tile_request) {
                 Ok(raw) => {
                     let source_j2k_dimensions = Some((raw.width(), raw.height()));
@@ -186,19 +151,28 @@ pub(crate) fn plan_lossless_j2k_row(
                         j2k_raw_frame_syntax_and_profile(&raw);
                     let source_j2k = j2k_direct_htj2k::frame(
                         &raw,
-                        tile_size,
-                        tile_size,
-                        transfer_syntax,
+                        request.grid.frame_columns,
+                        request.grid.frame_rows,
+                        request.transfer_syntax,
                         source_j2k_profile,
                     );
-                    let source_jpeg =
-                        jpeg_direct_htj2k::frame(&raw, tile_size, tile_size, transfer_syntax);
+                    let source_jpeg = jpeg_direct_htj2k::frame(
+                        &raw,
+                        request.grid.frame_columns,
+                        request.grid.frame_rows,
+                        request.transfer_syntax,
+                    );
                     let source_jpeg_direct_rejected =
-                        jpeg_direct_htj2k::transfer_syntax(transfer_syntax)
+                        jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax)
                             && raw.compression() == Compression::Jpeg
                             && source_jpeg.is_none();
-                    let passthrough = if allow_passthrough_probe {
-                        j2k_passthrough_frame(raw, tile_size, tile_size, transfer_syntax)?
+                    let passthrough = if request.allow_passthrough_probe {
+                        j2k_passthrough_frame(
+                            raw,
+                            request.grid.frame_columns,
+                            request.grid.frame_rows,
+                            request.transfer_syntax,
+                        )?
                     } else {
                         None
                     };
@@ -221,28 +195,21 @@ pub(crate) fn plan_lossless_j2k_row(
         let mut source_jpeg_retiled = false;
         let mut source_jpeg_retile_duration = Duration::ZERO;
         let mut source_jpeg_retile_rejection = None;
-        if source_jpeg.is_none() && jpeg_direct_htj2k::transfer_syntax(transfer_syntax) {
+        if source_jpeg.is_none() && jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax) {
             match read_raw_jpeg_retile_display_tile(
                 slide,
-                JpegBaselineFrameLocation {
-                    scene_idx,
-                    series_idx,
-                    level_idx,
-                    z,
-                    c,
-                    t,
-                },
+                request.location,
                 col,
                 row,
-                tile_size,
-                tile_size,
+                request.grid.frame_columns,
+                request.grid.frame_rows,
             )? {
                 RawJpegRetileProbe::Accepted(retiled) => {
                     source_jpeg = jpeg_direct_htj2k::frame(
                         &retiled.raw,
-                        tile_size,
-                        tile_size,
-                        transfer_syntax,
+                        request.grid.frame_columns,
+                        request.grid.frame_rows,
+                        request.transfer_syntax,
                     );
                     if source_jpeg.is_some() {
                         source_jpeg_retiled = true;

@@ -883,12 +883,7 @@ fn cpu_j2k_batch_matches_serial_ordered_frames() {
             reversible_transform: ReversibleTransform::Rct53,
             max_prepared_frame_bytes: u64::MAX,
         },
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
+        location,
         &frames,
         2,
     )
@@ -902,17 +897,7 @@ fn cpu_j2k_batch_matches_serial_ordered_frames() {
     let serial = frames
         .iter()
         .map(|frame| {
-            encode_cpu_input_tile(
-                &slide,
-                &mut serial_encoder,
-                location,
-                frame.x,
-                frame.y,
-                frame.width,
-                frame.height,
-                2,
-            )
-            .unwrap()
+            encode_cpu_input_tile(&slide, &mut serial_encoder, location, *frame, 2).unwrap()
         })
         .collect::<Vec<_>>();
 

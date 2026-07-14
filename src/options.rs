@@ -78,26 +78,37 @@ pub enum IccProfilePolicy {
     OmitIfMissing,
 }
 
+/// Policy for identifiers generated when the caller does not supply them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum UidPolicy {
+    /// Generate a fresh identity namespace for every export invocation.
+    Fresh,
+    /// Derive repeatable identifiers from source content, metadata, and export options.
+    Deterministic,
+}
+
 /// DICOM transfer syntax choices for exported VL Whole Slide Microscopy files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum TransferSyntax {
     /// JPEG Baseline 8-bit transfer syntax.
-    JpegBaseline8Bit,
+    JpegBaseline8Bit = 0,
     /// JPEG 2000 Image Compression transfer syntax.
-    Jpeg2000,
+    Jpeg2000 = 1,
     /// JPEG 2000 Image Compression Lossless Only transfer syntax.
-    Jpeg2000Lossless,
+    Jpeg2000Lossless = 2,
     /// High-Throughput JPEG 2000 Image Compression transfer syntax.
-    Htj2k,
+    Htj2k = 6,
     /// High-Throughput JPEG 2000 Image Compression Lossless Only transfer syntax.
-    Htj2kLossless,
+    Htj2kLossless = 3,
     /// High-Throughput JPEG 2000 with RPCL Options Image Compression Lossless Only transfer syntax.
-    Htj2kLosslessRpcl,
+    Htj2kLosslessRpcl = 4,
     /// Explicit VR Little Endian transfer syntax for uncompressed input fixtures.
     #[value(skip)]
-    ExplicitVrLittleEndian,
+    ExplicitVrLittleEndian = 5,
 }
 
 /// User-facing export presets for common conversion goals.
@@ -255,6 +266,8 @@ pub struct ExportOptions {
     pub jpeg_quality: u8,
     /// ICC profile policy for missing source color metadata.
     pub icc_profile_policy: IccProfilePolicy,
+    /// Policy for generated Study, Series, SOP, and related DICOM UIDs.
+    pub uid_policy: UidPolicy,
     /// Runtime encoder backend preference.
     pub encode_backend: EncodeBackendPreference,
     /// Runtime codec validation policy.
@@ -285,6 +298,7 @@ impl Default for ExportOptions {
             jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossless53,
             jpeg_quality: 90,
             icc_profile_policy: IccProfilePolicy::FallbackSrgb,
+            uid_policy: UidPolicy::Fresh,
             encode_backend: EncodeBackendPreference::Auto,
             codec_validation: CodecValidation::Disabled,
             source_device_decode: false,
@@ -518,6 +532,7 @@ mod tests {
             jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossy97Aggressive,
             jpeg_quality: 77,
             icc_profile_policy: IccProfilePolicy::OmitIfMissing,
+            uid_policy: UidPolicy::Deterministic,
             encode_backend: EncodeBackendPreference::PreferDevice,
             codec_validation: CodecValidation::RoundTrip,
             source_device_decode: true,

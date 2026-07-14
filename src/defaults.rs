@@ -4,9 +4,10 @@ use wsi_rs::Slide;
 
 use crate::error::Error;
 use crate::export::{
-    jpeg_baseline_route_frame_geometry, pixel_profile_from_raw_jpeg_tile, plan_lossless_j2k_row,
+    jpeg_baseline_route_frame_geometry, pixel_profile_from_raw_jpeg_tile, plan_lossless_j2k_frames,
     raw_jpeg_profile_can_passthrough, raw_rgb_passthrough_has_no_geometry_fallback,
-    read_raw_jpeg_passthrough_tile, JpegBaselineFrameLocation,
+    read_raw_jpeg_passthrough_tile, FrameRectGrid, JpegBaselineFrameLocation,
+    LosslessJ2kPlanRequest,
 };
 use crate::options::{ExportOptions, TransferSyntax};
 use crate::request::DefaultTransferSyntaxRequest;
@@ -157,22 +158,23 @@ fn j2k_passthrough_status_for_default(
     if matrix_columns == 0 || matrix_rows == 0 {
         return Ok(J2kDefaultPassthroughStatus::NoJ2kSource);
     }
-    let planned = plan_lossless_j2k_row(
+    let planned = plan_lossless_j2k_frames(
         slide,
-        location.scene_idx,
-        location.series_idx,
-        location.level_idx,
-        location.z,
-        location.c,
-        location.t,
-        0,
-        0,
-        1,
-        matrix_columns,
-        matrix_rows,
-        tile_size,
-        TransferSyntax::Jpeg2000,
-        true,
+        LosslessJ2kPlanRequest {
+            location,
+            start_row: 0,
+            row_count: 1,
+            start_col: 0,
+            tile_count: 1,
+            grid: FrameRectGrid {
+                matrix_columns,
+                matrix_rows,
+                frame_columns: tile_size,
+                frame_rows: tile_size,
+            },
+            transfer_syntax: TransferSyntax::Jpeg2000,
+            allow_passthrough_probe: true,
+        },
     )?;
     if planned.iter().any(|frame| frame.has_passthrough()) {
         return Ok(J2kDefaultPassthroughStatus::Eligible);

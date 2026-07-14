@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
@@ -34,18 +35,14 @@ pub(super) struct AutoMetalInputRouteCacheKey {
     pub(super) route_scope_frames: u64,
 }
 
-static AUTO_METAL_INPUT_ROUTE_CACHE: OnceLock<
-    Mutex<HashMap<AutoMetalInputRouteCacheKey, AutoLosslessJ2kRouteDecision>>,
-> = OnceLock::new();
-
 #[derive(Debug, Default)]
-struct AutoMetalInputRouteCacheState {
+struct AutoMetalInputRouteCache {
+    entries: HashMap<AutoMetalInputRouteCacheKey, AutoLosslessJ2kRouteDecision>,
     loaded_path: Option<PathBuf>,
     dirty: bool,
 }
 
-static AUTO_METAL_INPUT_ROUTE_CACHE_STATE: OnceLock<Mutex<AutoMetalInputRouteCacheState>> =
-    OnceLock::new();
+static AUTO_METAL_INPUT_ROUTE_CACHE: OnceLock<Mutex<AutoMetalInputRouteCache>> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 struct PersistentAutoMetalInputRouteCacheEntry {
@@ -69,21 +66,15 @@ struct PersistentAutoMetalInputRouteCacheEntry {
     route: Option<AutoLosslessJ2kRouteDecision>,
 }
 
-fn auto_metal_input_route_cache(
-) -> &'static Mutex<HashMap<AutoMetalInputRouteCacheKey, AutoLosslessJ2kRouteDecision>> {
-    AUTO_METAL_INPUT_ROUTE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn auto_metal_input_route_cache_state() -> &'static Mutex<AutoMetalInputRouteCacheState> {
-    AUTO_METAL_INPUT_ROUTE_CACHE_STATE
-        .get_or_init(|| Mutex::new(AutoMetalInputRouteCacheState::default()))
+fn auto_metal_input_route_cache() -> &'static Mutex<AutoMetalInputRouteCache> {
+    AUTO_METAL_INPUT_ROUTE_CACHE.get_or_init(|| Mutex::new(AutoMetalInputRouteCache::default()))
 }
 
 pub(super) fn cached_auto_metal_input_decision(
     key: &AutoMetalInputRouteCacheKey,
 ) -> Option<AutoLosslessJ2kRouteDecision> {
     match auto_metal_input_route_cache().lock() {
-        Ok(cache) => cache.get(key).copied(),
+        Ok(cache) => cache.entries.get(key).copied(),
         Err(_) => {
             eprintln!("wsi-dicom: auto Metal input route cache mutex is poisoned");
             None
@@ -100,16 +91,8 @@ pub(super) fn store_cached_auto_metal_input_decision(
     }
     match auto_metal_input_route_cache().lock() {
         Ok(mut cache) => {
-            cache.insert(key.clone(), route);
-        }
-        Err(_) => {
-            eprintln!("wsi-dicom: auto Metal input route cache mutex is poisoned");
-            return;
-        }
-    }
-    match auto_metal_input_route_cache_state().lock() {
-        Ok(mut state) => {
-            state.dirty = true;
+            cache.entries.insert(key.clone(), route);
+            cache.dirty = true;
         }
         Err(_) => {
             eprintln!("wsi-dicom: auto Metal input route cache state mutex is poisoned");
@@ -122,15 +105,16 @@ pub(super) fn clear_auto_metal_input_route_cache_for_tests() {
     auto_metal_input_route_cache()
         .lock()
         .expect("auto Metal input route cache mutex poisoned")
+        .entries
         .clear();
 }
 
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 pub(super) fn clear_auto_metal_input_route_cache_state_for_tests() {
-    *auto_metal_input_route_cache_state()
+    *auto_metal_input_route_cache()
         .lock()
         .expect("auto Metal input route cache state mutex poisoned") =
-        AutoMetalInputRouteCacheState::default();
+        AutoMetalInputRouteCache::default();
 }
 
 fn persistent_auto_metal_input_route_cache_path() -> Option<PathBuf> {
@@ -143,16 +127,19 @@ pub(super) fn load_persistent_auto_metal_input_route_cache_if_requested() -> Res
     let Some(path) = persistent_auto_metal_input_route_cache_path() else {
         return Ok(());
     };
-    {
-        let state =
-            auto_metal_input_route_cache_state()
-                .lock()
-                .map_err(|_| Error::Unsupported {
-                    reason: "auto Metal input route cache state mutex is poisoned".into(),
-                })?;
-        if state.loaded_path.as_ref() == Some(&path) {
-            return Ok(());
-        }
+    let mut cache = auto_metal_input_route_cache()
+        .lock()
+        .map_err(|_| Error::Unsupported {
+            reason: "auto Metal input route cache mutex is poisoned".into(),
+        })?;
+    if cache.loaded_path.as_ref() == Some(&path) {
+        return Ok(());
+    }
+    if cache.dirty {
+        return Err(Error::Unsupported {
+            reason: "auto Metal input route cache path changed while unsaved decisions remain"
+                .into(),
+        });
     }
 
     let bytes = match read_route_cache_file_capped(&path) {
@@ -163,16 +150,12 @@ pub(super) fn load_persistent_auto_metal_input_route_cache_if_requested() -> Res
         }
     };
 
+    let mut loaded_entries = HashMap::new();
     if !bytes.is_empty() {
         let entries: Vec<PersistentAutoMetalInputRouteCacheEntry> = serde_json::from_slice(&bytes)
             .map_err(|source| Error::Json {
                 path: path.clone(),
                 source,
-            })?;
-        let mut cache = auto_metal_input_route_cache()
-            .lock()
-            .map_err(|_| Error::Unsupported {
-                reason: "auto Metal input route cache mutex is poisoned".into(),
             })?;
         for entry in entries {
             let Some(route) = entry
@@ -191,7 +174,7 @@ pub(super) fn load_persistent_auto_metal_input_route_cache_if_requested() -> Res
                         ),
                     }
                 })?;
-            cache.insert(
+            loaded_entries.insert(
                 AutoMetalInputRouteCacheKey {
                     source_path: entry.source_path,
                     scene_idx: entry.scene_idx,
@@ -209,14 +192,9 @@ pub(super) fn load_persistent_auto_metal_input_route_cache_if_requested() -> Res
         }
     }
 
-    let mut state =
-        auto_metal_input_route_cache_state()
-            .lock()
-            .map_err(|_| Error::Unsupported {
-                reason: "auto Metal input route cache state mutex is poisoned".into(),
-            })?;
-    state.loaded_path = Some(path);
-    state.dirty = false;
+    cache.entries = loaded_entries;
+    cache.loaded_path = Some(path);
+    cache.dirty = false;
     Ok(())
 }
 
@@ -224,16 +202,13 @@ pub(super) fn flush_persistent_auto_metal_input_route_cache_if_requested() -> Re
     let Some(path) = persistent_auto_metal_input_route_cache_path() else {
         return Ok(());
     };
-    {
-        let state =
-            auto_metal_input_route_cache_state()
-                .lock()
-                .map_err(|_| Error::Unsupported {
-                    reason: "auto Metal input route cache state mutex is poisoned".into(),
-                })?;
-        if !state.dirty && state.loaded_path.as_ref() == Some(&path) {
-            return Ok(());
-        }
+    let mut cache = auto_metal_input_route_cache()
+        .lock()
+        .map_err(|_| Error::Unsupported {
+            reason: "auto Metal input route cache mutex is poisoned".into(),
+        })?;
+    if !cache.dirty && cache.loaded_path.as_ref() == Some(&path) {
+        return Ok(());
     }
 
     if let Some(parent) = path.parent() {
@@ -245,11 +220,10 @@ pub(super) fn flush_persistent_auto_metal_input_route_cache_if_requested() -> Re
         }
     }
 
-    let mut entries: Vec<_> = auto_metal_input_route_cache()
-        .lock()
-        .map_err(|_| Error::Unsupported {
-            reason: "auto Metal input route cache mutex is poisoned".into(),
-        })?
+    reject_symlink_route_cache_path(&path)?;
+
+    let mut entries: Vec<_> = cache
+        .entries
         .iter()
         .map(|(key, route)| PersistentAutoMetalInputRouteCacheEntry {
             source_path: key.source_path.clone(),
@@ -281,19 +255,73 @@ pub(super) fn flush_persistent_auto_metal_input_route_cache_if_requested() -> Re
     let bytes = serde_json::to_vec_pretty(&entries).map_err(|source| Error::JsonSerialize {
         message: format!("auto route cache serialization failed: {source}"),
     })?;
-    fs::write(&path, bytes).map_err(|source| Error::Io {
-        path: path.clone(),
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > ROUTE_CACHE_JSON_MAX_BYTES {
+        return Err(Error::Unsupported {
+            reason: format!(
+                "auto route cache serialization exceeds {ROUTE_CACHE_JSON_MAX_BYTES} byte limit"
+            ),
+        });
+    }
+    atomic_write_route_cache(&path, &bytes)?;
+
+    cache.loaded_path = Some(path);
+    cache.dirty = false;
+    Ok(())
+}
+
+fn reject_symlink_route_cache_path(path: &Path) -> Result<(), Error> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(Error::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "auto route cache path must not be a symbolic link",
+            ),
+        }),
+        Ok(_) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn atomic_write_route_cache(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".wsi-dicom-route-cache-")
+        .tempfile_in(parent)
+        .map_err(|source| Error::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    temporary.write_all(bytes).map_err(|source| Error::Io {
+        path: temporary.path().to_path_buf(),
         source,
     })?;
-
-    let mut state =
-        auto_metal_input_route_cache_state()
-            .lock()
-            .map_err(|_| Error::Unsupported {
-                reason: "auto Metal input route cache state mutex is poisoned".into(),
-            })?;
-    state.loaded_path = Some(path);
-    state.dirty = false;
+    temporary.flush().map_err(|source| Error::Io {
+        path: temporary.path().to_path_buf(),
+        source,
+    })?;
+    temporary.as_file().sync_all().map_err(|source| Error::Io {
+        path: temporary.path().to_path_buf(),
+        source,
+    })?;
+    temporary.persist(path).map_err(|error| Error::Io {
+        path: path.to_path_buf(),
+        source: error.error,
+    })?;
+    #[cfg(unix)]
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| Error::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
     Ok(())
 }
 
@@ -314,4 +342,28 @@ fn read_route_cache_file_capped(path: &PathBuf) -> std::io::Result<Vec<u8>> {
         ));
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reject_symlink_route_cache_path;
+
+    #[cfg(unix)]
+    #[test]
+    fn route_cache_path_rejects_symlinks_without_touching_the_target() {
+        let temp = tempfile::tempdir().expect("create temporary directory");
+        let target = temp.path().join("target.json");
+        let link = temp.path().join("cache.json");
+        std::fs::write(&target, b"trusted").expect("write target");
+        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+
+        let error = reject_symlink_route_cache_path(&link).expect_err("reject symlink");
+
+        assert!(error.to_string().contains("symbolic link"));
+        assert_eq!(std::fs::read(&target).expect("read target"), b"trusted");
+        assert!(std::fs::symlink_metadata(&link)
+            .expect("read symlink metadata")
+            .file_type()
+            .is_symlink());
+    }
 }

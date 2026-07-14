@@ -2,10 +2,12 @@ use std::path::{Path, PathBuf};
 
 use wsi_rs::CpuTile;
 
+use crate::coordinate::InstanceCoordinate;
 use crate::instance_context::DicomInstanceContext;
 use crate::options::TransferSyntax;
 use crate::report::{ExportMetrics, IccProfileSource};
 use crate::tile::prepare_tile_samples;
+use crate::uid::DicomExportIdentity;
 use crate::writer::pixel_data_offsets_from_lengths;
 use crate::Error;
 
@@ -67,17 +69,17 @@ pub fn instance_context_summary(
     c: u32,
     t: u32,
 ) -> InstanceContextBenchSummary {
+    let identity = DicomExportIdentity::from_seed(
+        "1.2.826.0.1.3680043.10.999.1".into(),
+        source_path.display().to_string(),
+    );
     let context = DicomInstanceContext::new(
-        source_path,
+        &identity,
         output_dir,
         (0.0005, 0.0005),
-        scene_idx,
-        series_idx,
-        level_idx,
-        z,
-        c,
-        t,
-    );
+        InstanceCoordinate::new(scene_idx, series_idx, level_idx, z, c, t),
+    )
+    .expect("benchmark coordinate should fit DICOM series numbering");
     let report = context.report(
         TransferSyntax::Htj2kLosslessRpcl.uid(),
         1024,

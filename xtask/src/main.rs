@@ -105,7 +105,7 @@ fn coverage() -> Result<(), String> {
 }
 
 fn semver() -> Result<(), String> {
-    run_cargo(&["semver-checks", "check-release", "--default-features"])
+    run_program(OsString::from("scripts/check-semver.sh"), &[])
 }
 
 fn release_test() -> Result<(), String> {

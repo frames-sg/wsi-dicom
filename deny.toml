@@ -38,13 +38,9 @@ wildcards = "deny"
 highlight = "all"
 skip = [
     # Reviewed transitive duplicates currently held by upstream DICOM,
-    # wsi-rs/j2k compatibility, platform, and dev-tool dependencies.
-    { name = "bitflags", version = "1.3.2" },
-    { name = "getrandom", version = "0.3.4" },
-    { name = "r-efi", version = "5.3.0" },
+    # wsi-rs compatibility and dev-tool dependencies.
     { name = "thiserror", version = "1.0.69" },
     { name = "thiserror-impl", version = "1.0.69" },
-    { name = "wit-bindgen", version = "0.51.0" },
 ]
 
 [sources]

@@ -5,49 +5,178 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
-    inputs:
-      dry-run-only:
-        description: "Run cargo publish in dry-run mode"
-        type: boolean
-        required: false
-        default: true
-      version:
-        description: "Package version to publish without dry-run; must match Cargo.toml"
-        type: string
-        required: false
-        default: ""
 
 permissions:
   contents: read
-  actions: read
+
+concurrency:
+  group: crates-io-publish
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
-  DRY_RUN_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run-only }}
 
 jobs:
-  publish-wsi-dicom:
+  dry_run:
+    name: Credential-free publish dry run
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
-      - name: Check release ref matches package version
-        if: github.event_name == 'push' || env.DRY_RUN_ONLY != 'true'
+      - name: Verify package without credentials
+        run: scripts/publish-crate.sh --dry-run
+
+  verify_release:
+    name: Verify tagged release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read # Required to verify CI status for the exact release SHA.
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+      - name: Validate tag, changelog, and protected branch ancestry
+        id: release
+        shell: bash
         run: |
-          version="$(cargo pkgid | sed 's/.*#//')"
-          if [ "${{ github.event_name }}" = "push" ]; then
-            release_version="${GITHUB_REF_NAME#v}"
-          else
-            release_version="${{ inputs.version }}"
+          version="$(
+            cargo metadata --locked --no-deps --format-version 1 |
+              python3 -c '
+          import json
+          import sys
+
+          packages = [
+              package
+              for package in json.load(sys.stdin)["packages"]
+              if package["name"] == "wsi-dicom"
+          ]
+          if len(packages) != 1:
+              raise SystemExit(f"expected one wsi-dicom package, found {len(packages)}")
+          print(packages[0]["version"])
+          '
+          )"
+          expected_tag="v${version}"
+          if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
+            echo "release tag must be ${expected_tag}, got ${GITHUB_REF_NAME}" >&2
+            exit 1
           fi
-          test "$release_version" = "$version"
-      - name: Require CI success for tagged commit
-        if: github.event_name == 'push' || env.DRY_RUN_ONLY != 'true'
+          PACKAGE_VERSION="$version" python3 - <<'PY'
+          import datetime
+          import os
+          from pathlib import Path
+
+          version = os.environ["PACKAGE_VERSION"]
+          prefix = f"## [{version}] - "
+          headings = [
+              line
+              for line in Path(".github/CHANGELOG.md").read_text(encoding="utf-8").splitlines()
+              if line.startswith(f"## [{version}]")
+          ]
+          if len(headings) != 1 or not headings[0].startswith(prefix):
+              raise SystemExit(f"expected one dated changelog heading for {version}")
+          try:
+              release_date = datetime.date.fromisoformat(headings[0][len(prefix):])
+          except ValueError as error:
+              raise SystemExit(f"invalid changelog date for {version}: {error}") from error
+          if headings[0] != f"{prefix}{release_date.isoformat()}":
+              raise SystemExit(f"invalid changelog heading for {version}")
+          PY
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "release commit is not on origin/main" >&2
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - name: Require successful CI for the exact release commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          count="$(gh run list --workflow CI --commit "$GITHUB_SHA" --json conclusion,status --jq '[.[] | select(.status == "completed" and .conclusion == "success")] | length')"
-          test "$count" -gt 0
-      - run: scripts/publish-crate.sh
+          if ! gh run list \
+            --workflow CI \
+            --commit "$GITHUB_SHA" \
+            --limit 100 \
+            --json headSha,status,conclusion |
+            jq -e --arg sha "$GITHUB_SHA" \
+              'any(.[]; .headSha == $sha and .status == "completed" and .conclusion == "success")' \
+              >/dev/null
+          then
+            echo "no successful CI run found for ${GITHUB_SHA}" >&2
+            exit 1
+          fi
+      - name: Verify the exact package without credentials
+        run: scripts/publish-crate.sh --dry-run
+
+  registry_status:
+    name: Check public crates.io version state
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: verify_release
+    runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.registry.outputs.published }}
+    steps:
+      - name: Query public registry before authentication
+        id: registry
         env:
-          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
+          PACKAGE_VERSION: ${{ needs.verify_release.outputs.version }}
+        run: |
+          if ! status="$(
+            curl --silent --show-error --location \
+              --user-agent "wsi-dicom-release-workflow/${PACKAGE_VERSION} (+https://github.com/frames-sg/wsi-dicom)" \
+              --retry 3 \
+              --retry-delay 2 \
+              --connect-timeout 15 \
+              --max-time 60 \
+              --output /dev/null \
+              --write-out '%{http_code}' \
+              "https://crates.io/api/v1/crates/wsi-dicom/${PACKAGE_VERSION}"
+          )"
+          then
+            echo "failed to query crates.io" >&2
+            exit 1
+          fi
+          case "$status" in
+            200) printf 'published=true\n' >> "$GITHUB_OUTPUT" ;;
+            404) printf 'published=false\n' >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "crates.io version query returned HTTP ${status}" >&2
+              exit 1
+              ;;
+          esac
+
+  publish:
+    name: Publish verified crate
+    if: >-
+      github.event_name == 'push' &&
+      github.ref_type == 'tag' &&
+      needs.registry_status.outputs.published == 'false'
+    needs:
+      - verify_release
+      - registry_status
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write # Required only for the crates.io OIDC token exchange.
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+      - name: Request short-lived crates.io credential
+        id: crates_io_auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18
+      - name: Publish the already-verified package
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
+        run: scripts/publish-crate.sh --publish

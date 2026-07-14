@@ -218,6 +218,50 @@ fn profile_dicom_routes_reports_jpeg_baseline_cpu_fallback_without_writing_dicom
 }
 
 #[test]
+fn profile_and_export_route_classification_match_for_cpu_pipelines() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let source = temporary_directory.path().join("source.dcm");
+    write_source_dicom(&source);
+
+    for (case_name, transfer_syntax) in [
+        ("jpeg-baseline", TransferSyntax::JpegBaseline8Bit),
+        ("htj2k-lossless", TransferSyntax::Htj2kLossless),
+    ] {
+        let options = ExportOptions {
+            tile_size: 2,
+            transfer_syntax,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: false,
+            ..ExportOptions::default()
+        };
+        let profile = profile_dicom_routes(RouteProfileRequest {
+            source_path: source.clone(),
+            options: options.clone(),
+            source_aware_transfer_syntax: false,
+            level: 0,
+            max_frames: 2,
+        })
+        .unwrap();
+        let export = export_dicom(ExportRequest {
+            source_path: source.clone(),
+            output_dir: temporary_directory.path().join(case_name),
+            options,
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: Some(0),
+        })
+        .unwrap();
+
+        assert_eq!(
+            profile.metrics.routes, export.metrics.routes,
+            "profile/export route classification drifted for {case_name}"
+        );
+        assert_eq!(profile.metrics.route_unclassified_frames(), 0);
+        assert_eq!(export.metrics.route_unclassified_frames(), 0);
+    }
+}
+
+#[test]
 fn route_coverage_report_serializes_metrics_for_batch_aggregation() {
     let report = RouteCoverageReport {
         source_path: PathBuf::from("source.svs"),

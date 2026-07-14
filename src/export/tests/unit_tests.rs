@@ -1,5 +1,149 @@
 use super::*;
 
+use std::collections::HashSet;
+
+use wsi_rs::{
+    AxesShape, ChannelInfo, ColorSpace, CpuTile, Dataset, DatasetId, Level, Properties, SampleType,
+    Scene, Series, SlideReader, TileLayout, TileRequest, WsiError,
+};
+
+struct MultiSceneSource {
+    dataset: Dataset,
+}
+
+impl SlideReader for MultiSceneSource {
+    fn dataset(&self) -> &Dataset {
+        &self.dataset
+    }
+
+    fn read_tile_cpu(&self, request: &TileRequest) -> Result<CpuTile, WsiError> {
+        let value = (request.scene.get() * 40 + request.series.get() * 10) as u8;
+        CpuTile::from_u8_interleaved(1, 1, 3, ColorSpace::Rgb, vec![value, 2, 3])
+    }
+
+    fn read_associated(&self, name: &str) -> Result<CpuTile, WsiError> {
+        Err(WsiError::AssociatedImageNotFound(name.into()))
+    }
+}
+
+fn one_pixel_series(id: &str) -> Series {
+    Series::new(
+        id,
+        AxesShape::new(1, 1, 1),
+        vec![Level::new(
+            (1, 1),
+            1.0,
+            TileLayout::Regular {
+                tile_width: 1,
+                tile_height: 1,
+                tiles_across: 1,
+                tiles_down: 1,
+            },
+        )],
+        SampleType::Uint8,
+        vec![ChannelInfo::new()],
+    )
+}
+
+#[test]
+fn multi_scene_multi_series_jobs_export_unique_instances() {
+    let mut properties = Properties::new();
+    properties.insert("openslide.mpp-x", "0.5");
+    properties.insert("openslide.mpp-y", "0.5");
+    let dataset = Dataset::new(
+        DatasetId::new(7),
+        vec![
+            Scene::new(
+                "scene-0",
+                vec![one_pixel_series("series-0"), one_pixel_series("series-1")],
+            ),
+            Scene::new(
+                "scene-1",
+                vec![one_pixel_series("series-0"), one_pixel_series("series-1")],
+            ),
+        ],
+    )
+    .with_properties(properties);
+    let slide = Slide::from_source_with_cache_bytes(Box::new(MultiSceneSource { dataset }), 0);
+    let output = tempfile::tempdir().unwrap();
+    let request = ExportRequest::new(
+        PathBuf::from("synthetic-multi-scene"),
+        output.path().to_path_buf(),
+        ExportOptions {
+            tile_size: 1,
+            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            ..ExportOptions::default()
+        },
+        MetadataSource::ResearchPlaceholder,
+    )
+    .unwrap();
+    let metadata = request.metadata.resolve().unwrap();
+    let identity = DicomExportIdentity::from_seed("1.2.3".into(), "multi-scene".into());
+    let jobs = dicom_export_instance_jobs(&slide, &request).unwrap();
+
+    let reports =
+        export_dicom_instance_jobs(&slide, &request, &metadata, &identity, &jobs).unwrap();
+
+    assert_eq!(reports.len(), 4);
+    assert_eq!(
+        reports
+            .iter()
+            .map(|report| report.path.clone())
+            .collect::<HashSet<_>>()
+            .len(),
+        reports.len()
+    );
+    assert_eq!(
+        reports
+            .iter()
+            .map(|report| report.sop_instance_uid.clone())
+            .collect::<HashSet<_>>()
+            .len(),
+        reports.len()
+    );
+    assert!(reports.iter().all(|report| report.path.is_file()));
+    assert_eq!(reports[0].scene, 0);
+    assert_eq!(reports[1].series, 1);
+    assert_eq!(reports[2].scene, 1);
+}
+
+#[test]
+fn preflight_accepts_same_axes_from_different_scenes_and_series() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source.dcm");
+    write_source_dicom(&source);
+    let slide = Slide::open(&source).unwrap();
+    let level = &slide.dataset().scenes[0].series[0].levels[0];
+    let request = ExportRequest::new(
+        source,
+        tmp.path().join("out"),
+        ExportOptions::default(),
+        MetadataSource::ResearchPlaceholder,
+    )
+    .unwrap();
+    let jobs = [
+        DicomExportInstanceJob {
+            ordinal: 0,
+            instance_number: 1,
+            coordinate: InstanceCoordinate::new(0, 0, 0, 0, 0, 0),
+            level,
+        },
+        DicomExportInstanceJob {
+            ordinal: 1,
+            instance_number: 2,
+            coordinate: InstanceCoordinate::new(1, 3, 0, 0, 0, 0),
+            level,
+        },
+    ];
+
+    preflight_output_paths(&request, &jobs).unwrap();
+    assert_ne!(
+        jobs[0].coordinate.output_path(&request.output_dir),
+        jobs[1].coordinate.output_path(&request.output_dir)
+    );
+}
+
 #[test]
 fn consistent_pixel_profile_accepts_first_matching_profile_and_rejects_mismatch() {
     let rgb = PixelProfile {
@@ -65,9 +209,14 @@ fn lossless_j2k_cpu_tile_preparation_returns_named_prepared_region() {
     write_source_dicom_with_pixels(&source, "1.2.826.0.1.3680043.10.999.82", 2, 2, pixels);
     let slide = Slide::open(&source).unwrap();
 
-    let prepared: PreparedCpuRegion =
-        prepare_cpu_input_lossless_j2k_tile(&slide, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 3, u64::MAX)
-            .unwrap();
+    let prepared: PreparedCpuRegion = prepare_cpu_input_lossless_j2k_tile(
+        &slide,
+        InstanceCoordinate::first_series_level(0),
+        OutputFrameRect::new(0, 0, 2, 2),
+        3,
+        u64::MAX,
+    )
+    .unwrap();
 
     assert_eq!(
         prepared.profile,

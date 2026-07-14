@@ -1,14 +1,18 @@
 use std::ffi::OsString;
-use std::io::{self, Read, Write};
+use std::fs;
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use dicom_core::value::{PixelFragmentSequence, Value};
 use dicom_dictionary_std::tags;
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, TransferSyntax};
+
+mod process;
+
+use process::{CommandOutcome, SystemCommandRunner, ValidationCommandRunner};
 
 /// Options for validating generated DICOM files with external tools.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +35,8 @@ pub struct ValidationOptions {
     pub max_depth: usize,
     /// Maximum captured stdout or stderr bytes per child process.
     pub max_child_output_bytes: usize,
+    /// Maximum encoded bytes assembled for one compressed pixel frame.
+    pub max_pixel_frame_bytes: usize,
 }
 
 impl Default for ValidationOptions {
@@ -44,6 +50,7 @@ impl Default for ValidationOptions {
             max_files: 100_000,
             max_depth: 64,
             max_child_output_bytes: 4 * 1024 * 1024,
+            max_pixel_frame_bytes: 512 * 1024 * 1024,
         }
     }
 }
@@ -228,27 +235,6 @@ pub enum ValidationStatus {
     Skipped,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CommandOutcome {
-    pub(crate) success: bool,
-    pub(crate) timed_out: bool,
-    pub(crate) stdout: String,
-    pub(crate) stderr: String,
-    pub(crate) stdout_truncated: bool,
-    pub(crate) stderr_truncated: bool,
-}
-
-pub(crate) trait ValidationCommandRunner {
-    fn find_command(&self, name: &str) -> Option<PathBuf>;
-    fn run(
-        &self,
-        program: &Path,
-        args: &[OsString],
-        timeout: Duration,
-        max_output_bytes: usize,
-    ) -> Result<CommandOutcome, std::io::Error>;
-}
-
 const DOCTOR_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -305,87 +291,6 @@ const VALIDATOR_DOCTOR_TOOLS: &[ValidatorToolSpec] = &[
 const AUTO_HTJ2K_DECODER_COMMAND: &str = "grk_decompress";
 const VALIDATOR_SET_FILE_CHUNK_SIZE: usize = 512;
 
-struct SystemCommandRunner;
-
-impl ValidationCommandRunner for SystemCommandRunner {
-    fn find_command(&self, name: &str) -> Option<PathBuf> {
-        let command = Path::new(name);
-        if command.is_absolute() {
-            return command.is_file().then(|| command.to_path_buf());
-        }
-        std::env::var_os("PATH")
-            .and_then(|paths| {
-                std::env::split_paths(&paths)
-                    .map(|path| path.join(name))
-                    .find(|path| path.is_file())
-            })
-            .or_else(|| staged_dicom3tools_command(name))
-    }
-
-    fn run(
-        &self,
-        program: &Path,
-        args: &[OsString],
-        timeout: Duration,
-        max_output_bytes: usize,
-    ) -> Result<CommandOutcome, std::io::Error> {
-        let mut child = Command::new(program)
-            .args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("child stdout pipe was not captured"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| io::Error::other("child stderr pipe was not captured"))?;
-        let stdout_reader = read_child_pipe(stdout, max_output_bytes);
-        let stderr_reader = read_child_pipe(stderr, max_output_bytes);
-        let started = Instant::now();
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let (stdout, stderr, stdout_truncated, stderr_truncated) =
-                        collect_child_pipes(stdout_reader, stderr_reader)?;
-                    return Ok(CommandOutcome {
-                        success: status.success(),
-                        timed_out: false,
-                        stdout,
-                        stderr,
-                        stdout_truncated,
-                        stderr_truncated,
-                    });
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = collect_child_pipes(stdout_reader, stderr_reader);
-                    return Err(err);
-                }
-            }
-            if started.elapsed() >= timeout {
-                let _ = child.kill();
-                let _ = child.wait()?;
-                let (stdout, stderr, stdout_truncated, stderr_truncated) =
-                    collect_child_pipes(stdout_reader, stderr_reader)?;
-                return Ok(CommandOutcome {
-                    success: false,
-                    timed_out: true,
-                    stdout,
-                    stderr,
-                    stdout_truncated,
-                    stderr_truncated,
-                });
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-    }
-}
-
 fn staged_dicom3tools_command(name: &str) -> Option<PathBuf> {
     if !staged_dicom3tools_probe_enabled() {
         return None;
@@ -406,55 +311,6 @@ fn staged_dicom3tools_probe_enabled() -> bool {
 
 fn staged_dicom3tools_probe_enabled_from(debug_assertions: bool, env_present: bool) -> bool {
     debug_assertions || env_present
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CapturedOutput {
-    bytes: Vec<u8>,
-    truncated: bool,
-}
-
-fn read_child_pipe(
-    mut pipe: impl Read + Send + 'static,
-    max_output_bytes: usize,
-) -> JoinHandle<io::Result<CapturedOutput>> {
-    thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let mut limited = pipe.by_ref().take(
-            u64::try_from(max_output_bytes)
-                .unwrap_or(u64::MAX)
-                .saturating_add(1),
-        );
-        limited.read_to_end(&mut bytes)?;
-        let truncated = bytes.len() > max_output_bytes;
-        if truncated {
-            bytes.truncate(max_output_bytes);
-            io::copy(&mut pipe, &mut io::sink())?;
-        }
-        Ok(CapturedOutput { bytes, truncated })
-    })
-}
-
-fn collect_child_pipes(
-    stdout_reader: JoinHandle<io::Result<CapturedOutput>>,
-    stderr_reader: JoinHandle<io::Result<CapturedOutput>>,
-) -> io::Result<(String, String, bool, bool)> {
-    let stdout = collect_child_pipe(stdout_reader)?;
-    let stderr = collect_child_pipe(stderr_reader)?;
-    Ok((
-        String::from_utf8_lossy(&stdout.bytes).into_owned(),
-        String::from_utf8_lossy(&stderr.bytes).into_owned(),
-        stdout.truncated,
-        stderr.truncated,
-    ))
-}
-
-fn collect_child_pipe(
-    reader: JoinHandle<io::Result<CapturedOutput>>,
-) -> io::Result<CapturedOutput> {
-    reader
-        .join()
-        .map_err(|_| io::Error::other("child output reader thread panicked"))?
 }
 
 /// Validate a DICOM file or recursively discovered DICOM directory.
@@ -1054,6 +910,37 @@ fn run_pixel_decode_checks(
         }];
     }
 
+    let expected = match decoded_frame_expectation(&object) {
+        Ok(expected) => expected,
+        Err(message) => return vec![failed_check("pixel-decode", Some(file), message)],
+    };
+    let frame_count = match object.element(tags::NUMBER_OF_FRAMES) {
+        Ok(element) => match element.to_int::<usize>() {
+            Ok(frame_count) if frame_count > 0 => frame_count,
+            Ok(_) => {
+                return vec![failed_check(
+                    "pixel-decode",
+                    Some(file),
+                    "DICOM Number of Frames must be greater than zero".to_string(),
+                )];
+            }
+            Err(err) => {
+                return vec![failed_check(
+                    "pixel-decode",
+                    Some(file),
+                    format!("failed to read DICOM Number of Frames: {err}"),
+                )];
+            }
+        },
+        Err(err) => {
+            return vec![failed_check(
+                "pixel-decode",
+                Some(file),
+                format!("DICOM Number of Frames is missing: {err}"),
+            )];
+        }
+    };
+
     let pixel_data = match object.element(tags::PIXEL_DATA) {
         Ok(pixel_data) => pixel_data,
         Err(err) => {
@@ -1064,14 +951,14 @@ fn run_pixel_decode_checks(
             )];
         }
     };
-    let Some(fragments) = pixel_data.value().fragments() else {
+    let Value::PixelSequence(pixel_sequence) = pixel_data.value() else {
         return vec![skipped_check(
             "pixel-decode",
             Some(file),
             "Pixel Data is not encapsulated".to_string(),
         )];
     };
-    if fragments.is_empty() {
+    if pixel_sequence.fragments().is_empty() {
         return vec![skipped_check(
             "pixel-decode",
             Some(file),
@@ -1079,24 +966,235 @@ fn run_pixel_decode_checks(
         )];
     }
 
+    let extended_offsets = match optional_u64_values(&object, tags::EXTENDED_OFFSET_TABLE) {
+        Ok(values) => values,
+        Err(message) => return vec![failed_check("pixel-decode", Some(file), message)],
+    };
+    let extended_lengths = match optional_u64_values(&object, tags::EXTENDED_OFFSET_TABLE_LENGTHS) {
+        Ok(values) => values,
+        Err(message) => return vec![failed_check("pixel-decode", Some(file), message)],
+    };
+    let frames = match assemble_encapsulated_frames(
+        pixel_sequence,
+        frame_count,
+        extended_offsets.as_deref(),
+        extended_lengths.as_deref(),
+        options.max_pixel_frames,
+        options.max_pixel_frame_bytes,
+    ) {
+        Ok(frames) => frames,
+        Err(message) => return vec![failed_check("pixel-decode", Some(file), message)],
+    };
+
     let mut checks = Vec::new();
-    for (frame_idx, fragment) in fragments.iter().take(options.max_pixel_frames).enumerate() {
+    for (frame_idx, frame) in frames.iter().enumerate() {
         checks.push(run_pixel_decoder_for_fragment(
             &decoder,
             PixelFragmentDecode {
                 file_idx,
                 frame_idx,
-                fragment: fragment_payload_without_padding(fragment),
+                fragment: frame,
                 file,
                 runner,
                 temp_dir,
                 strict: options.strict,
                 timeout: options.command_timeout(),
                 max_output_bytes: options.max_child_output_bytes,
+                max_decoded_bytes: options.max_pixel_frame_bytes,
+                expected,
             },
         ));
     }
     checks
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DecodedFrameExpectation {
+    columns: u32,
+    rows: u32,
+    samples_per_pixel: Option<u16>,
+    bits_allocated: Option<u16>,
+}
+
+fn decoded_frame_expectation(
+    object: &dicom_object::DefaultDicomObject,
+) -> Result<DecodedFrameExpectation, String> {
+    let columns = object
+        .element(tags::COLUMNS)
+        .map_err(|err| format!("DICOM Columns is missing: {err}"))?
+        .to_int::<u32>()
+        .map_err(|err| format!("failed to read DICOM Columns: {err}"))?;
+    let rows = object
+        .element(tags::ROWS)
+        .map_err(|err| format!("DICOM Rows is missing: {err}"))?
+        .to_int::<u32>()
+        .map_err(|err| format!("failed to read DICOM Rows: {err}"))?;
+    if columns == 0 || rows == 0 {
+        return Err("DICOM Rows and Columns must be greater than zero".to_string());
+    }
+    let samples_per_pixel = object
+        .element(tags::SAMPLES_PER_PIXEL)
+        .ok()
+        .map(|element| {
+            element
+                .to_int::<u16>()
+                .map_err(|err| format!("failed to read DICOM Samples per Pixel: {err}"))
+        })
+        .transpose()?;
+    let bits_allocated = object
+        .element(tags::BITS_ALLOCATED)
+        .ok()
+        .map(|element| {
+            element
+                .to_int::<u16>()
+                .map_err(|err| format!("failed to read DICOM Bits Allocated: {err}"))
+        })
+        .transpose()?;
+    Ok(DecodedFrameExpectation {
+        columns,
+        rows,
+        samples_per_pixel,
+        bits_allocated,
+    })
+}
+
+fn optional_u64_values(
+    object: &dicom_object::DefaultDicomObject,
+    tag: dicom_core::Tag,
+) -> Result<Option<Vec<u64>>, String> {
+    let Ok(element) = object.element(tag) else {
+        return Ok(None);
+    };
+    element
+        .to_multi_int::<u64>()
+        .map(Some)
+        .map_err(|err| format!("failed to read DICOM element {tag}: {err}"))
+}
+
+fn assemble_encapsulated_frames(
+    sequence: &PixelFragmentSequence<Vec<u8>>,
+    frame_count: usize,
+    extended_offsets: Option<&[u64]>,
+    extended_lengths: Option<&[u64]>,
+    max_frames: usize,
+    max_frame_bytes: usize,
+) -> Result<Vec<Vec<u8>>, String> {
+    let fragments = sequence.fragments();
+    if fragments.is_empty() {
+        return Err("Pixel Data has no fragments".to_string());
+    }
+
+    let basic_offsets = sequence.offset_table();
+    let offsets = match extended_offsets {
+        Some(offsets) if !offsets.is_empty() => offsets.to_vec(),
+        _ if !basic_offsets.is_empty() => basic_offsets
+            .iter()
+            .map(|&value| u64::from(value))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let lengths = extended_lengths.filter(|lengths| !lengths.is_empty());
+    if lengths.is_some() && extended_offsets.is_none_or(<[u64]>::is_empty) {
+        return Err("Extended Offset Table Lengths requires an Extended Offset Table".to_string());
+    }
+    if let Some(lengths) = lengths {
+        if lengths.len() != frame_count {
+            return Err(format!(
+                "Extended Offset Table Lengths has {} entries for {frame_count} frames",
+                lengths.len()
+            ));
+        }
+    }
+
+    let spans = if offsets.is_empty() {
+        if frame_count == 1 {
+            vec![(0, fragments.len())]
+        } else if frame_count == fragments.len() {
+            (0..fragments.len())
+                .map(|index| (index, index + 1))
+                .collect()
+        } else {
+            return Err(format!(
+                "cannot map {} Pixel Data fragments to {frame_count} frames without an offset table",
+                fragments.len()
+            ));
+        }
+    } else {
+        if offsets.len() != frame_count {
+            return Err(format!(
+                "Pixel Data offset table has {} entries for {frame_count} frames",
+                offsets.len()
+            ));
+        }
+        let mut fragment_offsets = Vec::with_capacity(fragments.len());
+        let mut next_offset = 0u64;
+        for fragment in fragments {
+            fragment_offsets.push(next_offset);
+            let fragment_len = u64::try_from(fragment.len())
+                .map_err(|_| "Pixel Data fragment length exceeds u64".to_string())?;
+            next_offset = next_offset
+                .checked_add(8)
+                .and_then(|offset| offset.checked_add(fragment_len))
+                .ok_or_else(|| "Pixel Data fragment offsets overflow u64".to_string())?;
+        }
+        let mut starts = Vec::with_capacity(offsets.len());
+        for offset in offsets {
+            let index = fragment_offsets.binary_search(&offset).map_err(|_| {
+                format!("Pixel Data frame offset {offset} does not identify a fragment boundary")
+            })?;
+            starts.push(index);
+        }
+        if starts.first() != Some(&0) || starts.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(
+                "Pixel Data frame offsets are not strictly increasing from zero".to_string(),
+            );
+        }
+        starts
+            .iter()
+            .enumerate()
+            .map(|(index, &start)| {
+                let end = starts.get(index + 1).copied().unwrap_or(fragments.len());
+                (start, end)
+            })
+            .collect()
+    };
+
+    let mut frames = Vec::with_capacity(max_frames.min(frame_count));
+    for (frame_index, &(start, end)) in spans.iter().take(max_frames).enumerate() {
+        let assembled_len = fragments[start..end]
+            .iter()
+            .try_fold(0usize, |total, fragment| {
+                total
+                    .checked_add(fragment.len())
+                    .ok_or_else(|| "assembled Pixel Data frame length overflows usize".to_string())
+            })?;
+        let output_len = match lengths {
+            Some(lengths) => usize::try_from(lengths[frame_index]).map_err(|_| {
+                format!("Pixel Data frame {frame_index} length exceeds platform limits")
+            })?,
+            None => assembled_len,
+        };
+        if output_len > assembled_len {
+            return Err(format!(
+                "Pixel Data frame {frame_index} declares {output_len} bytes but only {assembled_len} are available"
+            ));
+        }
+        if output_len > max_frame_bytes {
+            return Err(format!(
+                "Pixel Data frame {frame_index} exceeds {max_frame_bytes} byte validation limit"
+            ));
+        }
+        let mut frame = Vec::with_capacity(output_len);
+        for fragment in &fragments[start..end] {
+            let remaining = output_len.saturating_sub(frame.len());
+            if remaining == 0 {
+                break;
+            }
+            frame.extend_from_slice(&fragment[..fragment.len().min(remaining)]);
+        }
+        frames.push(frame);
+    }
+    Ok(frames)
 }
 
 enum PixelDecoder {
@@ -1148,6 +1246,8 @@ struct PixelFragmentDecode<'a, R: ValidationCommandRunner> {
     strict: bool,
     timeout: Duration,
     max_output_bytes: usize,
+    max_decoded_bytes: usize,
+    expected: DecodedFrameExpectation,
 }
 
 fn run_pixel_decoder_for_fragment<R: ValidationCommandRunner>(
@@ -1170,7 +1270,7 @@ fn run_pixel_decoder_for_fragment<R: ValidationCommandRunner>(
         );
     }
 
-    match decoder {
+    let check = match decoder {
         PixelDecoder::Djpeg => run_named_command_check(
             request.runner,
             CommandCheckRequest {
@@ -1232,7 +1332,162 @@ fn run_pixel_decoder_for_fragment<R: ValidationCommandRunner>(
             Some(request.file),
             "HTJ2K decoder command is not configured".to_string(),
         ),
+    };
+    validate_decoded_output(check, &output, request.expected, request.max_decoded_bytes)
+}
+
+fn validate_decoded_output(
+    mut check: ValidationCheck,
+    output: &Path,
+    expected: DecodedFrameExpectation,
+    max_decoded_bytes: usize,
+) -> ValidationCheck {
+    if check.status != ValidationStatus::Passed {
+        return check;
     }
+    if let Err(message) = inspect_pnm_output(output, expected, max_decoded_bytes) {
+        check.status = ValidationStatus::Failed;
+        check.message = message;
+    }
+    check
+}
+
+fn inspect_pnm_output(
+    output: &Path,
+    expected: DecodedFrameExpectation,
+    max_decoded_bytes: usize,
+) -> Result<(), String> {
+    let mut file = fs::File::open(output).map_err(|err| {
+        format!(
+            "decoder did not create readable output {}: {err}",
+            output.display()
+        )
+    })?;
+    let file_len = file
+        .metadata()
+        .map_err(|err| format!("inspect decoder output {}: {err}", output.display()))?
+        .len();
+    let max_decoded_bytes = u64::try_from(max_decoded_bytes).unwrap_or(u64::MAX);
+    if file_len > max_decoded_bytes {
+        return Err(format!(
+            "decoder output {} exceeds {max_decoded_bytes} byte validation limit",
+            output.display()
+        ));
+    }
+
+    let magic = read_pnm_token(&mut file)?;
+    let components = match magic.as_str() {
+        "P5" => 1u64,
+        "P6" => 3u64,
+        _ => {
+            return Err(format!(
+                "decoder output uses unsupported PNM magic {magic:?}"
+            ))
+        }
+    };
+    let columns = parse_pnm_u32(&mut file, "width")?;
+    let rows = parse_pnm_u32(&mut file, "height")?;
+    let max_value = parse_pnm_u32(&mut file, "maximum sample value")?;
+    if columns != expected.columns || rows != expected.rows {
+        return Err(format!(
+            "decoder output dimensions {columns}x{rows} do not match DICOM {}x{}",
+            expected.columns, expected.rows
+        ));
+    }
+    if let Some(samples_per_pixel) = expected.samples_per_pixel {
+        if u64::from(samples_per_pixel) != components {
+            return Err(format!(
+                "decoder output has {components} component(s), expected {samples_per_pixel}"
+            ));
+        }
+    }
+    if !matches!(max_value, 255 | 65_535) {
+        return Err(format!(
+            "decoder output maximum sample value {max_value} is unsupported"
+        ));
+    }
+    if let Some(bits_allocated) = expected.bits_allocated {
+        let expected_max = match bits_allocated {
+            8 => 255,
+            16 => 65_535,
+            other => {
+                return Err(format!(
+                    "DICOM Bits Allocated {other} is unsupported for PNM validation"
+                ));
+            }
+        };
+        if max_value != expected_max {
+            return Err(format!(
+                "decoder output maximum sample value {max_value} does not match {bits_allocated}-bit DICOM pixels"
+            ));
+        }
+    }
+    let bytes_per_sample = if max_value > 255 { 2u64 } else { 1u64 };
+    let payload_len = u64::from(columns)
+        .checked_mul(u64::from(rows))
+        .and_then(|value| value.checked_mul(components))
+        .and_then(|value| value.checked_mul(bytes_per_sample))
+        .ok_or_else(|| "decoder output dimensions overflow payload length".to_string())?;
+    let payload_start = file
+        .stream_position()
+        .map_err(|err| format!("inspect decoder output payload: {err}"))?;
+    let expected_file_len = payload_start
+        .checked_add(payload_len)
+        .ok_or_else(|| "decoder output length overflows u64".to_string())?;
+    if file_len != expected_file_len {
+        return Err(format!(
+            "decoder output payload has {} bytes, expected {payload_len}",
+            file_len.saturating_sub(payload_start)
+        ));
+    }
+    Ok(())
+}
+
+fn parse_pnm_u32(file: &mut fs::File, field: &str) -> Result<u32, String> {
+    let token = read_pnm_token(file)?;
+    token
+        .parse::<u32>()
+        .map_err(|err| format!("decoder output has invalid PNM {field} {token:?}: {err}"))
+}
+
+fn read_pnm_token(file: &mut fs::File) -> Result<String, String> {
+    let mut token = Vec::new();
+    let mut in_comment = false;
+    loop {
+        let mut byte = [0u8; 1];
+        if file
+            .read(&mut byte)
+            .map_err(|err| format!("read decoder PNM header: {err}"))?
+            == 0
+        {
+            if token.is_empty() {
+                return Err("decoder output ended inside the PNM header".to_string());
+            }
+            break;
+        }
+        let byte = byte[0];
+        if in_comment {
+            if byte == b'\n' {
+                in_comment = false;
+            }
+            continue;
+        }
+        if token.is_empty() && byte == b'#' {
+            in_comment = true;
+            continue;
+        }
+        if byte.is_ascii_whitespace() {
+            if token.is_empty() {
+                continue;
+            }
+            break;
+        }
+        token.push(byte);
+        if token.len() > 64 {
+            return Err("decoder output PNM header token exceeds 64 bytes".to_string());
+        }
+    }
+    String::from_utf8(token).map_err(|err| format!("decoder output PNM header is not ASCII: {err}"))
 }
 
 pub(crate) fn htj2k_decoder_command(
@@ -1273,6 +1528,7 @@ pub(crate) fn htj2k_decoder_command(
     Ok((command, args))
 }
 
+#[cfg(any(test, feature = "bench-internals"))]
 pub(crate) fn fragment_payload_without_padding(fragment: &[u8]) -> &[u8] {
     fragment
 }
@@ -1433,14 +1689,22 @@ mod tests {
                 key.push(' ');
                 key.push_str(&arg.to_string_lossy());
             }
-            Ok(self.outcomes.get(&key).cloned().unwrap_or(CommandOutcome {
+            let outcome = self.outcomes.get(&key).cloned().unwrap_or(CommandOutcome {
                 success: true,
                 timed_out: false,
                 stdout: String::new(),
                 stderr: String::new(),
                 stdout_truncated: false,
                 stderr_truncated: false,
-            }))
+            });
+            if outcome.success {
+                for pair in args.windows(2) {
+                    if matches!(pair[0].to_str(), Some("-o" | "-outfile")) {
+                        std::fs::write(PathBuf::from(&pair[1]), b"P6\n1 1\n255\n\x00\x00\x00")?;
+                    }
+                }
+            }
+            Ok(outcome)
         }
     }
 
@@ -1463,6 +1727,24 @@ mod tests {
         assert!(outcome.success);
         assert_eq!(outcome.stdout.len(), 200_000);
         assert!(!outcome.timed_out);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn system_runner_timeout_terminates_descendants_and_returns_promptly() {
+        let runner = SystemCommandRunner;
+        let started = std::time::Instant::now();
+        let outcome = runner
+            .run(
+                Path::new("/bin/sh"),
+                &[OsString::from("-c"), OsString::from("sleep 30 & wait")],
+                Duration::from_millis(100),
+                1024,
+            )
+            .unwrap();
+
+        assert!(outcome.timed_out);
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 
     #[test]
@@ -1924,6 +2206,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn encapsulated_frame_assembly_uses_offsets_and_extended_lengths() {
+        let sequence = dicom_core::value::PixelFragmentSequence::new_fragments(vec![
+            vec![1, 2],
+            vec![3, 0],
+            vec![4, 5],
+        ]);
+        let frames =
+            super::assemble_encapsulated_frames(&sequence, 2, Some(&[0, 20]), Some(&[3, 2]), 2, 64)
+                .unwrap();
+
+        assert_eq!(frames, vec![vec![1, 2, 3], vec![4, 5]]);
+    }
+
+    #[test]
+    fn encapsulated_frame_assembly_rejects_ambiguous_fragment_mapping() {
+        let sequence = dicom_core::value::PixelFragmentSequence::new_fragments(vec![
+            vec![1],
+            vec![2],
+            vec![3],
+        ]);
+        let error = super::assemble_encapsulated_frames(&sequence, 2, None, None, 2, 64)
+            .expect_err("multiple frames without offsets must be unambiguous");
+        assert!(error.contains("without an offset table"));
+    }
+
+    #[test]
+    fn decoded_output_must_exist_and_match_dicom_geometry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = tmp.path().join("frame.ppm");
+        let expected = super::DecodedFrameExpectation {
+            columns: 2,
+            rows: 1,
+            samples_per_pixel: Some(3),
+            bits_allocated: Some(8),
+        };
+
+        let missing = super::inspect_pnm_output(&output, expected, 1024)
+            .expect_err("missing output must fail");
+        assert!(missing.contains("did not create readable output"));
+
+        std::fs::write(&output, b"P6\n2 1\n255\n\x01\x02\x03\x04\x05\x06").unwrap();
+        super::inspect_pnm_output(&output, expected, 1024).unwrap();
+
+        std::fs::write(&output, b"P6\n1 1\n255\n\x01\x02\x03").unwrap();
+        let wrong_geometry = super::inspect_pnm_output(&output, expected, 1024)
+            .expect_err("wrong dimensions must fail");
+        assert!(wrong_geometry.contains("do not match DICOM"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn validation_temp_dir_and_codestream_files_are_private() {
@@ -2022,6 +2354,7 @@ mod tests {
             max_files: 100_000,
             max_depth: 64,
             max_child_output_bytes: 4 * 1024 * 1024,
+            max_pixel_frame_bytes: 512 * 1024 * 1024,
         };
 
         let json = serde_json::to_string(&options).expect("serialize validation options");

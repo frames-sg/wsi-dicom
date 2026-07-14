@@ -16,6 +16,7 @@ mod api;
 #[cfg(feature = "bench-internals")]
 #[doc(hidden)]
 pub mod bench_support;
+mod coordinate;
 mod defaults;
 mod diagnostics;
 mod encode;
@@ -30,6 +31,7 @@ mod request;
 mod routing;
 mod synthetic_source;
 mod tile;
+mod time;
 mod uid;
 mod validation;
 mod writer;
@@ -48,7 +50,7 @@ pub use export::{
 pub use metadata::{DicomMetadata, MetadataSource, METADATA_JSON_MAX_BYTES};
 pub use options::{
     CodecValidation, EncodeBackendPreference, ExportOptions, ExportPreset, IccProfilePolicy,
-    JpegDirectHtj2kProfile, TransferSyntax,
+    JpegDirectHtj2kProfile, TransferSyntax, UidPolicy,
 };
 pub use report::{
     EncodedFrame, ExportMetrics, ExportReport, GpuEncodeMetrics, IccProfileSource, InstanceReport,
@@ -70,7 +72,7 @@ pub mod prelude {
     pub use crate::{
         CodecValidation, DefaultTransferSyntaxRequest, Error, Export, ExportOptions, ExportPreset,
         ExportReport, ExportRequest, FrameSamples, IccProfilePolicy, IccProfileSource,
-        J2kFrameEncodeRequest, JpegDirectHtj2kProfile, MetadataSource, TransferSyntax,
+        J2kFrameEncodeRequest, JpegDirectHtj2kProfile, MetadataSource, TransferSyntax, UidPolicy,
         ValidationOptions,
     };
 }

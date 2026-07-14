@@ -1,35 +1,5 @@
-use wsi_rs::{PlaneSelection, TileRequest};
-
+pub(crate) use crate::coordinate::InstanceCoordinate as FrameLocation;
 use crate::error::Error;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct FrameLocation {
-    pub(crate) scene_idx: usize,
-    pub(crate) series_idx: usize,
-    pub(crate) level_idx: u32,
-    pub(crate) z: u32,
-    pub(crate) c: u32,
-    pub(crate) t: u32,
-}
-
-impl FrameLocation {
-    #[cfg(test)]
-    pub(super) fn first_series_level(level_idx: u32) -> Self {
-        Self {
-            scene_idx: 0,
-            series_idx: 0,
-            level_idx,
-            z: 0,
-            c: 0,
-            t: 0,
-        }
-    }
-
-    pub(super) fn tile_request(self, col: i64, row: i64) -> TileRequest {
-        TileRequest::new(self.scene_idx, self.series_idx, self.level_idx, col, row)
-            .with_plane(PlaneSelection::new(self.z, self.c, self.t))
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct OutputFrameRect {
@@ -81,11 +51,11 @@ impl OutputFrameRect {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct FrameRectGrid {
-    pub(super) matrix_columns: u64,
-    pub(super) matrix_rows: u64,
-    pub(super) frame_columns: u32,
-    pub(super) frame_rows: u32,
+pub(crate) struct FrameRectGrid {
+    pub(crate) matrix_columns: u64,
+    pub(crate) matrix_rows: u64,
+    pub(crate) frame_columns: u32,
+    pub(crate) frame_rows: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -8,6 +8,7 @@ extend-exclude = [
 
 [default.extend-words]
 dicom = "dicom"
+flate = "flate"
 HTJ2K = "HTJ2K"
 ndpi = "ndpi"
 PN = "PN"
@@ -15,3 +16,4 @@ SOP = "SOP"
 UID = "UID"
 uids = "uids"
 wsi = "wsi"
+writeable = "writeable"

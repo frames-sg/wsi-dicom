@@ -95,7 +95,7 @@ pub(crate) fn export_dicom_instance_jobs_prefer_device_htj2k_hybrid_lanes(
     slide: &Slide,
     request: &ExportRequest,
     metadata: &DicomMetadata,
-    study_uid: &str,
+    identity: &DicomExportIdentity,
     jobs: &[DicomExportInstanceJob<'_>],
 ) -> Result<Vec<InstanceReport>, Error> {
     let mut gpu_jobs = Vec::new();
@@ -106,12 +106,12 @@ pub(crate) fn export_dicom_instance_jobs_prefer_device_htj2k_hybrid_lanes(
             Some(HybridExportLane::Gpu) => gpu_jobs.push(job),
             Some(HybridExportLane::Cpu) => cpu_jobs.push(job),
             None => {
-                return export_dicom_instance_jobs_serial(slide, request, metadata, study_uid, jobs)
+                return export_dicom_instance_jobs_serial(slide, request, metadata, identity, jobs)
             }
         }
     }
     if gpu_jobs.is_empty() || cpu_jobs.is_empty() {
-        return export_dicom_instance_jobs_serial(slide, request, metadata, study_uid, jobs);
+        return export_dicom_instance_jobs_serial(slide, request, metadata, identity, jobs);
     }
 
     let mut reports = std::thread::scope(|scope| -> Result<Vec<_>, Error> {
@@ -137,7 +137,7 @@ pub(crate) fn export_dicom_instance_jobs_prefer_device_htj2k_hybrid_lanes(
                 cpu_jobs
                     .iter()
                     .map(|job| {
-                        export_dicom_instance_job(slide, request, metadata, study_uid, job)
+                        export_dicom_instance_job(slide, request, metadata, identity, job)
                             .map(|report| (job.ordinal, report))
                     })
                     .collect::<Result<Vec<_>, _>>()
@@ -149,14 +149,9 @@ pub(crate) fn export_dicom_instance_jobs_prefer_device_htj2k_hybrid_lanes(
                 slide,
                 request,
                 metadata,
-                study_uid,
+                identity,
                 job.instance_number,
-                job.scene_idx,
-                job.series_idx,
-                job.level_idx,
-                job.z,
-                job.c,
-                job.t,
+                job.coordinate,
                 job.level,
             )?;
             writer_tx

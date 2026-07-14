@@ -1,32 +1,21 @@
 use super::*;
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn export_instance(
     slide: &Slide,
     request: &ExportRequest,
     metadata: &DicomMetadata,
-    study_uid: &str,
+    identity: &DicomExportIdentity,
     instance_number: u32,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
+    coordinate: InstanceCoordinate,
     level: &wsi_rs::Level,
 ) -> Result<InstanceReport, Error> {
     prepare_lossless_j2k_instance(
         slide,
         request,
         metadata,
-        study_uid,
+        identity,
         instance_number,
-        scene_idx,
-        series_idx,
-        level_idx,
-        z,
-        c,
-        t,
+        coordinate,
         level,
     )?
     .finish()
@@ -96,19 +85,13 @@ impl PendingLosslessJ2kInstance {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn prepare_lossless_j2k_instance(
     slide: &Slide,
     request: &ExportRequest,
     metadata: &DicomMetadata,
-    study_uid: &str,
+    identity: &DicomExportIdentity,
     instance_number: u32,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
+    coordinate: InstanceCoordinate,
     level: &wsi_rs::Level,
 ) -> Result<PendingLosslessJ2kInstance, Error> {
     let tile_size = j2k_route_tile_size(&request.options, level)?;
@@ -118,25 +101,20 @@ pub(super) fn prepare_lossless_j2k_instance(
     let tiles_down = grid.tiles_down;
     let frame_count = grid.frame_count_u32()?;
     let context = DicomInstanceContext::new(
-        &request.source_path,
+        identity,
         &request.output_dir,
         require_pixel_spacing_mm(level_pixel_spacing_mm(slide, level))?,
-        scene_idx,
-        series_idx,
-        level_idx,
-        z,
-        c,
-        t,
-    );
-    let location = JpegBaselineFrameLocation {
-        scene_idx,
-        series_idx,
-        level_idx,
-        z,
-        c,
-        t,
-    };
-    let icc_profile = resolve_icc_profile(slide, request, scene_idx, series_idx, level_idx, level)?;
+        coordinate,
+    )?;
+    let location = coordinate;
+    let icc_profile = resolve_icc_profile(
+        slide,
+        request,
+        coordinate.scene_idx,
+        coordinate.series_idx,
+        coordinate.level_idx,
+        level,
+    )?;
 
     let spool_path = unique_spool_path(&context.path);
     let mut pixel_data = BufferedPixelDataSink::create(
@@ -144,80 +122,22 @@ pub(super) fn prepare_lossless_j2k_instance(
         frame_count as usize,
         lossless_j2k_use_direct_pixel_data(frame_count, tile_size, rayon::current_num_threads()),
     )?;
-    let mut pixel_profile = None;
-    let effective_backend =
-        effective_lossless_j2k_encode_backend(&request.options, u64::from(frame_count));
-    let mut j2k_encoder = DicomJ2kEncoder::new(
-        effective_backend,
-        j2k_encode_transfer_syntax(request.options.transfer_syntax),
-        request.options.codec_validation,
-    )
-    .with_j2k_decomposition_levels(request.options.j2k_decomposition_levels)
-    .with_gpu_encode_tuning(
-        request.options.gpu_encode_inflight_tiles,
-        hybrid_lane::effective_lossless_gpu_encode_memory_mib(
-            &request.options,
-            u64::from(frame_count),
-        ),
-    );
-    #[cfg(all(feature = "metal", target_os = "macos"))]
-    let metal_input_backend = lossless_j2k_metal_input_preference(
-        effective_backend,
-        request.options.source_device_decode,
-    );
-    #[cfg(all(feature = "metal", target_os = "macos"))]
-    let mut metal_input = MetalInputTileReader::new_for_lossless_j2k(
-        metal_input_backend,
-        lossless_j2k_auto_allows_metal_input(
-            metal_input_backend,
-            request.options.transfer_syntax,
-            u64::from(frame_count),
-            request.options.source_device_decode,
-        ),
-        auto_metal_input_route_cache_key(
-            &request.source_path,
-            request.options.clone(),
-            location,
-            u64::from(frame_count),
-        ),
-        request.options.source_device_decode,
-    )
-    .with_row_batch_tuning(
-        request.options.gpu_row_batch_rows,
-        hybrid_lane::effective_lossless_gpu_row_batch_target_tiles(
-            &request.options,
-            u64::from(frame_count),
-        ),
-    )
-    .with_pipeline_depth(effective_gpu_pipeline_depth(&request.options));
-    #[cfg(all(feature = "metal", target_os = "macos"))]
-    if lossless_j2k_auto_should_start_cpu_only(
-        effective_backend,
-        request.options.transfer_syntax,
+    let LosslessJ2kRoutePipeline {
+        encoder: mut j2k_encoder,
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        mut metal_input,
+        mut metrics,
+        mut pixel_profile,
+        mut jpeg_direct_encoder,
+    } = LosslessJ2kRoutePipeline::new(
+        &request.source_path,
+        &request.options,
+        location,
         u64::from(frame_count),
-        request.options.source_device_decode,
-    ) || metal_input.auto_route_decision() == AutoLosslessJ2kRouteDecision::CpuOnly
-    {
-        j2k_encoder.force_cpu_only_for_auto();
-    }
-    let mut metrics = ExportMetrics::default();
-    #[cfg(all(feature = "metal", target_os = "macos"))]
-    if metal_input.enabled() {
-        metrics.record_gpu_pipeline_depth(effective_gpu_pipeline_depth(&request.options));
-    }
+    )?;
     let mut j2k_passthrough_lossy = false;
     let allow_passthrough_probe =
         j2k_family_passthrough_probe_allowed(&request.source_path, request.options.transfer_syntax);
-    let mut jpeg_direct_encoder =
-        jpeg_direct_htj2k_supported_for_backend(request.options.transfer_syntax, effective_backend)
-            .then(|| {
-                jpeg_direct_htj2k::BatchEncoder::new(
-                    request.options.transfer_syntax,
-                    request.options.jpeg_direct_htj2k_profile,
-                    effective_backend,
-                )
-            })
-            .transpose()?;
 
     let mut row = 0;
     while row < tiles_down {
@@ -225,23 +145,23 @@ pub(super) fn prepare_lossless_j2k_instance(
         let planned_row_count = 1;
         #[cfg(not(all(feature = "metal", target_os = "macos")))]
         let planned_row_count = lossless_j2k_cpu_row_batch_count(tiles_across, tiles_down - row);
-        let planned = plan_lossless_j2k_rows(
+        let planned = plan_lossless_j2k_frames(
             slide,
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-            row,
-            planned_row_count,
-            0,
-            tiles_across,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
-            request.options.transfer_syntax,
-            allow_passthrough_probe,
+            LosslessJ2kPlanRequest {
+                location: coordinate,
+                start_row: row,
+                row_count: planned_row_count,
+                start_col: 0,
+                tile_count: tiles_across,
+                grid: FrameRectGrid {
+                    matrix_columns,
+                    matrix_rows,
+                    frame_columns: tile_size,
+                    frame_rows: tile_size,
+                },
+                transfer_syntax: request.options.transfer_syntax,
+                allow_passthrough_probe,
+            },
         )?;
         #[cfg(all(feature = "metal", target_os = "macos"))]
         let generated_jpeg_direct_allowed = jpeg_direct_encoder.is_some()
@@ -251,40 +171,32 @@ pub(super) fn prepare_lossless_j2k_instance(
             );
         #[cfg(not(all(feature = "metal", target_os = "macos")))]
         let generated_jpeg_direct_allowed = jpeg_direct_encoder.is_some();
-        let mut direct_routes = encode_direct_lossless_j2k_routes(
+        let batch_context = LosslessJ2kBatchContext {
             slide,
-            &mut jpeg_direct_encoder,
-            &planned,
-            &request.options,
+            level,
+            planned: &planned,
+            options: &request.options,
             location,
             tile_size,
+        };
+        let mut direct_routes = encode_direct_lossless_j2k_routes(
+            batch_context,
+            &mut jpeg_direct_encoder,
             generated_jpeg_direct_allowed,
         )?;
         #[cfg(all(feature = "metal", target_os = "macos"))]
         let mut routed_tiles = route_lossless_j2k_metal_input_runs(
-            slide,
+            batch_context,
             &mut metal_input,
             &mut j2k_encoder,
-            level,
-            location,
             row,
-            &planned,
             &direct_routes,
-            request.options.transfer_syntax,
             frame_count as usize,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
             &mut metrics,
         )?;
         let mut cpu_batch_results = encode_lossless_j2k_cpu_fallback_after_routes(
-            slide,
-            level,
+            batch_context,
             &j2k_encoder,
-            &planned,
-            &request.options,
-            location,
-            tile_size,
             &direct_routes,
             |idx| {
                 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -298,19 +210,21 @@ pub(super) fn prepare_lossless_j2k_instance(
                 }
             },
         )?;
-        for (idx, planned_frame) in planned.into_iter().enumerate() {
+        for (idx, planned_frame) in planned.iter().enumerate() {
             let encode_allowed = j2k_non_passthrough_encode_allowed(
-                &planned_frame,
+                planned_frame,
                 request.options.transfer_syntax,
                 tile_size,
             );
             if try_write_existing_lossless_j2k_frame(
-                idx,
-                &planned_frame,
-                &mut direct_routes,
-                &request.options,
-                &mut metrics,
-                &mut pixel_profile,
+                ExistingLosslessJ2kFrameContext {
+                    idx,
+                    planned_frame,
+                    direct_routes: &mut direct_routes,
+                    options: &request.options,
+                    metrics: &mut metrics,
+                    pixel_profile: &mut pixel_profile,
+                },
                 &mut pixel_data,
                 &mut j2k_passthrough_lossy,
             )? {
@@ -324,21 +238,18 @@ pub(super) fn prepare_lossless_j2k_instance(
                 ));
             }
             reject_lossy_j2k_lossless_fallback(
-                &planned_frame,
+                planned_frame,
                 request.options.transfer_syntax,
                 planned_frame.row,
             )?;
 
             let resolved = resolve_lossless_j2k_fallback_frame(
-                slide,
+                batch_context,
                 &mut j2k_encoder,
-                location,
-                &planned_frame,
+                planned_frame,
                 &mut cpu_batch_results[idx],
                 #[cfg(all(feature = "metal", target_os = "macos"))]
                 routed_tiles[idx].take(),
-                request.options.transfer_syntax,
-                tile_size,
             )?;
             let encoded = record_resolved_lossless_j2k_fallback_frame(
                 &mut metrics,
@@ -347,7 +258,7 @@ pub(super) fn prepare_lossless_j2k_instance(
                 "pixel profile changed across frames",
                 |err| match err {
                     Error::Encode { message } => Error::FrameEncode {
-                        level: level_idx,
+                        level: coordinate.level_idx,
                         row: planned_frame.row,
                         col: planned_frame.col,
                         message,
@@ -390,7 +301,7 @@ pub(super) fn prepare_lossless_j2k_instance(
     Ok(PendingLosslessJ2kInstance {
         context,
         metadata: metadata.clone(),
-        study_uid: study_uid.to_string(),
+        study_uid: identity.study_uid().to_string(),
         instance_number,
         tile_size,
         matrix_columns,

@@ -7,6 +7,7 @@ use serde::{ser::SerializeStruct, Serialize};
 
 use crate::encode;
 use crate::tile::PixelProfile;
+use crate::time::duration_as_reported_micros;
 
 macro_rules! saturating_add_fields {
     ($target:expr, $source:expr, [$($field:ident),+ $(,)?]) => {
@@ -20,6 +21,14 @@ macro_rules! saturating_add_values {
     ($target:expr, [$($field:ident => $value:expr),+ $(,)?]) => {
         $(
             $target.$field = $target.$field.saturating_add($value);
+        )+
+    };
+}
+
+macro_rules! max_fields {
+    ($target:expr, $source:expr, [$($field:ident),+ $(,)?]) => {
+        $(
+            $target.$field = $target.$field.max($source.$field);
         )+
     };
 }
@@ -176,6 +185,10 @@ pub struct InstanceReport {
     pub transfer_syntax_uid: &'static str,
     /// ICC profile provenance for the instance.
     pub icc_profile_source: IccProfileSource,
+    /// Source scene index.
+    pub scene: usize,
+    /// Source series index within the scene.
+    pub series: usize,
     /// Source pyramid level exported.
     pub level: u32,
     /// Z stack index.
@@ -550,114 +563,50 @@ impl ExportMetrics {
     }
 
     pub(crate) fn add_assign(&mut self, other: Self) {
-        self.routes.total_frames = self
-            .routes
-            .total_frames
-            .saturating_add(other.routes.total_frames);
-        self.routes.cpu_input_frames = self
-            .routes
-            .cpu_input_frames
-            .saturating_add(other.routes.cpu_input_frames);
-        self.routes.gpu_input_decode_frames = self
-            .routes
-            .gpu_input_decode_frames
-            .saturating_add(other.routes.gpu_input_decode_frames);
-        self.routes.gpu_encode_frames = self
-            .routes
-            .gpu_encode_frames
-            .saturating_add(other.routes.gpu_encode_frames);
-        self.routes.gpu_validation_frames = self
-            .routes
-            .gpu_validation_frames
-            .saturating_add(other.routes.gpu_validation_frames);
-        self.routes.gray_frames = self
-            .routes
-            .gray_frames
-            .saturating_add(other.routes.gray_frames);
-        self.routes.rgb_like_frames = self
-            .routes
-            .rgb_like_frames
-            .saturating_add(other.routes.rgb_like_frames);
-        self.routes.other_component_frames = self
-            .routes
-            .other_component_frames
-            .saturating_add(other.routes.other_component_frames);
-        self.routes.unknown_pixel_profile_frames = self
-            .routes
-            .unknown_pixel_profile_frames
-            .saturating_add(other.routes.unknown_pixel_profile_frames);
-        self.routes.bits8_frames = self
-            .routes
-            .bits8_frames
-            .saturating_add(other.routes.bits8_frames);
-        self.routes.bits16_frames = self
-            .routes
-            .bits16_frames
-            .saturating_add(other.routes.bits16_frames);
-        self.routes.other_bit_depth_frames = self
-            .routes
-            .other_bit_depth_frames
-            .saturating_add(other.routes.other_bit_depth_frames);
-        self.routes.gpu_transcode_frames = self
-            .routes
-            .gpu_transcode_frames
-            .saturating_add(other.routes.gpu_transcode_frames);
-        self.routes.resident_gpu_transcode_frames = self
-            .routes
-            .resident_gpu_transcode_frames
-            .saturating_add(other.routes.resident_gpu_transcode_frames);
-        self.routes.partial_gpu_transcode_frames = self
-            .routes
-            .partial_gpu_transcode_frames
-            .saturating_add(other.routes.partial_gpu_transcode_frames);
-        self.routes.gpu_input_decode_batches = self
-            .routes
-            .gpu_input_decode_batches
-            .saturating_add(other.routes.gpu_input_decode_batches);
-        self.routes.gpu_compose_batches = self
-            .routes
-            .gpu_compose_batches
-            .saturating_add(other.routes.gpu_compose_batches);
-        self.routes.gpu_encode_batches = self
-            .routes
-            .gpu_encode_batches
-            .saturating_add(other.routes.gpu_encode_batches);
-        self.routes.auto_route_probe_frames = self
-            .routes
-            .auto_route_probe_frames
-            .saturating_add(other.routes.auto_route_probe_frames);
-        self.routes.auto_route_probe_gpu_batches = self
-            .routes
-            .auto_route_probe_gpu_batches
-            .saturating_add(other.routes.auto_route_probe_gpu_batches);
-        self.routes.auto_route_probe_cpu_micros = self
-            .routes
-            .auto_route_probe_cpu_micros
-            .saturating_add(other.routes.auto_route_probe_cpu_micros);
-        self.routes.auto_route_probe_gpu_micros = self
-            .routes
-            .auto_route_probe_gpu_micros
-            .saturating_add(other.routes.auto_route_probe_gpu_micros);
-        self.routes.auto_route_probe_selected_gpu_input_frames = self
-            .routes
-            .auto_route_probe_selected_gpu_input_frames
-            .saturating_add(other.routes.auto_route_probe_selected_gpu_input_frames);
-        self.routes.cpu_fallback_frames = self
-            .routes
-            .cpu_fallback_frames
-            .saturating_add(other.routes.cpu_fallback_frames);
-        self.routes.jpeg_passthrough_frames = self
-            .routes
-            .jpeg_passthrough_frames
-            .saturating_add(other.routes.jpeg_passthrough_frames);
-        self.routes.j2k_passthrough_frames = self
-            .routes
-            .j2k_passthrough_frames
-            .saturating_add(other.routes.j2k_passthrough_frames);
-        self.routes.j2k_direct_htj2k_frames = self
-            .routes
-            .j2k_direct_htj2k_frames
-            .saturating_add(other.routes.j2k_direct_htj2k_frames);
+        saturating_add_fields!(
+            self.routes,
+            other.routes,
+            [
+                total_frames,
+                cpu_input_frames,
+                gpu_input_decode_frames,
+                gpu_encode_frames,
+                gpu_validation_frames,
+                gray_frames,
+                rgb_like_frames,
+                other_component_frames,
+                unknown_pixel_profile_frames,
+                bits8_frames,
+                bits16_frames,
+                other_bit_depth_frames,
+                gpu_transcode_frames,
+                resident_gpu_transcode_frames,
+                partial_gpu_transcode_frames,
+                gpu_input_decode_batches,
+                gpu_compose_batches,
+                gpu_encode_batches,
+                auto_route_probe_frames,
+                auto_route_probe_gpu_batches,
+                auto_route_probe_cpu_micros,
+                auto_route_probe_gpu_micros,
+                auto_route_probe_selected_gpu_input_frames,
+                cpu_fallback_frames,
+                jpeg_passthrough_frames,
+                j2k_passthrough_frames,
+                j2k_direct_htj2k_frames,
+                jpeg_retile_frames,
+                jpeg_retile_rejected_frames,
+                jpeg_retile_source_unsupported_frames,
+                jpeg_retile_geometry_mismatch_frames,
+                jpeg_retile_profile_unsupported_frames,
+                jpeg_retile_mcu_invalid_frames,
+                jpeg_retile_us,
+                jpeg_retile_to_htj2k_53_frames,
+                jpeg_cpu_encode_frames,
+                jpeg_metal_encode_frames,
+                jpeg_decode_fallback_frames,
+            ]
+        );
         saturating_add_fields!(
             self.jpeg_direct_htj2k,
             other.jpeg_direct_htj2k,
@@ -695,166 +644,53 @@ impl ExportMetrics {
                 jpeg_direct_htj2k_cpu_fallback_jobs,
             ]
         );
-        self.routes.jpeg_retile_frames = self
-            .routes
-            .jpeg_retile_frames
-            .saturating_add(other.routes.jpeg_retile_frames);
-        self.routes.jpeg_retile_rejected_frames = self
-            .routes
-            .jpeg_retile_rejected_frames
-            .saturating_add(other.routes.jpeg_retile_rejected_frames);
-        self.routes.jpeg_retile_source_unsupported_frames = self
-            .routes
-            .jpeg_retile_source_unsupported_frames
-            .saturating_add(other.routes.jpeg_retile_source_unsupported_frames);
-        self.routes.jpeg_retile_geometry_mismatch_frames = self
-            .routes
-            .jpeg_retile_geometry_mismatch_frames
-            .saturating_add(other.routes.jpeg_retile_geometry_mismatch_frames);
-        self.routes.jpeg_retile_profile_unsupported_frames = self
-            .routes
-            .jpeg_retile_profile_unsupported_frames
-            .saturating_add(other.routes.jpeg_retile_profile_unsupported_frames);
-        self.routes.jpeg_retile_mcu_invalid_frames = self
-            .routes
-            .jpeg_retile_mcu_invalid_frames
-            .saturating_add(other.routes.jpeg_retile_mcu_invalid_frames);
-        self.routes.jpeg_retile_us = self
-            .routes
-            .jpeg_retile_us
-            .saturating_add(other.routes.jpeg_retile_us);
-        self.routes.jpeg_retile_to_htj2k_53_frames = self
-            .routes
-            .jpeg_retile_to_htj2k_53_frames
-            .saturating_add(other.routes.jpeg_retile_to_htj2k_53_frames);
-        self.routes.jpeg_cpu_encode_frames = self
-            .routes
-            .jpeg_cpu_encode_frames
-            .saturating_add(other.routes.jpeg_cpu_encode_frames);
-        self.routes.jpeg_metal_encode_frames = self
-            .routes
-            .jpeg_metal_encode_frames
-            .saturating_add(other.routes.jpeg_metal_encode_frames);
-        self.routes.jpeg_decode_fallback_frames = self
-            .routes
-            .jpeg_decode_fallback_frames
-            .saturating_add(other.routes.jpeg_decode_fallback_frames);
-        self.timings.input_decode_micros = self
-            .timings
-            .input_decode_micros
-            .saturating_add(other.timings.input_decode_micros);
-        self.timings.compose_micros = self
-            .timings
-            .compose_micros
-            .saturating_add(other.timings.compose_micros);
-        self.timings.encode_micros = self
-            .timings
-            .encode_micros
-            .saturating_add(other.timings.encode_micros);
-        self.timings.validation_micros = self
-            .timings
-            .validation_micros
-            .saturating_add(other.timings.validation_micros);
-        self.timings.gpu_dispatch_micros = self
-            .timings
-            .gpu_dispatch_micros
-            .saturating_add(other.timings.gpu_dispatch_micros);
-        self.gpu_encode.gpu_encode_configured_inflight_tiles = self
-            .gpu_encode
-            .gpu_encode_configured_inflight_tiles
-            .max(other.gpu_encode.gpu_encode_configured_inflight_tiles);
-        self.gpu_encode.gpu_encode_effective_inflight_tiles = self
-            .gpu_encode
-            .gpu_encode_effective_inflight_tiles
-            .max(other.gpu_encode.gpu_encode_effective_inflight_tiles);
-        self.gpu_encode.gpu_encode_max_observed_inflight_tiles = self
-            .gpu_encode
-            .gpu_encode_max_observed_inflight_tiles
-            .max(other.gpu_encode.gpu_encode_max_observed_inflight_tiles);
-        self.gpu_encode.gpu_encode_configured_memory_mib = self
-            .gpu_encode
-            .gpu_encode_configured_memory_mib
-            .max(other.gpu_encode.gpu_encode_configured_memory_mib);
-        self.gpu_encode.gpu_encode_effective_memory_mib = self
-            .gpu_encode
-            .gpu_encode_effective_memory_mib
-            .max(other.gpu_encode.gpu_encode_effective_memory_mib);
-        self.gpu_encode.gpu_encode_wall_micros = self
-            .gpu_encode
-            .gpu_encode_wall_micros
-            .saturating_add(other.gpu_encode.gpu_encode_wall_micros);
-        self.gpu_encode.gpu_encode_hardware_micros = self
-            .gpu_encode
-            .gpu_encode_hardware_micros
-            .saturating_add(other.gpu_encode.gpu_encode_hardware_micros);
-        self.gpu_encode.gpu_encode_dispatch_overhead_micros = self
-            .gpu_encode
-            .gpu_encode_dispatch_overhead_micros
-            .saturating_add(other.gpu_encode.gpu_encode_dispatch_overhead_micros);
-        self.gpu_encode.gpu_encode_plan_micros = self
-            .gpu_encode
-            .gpu_encode_plan_micros
-            .saturating_add(other.gpu_encode.gpu_encode_plan_micros);
-        self.gpu_encode.gpu_encode_prepare_submit_micros = self
-            .gpu_encode
-            .gpu_encode_prepare_submit_micros
-            .saturating_add(other.gpu_encode.gpu_encode_prepare_submit_micros);
-        self.gpu_encode.gpu_encode_ht_table_build_micros = self
-            .gpu_encode
-            .gpu_encode_ht_table_build_micros
-            .saturating_add(other.gpu_encode.gpu_encode_ht_table_build_micros);
-        self.gpu_encode.gpu_encode_ht_buffer_allocation_micros = self
-            .gpu_encode
-            .gpu_encode_ht_buffer_allocation_micros
-            .saturating_add(other.gpu_encode.gpu_encode_ht_buffer_allocation_micros);
-        self.gpu_encode.gpu_encode_ht_command_encode_micros = self
-            .gpu_encode
-            .gpu_encode_ht_command_encode_micros
-            .saturating_add(other.gpu_encode.gpu_encode_ht_command_encode_micros);
-        self.gpu_encode.gpu_encode_codestream_wait_micros = self
-            .gpu_encode
-            .gpu_encode_codestream_wait_micros
-            .saturating_add(other.gpu_encode.gpu_encode_codestream_wait_micros);
-        self.gpu_encode.gpu_encode_chunk_count = self
-            .gpu_encode
-            .gpu_encode_chunk_count
-            .saturating_add(other.gpu_encode.gpu_encode_chunk_count);
-        self.gpu_encode.gpu_encode_tile_count = self
-            .gpu_encode
-            .gpu_encode_tile_count
-            .saturating_add(other.gpu_encode.gpu_encode_tile_count);
-        self.gpu_encode.gpu_encode_code_block_count = self
-            .gpu_encode
-            .gpu_encode_code_block_count
-            .saturating_add(other.gpu_encode.gpu_encode_code_block_count);
-        self.gpu_encode.gpu_pipeline_depth = self
-            .gpu_encode
-            .gpu_pipeline_depth
-            .max(other.gpu_encode.gpu_pipeline_depth);
-        self.gpu_encode.gpu_row_batch_rows_max = self
-            .gpu_encode
-            .gpu_row_batch_rows_max
-            .max(other.gpu_encode.gpu_row_batch_rows_max);
-        self.gpu_encode.gpu_row_batch_target_tiles = self
-            .gpu_encode
-            .gpu_row_batch_target_tiles
-            .max(other.gpu_encode.gpu_row_batch_target_tiles);
-        self.timings.streaming_write_micros = self
-            .timings
-            .streaming_write_micros
-            .saturating_add(other.timings.streaming_write_micros);
-        self.timings.pixel_data_patch_micros = self
-            .timings
-            .pixel_data_patch_micros
-            .saturating_add(other.timings.pixel_data_patch_micros);
-        self.timings.writer_backpressure_micros = self
-            .timings
-            .writer_backpressure_micros
-            .saturating_add(other.timings.writer_backpressure_micros);
-        self.timings.write_micros = self
-            .timings
-            .write_micros
-            .saturating_add(other.timings.write_micros);
+        saturating_add_fields!(
+            self.timings,
+            other.timings,
+            [
+                input_decode_micros,
+                compose_micros,
+                encode_micros,
+                validation_micros,
+                gpu_dispatch_micros,
+                streaming_write_micros,
+                pixel_data_patch_micros,
+                writer_backpressure_micros,
+                write_micros,
+            ]
+        );
+        saturating_add_fields!(
+            self.gpu_encode,
+            other.gpu_encode,
+            [
+                gpu_encode_wall_micros,
+                gpu_encode_hardware_micros,
+                gpu_encode_dispatch_overhead_micros,
+                gpu_encode_plan_micros,
+                gpu_encode_prepare_submit_micros,
+                gpu_encode_ht_table_build_micros,
+                gpu_encode_ht_buffer_allocation_micros,
+                gpu_encode_ht_command_encode_micros,
+                gpu_encode_codestream_wait_micros,
+                gpu_encode_chunk_count,
+                gpu_encode_tile_count,
+                gpu_encode_code_block_count,
+            ]
+        );
+        max_fields!(
+            self.gpu_encode,
+            other.gpu_encode,
+            [
+                gpu_encode_configured_inflight_tiles,
+                gpu_encode_effective_inflight_tiles,
+                gpu_encode_max_observed_inflight_tiles,
+                gpu_encode_configured_memory_mib,
+                gpu_encode_effective_memory_mib,
+                gpu_pipeline_depth,
+                gpu_row_batch_rows_max,
+                gpu_row_batch_target_tiles,
+            ]
+        );
     }
 
     pub(crate) fn record_cpu_input(&mut self) {
@@ -1276,14 +1112,6 @@ impl ExportMetrics {
     }
 }
 
-/// Convert a duration into report microseconds, rounding positive sub-microsecond work up to one.
-pub fn duration_as_reported_micros(duration: Duration) -> u128 {
-    match duration.as_micros() {
-        0 if duration > Duration::ZERO => 1,
-        micros => micros,
-    }
-}
-
 fn increment_u64(value: &mut u64) {
     *value = value.saturating_add(1);
 }
@@ -1295,22 +1123,12 @@ fn add_duration_micros(value: &mut u128, duration: Duration) {
 #[cfg(test)]
 mod tests {
     use super::{
-        duration_as_reported_micros, ExportMetrics, GpuEncodeMetrics, JpegDirectHtj2kMetrics,
-        JpegRetileRejectionReason, RouteCounters,
+        ExportMetrics, GpuEncodeMetrics, JpegDirectHtj2kMetrics, JpegRetileRejectionReason,
+        RouteCounters, WriteTimings,
     };
     use crate::tile::PixelProfile;
     use j2k_transcode::TranscodeTimingReport;
     use std::time::Duration;
-
-    #[test]
-    fn duration_as_reported_micros_preserves_zero_duration() {
-        assert_eq!(duration_as_reported_micros(Duration::ZERO), 0);
-    }
-
-    #[test]
-    fn duration_as_reported_micros_rounds_submicrosecond_work_up_to_one() {
-        assert_eq!(duration_as_reported_micros(Duration::from_nanos(1)), 1);
-    }
 
     #[test]
     fn dicom_export_metrics_serializes_stable_public_fields() {
@@ -1355,6 +1173,186 @@ mod tests {
                 .len(),
             ExportMetrics::SERIALIZED_FIELD_COUNT
         );
+    }
+
+    #[test]
+    fn metrics_aggregation_saturates_counters_and_preserves_configuration_maxima() {
+        let mut aggregate = ExportMetrics {
+            routes: RouteCounters {
+                total_frames: u64::MAX,
+                jpeg_retile_frames: 2,
+                ..RouteCounters::default()
+            },
+            jpeg_direct_htj2k: JpegDirectHtj2kMetrics {
+                jpeg_direct_htj2k_53_frames: 3,
+                ..JpegDirectHtj2kMetrics::default()
+            },
+            gpu_encode: GpuEncodeMetrics {
+                gpu_encode_configured_inflight_tiles: 8,
+                gpu_encode_wall_micros: 5,
+                ..GpuEncodeMetrics::default()
+            },
+            ..ExportMetrics::default()
+        };
+        let mut next = ExportMetrics {
+            routes: RouteCounters {
+                total_frames: 1,
+                jpeg_retile_frames: 7,
+                ..RouteCounters::default()
+            },
+            jpeg_direct_htj2k: JpegDirectHtj2kMetrics {
+                jpeg_direct_htj2k_53_frames: 11,
+                ..JpegDirectHtj2kMetrics::default()
+            },
+            gpu_encode: GpuEncodeMetrics {
+                gpu_encode_configured_inflight_tiles: 4,
+                gpu_encode_effective_memory_mib: 32,
+                gpu_encode_wall_micros: 13,
+                ..GpuEncodeMetrics::default()
+            },
+            ..ExportMetrics::default()
+        };
+        next.timings.write_micros = 17;
+
+        aggregate.add_assign(next);
+
+        assert_eq!(aggregate.routes.total_frames, u64::MAX);
+        assert_eq!(aggregate.routes.jpeg_retile_frames, 9);
+        assert_eq!(aggregate.jpeg_direct_htj2k.jpeg_direct_htj2k_53_frames, 14);
+        assert_eq!(aggregate.timings.write_micros, 17);
+        assert_eq!(aggregate.gpu_encode.gpu_encode_wall_micros, 18);
+        assert_eq!(aggregate.gpu_encode.gpu_encode_configured_inflight_tiles, 8);
+        assert_eq!(aggregate.gpu_encode.gpu_encode_effective_memory_mib, 32);
+    }
+
+    fn fully_populated_metrics() -> ExportMetrics {
+        ExportMetrics {
+            routes: RouteCounters {
+                total_frames: 1,
+                cpu_input_frames: 1,
+                gpu_input_decode_frames: 1,
+                gpu_encode_frames: 1,
+                gpu_validation_frames: 1,
+                gray_frames: 1,
+                rgb_like_frames: 1,
+                other_component_frames: 1,
+                unknown_pixel_profile_frames: 1,
+                bits8_frames: 1,
+                bits16_frames: 1,
+                other_bit_depth_frames: 1,
+                gpu_transcode_frames: 1,
+                resident_gpu_transcode_frames: 1,
+                partial_gpu_transcode_frames: 1,
+                gpu_input_decode_batches: 1,
+                gpu_compose_batches: 1,
+                gpu_encode_batches: 1,
+                auto_route_probe_frames: 1,
+                auto_route_probe_gpu_batches: 1,
+                auto_route_probe_cpu_micros: 1,
+                auto_route_probe_gpu_micros: 1,
+                auto_route_probe_selected_gpu_input_frames: 1,
+                cpu_fallback_frames: 1,
+                jpeg_passthrough_frames: 1,
+                j2k_passthrough_frames: 1,
+                j2k_direct_htj2k_frames: 1,
+                jpeg_retile_frames: 1,
+                jpeg_retile_rejected_frames: 1,
+                jpeg_retile_source_unsupported_frames: 1,
+                jpeg_retile_geometry_mismatch_frames: 1,
+                jpeg_retile_profile_unsupported_frames: 1,
+                jpeg_retile_mcu_invalid_frames: 1,
+                jpeg_retile_us: 1,
+                jpeg_retile_to_htj2k_53_frames: 1,
+                jpeg_cpu_encode_frames: 1,
+                jpeg_metal_encode_frames: 1,
+                jpeg_decode_fallback_frames: 1,
+            },
+            jpeg_direct_htj2k: JpegDirectHtj2kMetrics {
+                jpeg_direct_htj2k_53_frames: 1,
+                jpeg_direct_htj2k_97_frames: 1,
+                jpeg_direct_htj2k_rejected_frames: 1,
+                jpeg_direct_htj2k_extract_micros: 1,
+                jpeg_direct_htj2k_repack_micros: 1,
+                jpeg_direct_htj2k_transform_micros: 1,
+                jpeg_direct_htj2k_accelerator_micros: 1,
+                jpeg_direct_htj2k_cpu_fallback_micros: 1,
+                jpeg_direct_htj2k_dwt_decompose_micros: 1,
+                jpeg_direct_htj2k_dwt97_pack_upload_micros: 1,
+                jpeg_direct_htj2k_dwt97_idct_row_lift_micros: 1,
+                jpeg_direct_htj2k_dwt97_column_lift_micros: 1,
+                jpeg_direct_htj2k_dwt97_quantize_codeblock_micros: 1,
+                jpeg_direct_htj2k_dwt97_ht_encode_micros: 1,
+                jpeg_direct_htj2k_dwt97_ht_kernel_micros: 1,
+                jpeg_direct_htj2k_dwt97_ht_status_readback_micros: 1,
+                jpeg_direct_htj2k_dwt97_ht_compact_micros: 1,
+                jpeg_direct_htj2k_dwt97_ht_output_readback_micros: 1,
+                jpeg_direct_htj2k_dwt97_ht_codeblock_dispatches: 1,
+                jpeg_direct_htj2k_dwt97_readback_micros: 1,
+                jpeg_direct_htj2k_htj2k_encode_micros: 1,
+                jpeg_direct_htj2k_encode_accelerator_dispatches: 1,
+                jpeg_direct_htj2k_encode_ht_code_block_dispatches: 1,
+                jpeg_direct_htj2k_encode_packetization_dispatches: 1,
+                jpeg_direct_htj2k_batch_count: 1,
+                jpeg_direct_htj2k_batch_jobs: 1,
+                jpeg_direct_htj2k_accelerator_attempts: 1,
+                jpeg_direct_htj2k_accelerator_jobs: 1,
+                jpeg_direct_htj2k_accelerator_dispatches: 1,
+                jpeg_direct_htj2k_accelerator_dispatched_jobs: 1,
+                jpeg_direct_htj2k_cpu_fallback_jobs: 1,
+            },
+            gpu_encode: GpuEncodeMetrics {
+                gpu_encode_configured_inflight_tiles: 1,
+                gpu_encode_effective_inflight_tiles: 1,
+                gpu_encode_max_observed_inflight_tiles: 1,
+                gpu_encode_configured_memory_mib: 1,
+                gpu_encode_effective_memory_mib: 1,
+                gpu_encode_wall_micros: 1,
+                gpu_encode_hardware_micros: 1,
+                gpu_encode_dispatch_overhead_micros: 1,
+                gpu_encode_plan_micros: 1,
+                gpu_encode_prepare_submit_micros: 1,
+                gpu_encode_ht_table_build_micros: 1,
+                gpu_encode_ht_buffer_allocation_micros: 1,
+                gpu_encode_ht_command_encode_micros: 1,
+                gpu_encode_codestream_wait_micros: 1,
+                gpu_encode_chunk_count: 1,
+                gpu_encode_tile_count: 1,
+                gpu_encode_code_block_count: 1,
+                gpu_pipeline_depth: 1,
+                gpu_row_batch_rows_max: 1,
+                gpu_row_batch_target_tiles: 1,
+            },
+            timings: WriteTimings {
+                input_decode_micros: 1,
+                compose_micros: 1,
+                encode_micros: 1,
+                validation_micros: 1,
+                gpu_dispatch_micros: 1,
+                streaming_write_micros: 1,
+                pixel_data_patch_micros: 1,
+                writer_backpressure_micros: 1,
+                write_micros: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn every_serialized_metric_field_has_aggregation_behavior() {
+        let mut aggregate = ExportMetrics::default();
+
+        aggregate.add_assign(fully_populated_metrics());
+
+        let aggregated = serde_json::to_value(aggregate).expect("serialize aggregate metrics");
+        for (field, value) in aggregated
+            .as_object()
+            .expect("metrics serialize as a flat object")
+        {
+            assert_eq!(
+                value.as_f64(),
+                Some(1.0),
+                "serialized metric `{field}` was not aggregated"
+            );
+        }
     }
 
     #[test]

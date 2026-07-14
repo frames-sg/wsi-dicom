@@ -1,3 +1,6 @@
+use std::io::Read;
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
@@ -240,6 +243,40 @@ pub enum MetadataSource {
 }
 
 impl MetadataSource {
+    /// Read a bounded JSON file and map it into FHIR R4 or strict DICOM metadata.
+    pub fn from_json_file(path: impl AsRef<Path>) -> Result<Self, Error> {
+        let path = path.as_ref();
+        let file = std::fs::File::open(path).map_err(|source| Error::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let mut limited = file.take(METADATA_JSON_MAX_BYTES.saturating_add(1));
+        let mut bytes = Vec::new();
+        limited
+            .read_to_end(&mut bytes)
+            .map_err(|source| Error::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > METADATA_JSON_MAX_BYTES {
+            return Err(Error::Metadata {
+                reason: format!(
+                    "metadata JSON {} exceeds {} byte limit",
+                    path.display(),
+                    METADATA_JSON_MAX_BYTES
+                ),
+            });
+        }
+        let value = serde_json::from_slice(&bytes).map_err(|source| Error::Json {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        Self::from_json_value(value).map_err(|source| Error::Json {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
+
     /// Map metadata JSON into either FHIR R4 or strict DICOM metadata input.
     pub fn from_json_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
         if metadata_json_is_supported_fhir(&value) {
@@ -767,7 +804,24 @@ fn is_disallowed_text_control(ch: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{DicomMetadata, MetadataSource};
+    use super::{DicomMetadata, MetadataSource, METADATA_JSON_MAX_BYTES};
+
+    #[test]
+    fn metadata_source_from_json_file_reads_valid_input_and_rejects_oversize_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let valid = directory.path().join("metadata.json");
+        std::fs::write(&valid, br#"{"patient_id":"P-1","patient_name":"DOE^JANE"}"#).unwrap();
+        assert!(matches!(
+            MetadataSource::from_json_file(&valid).unwrap(),
+            MetadataSource::Strict(_)
+        ));
+
+        let oversized = directory.path().join("oversized.json");
+        let file = std::fs::File::create(&oversized).unwrap();
+        file.set_len(METADATA_JSON_MAX_BYTES + 1).unwrap();
+        let error = MetadataSource::from_json_file(&oversized).unwrap_err();
+        assert!(error.to_string().contains("exceeds"));
+    }
 
     #[test]
     fn metadata_source_from_json_value_detects_supported_fhir_resources() {

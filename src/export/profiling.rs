@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use crate::error::Error;
-use crate::report::duration_as_reported_micros;
+use crate::time::duration_as_reported_micros;
 
 #[derive(Clone, Copy)]
 pub(super) struct RouteLevelDeadline {

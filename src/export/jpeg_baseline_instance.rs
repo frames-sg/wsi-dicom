@@ -1,46 +1,35 @@
 use super::*;
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn export_jpeg_passthrough_instance(
     slide: &Slide,
     request: &ExportRequest,
     metadata: &DicomMetadata,
-    study_uid: &str,
+    identity: &DicomExportIdentity,
     instance_number: u32,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
+    coordinate: InstanceCoordinate,
     level: &wsi_rs::Level,
 ) -> Result<InstanceReport, Error> {
     let tile_size = request.options.tile_size;
     let (matrix_columns, matrix_rows) = level.dimensions;
-    let location = JpegBaselineFrameLocation {
-        scene_idx,
-        series_idx,
-        level_idx,
-        z,
-        c,
-        t,
-    };
+    let location = coordinate;
     let geometry = jpeg_baseline_route_frame_geometry(slide, level, location, tile_size)?;
     let (tiles_across, tiles_down) = (geometry.tiles_across, geometry.tiles_down);
     let (frame_columns, frame_rows) = (geometry.frame_columns, geometry.frame_rows);
     let frame_count = checked_frame_count_u32(tiles_across, tiles_down)?;
     let context = DicomInstanceContext::new(
-        &request.source_path,
+        identity,
         &request.output_dir,
         require_pixel_spacing_mm(level_pixel_spacing_mm(slide, level))?,
-        scene_idx,
-        series_idx,
-        level_idx,
-        z,
-        c,
-        t,
-    );
-    let icc_profile = resolve_icc_profile(slide, request, scene_idx, series_idx, level_idx, level)?;
+        coordinate,
+    )?;
+    let icc_profile = resolve_icc_profile(
+        slide,
+        request,
+        coordinate.scene_idx,
+        coordinate.series_idx,
+        coordinate.level_idx,
+        level,
+    )?;
 
     if let Some(direct_frames) =
         try_plan_direct_jpeg_passthrough_frames(slide, location, level, geometry)?
@@ -69,7 +58,7 @@ pub(super) fn export_jpeg_passthrough_instance(
         let offsets = pixel_data_offsets_from_lengths(&lengths)?;
         let object = context.build_dicom_object(InstanceDicomObjectParams {
             metadata,
-            study_uid,
+            study_uid: identity.study_uid(),
             instance_number,
             frame_grid: FrameGrid {
                 frame_columns,
@@ -282,7 +271,7 @@ pub(super) fn export_jpeg_passthrough_instance(
                             JpegBackend::Cpu | JpegBackend::Auto => {
                                 metrics.record_jpeg_cpu_encode(encode_duration);
                             }
-                            JpegBackend::Metal | JpegBackend::Cuda => {}
+                            JpegBackend::Metal => {}
                         }
                     }
                 }
@@ -295,7 +284,7 @@ pub(super) fn export_jpeg_passthrough_instance(
     })?;
     let object = context.build_dicom_object(InstanceDicomObjectParams {
         metadata,
-        study_uid,
+        study_uid: identity.study_uid(),
         instance_number,
         frame_grid: FrameGrid {
             frame_columns,

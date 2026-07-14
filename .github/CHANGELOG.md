@@ -9,7 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-11
+
 ### Changed
+
+- Prepared the first public release after `0.2.0`. Versions `0.3.0` through
+  `0.6.0` were unpublished development lines whose changes are consolidated
+  into `0.7.0`.
+- Generated UIDs are fresh by default; deterministic content/configuration
+  identity is now an explicit opt-in.
+- Instance filenames now include scene, series, level, Z, channel, and time.
+- Export requests now stage and atomically commit the complete generation,
+  restoring overwritten files if any commit step fails.
 
 - Export metadata is now explicit. CLI, GUI, `Export`, and `ExportRequest::new`
   require either caller-provided metadata JSON/FHIR input or an explicit
@@ -29,15 +40,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- SOP Instance UID generation now includes the timepoint axis so otherwise
-  identical `t` contexts produce distinct UIDs and output paths.
+- Instance identity and paths now include scene, series, level, Z, channel, and
+  time coordinates; synthetic multi-scene/multi-series export coverage prevents
+  cross-instance collisions.
+- External validation now assembles multi-fragment frames from Basic or Extended
+  Offset Tables, verifies bounded decoder output geometry and payload size, and
+  terminates timed-out process trees.
+- Persistent route-cache and export-lock writes reject symlink destinations and
+  use durable same-filesystem replacement.
 
 ### Removed
 
 - Removed standalone `docs/*.md` files and consolidated public guidance into a
   shorter README.
 
-## [0.4.0] - 2026-06-09
+### Changes carried forward from the unpublished 0.4 development line
 
 ### Added
 
@@ -53,10 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Bumped the crate to `0.4.0`; `0.3.0` was an unpublished in-repository
-  development version.
-- Relaxed exact `j2k` and `wsi-rs` dependency pins to compatible
-  published release requirements while preserving the current lockfile graph.
+- Used `0.3.0` through `0.6.0` only as unpublished in-repository development
+  versions before consolidating the release at `0.7.0`.
+- Pinned the coordinated `j2k` and `wsi-rs` dependency lines exactly so the
+  pre-1.0 codec/reader graph cannot drift across incompatible APIs.
 - Profile and route coverage metrics no longer report synthetic DICOM write
   duration for code paths that do not write DICOM files.
 - Removed dead placeholder facade modules while preserving the public crate
@@ -141,7 +158,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Made DICOM doctor probes execute lightweight tool commands and gated staged
   dicom3tools lookup behind debug builds or explicit opt-in.
 
-## [0.3.0] - 2026-05-27
+### Changes carried forward from the unpublished 0.3 development line
 
 ### Added
 
@@ -199,8 +216,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation, and JPEG 2000 / HTJ2K frame encoding primitives.
 - Added passthrough-first planning for compatible compressed WSI source frames.
 
-[Unreleased]: https://github.com/frames-sg/wsi-dicom/compare/v0.4.0...HEAD
-[0.4.0]: https://github.com/frames-sg/wsi-dicom/compare/v0.2.0...v0.4.0
-[0.3.0]: https://github.com/frames-sg/wsi-dicom/compare/v0.2.0...v0.3.0
+[Unreleased]: https://github.com/frames-sg/wsi-dicom/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/frames-sg/wsi-dicom/compare/v0.2.0...v0.7.0
 [0.2.0]: https://github.com/frames-sg/wsi-dicom/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/frames-sg/wsi-dicom/releases/tag/v0.1.0

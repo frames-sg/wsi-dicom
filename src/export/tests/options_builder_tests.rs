@@ -1,4 +1,5 @@
 use super::*;
+use crate::UidPolicy;
 
 #[test]
 fn default_options_use_htj2k_lossless_rpcl_and_auto_backend() {
@@ -343,6 +344,7 @@ fn dicom_export_builder_with_options_preserves_explicit_option_fields() {
         jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossless53,
         jpeg_quality: 80,
         icc_profile_policy: IccProfilePolicy::FallbackSrgb,
+        uid_policy: UidPolicy::Deterministic,
         encode_backend: EncodeBackendPreference::CpuOnly,
         codec_validation: CodecValidation::RoundTrip,
         source_device_decode: true,

@@ -36,6 +36,12 @@ pub enum Error {
         /// Underlying open error message.
         message: String,
     },
+    /// DICOM export identity generation failed.
+    #[error("failed to generate DICOM export identity: {reason}")]
+    Identity {
+        /// Human-readable identity generation failure.
+        reason: String,
+    },
     /// The source slide failed while reading pixels or metadata.
     #[error("slide read failed: {message}")]
     SlideRead {
@@ -91,6 +97,14 @@ pub enum Error {
     JsonSerialize {
         /// Serialization error message.
         message: String,
+    },
+    /// A staged export could not be committed or rolled back completely.
+    #[error("export transaction requires recovery at {recovery_path}: {reason}")]
+    ExportTransaction {
+        /// Directory containing the durable manifest, staged files, and backups.
+        recovery_path: PathBuf,
+        /// Human-readable commit or rollback failure details.
+        reason: String,
     },
     /// External DICOM validation failed.
     #[error("DICOM validation failed: {reason}")]

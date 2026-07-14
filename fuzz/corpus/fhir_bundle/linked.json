@@ -1,0 +1,1 @@
+{"resourceType":"Bundle","entry":[{"resource":{"resourceType":"DiagnosticReport","id":"r","subject":{"reference":"Patient/p"},"specimen":[{"reference":"Specimen/s"}],"basedOn":[{"reference":"ServiceRequest/o"}]}},{"resource":{"resourceType":"Patient","id":"p"}},{"resource":{"resourceType":"Specimen","id":"s"}},{"resource":{"resourceType":"ServiceRequest","id":"o"}}]}
