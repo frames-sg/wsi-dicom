@@ -16,14 +16,15 @@ fn rgb8_tile(width: u32, height: u32) -> CpuTile {
             data.push((x.wrapping_mul(7) ^ y.wrapping_mul(43)) as u8);
         }
     }
-    CpuTile {
+    CpuTile::new(
         width,
         height,
-        channels: 3,
-        color_space: ColorSpace::Rgb,
-        layout: CpuTileLayout::Interleaved,
-        data: CpuTileData::u8(data),
-    }
+        3,
+        ColorSpace::Rgb,
+        CpuTileLayout::Interleaved,
+        CpuTileData::u8(data),
+    )
+    .expect("benchmark RGB tile dimensions and data agree")
 }
 
 fn bench_prepare_tile_samples(c: &mut Criterion) {

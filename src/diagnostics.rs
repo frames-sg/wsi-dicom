@@ -138,7 +138,14 @@ impl SelfTestWorkspace {
 impl Drop for SelfTestWorkspace {
     fn drop(&mut self) {
         if self.cleanup {
-            let _ = std::fs::remove_dir_all(&self.path);
+            if let Err(err) = std::fs::remove_dir_all(&self.path) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!(
+                        "wsi-dicom: failed to remove self-test workspace {}: {err}",
+                        self.path.display()
+                    );
+                }
+            }
         }
     }
 }

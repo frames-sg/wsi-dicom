@@ -53,7 +53,7 @@ fn export_rs_line_budget_ratchets_down() {
         .count();
 
     assert!(
-        nonblank_lines <= 3_300,
+        nonblank_lines <= 2_950,
         "src/export.rs must keep shrinking as route/default/passthrough modules take ownership; found {nonblank_lines} nonblank lines"
     );
 
@@ -69,6 +69,34 @@ fn export_rs_line_budget_ratchets_down() {
         nonblank_lines <= 650,
         "src/export/metal_row_batch.rs must stay focused on row-batch orchestration; found {nonblank_lines} nonblank lines"
     );
+}
+
+#[test]
+fn large_source_module_line_budgets_do_not_regress() {
+    if !in_source_checkout() {
+        return;
+    }
+
+    // These are regression ceilings, not targets. Focused ownership and tests
+    // still take precedence over compressing code merely to satisfy a count.
+    for (relative_path, ceiling) in [
+        ("src/writer.rs", 2_650),
+        ("src/validation.rs", 2_400),
+        ("src/main.rs", 2_100),
+        ("src/report.rs", 1_500),
+    ] {
+        let path = crate_root().join(relative_path);
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        let nonblank_lines = source
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count();
+        assert!(
+            nonblank_lines <= ceiling,
+            "{relative_path} exceeded its structural regression ceiling of {ceiling} nonblank lines; found {nonblank_lines}"
+        );
+    }
 }
 
 #[test]
@@ -157,36 +185,38 @@ fn lockfile_package_name_count(lockfile: &str, package: &str) -> usize {
 }
 
 #[test]
-fn manifest_uses_renamed_local_codec_dependencies() {
+fn dependency_topology_policy_is_cargo_independent_and_wired_into_ci() {
     if !in_source_checkout() {
         return;
     }
 
+    let policy_test = crate_root().join("tests/test_dependency_topology.py");
+    let ci = fs::read_to_string(crate_root().join(".github/workflows/ci.yml"))
+        .expect("read CI workflow");
     let manifest = fs::read_to_string(crate_root().join("Cargo.toml")).expect("read Cargo.toml");
+
+    assert!(
+        policy_test.is_file(),
+        "Cargo-independent dependency topology policy test must exist"
+    );
+    assert!(
+        ci.contains("python -m unittest discover -s tests -p 'test_dependency_topology.py'"),
+        "CI must run the Cargo-independent dependency topology policy test"
+    );
+    assert!(
+        !manifest.contains("../j2k/") && !manifest.contains("[patch."),
+        "root manifest must not redirect j2k packages to sibling checkouts"
+    );
+}
+
+#[test]
+fn ci_uses_current_repository_layout_and_names() {
+    if !in_source_checkout() {
+        return;
+    }
+
     let workflow =
         fs::read_to_string(crate_root().join(".github/workflows/ci.yml")).expect("read CI");
-
-    assert_eq!(
-        manifest_patch_crates(&manifest),
-        LOCAL_J2K_PATCHES,
-        "Cargo.toml must patch crates.io j2k crates only to the local checkout"
-    );
-
-    for required in [
-        r#"j2k-core = { path = "../j2k/crates/j2k-core", version = "=0.6.2" }"#,
-        r#"j2k = { path = "../j2k/crates/j2k", version = "=0.6.2" }"#,
-        r#"j2k-metal = { path = "../j2k/crates/j2k-metal", version = "=0.6.2", optional = true }"#,
-        r#"j2k-jpeg = { path = "../j2k/crates/j2k-jpeg", version = "=0.6.2" }"#,
-        r#"j2k-jpeg-metal = { path = "../j2k/crates/j2k-jpeg-metal", version = "=0.6.2", optional = true }"#,
-        r#"j2k-transcode = { path = "../j2k/crates/j2k-transcode", version = "=0.6.2" }"#,
-        r#"j2k-transcode-metal = { path = "../j2k/crates/j2k-transcode-metal", version = "=0.6.2", optional = true }"#,
-        r#"wsi-rs = { path = "../wsi-rs", version = "=0.5.0" }"#,
-    ] {
-        assert!(
-            manifest.contains(required),
-            "Cargo.toml must retain renamed local dependency `{required}`"
-        );
-    }
 
     for required in [
         "path: wsi-dicom",
@@ -206,65 +236,28 @@ fn manifest_uses_renamed_local_codec_dependencies() {
             legacy_name.to_owned(),
         ] {
             assert!(
-                !workflow.contains(&forbidden) && !manifest.contains(&forbidden),
-                "CI and manifest must not reference legacy crate metadata; found `{forbidden}`"
+                !workflow.contains(&forbidden),
+                "CI must not reference legacy crate metadata; found `{forbidden}`"
             );
         }
     }
 }
 
 #[test]
-fn manifest_does_not_use_legacy_vendor_patch_table() {
+fn manifests_do_not_patch_registry_crates_to_sibling_checkouts() {
     let manifest = fs::read_to_string(crate_root().join("Cargo.toml")).expect("read Cargo.toml");
+    let fuzz_manifest =
+        fs::read_to_string(crate_root().join("fuzz/Cargo.toml")).expect("read fuzz manifest");
 
-    assert_eq!(
-        manifest_patch_crates(&manifest),
-        LOCAL_J2K_PATCHES,
-        "Cargo.toml must use only local j2k patches, not legacy vendored patch crates"
-    );
-    assert!(
-        !manifest.contains("vendor/metal-0.33-patches"),
-        "Cargo.toml must not depend on the legacy vendored patch tree"
-    );
-}
-
-fn manifest_patch_crates(manifest: &str) -> Vec<&str> {
-    let mut patches = Vec::new();
-    let mut in_patch_crates_io = false;
-
-    for line in manifest.lines().map(str::trim) {
-        if line.starts_with("[patch.") && line != "[patch.crates-io]" {
-            patches.push(line);
-            continue;
-        }
-        if line.starts_with('[') {
-            in_patch_crates_io = line == "[patch.crates-io]";
-            continue;
-        }
-        if in_patch_crates_io && !line.is_empty() && !line.starts_with('#') {
-            patches.push(line);
+    for (name, source) in [("Cargo.toml", manifest), ("fuzz/Cargo.toml", fuzz_manifest)] {
+        for forbidden in ["[patch.", "../j2k/", "vendor/metal-0.33-patches"] {
+            assert!(
+                !source.contains(forbidden),
+                "{name} must not redirect registry codecs through `{forbidden}`"
+            );
         }
     }
-
-    patches
 }
-
-const LOCAL_J2K_PATCHES: &[&str] = &[
-    r#"j2k = { path = "../j2k/crates/j2k" }"#,
-    r#"j2k-core = { path = "../j2k/crates/j2k-core" }"#,
-    r#"j2k-cuda = { path = "../j2k/crates/j2k-cuda" }"#,
-    r#"j2k-cuda-runtime = { path = "../j2k/crates/j2k-cuda-runtime" }"#,
-    r#"j2k-jpeg = { path = "../j2k/crates/j2k-jpeg" }"#,
-    r#"j2k-jpeg-metal = { path = "../j2k/crates/j2k-jpeg-metal" }"#,
-    r#"j2k-metal = { path = "../j2k/crates/j2k-metal" }"#,
-    r#"j2k-metal-support = { path = "../j2k/crates/j2k-metal-support" }"#,
-    r#"j2k-native = { path = "../j2k/crates/j2k-native" }"#,
-    r#"j2k-profile = { path = "../j2k/crates/j2k-profile" }"#,
-    r#"j2k-tilecodec = { path = "../j2k/crates/j2k-tilecodec" }"#,
-    r#"j2k-transcode = { path = "../j2k/crates/j2k-transcode" }"#,
-    r#"j2k-transcode-metal = { path = "../j2k/crates/j2k-transcode-metal" }"#,
-    r#"j2k-types = { path = "../j2k/crates/j2k-types" }"#,
-];
 
 #[test]
 fn jpeg_dependencies_are_limited_to_j2k_crates() {
@@ -518,11 +511,11 @@ fn pre_1_0_release_gates_are_documented_and_automated() {
     let workflow =
         fs::read_to_string(crate_root().join(".github/workflows/ci.yml")).expect("read CI");
     for required in [
-        "cargo rustdoc --lib --no-default-features -- -D missing_docs",
-        "cargo llvm-cov --package wsi-dicom --lib --bins --tests --no-default-features --summary-only --fail-under-lines 80",
-        "cargo semver-checks check-release",
-        "cargo check --features cuda --lib",
-        "cargo check --features metal --lib",
+        "cargo rustdoc --lib --no-default-features --locked -- -D missing_docs",
+        "cargo llvm-cov --package wsi-dicom --lib --bins --tests --no-default-features --locked --summary-only --fail-under-lines 80",
+        "scripts/check-semver.sh",
+        "cargo check --features cuda --lib --locked",
+        "cargo check --features metal --lib --locked",
     ] {
         assert!(
             workflow.contains(required),
@@ -544,8 +537,7 @@ fn pre_1_0_release_gates_are_documented_and_automated() {
         "\"llvm-cov\"",
         "\"--fail-under-lines\"",
         "\"80\"",
-        "\"semver-checks\"",
-        "\"check-release\"",
+        "\"scripts/check-semver.sh\"",
     ] {
         assert!(
             xtask.contains(required),
@@ -625,10 +617,11 @@ fn release_hygiene_files_are_present_and_current() {
     let changelog =
         fs::read_to_string(crate_root().join(".github/CHANGELOG.md")).expect("read changelog");
     for required in [
-        "## [0.4.0]",
-        "## [0.3.0]",
+        "## [0.7.0]",
         "## [0.2.0]",
         "## [0.1.0]",
+        "Versions `0.3.0` through",
+        "unpublished development lines",
         "DICOM VL Whole Slide Microscopy",
     ] {
         assert!(
@@ -653,9 +646,9 @@ fn ci_checks_workspace_and_gui_app_without_deleted_validation_bench() {
         fs::read_to_string(crate_root().join(".github/workflows/ci.yml")).expect("read CI");
 
     for required in [
-        "cargo clippy --workspace --no-default-features --all-targets -- -D warnings",
-        "cargo test --workspace --no-default-features --all-targets",
-        "cargo check -p wsi-dicom-gui",
+        "cargo clippy --workspace --no-default-features --all-targets --locked -- -D warnings",
+        "cargo test --workspace --no-default-features --all-targets --locked",
+        "cargo check -p wsi-dicom-gui --locked",
     ] {
         assert!(
             workflow.contains(required),
@@ -756,32 +749,54 @@ fn root_and_docs_do_not_accumulate_markdown_bloat() {
 }
 
 #[test]
-fn crates_io_publish_path_is_explicit() {
+fn crates_io_publish_path_is_oidc_scoped() {
     if !in_source_checkout() {
         return;
     }
 
     let workflow = fs::read_to_string(crate_root().join(".github/workflows/publish.yml"))
         .expect("read publish workflow");
+    let ci = fs::read_to_string(crate_root().join(".github/workflows/ci.yml"))
+        .expect("read CI workflow");
     let script = fs::read_to_string(crate_root().join("scripts/publish-crate.sh"))
         .expect("read publish script");
+    let policy_test = crate_root().join("tests/test_publish_workflow.py");
 
     assert!(
-        workflow.contains("scripts/publish-crate.sh"),
-        "publish workflow must call the checked-in publish script"
+        policy_test.is_file(),
+        "Cargo-independent publish workflow policy test must exist"
     );
     assert!(
-        workflow.contains("CRATES_IO_API_TOKEN"),
-        "publish workflow must require the crates.io token secret"
+        ci.contains("python -m unittest discover -s tests -p 'test_publish_workflow.py'"),
+        "CI must run the Cargo-independent publish workflow policy test"
     );
     for required in [
-        "cargo publish --dry-run",
-        "cargo info \"${crate}@${version}\"",
-        "cargo publish",
+        "workflow_dispatch:",
+        "environment: crates-io",
+        "id-token: write",
     ] {
         assert!(
+            workflow.contains(required),
+            "publish workflow must include `{required}`"
+        );
+    }
+    assert_eq!(
+        workflow.matches("id-token: write").count(),
+        1,
+        "only the protected publish job may request an OIDC token"
+    );
+    assert!(
+        workflow.contains("rust-lang/crates-io-auth-action@"),
+        "publish workflow must use crates.io trusted publishing"
+    );
+    assert!(
+        !workflow.contains("CRATES_IO_API_TOKEN") && !workflow.contains("${{ inputs."),
+        "publish workflow must not use long-lived tokens or inline dispatch inputs"
+    );
+    for required in ["--dry-run", "--publish", "--locked", "--no-verify"] {
+        assert!(
             script.contains(required),
-            "publish script must include `{required}`"
+            "publish script must include explicit mode/control `{required}`"
         );
     }
 }

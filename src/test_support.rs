@@ -4,7 +4,7 @@ use std::path::Path;
 use j2k_jpeg::{JpegBackend, JpegSamples, JpegSubsampling};
 
 pub(crate) fn find_command_for_test(name: &str) -> Option<String> {
-    std::env::var_os("PATH")
+    let command = std::env::var_os("PATH")
         .and_then(|paths| {
             std::env::split_paths(&paths)
                 .map(|path| path.join(name))
@@ -17,7 +17,26 @@ pub(crate) fn find_command_for_test(name: &str) -> Option<String> {
                 .join(name);
             staged.is_file().then_some(staged)
         })
-        .map(|path| path.to_string_lossy().into_owned())
+        .map(|path| path.to_string_lossy().into_owned());
+    if command.is_none() && external_tool_is_required(name) {
+        panic!(
+            "required external conformance tool `{name}` was not found; checked PATH and target/dicom3tools-mac"
+        );
+    }
+    command
+}
+
+fn external_tool_is_required(name: &str) -> bool {
+    std::env::var("WSI_DICOM_REQUIRED_EXTERNAL_TOOLS")
+        .ok()
+        .is_some_and(|required| external_tool_list_contains(&required, name))
+}
+
+fn external_tool_list_contains(required: &str, name: &str) -> bool {
+    required
+        .split(',')
+        .map(str::trim)
+        .any(|required_name| required_name == name)
 }
 
 pub(crate) fn read_binary_ppm_for_test(path: &Path) -> (u32, u32, Vec<u8>) {
@@ -276,6 +295,17 @@ mod tests {
     #[test]
     fn find_command_for_test_returns_none_for_missing_command() {
         assert!(find_command_for_test("wsi-dicom-command-that-should-not-exist").is_none());
+    }
+
+    #[test]
+    fn external_tool_requirement_parser_matches_complete_names_only() {
+        let required = "dciodvfy, opj_decompress";
+        assert!(super::external_tool_list_contains(required, "dciodvfy"));
+        assert!(super::external_tool_list_contains(
+            required,
+            "opj_decompress"
+        ));
+        assert!(!super::external_tool_list_contains(required, "dciod"));
     }
 
     #[test]

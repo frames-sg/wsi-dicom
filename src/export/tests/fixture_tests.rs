@@ -248,10 +248,9 @@ fn ndpi_fixture_exports_full_jpeg_baseline_passthrough_instance() {
         level_filter: None,
     };
     let metadata = request.metadata.resolve().unwrap();
-    let study_uid = metadata
-        .study_instance_uid
-        .clone()
-        .unwrap_or_else(|| uid_from_seed(&format!("study:{}", source.display())));
+    let identity =
+        DicomExportIdentity::for_export(&source, &request.options, &metadata, request.level_filter)
+            .unwrap();
     let slide = Slide::open(&source).unwrap();
     let (level_idx, geometry) = ndpi_jpeg_passthrough_level(&slide, request.options.tile_size);
     let level = &slide.dataset().scenes[0].series[0].levels[level_idx];
@@ -261,14 +260,9 @@ fn ndpi_fixture_exports_full_jpeg_baseline_passthrough_instance() {
         &slide,
         &request,
         &metadata,
-        &study_uid,
+        &identity,
         1,
-        0,
-        0,
-        level_idx as u32,
-        0,
-        0,
-        0,
+        InstanceCoordinate::new(0, 0, level_idx as u32, 0, 0, 0),
         level,
     )
     .unwrap();
@@ -366,10 +360,9 @@ fn ndpi_fixture_exports_jpeg_baseline_passthrough_pyramid_subset_for_qupath() {
         level_filter: None,
     };
     let metadata = request.metadata.resolve().unwrap();
-    let study_uid = metadata
-        .study_instance_uid
-        .clone()
-        .unwrap_or_else(|| uid_from_seed(&format!("study:{}", source.display())));
+    let identity =
+        DicomExportIdentity::for_export(&source, &request.options, &metadata, request.level_filter)
+            .unwrap();
     let slide = Slide::open(&source).unwrap();
     let levels = ndpi_jpeg_passthrough_levels(&slide, request.options.tile_size);
     assert!(
@@ -385,14 +378,9 @@ fn ndpi_fixture_exports_jpeg_baseline_passthrough_pyramid_subset_for_qupath() {
             &slide,
             &request,
             &metadata,
-            &study_uid,
+            &identity,
             (instance_idx + 1) as u32,
-            0,
-            0,
-            level_idx as u32,
-            0,
-            0,
-            0,
+            InstanceCoordinate::new(0, 0, level_idx as u32, 0, 0, 0),
             level,
         )
         .unwrap();

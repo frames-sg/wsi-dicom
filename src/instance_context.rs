@@ -2,10 +2,11 @@ use std::path::{Path, PathBuf};
 
 use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 
+use crate::coordinate::InstanceCoordinate;
 use crate::metadata::DicomMetadata;
 use crate::report::{ExportMetrics, IccProfileSource, InstanceReport};
 use crate::tile::PixelProfile;
-use crate::uid::{deterministic_instance_path, uid_from_seed};
+use crate::uid::DicomExportIdentity;
 use crate::writer::{
     build_dicom_object, DicomObjectIdentifiers, DicomObjectParams, FrameGrid,
     LossyCompressionMetadata, PixelDataOffsetTables,
@@ -22,78 +23,67 @@ pub(crate) struct DicomInstanceContext {
     pub(crate) pyramid_label: String,
     pub(crate) pixel_spacing_mm: (f64, f64),
     pub(crate) series_number: u32,
-    pub(crate) level_idx: u32,
-    pub(crate) z: u32,
-    pub(crate) c: u32,
-    pub(crate) t: u32,
+    pub(crate) coordinate: InstanceCoordinate,
 }
 
 impl DicomInstanceContext {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        source_path: &Path,
+        identity: &DicomExportIdentity,
         output_dir: &Path,
         pixel_spacing_mm: (f64, f64),
-        scene_idx: usize,
-        series_idx: usize,
-        level_idx: u32,
-        z: u32,
-        c: u32,
-        t: u32,
-    ) -> Self {
-        Self {
-            path: deterministic_instance_path(output_dir, level_idx, z, c, t),
-            series_uid: uid_from_seed(&format!(
-                "series:{}:{}:{}:{}:{}:{}",
-                source_path.display(),
-                scene_idx,
-                series_idx,
-                z,
-                c,
-                t
+        coordinate: InstanceCoordinate,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            path: coordinate.output_path(output_dir),
+            series_uid: identity.uid(&format!(
+                "series:{}:{}:{}:{}:{}",
+                coordinate.scene_idx,
+                coordinate.series_idx,
+                coordinate.z,
+                coordinate.c,
+                coordinate.t
             )),
-            sop_instance_uid: uid_from_seed(&format!(
-                "instance:{}:{}:{}:{}:{}:{}:{}",
-                source_path.display(),
-                scene_idx,
-                series_idx,
-                level_idx,
-                z,
-                c,
-                t
+            sop_instance_uid: identity.uid(&format!(
+                "instance:{}:{}:{}:{}:{}:{}",
+                coordinate.scene_idx,
+                coordinate.series_idx,
+                coordinate.level_idx,
+                coordinate.z,
+                coordinate.c,
+                coordinate.t
             )),
-            frame_of_reference_uid: uid_from_seed(&format!(
-                "frame-of-reference:{}:{}:{}",
-                source_path.display(),
-                scene_idx,
-                series_idx
+            frame_of_reference_uid: identity.uid(&format!(
+                "frame-of-reference:{}:{}",
+                coordinate.scene_idx, coordinate.series_idx
             )),
-            pyramid_uid: uid_from_seed(&format!(
-                "pyramid:{}:{}:{}:{}:{}:{}",
-                source_path.display(),
-                scene_idx,
-                series_idx,
-                z,
-                c,
-                t
+            pyramid_uid: identity.uid(&format!(
+                "pyramid:{}:{}:{}:{}:{}",
+                coordinate.scene_idx,
+                coordinate.series_idx,
+                coordinate.z,
+                coordinate.c,
+                coordinate.t
             )),
-            dimension_organization_uid: uid_from_seed(&format!(
-                "dimension-organization:{}:{}:{}:{}:{}:{}",
-                source_path.display(),
-                scene_idx,
-                series_idx,
-                z,
-                c,
-                t
+            dimension_organization_uid: identity.uid(&format!(
+                "dimension-organization:{}:{}:{}:{}:{}",
+                coordinate.scene_idx,
+                coordinate.series_idx,
+                coordinate.z,
+                coordinate.c,
+                coordinate.t
             )),
-            pyramid_label: format!("WSI pyramid s{scene_idx} ser{series_idx} z{z} c{c} t{t}"),
+            pyramid_label: format!(
+                "WSI pyramid s{} ser{} z{} c{} t{}",
+                coordinate.scene_idx,
+                coordinate.series_idx,
+                coordinate.z,
+                coordinate.c,
+                coordinate.t
+            ),
             pixel_spacing_mm,
-            series_number: (series_idx + 1) as u32,
-            level_idx,
-            z,
-            c,
-            t,
-        }
+            series_number: coordinate.series_number()?,
+            coordinate,
+        })
     }
 
     pub(crate) fn build_dicom_object(
@@ -113,7 +103,7 @@ impl DicomInstanceContext {
             },
             series_number: self.series_number,
             instance_number: params.instance_number,
-            level_idx: self.level_idx,
+            level_idx: self.coordinate.level_idx,
             frame_grid: params.frame_grid,
             frame_count: params.frame_count,
             profile: params.profile,
@@ -144,10 +134,12 @@ impl DicomInstanceContext {
             series_instance_uid: self.series_uid.clone(),
             transfer_syntax_uid,
             icc_profile_source,
-            level: self.level_idx,
-            z: self.z,
-            c: self.c,
-            t: self.t,
+            scene: self.coordinate.scene_idx,
+            series: self.coordinate.series_idx,
+            level: self.coordinate.level_idx,
+            z: self.coordinate.z,
+            c: self.coordinate.c,
+            t: self.coordinate.t,
             frame_count,
             metrics,
         }
@@ -171,21 +163,20 @@ mod tests {
     use std::path::PathBuf;
 
     use super::DicomInstanceContext;
+    use crate::coordinate::InstanceCoordinate;
     use crate::options::ExportOptions;
     use crate::report::{ExportMetrics, IccProfileSource, InstanceReport};
-    use crate::uid::{deterministic_instance_path, uid_from_seed};
+    use crate::uid::DicomExportIdentity;
 
     #[test]
     fn dicom_instance_context_captures_stable_ids_paths_and_report_fields() {
-        let source = PathBuf::from("/tmp/source.dcm");
         let output = PathBuf::from("/tmp/out");
+        let coordinate = InstanceCoordinate::new(1, 2, 3, 4, 5, 6);
+        let identity = DicomExportIdentity::from_seed("1.2.3".into(), "test-seed".into());
         let context =
-            DicomInstanceContext::new(&source, &output, (0.0005, 0.0005), 1, 2, 3, 4, 5, 6);
+            DicomInstanceContext::new(&identity, &output, (0.0005, 0.0005), coordinate).unwrap();
 
-        assert_eq!(
-            context.path,
-            deterministic_instance_path(&output, 3, 4, 5, 6)
-        );
+        assert_eq!(context.path, coordinate.output_path(&output));
         let actual_uids = [
             context.series_uid.as_str(),
             context.sop_instance_uid.as_str(),
@@ -194,11 +185,11 @@ mod tests {
             context.dimension_organization_uid.as_str(),
         ];
         let expected_uids = [
-            uid_from_seed("series:/tmp/source.dcm:1:2:4:5:6"),
-            uid_from_seed("instance:/tmp/source.dcm:1:2:3:4:5:6"),
-            uid_from_seed("frame-of-reference:/tmp/source.dcm:1:2"),
-            uid_from_seed("pyramid:/tmp/source.dcm:1:2:4:5:6"),
-            uid_from_seed("dimension-organization:/tmp/source.dcm:1:2:4:5:6"),
+            identity.uid("series:1:2:4:5:6"),
+            identity.uid("instance:1:2:3:4:5:6"),
+            identity.uid("frame-of-reference:1:2"),
+            identity.uid("pyramid:1:2:4:5:6"),
+            identity.uid("dimension-organization:1:2:4:5:6"),
         ];
         assert_eq!(actual_uids, expected_uids.each_ref().map(String::as_str));
         assert_eq!(context.pyramid_label, "WSI pyramid s1 ser2 z4 c5 t6");
@@ -219,6 +210,8 @@ mod tests {
                 series_instance_uid: context.series_uid,
                 transfer_syntax_uid: ExportOptions::default().transfer_syntax.uid(),
                 icc_profile_source: IccProfileSource::SynthesizedSrgb,
+                scene: 1,
+                series: 2,
                 level: 3,
                 z: 4,
                 c: 5,
@@ -231,10 +224,22 @@ mod tests {
 
     #[test]
     fn dicom_instance_context_uid_changes_when_only_timepoint_changes() {
-        let source = PathBuf::from("/tmp/source.dcm");
         let output = PathBuf::from("/tmp/out");
-        let t0 = DicomInstanceContext::new(&source, &output, (0.0005, 0.0005), 0, 0, 0, 0, 0, 0);
-        let t1 = DicomInstanceContext::new(&source, &output, (0.0005, 0.0005), 0, 0, 0, 0, 0, 1);
+        let identity = DicomExportIdentity::from_seed("1.2.3".into(), "test-seed".into());
+        let t0 = DicomInstanceContext::new(
+            &identity,
+            &output,
+            (0.0005, 0.0005),
+            InstanceCoordinate::new(0, 0, 0, 0, 0, 0),
+        )
+        .unwrap();
+        let t1 = DicomInstanceContext::new(
+            &identity,
+            &output,
+            (0.0005, 0.0005),
+            InstanceCoordinate::new(0, 0, 0, 0, 0, 1),
+        )
+        .unwrap();
 
         assert_ne!(t0.sop_instance_uid, t1.sop_instance_uid);
         assert_ne!(t0.path, t1.path);

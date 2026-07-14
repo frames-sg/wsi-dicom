@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -38,6 +38,7 @@ use wsi_rs::{TileOutputPreference, TilePixels};
 
 #[cfg(test)]
 use crate::api::Export;
+use crate::coordinate::InstanceCoordinate;
 use crate::defaults::default_transfer_syntax_for_source;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use crate::encode;
@@ -51,9 +52,9 @@ use crate::options::{
     CodecValidation, EncodeBackendPreference, ExportOptions, JpegDirectHtj2kProfile, TransferSyntax,
 };
 use crate::report::{
-    duration_as_reported_micros, EncodedFrame, ExportMetrics, ExportReport, IccProfileSource,
-    InstanceReport, JpegRetileRejectionReason, RouteCorpusCoverageFailure,
-    RouteCorpusCoverageReport, RouteCoverageReport, RouteProfileReport,
+    EncodedFrame, ExportMetrics, ExportReport, IccProfileSource, InstanceReport,
+    JpegRetileRejectionReason, RouteCorpusCoverageFailure, RouteCorpusCoverageReport,
+    RouteCoverageReport, RouteProfileReport,
 };
 #[cfg(test)]
 use crate::report::{GpuEncodeMetrics, RouteCounters, WriteTimings};
@@ -78,7 +79,8 @@ use crate::tile::{
     pixel_profile_from_wsi_device_format, wsi_pixel_format_from_j2k,
 };
 use crate::tile::{optical_path_groups, prepare_tile_samples_with_limit, PixelProfile};
-use crate::uid::{deterministic_instance_path, uid_from_seed};
+use crate::time::duration_as_reported_micros;
+use crate::uid::DicomExportIdentity;
 use crate::writer::{
     pixel_data_offsets_from_lengths, unique_spool_path, write_dicom_object_with_direct_pixel_data,
     write_dicom_object_with_spooled_pixel_data, write_dicom_object_with_streamed_pixel_data,
@@ -91,6 +93,7 @@ mod hybrid_lane;
 mod icc_profile;
 mod j2k_direct_htj2k;
 mod j2k_policy;
+mod jobs;
 mod jpeg_baseline;
 mod jpeg_baseline_instance;
 mod jpeg_direct_htj2k;
@@ -111,9 +114,10 @@ mod profiling;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod route_cache;
 mod tile_grid;
+mod transaction;
 
 fn jpeg_backend_uses_device(backend: JpegBackend) -> bool {
-    matches!(backend, JpegBackend::Metal | JpegBackend::Cuda)
+    matches!(backend, JpegBackend::Metal)
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -154,8 +158,9 @@ use route_cache::{
     clear_auto_metal_input_route_cache_state_for_tests, WSI_DICOM_AUTO_ROUTE_CACHE_ENV,
 };
 
+pub(crate) use self::frame_region::FrameRectGrid;
 use self::frame_region::PreparedCpuRegion;
-use self::frame_region::{FrameRectGrid, FrameRectOverflowReasons, OutputFrameRect};
+use self::frame_region::{FrameRectOverflowReasons, OutputFrameRect};
 use self::icc_profile::resolve_icc_profile;
 #[cfg(test)]
 use self::j2k_policy::j2k_passthrough_frame;
@@ -163,6 +168,7 @@ use self::j2k_policy::{
     j2k_fallback_profile, j2k_fallback_reversible_transform, j2k_non_passthrough_encode_allowed,
     lossless_j2k_cpu_fallback_indices, reject_lossy_j2k_lossless_fallback,
 };
+use self::jobs::*;
 #[cfg(test)]
 use self::jpeg_baseline::jpeg_baseline_frame_geometry;
 use self::jpeg_baseline::{
@@ -192,49 +198,15 @@ use self::lossless_j2k_cpu::{encode_cpu_input_lossless_j2k_tile_batch, LosslessJ
 use self::lossless_j2k_instance::export_instance;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use self::lossless_j2k_instance::{prepare_lossless_j2k_instance, PendingLosslessJ2kInstance};
-pub(crate) use self::lossless_j2k_plan::{plan_lossless_j2k_row, LosslessJ2kPlannedFrame};
-use self::lossless_j2k_plan::{plan_lossless_j2k_rows, J2kPassthroughFrame};
+use self::lossless_j2k_plan::J2kPassthroughFrame;
+pub(crate) use self::lossless_j2k_plan::{
+    plan_lossless_j2k_frames, LosslessJ2kPlanRequest, LosslessJ2kPlannedFrame,
+};
 use self::profiling::{check_route_level_deadline, validate_max_level_elapsed, RouteLevelDeadline};
 use self::tile_grid::{checked_frame_count_u32, TileGrid};
+use self::transaction::{ExportTransaction, OutputDirectoryLock};
 
 type EncodedJpegBaselineFrame = (EncodedJpeg, PixelProfile, Duration, Duration, Duration);
-
-#[derive(Clone, Copy)]
-struct DicomExportInstanceJob<'a> {
-    ordinal: usize,
-    instance_number: u32,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-    level: &'a wsi_rs::Level,
-}
-
-#[derive(Clone, Copy)]
-struct DicomRouteProfileJob<'a> {
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-    level: &'a wsi_rs::Level,
-}
-
-impl DicomRouteProfileJob<'_> {
-    fn location(&self) -> JpegBaselineFrameLocation {
-        JpegBaselineFrameLocation {
-            scene_idx: self.scene_idx,
-            series_idx: self.series_idx,
-            level_idx: self.level_idx,
-            z: self.z,
-            c: self.c,
-            t: self.t,
-        }
-    }
-}
 
 fn j2k_lossy_compression_method(transfer_syntax: TransferSyntax) -> &'static str {
     match transfer_syntax {
@@ -253,8 +225,6 @@ const WSI_RS_JPEG_DEVICE_DECODE_ENV: &str = "WSI_RS_JPEG_DEVICE_DECODE";
 const WSI_RS_JP2K_DEVICE_DECODE_ENV: &str = "WSI_RS_JP2K_DEVICE_DECODE";
 
 const DIRECT_JPEG_PASSTHROUGH_WRITE_CHUNK_FRAMES: usize = 2048;
-
-const WSI_DICOM_EXPORT_INSTANCE_WORKERS_ENV: &str = "WSI_DICOM_EXPORT_INSTANCE_WORKERS";
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 const WSI_DICOM_METAL_ROW_BATCH_ROWS_ENV: &str = "WSI_DICOM_METAL_ROW_BATCH_ROWS";
@@ -455,19 +425,27 @@ pub fn export_dicom(request: ExportRequest) -> Result<ExportReport, Error> {
         path: request.output_dir.clone(),
         source,
     })?;
+    let _output_lock = OutputDirectoryLock::acquire(&request.output_dir)?;
 
     let slide = Slide::open(&request.source_path).map_err(|source| Error::SourceOpen {
         path: request.source_path.clone(),
         message: source.to_string(),
     })?;
 
-    let study_uid = metadata
-        .study_instance_uid
-        .clone()
-        .unwrap_or_else(|| uid_from_seed(&format!("study:{}", request.source_path.display())));
+    let identity = DicomExportIdentity::for_export(
+        &request.source_path,
+        &request.options,
+        &metadata,
+        request.level_filter,
+    )?;
     let jobs = dicom_export_instance_jobs(&slide, &request)?;
     preflight_output_paths(&request, &jobs)?;
-    let instances = export_dicom_instance_jobs(&slide, &request, &metadata, &study_uid, &jobs)?;
+    let transaction = ExportTransaction::begin(&request.output_dir)?;
+    let mut staged_request = request.clone();
+    staged_request.output_dir = transaction.staging_dir().to_path_buf();
+    staged_request.options.overwrite = false;
+    let mut instances =
+        export_dicom_instance_jobs(&slide, &staged_request, &metadata, &identity, &jobs)?;
 
     if instances.is_empty() {
         return Err(Error::Unsupported {
@@ -479,9 +457,14 @@ pub fn export_dicom(request: ExportRequest) -> Result<ExportReport, Error> {
             },
         });
     }
+    transaction.commit(&mut instances, request.options.overwrite)?;
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    flush_persistent_auto_metal_input_route_cache_if_requested()?;
+    if let Err(err) = flush_persistent_auto_metal_input_route_cache_if_requested() {
+        eprintln!(
+            "wsi-dicom: export completed, but the optional auto-route cache could not be persisted: {err}"
+        );
+    }
 
     let metrics = instances
         .iter()
@@ -495,301 +478,6 @@ pub fn export_dicom(request: ExportRequest) -> Result<ExportReport, Error> {
         instances,
         metrics,
     })
-}
-
-fn dicom_export_instance_jobs<'a>(
-    slide: &'a Slide,
-    request: &ExportRequest,
-) -> Result<Vec<DicomExportInstanceJob<'a>>, Error> {
-    let mut jobs = Vec::new();
-    for (scene_idx, scene) in slide.dataset().scenes.iter().enumerate() {
-        for (series_idx, series) in scene.series.iter().enumerate() {
-            for (level_idx, level) in series.levels.iter().enumerate() {
-                let level_idx = u32::try_from(level_idx).map_err(|_| Error::Unsupported {
-                    reason: "export level index exceeds u32".into(),
-                })?;
-                if request
-                    .level_filter
-                    .is_some_and(|requested_level| requested_level != level_idx)
-                {
-                    continue;
-                }
-                for z in 0..series.axes.z {
-                    for t in 0..series.axes.t {
-                        for c in optical_path_groups(series.axes.c) {
-                            let instance_number =
-                                u32::try_from(jobs.len() + 1).map_err(|_| Error::Unsupported {
-                                    reason: "DICOM instance count exceeds u32".into(),
-                                })?;
-                            jobs.push(DicomExportInstanceJob {
-                                ordinal: jobs.len(),
-                                instance_number,
-                                scene_idx,
-                                series_idx,
-                                level_idx,
-                                z,
-                                c,
-                                t,
-                                level,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(jobs)
-}
-
-fn dicom_route_profile_jobs(
-    slide: &Slide,
-    level_filter: Option<u32>,
-    max_levels: Option<u32>,
-) -> Result<Vec<DicomRouteProfileJob<'_>>, Error> {
-    let max_levels =
-        max_levels
-            .map(usize::try_from)
-            .transpose()
-            .map_err(|_| Error::Unsupported {
-                reason: "route profiling max_levels exceeds platform addressable memory".into(),
-            })?;
-    let mut jobs = Vec::new();
-    for (scene_idx, scene) in slide.dataset().scenes.iter().enumerate() {
-        for (series_idx, series) in scene.series.iter().enumerate() {
-            let level_limit = max_levels
-                .unwrap_or(series.levels.len())
-                .min(series.levels.len());
-            for (level_idx, level) in series.levels.iter().take(level_limit).enumerate() {
-                let level_idx = u32::try_from(level_idx).map_err(|_| Error::Unsupported {
-                    reason: "route profiling level index exceeds u32".into(),
-                })?;
-                if level_filter.is_some_and(|requested_level| requested_level != level_idx) {
-                    continue;
-                }
-                for z in 0..series.axes.z {
-                    for t in 0..series.axes.t {
-                        for c in optical_path_groups(series.axes.c) {
-                            jobs.push(DicomRouteProfileJob {
-                                scene_idx,
-                                series_idx,
-                                level_idx,
-                                z,
-                                c,
-                                t,
-                                level,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(jobs)
-}
-
-fn preflight_output_paths(
-    request: &ExportRequest,
-    jobs: &[DicomExportInstanceJob<'_>],
-) -> Result<(), Error> {
-    let mut paths = HashSet::with_capacity(jobs.len());
-    for job in jobs {
-        let path =
-            deterministic_instance_path(&request.output_dir, job.level_idx, job.z, job.c, job.t);
-        if !paths.insert(path.clone()) {
-            return Err(Error::InvalidOptions {
-                reason: format!("multiple export instances would write {}", path.display()),
-            });
-        }
-        if !request.options.overwrite && path.exists() {
-            return Err(Error::Io {
-                path,
-                source: std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    "output file exists; enable overwrite to replace it",
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn export_dicom_instance_jobs(
-    slide: &Slide,
-    request: &ExportRequest,
-    metadata: &DicomMetadata,
-    study_uid: &str,
-    jobs: &[DicomExportInstanceJob<'_>],
-) -> Result<Vec<InstanceReport>, Error> {
-    if jobs.len() <= 1 {
-        return export_dicom_instance_jobs_serial(slide, request, metadata, study_uid, jobs);
-    }
-
-    if let Some(configured) = configured_export_instance_worker_count()? {
-        let workers = configured.max(1).min(jobs.len());
-        if workers <= 1 {
-            return export_dicom_instance_jobs_serial(slide, request, metadata, study_uid, jobs);
-        }
-        return export_dicom_instance_jobs_parallel(
-            slide, request, metadata, study_uid, jobs, workers,
-        );
-    }
-
-    #[cfg(all(feature = "metal", target_os = "macos"))]
-    if hybrid_lane::prefer_device_htj2k_rpcl_hybrid_export_lanes_enabled(request, jobs)? {
-        return hybrid_lane::export_dicom_instance_jobs_prefer_device_htj2k_hybrid_lanes(
-            slide, request, metadata, study_uid, jobs,
-        );
-    }
-
-    let default_workers = default_export_instance_worker_count(
-        &request.options,
-        jobs.len(),
-        rayon::current_num_threads(),
-    );
-    if default_workers > 1 {
-        return export_dicom_instance_jobs_parallel(
-            slide,
-            request,
-            metadata,
-            study_uid,
-            jobs,
-            default_workers,
-        );
-    }
-
-    export_dicom_instance_jobs_serial(slide, request, metadata, study_uid, jobs)
-}
-
-fn export_dicom_instance_jobs_serial(
-    slide: &Slide,
-    request: &ExportRequest,
-    metadata: &DicomMetadata,
-    study_uid: &str,
-    jobs: &[DicomExportInstanceJob<'_>],
-) -> Result<Vec<InstanceReport>, Error> {
-    jobs.iter()
-        .map(|job| export_dicom_instance_job(slide, request, metadata, study_uid, job))
-        .collect()
-}
-
-fn export_dicom_instance_jobs_parallel(
-    slide: &Slide,
-    request: &ExportRequest,
-    metadata: &DicomMetadata,
-    study_uid: &str,
-    jobs: &[DicomExportInstanceJob<'_>],
-    workers: usize,
-) -> Result<Vec<InstanceReport>, Error> {
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(workers)
-        .thread_name(|idx| format!("wsi-dicom-export-{idx}"))
-        .build()
-        .map_err(|err| Error::InvalidOptions {
-            reason: format!("failed to initialize DICOM export worker pool: {err}"),
-        })?;
-    let mut reports = pool.install(|| {
-        jobs.par_iter()
-            .map(|job| {
-                export_dicom_instance_job(slide, request, metadata, study_uid, job)
-                    .map(|report| (job.ordinal, report))
-            })
-            .collect::<Result<Vec<_>, _>>()
-    })?;
-    reports.sort_by_key(|(ordinal, _)| *ordinal);
-    Ok(reports.into_iter().map(|(_, report)| report).collect())
-}
-
-#[cfg_attr(not(all(feature = "metal", target_os = "macos")), allow(dead_code))]
-fn dicom_instance_job_frame_count(
-    options: &ExportOptions,
-    job: &DicomExportInstanceJob<'_>,
-) -> Result<u64, Error> {
-    let tile_size = j2k_route_tile_size(options, job.level)?;
-    let (matrix_columns, matrix_rows) = job.level.dimensions;
-    TileGrid::square(matrix_columns, matrix_rows, tile_size)?.frame_count_u64()
-}
-
-fn export_dicom_instance_job(
-    slide: &Slide,
-    request: &ExportRequest,
-    metadata: &DicomMetadata,
-    study_uid: &str,
-    job: &DicomExportInstanceJob<'_>,
-) -> Result<InstanceReport, Error> {
-    if request.options.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
-        export_jpeg_passthrough_instance(
-            slide,
-            request,
-            metadata,
-            study_uid,
-            job.instance_number,
-            job.scene_idx,
-            job.series_idx,
-            job.level_idx,
-            job.z,
-            job.c,
-            job.t,
-            job.level,
-        )
-    } else {
-        export_instance(
-            slide,
-            request,
-            metadata,
-            study_uid,
-            job.instance_number,
-            job.scene_idx,
-            job.series_idx,
-            job.level_idx,
-            job.z,
-            job.c,
-            job.t,
-            job.level,
-        )
-    }
-}
-
-fn configured_export_instance_worker_count() -> Result<Option<usize>, Error> {
-    let value = match std::env::var(WSI_DICOM_EXPORT_INSTANCE_WORKERS_ENV) {
-        Ok(value) => value,
-        Err(std::env::VarError::NotPresent) => return Ok(None),
-        Err(err) => {
-            return Err(Error::InvalidOptions {
-                reason: format!(
-                    "{WSI_DICOM_EXPORT_INSTANCE_WORKERS_ENV} is not valid UTF-8: {err}"
-                ),
-            });
-        }
-    };
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    let workers = trimmed
-        .parse::<usize>()
-        .map_err(|_| Error::InvalidOptions {
-            reason: format!("{WSI_DICOM_EXPORT_INSTANCE_WORKERS_ENV} must be a positive integer"),
-        })?;
-    if workers == 0 {
-        return Err(Error::InvalidOptions {
-            reason: format!("{WSI_DICOM_EXPORT_INSTANCE_WORKERS_ENV} must be greater than zero"),
-        });
-    }
-    Ok(Some(workers))
-}
-
-fn default_export_instance_worker_count(
-    options: &ExportOptions,
-    job_count: usize,
-    rayon_threads: usize,
-) -> usize {
-    if job_count <= 1 {
-        return 1;
-    }
-    if !options.encode_backend.cpu_batch_safe() {
-        return 1;
-    }
-    job_count.min(rayon_threads.saturating_sub(1).max(1)).max(1)
 }
 
 fn resolve_source_aware_profile_options(
@@ -859,7 +547,7 @@ pub fn profile_dicom_routes(request: RouteProfileRequest) -> Result<RouteProfile
     let mut remaining = request.max_frames;
 
     for job in &jobs {
-        let location = job.location();
+        let location = job.coordinate;
         let job_available_frames =
             route_profile_available_frames(&slide, &options, job.level, location)?;
         available_frames = available_frames.saturating_add(job_available_frames);
@@ -956,7 +644,10 @@ pub fn profile_dicom_route_coverage(
     let transfer_syntax_uid = options.transfer_syntax.uid();
     let mut jobs_by_level: BTreeMap<u32, Vec<DicomRouteProfileJob<'_>>> = BTreeMap::new();
     for job in jobs {
-        jobs_by_level.entry(job.level_idx).or_default().push(job);
+        jobs_by_level
+            .entry(job.coordinate.level_idx)
+            .or_default()
+            .push(job);
     }
     let level_count = jobs_by_level.len();
     let mut levels = Vec::with_capacity(level_count);
@@ -968,7 +659,7 @@ pub fn profile_dicom_route_coverage(
         let mut level_available_frames = 0u64;
         for job in &level_jobs {
             level_available_frames = level_available_frames.saturating_add(
-                route_profile_available_frames(&slide, &options, job.level, job.location())?,
+                route_profile_available_frames(&slide, &options, job.level, job.coordinate)?,
             );
         }
         if matches!(request.progress, Some(RouteProgressSink::Stderr)) {
@@ -989,7 +680,7 @@ pub fn profile_dicom_route_coverage(
                 break;
             }
             check_route_level_deadline(level_deadline, level_idx)?;
-            let location = job.location();
+            let location = job.coordinate;
             let job_available_frames =
                 route_profile_available_frames(&slide, &options, job.level, location)?;
             if job_available_frames == 0 {
@@ -1312,16 +1003,122 @@ struct ResolvedLosslessJ2kFallbackFrame {
     compose_duration: Duration,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn encode_direct_lossless_j2k_routes(
-    slide: &Slide,
-    jpeg_direct_encoder: &mut Option<jpeg_direct_htj2k::BatchEncoder>,
-    planned: &[LosslessJ2kPlannedFrame],
-    options: &ExportOptions,
-    location: JpegBaselineFrameLocation,
+#[derive(Clone, Copy)]
+struct LosslessJ2kBatchContext<'a> {
+    slide: &'a Slide,
+    level: &'a wsi_rs::Level,
+    planned: &'a [LosslessJ2kPlannedFrame],
+    options: &'a ExportOptions,
+    location: InstanceCoordinate,
     tile_size: u32,
+}
+
+struct LosslessJ2kRoutePipeline {
+    encoder: DicomJ2kEncoder,
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    metal_input: MetalInputTileReader,
+    metrics: ExportMetrics,
+    pixel_profile: Option<PixelProfile>,
+    jpeg_direct_encoder: Option<jpeg_direct_htj2k::BatchEncoder>,
+}
+
+impl LosslessJ2kRoutePipeline {
+    fn new(
+        _source_path: &Path,
+        options: &ExportOptions,
+        _location: InstanceCoordinate,
+        route_scope_frames: u64,
+    ) -> Result<Self, Error> {
+        let effective_backend = effective_lossless_j2k_encode_backend(options, route_scope_frames);
+        let encoder = DicomJ2kEncoder::new(
+            effective_backend,
+            j2k_encode_transfer_syntax(options.transfer_syntax),
+            options.codec_validation,
+        )
+        .with_j2k_decomposition_levels(options.j2k_decomposition_levels)
+        .with_gpu_encode_tuning(
+            options.gpu_encode_inflight_tiles,
+            hybrid_lane::effective_lossless_gpu_encode_memory_mib(options, route_scope_frames),
+        );
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        let mut encoder = encoder;
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        let metal_input_backend =
+            lossless_j2k_metal_input_preference(effective_backend, options.source_device_decode);
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        let metal_input = MetalInputTileReader::new_for_lossless_j2k(
+            metal_input_backend,
+            lossless_j2k_auto_allows_metal_input(
+                metal_input_backend,
+                options.transfer_syntax,
+                route_scope_frames,
+                options.source_device_decode,
+            ),
+            auto_metal_input_route_cache_key(
+                _source_path,
+                options.clone(),
+                _location,
+                route_scope_frames,
+            ),
+            options.source_device_decode,
+        )
+        .with_row_batch_tuning(
+            options.gpu_row_batch_rows,
+            hybrid_lane::effective_lossless_gpu_row_batch_target_tiles(options, route_scope_frames),
+        )
+        .with_pipeline_depth(effective_gpu_pipeline_depth(options));
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if lossless_j2k_auto_should_start_cpu_only(
+            effective_backend,
+            options.transfer_syntax,
+            route_scope_frames,
+            options.source_device_decode,
+        ) || metal_input.auto_route_decision() == AutoLosslessJ2kRouteDecision::CpuOnly
+        {
+            encoder.force_cpu_only_for_auto();
+        }
+        let metrics = ExportMetrics::default();
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        let mut metrics = metrics;
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if metal_input.enabled() {
+            metrics.record_gpu_pipeline_depth(effective_gpu_pipeline_depth(options));
+        }
+        let jpeg_direct_encoder =
+            jpeg_direct_htj2k_supported_for_backend(options.transfer_syntax, effective_backend)
+                .then(|| {
+                    jpeg_direct_htj2k::BatchEncoder::new(
+                        options.transfer_syntax,
+                        options.jpeg_direct_htj2k_profile,
+                        effective_backend,
+                    )
+                })
+                .transpose()?;
+
+        Ok(Self {
+            encoder,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            metal_input,
+            metrics,
+            pixel_profile: None,
+            jpeg_direct_encoder,
+        })
+    }
+}
+
+fn encode_direct_lossless_j2k_routes(
+    context: LosslessJ2kBatchContext<'_>,
+    jpeg_direct_encoder: &mut Option<jpeg_direct_htj2k::BatchEncoder>,
     generated_jpeg_direct_allowed: bool,
 ) -> Result<LosslessJ2kDirectRouteBatch, Error> {
+    let LosslessJ2kBatchContext {
+        slide,
+        planned,
+        options,
+        location,
+        tile_size,
+        ..
+    } = context;
     let direct_jpeg_results = if let Some(jpeg_direct_encoder) = jpeg_direct_encoder.as_mut() {
         jpeg_direct_htj2k::encode_planned_batch_with_encoder(planned, jpeg_direct_encoder)?
     } else {
@@ -1362,17 +1159,19 @@ fn encode_direct_lossless_j2k_routes(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn encode_lossless_j2k_cpu_fallback_batch(
-    slide: &Slide,
-    level: &wsi_rs::Level,
+    context: LosslessJ2kBatchContext<'_>,
     j2k_encoder: &DicomJ2kEncoder,
-    planned: &[LosslessJ2kPlannedFrame],
-    options: &ExportOptions,
-    location: JpegBaselineFrameLocation,
-    tile_size: u32,
     mut skip_index: impl FnMut(usize) -> bool,
 ) -> Result<Vec<Option<LosslessJ2kCpuBatchOutcome>>, Error> {
+    let LosslessJ2kBatchContext {
+        slide,
+        level,
+        planned,
+        options,
+        location,
+        tile_size,
+    } = context;
     let mut cpu_batch_results: Vec<Option<LosslessJ2kCpuBatchOutcome>> =
         (0..planned.len()).map(|_| None).collect();
     if let Some((
@@ -1400,12 +1199,7 @@ fn encode_lossless_j2k_cpu_fallback_batch(
                     reversible_transform,
                     max_prepared_frame_bytes: options.max_prepared_frame_bytes,
                 },
-                location.scene_idx,
-                location.series_idx,
-                location.level_idx,
-                location.z,
-                location.c,
-                location.t,
+                location,
                 planned,
                 &cpu_indices,
                 tile_size,
@@ -1415,45 +1209,34 @@ fn encode_lossless_j2k_cpu_fallback_batch(
     Ok(cpu_batch_results)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn encode_lossless_j2k_cpu_fallback_after_routes(
-    slide: &Slide,
-    level: &wsi_rs::Level,
+    context: LosslessJ2kBatchContext<'_>,
     j2k_encoder: &DicomJ2kEncoder,
-    planned: &[LosslessJ2kPlannedFrame],
-    options: &ExportOptions,
-    location: JpegBaselineFrameLocation,
-    tile_size: u32,
     direct_routes: &LosslessJ2kDirectRouteBatch,
     mut routed_result_is_ready: impl FnMut(usize) -> bool,
 ) -> Result<Vec<Option<LosslessJ2kCpuBatchOutcome>>, Error> {
-    encode_lossless_j2k_cpu_fallback_batch(
-        slide,
-        level,
-        j2k_encoder,
-        planned,
-        options,
-        location,
-        tile_size,
-        |idx| {
-            routed_result_is_ready(idx) || lossless_j2k_direct_route_succeeded(direct_routes, idx)
-        },
-    )
+    encode_lossless_j2k_cpu_fallback_batch(context, j2k_encoder, |idx| {
+        routed_result_is_ready(idx) || lossless_j2k_direct_route_succeeded(direct_routes, idx)
+    })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn resolve_lossless_j2k_fallback_frame(
-    slide: &Slide,
+    context: LosslessJ2kBatchContext<'_>,
     j2k_encoder: &mut DicomJ2kEncoder,
-    location: JpegBaselineFrameLocation,
     planned_frame: &LosslessJ2kPlannedFrame,
     cpu_batch_result: &mut Option<LosslessJ2kCpuBatchOutcome>,
     #[cfg(all(feature = "metal", target_os = "macos"))] routed_encoded: Option<
         RoutedLosslessJ2kTile,
     >,
-    transfer_syntax: TransferSyntax,
-    tile_size: u32,
 ) -> Result<ResolvedLosslessJ2kFallbackFrame, Error> {
+    let LosslessJ2kBatchContext {
+        slide,
+        options,
+        location,
+        tile_size,
+        ..
+    } = context;
+    let transfer_syntax = options.transfer_syntax;
     #[cfg(all(feature = "metal", target_os = "macos"))]
     if let Some(routed) = routed_encoded {
         return Ok(ResolvedLosslessJ2kFallbackFrame {
@@ -1482,10 +1265,7 @@ fn resolve_lossless_j2k_fallback_frame(
                 slide,
                 j2k_encoder,
                 location,
-                planned_frame.x,
-                planned_frame.y,
-                planned_frame.width,
-                planned_frame.height,
+                planned_frame.rect(),
                 tile_size,
             )?
         };
@@ -1534,23 +1314,25 @@ fn lossless_j2k_direct_route_succeeded(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
 fn route_lossless_j2k_metal_input_runs(
-    slide: &Slide,
+    context: LosslessJ2kBatchContext<'_>,
     metal_input: &mut MetalInputTileReader,
     j2k_encoder: &mut DicomJ2kEncoder,
-    level: &wsi_rs::Level,
-    location: JpegBaselineFrameLocation,
     row: u64,
-    planned: &[LosslessJ2kPlannedFrame],
     direct_routes: &LosslessJ2kDirectRouteBatch,
-    transfer_syntax: TransferSyntax,
     auto_probe_frame_count: usize,
-    matrix_columns: u64,
-    matrix_rows: u64,
-    tile_size: u32,
     metrics: &mut ExportMetrics,
 ) -> Result<Vec<Option<RoutedLosslessJ2kTile>>, Error> {
+    let LosslessJ2kBatchContext {
+        slide,
+        level,
+        planned,
+        options,
+        location,
+        tile_size,
+    } = context;
+    let transfer_syntax = options.transfer_syntax;
+    let (matrix_columns, matrix_rows) = level.dimensions;
     let mut routed_tiles: Vec<Option<RoutedLosslessJ2kTile>> =
         (0..planned.len()).map(|_| None).collect();
     let mut run_start = 0usize;
@@ -1683,24 +1465,22 @@ fn jpeg_direct_htj2k_result_is_ok(
             .is_some_and(|outcome| outcome.direct.is_ok())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn try_write_existing_lossless_j2k_frame(
+struct ExistingLosslessJ2kFrameContext<'a> {
     idx: usize,
-    planned_frame: &LosslessJ2kPlannedFrame,
-    direct_routes: &mut LosslessJ2kDirectRouteBatch,
-    options: &ExportOptions,
-    metrics: &mut ExportMetrics,
-    pixel_profile: &mut Option<PixelProfile>,
+    planned_frame: &'a LosslessJ2kPlannedFrame,
+    direct_routes: &'a mut LosslessJ2kDirectRouteBatch,
+    options: &'a ExportOptions,
+    metrics: &'a mut ExportMetrics,
+    pixel_profile: &'a mut Option<PixelProfile>,
+}
+
+fn try_write_existing_lossless_j2k_frame(
+    context: ExistingLosslessJ2kFrameContext<'_>,
     pixel_data: &mut impl PixelDataSink,
     j2k_passthrough_lossy: &mut bool,
 ) -> Result<bool, Error> {
     try_record_existing_lossless_j2k_frame(
-        idx,
-        planned_frame,
-        direct_routes,
-        options,
-        metrics,
-        pixel_profile,
+        context,
         Some(j2k_passthrough_lossy),
         "pixel profile changed across frames",
         |metrics, codestream| {
@@ -1709,44 +1489,35 @@ fn try_write_existing_lossless_j2k_frame(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn try_profile_existing_lossless_j2k_frame(
-    idx: usize,
-    planned_frame: &LosslessJ2kPlannedFrame,
-    direct_routes: &mut LosslessJ2kDirectRouteBatch,
-    options: &ExportOptions,
-    metrics: &mut ExportMetrics,
-    pixel_profile: &mut Option<PixelProfile>,
+    context: ExistingLosslessJ2kFrameContext<'_>,
 ) -> Result<bool, Error> {
     try_record_existing_lossless_j2k_frame(
-        idx,
-        planned_frame,
-        direct_routes,
-        options,
-        metrics,
-        pixel_profile,
+        context,
         None,
         "pixel profile changed across profiled frames",
         |_, _| Ok(()),
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn try_record_existing_lossless_j2k_frame(
-    idx: usize,
-    planned_frame: &LosslessJ2kPlannedFrame,
-    direct_routes: &mut LosslessJ2kDirectRouteBatch,
-    options: &ExportOptions,
-    metrics: &mut ExportMetrics,
-    pixel_profile: &mut Option<PixelProfile>,
-    mut j2k_passthrough_lossy: Option<&mut bool>,
+    context: ExistingLosslessJ2kFrameContext<'_>,
+    j2k_passthrough_lossy: Option<&mut bool>,
     mismatch_reason: &'static str,
     mut codestream_sink: impl FnMut(&mut ExportMetrics, &[u8]) -> Result<(), Error>,
 ) -> Result<bool, Error> {
+    let ExistingLosslessJ2kFrameContext {
+        idx,
+        planned_frame,
+        direct_routes,
+        options,
+        metrics,
+        pixel_profile,
+    } = context;
     if let Some(passthrough) = planned_frame.passthrough.as_ref() {
         let profile = passthrough.profile;
         ensure_consistent_pixel_profile(pixel_profile, profile, mismatch_reason)?;
-        if let Some(j2k_passthrough_lossy) = j2k_passthrough_lossy.as_deref_mut() {
+        if let Some(j2k_passthrough_lossy) = j2k_passthrough_lossy {
             *j2k_passthrough_lossy |= passthrough.is_lossy();
         }
         codestream_sink(metrics, &passthrough.codestream)?;
@@ -1883,71 +1654,17 @@ fn profile_lossless_j2k_routes(
         usize::try_from(route_scope_frames).map_err(|_| Error::Unsupported {
             reason: "route profile frame count exceeds platform addressable memory".into(),
         })?;
-    let effective_backend = effective_lossless_j2k_encode_backend(&options, route_scope_frames);
-    let mut j2k_encoder = DicomJ2kEncoder::new(
-        effective_backend,
-        j2k_encode_transfer_syntax(options.transfer_syntax),
-        options.codec_validation,
-    )
-    .with_j2k_decomposition_levels(options.j2k_decomposition_levels)
-    .with_gpu_encode_tuning(
-        options.gpu_encode_inflight_tiles,
-        hybrid_lane::effective_lossless_gpu_encode_memory_mib(&options, route_scope_frames),
-    );
-    #[cfg(all(feature = "metal", target_os = "macos"))]
-    let metal_input_backend =
-        lossless_j2k_metal_input_preference(effective_backend, options.source_device_decode);
-    #[cfg(all(feature = "metal", target_os = "macos"))]
-    let mut metal_input = MetalInputTileReader::new_for_lossless_j2k(
-        metal_input_backend,
-        lossless_j2k_auto_allows_metal_input(
-            metal_input_backend,
-            options.transfer_syntax,
-            max_frames,
-            options.source_device_decode,
-        ),
-        auto_metal_input_route_cache_key(
-            _source_path,
-            options.clone(),
-            location,
-            route_scope_frames,
-        ),
-        options.source_device_decode,
-    )
-    .with_row_batch_tuning(
-        options.gpu_row_batch_rows,
-        hybrid_lane::effective_lossless_gpu_row_batch_target_tiles(&options, route_scope_frames),
-    )
-    .with_pipeline_depth(effective_gpu_pipeline_depth(&options));
-    #[cfg(all(feature = "metal", target_os = "macos"))]
-    if lossless_j2k_auto_should_start_cpu_only(
-        effective_backend,
-        options.transfer_syntax,
-        route_scope_frames,
-        options.source_device_decode,
-    ) || metal_input.auto_route_decision() == AutoLosslessJ2kRouteDecision::CpuOnly
-    {
-        j2k_encoder.force_cpu_only_for_auto();
-    }
-    let mut metrics = ExportMetrics::default();
-    #[cfg(all(feature = "metal", target_os = "macos"))]
-    if metal_input.enabled() {
-        metrics.record_gpu_pipeline_depth(effective_gpu_pipeline_depth(&options));
-    }
-    let mut pixel_profile = None;
+    let LosslessJ2kRoutePipeline {
+        encoder: mut j2k_encoder,
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        mut metal_input,
+        mut metrics,
+        mut pixel_profile,
+        mut jpeg_direct_encoder,
+    } = LosslessJ2kRoutePipeline::new(_source_path, &options, location, route_scope_frames)?;
     let mut remaining = max_frames;
     let allow_passthrough_probe =
         j2k_family_passthrough_probe_allowed(_source_path, options.transfer_syntax);
-    let mut jpeg_direct_encoder =
-        jpeg_direct_htj2k_supported_for_backend(options.transfer_syntax, effective_backend)
-            .then(|| {
-                jpeg_direct_htj2k::BatchEncoder::new(
-                    options.transfer_syntax,
-                    options.jpeg_direct_htj2k_profile,
-                    effective_backend,
-                )
-            })
-            .transpose()?;
 
     for row in 0..tiles_down {
         if remaining == 0 {
@@ -1955,62 +1672,55 @@ fn profile_lossless_j2k_routes(
         }
         check_route_level_deadline(deadline, level_idx)?;
         let row_tile_count = grid.row_tile_count(row)?.min(remaining);
-        let planned = plan_lossless_j2k_row(
+        let planned = plan_lossless_j2k_frames(
             slide,
-            location.scene_idx,
-            location.series_idx,
-            location.level_idx,
-            location.z,
-            location.c,
-            location.t,
-            row,
-            0,
-            row_tile_count,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
-            options.transfer_syntax,
-            allow_passthrough_probe,
+            LosslessJ2kPlanRequest {
+                location,
+                start_row: row,
+                row_count: 1,
+                start_col: 0,
+                tile_count: row_tile_count,
+                grid: FrameRectGrid {
+                    matrix_columns,
+                    matrix_rows,
+                    frame_columns: tile_size,
+                    frame_rows: tile_size,
+                },
+                transfer_syntax: options.transfer_syntax,
+                allow_passthrough_probe,
+            },
         )?;
         #[cfg(all(feature = "metal", target_os = "macos"))]
         let generated_jpeg_direct_allowed = jpeg_direct_encoder.is_some()
             && generated_jpeg_direct_htj2k_allowed_for_route(options.transfer_syntax, &metal_input);
         #[cfg(not(all(feature = "metal", target_os = "macos")))]
         let generated_jpeg_direct_allowed = jpeg_direct_encoder.is_some();
-        let mut direct_routes = encode_direct_lossless_j2k_routes(
+        let batch_context = LosslessJ2kBatchContext {
             slide,
-            &mut jpeg_direct_encoder,
-            &planned,
-            &options,
+            level,
+            planned: &planned,
+            options: &options,
             location,
             tile_size,
+        };
+        let mut direct_routes = encode_direct_lossless_j2k_routes(
+            batch_context,
+            &mut jpeg_direct_encoder,
             generated_jpeg_direct_allowed,
         )?;
         #[cfg(all(feature = "metal", target_os = "macos"))]
         let mut routed_tiles = route_lossless_j2k_metal_input_runs(
-            slide,
+            batch_context,
             &mut metal_input,
             &mut j2k_encoder,
-            level,
-            location,
             row,
-            &planned,
             &direct_routes,
-            options.transfer_syntax,
             route_scope_frames_usize,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
             &mut metrics,
         )?;
         let mut cpu_batch_results = encode_lossless_j2k_cpu_fallback_after_routes(
-            slide,
-            level,
+            batch_context,
             &j2k_encoder,
-            &planned,
-            &options,
-            location,
-            tile_size,
             &direct_routes,
             |idx| {
                 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -2024,20 +1734,20 @@ fn profile_lossless_j2k_routes(
                 }
             },
         )?;
-        for (idx, planned_frame) in planned.into_iter().enumerate() {
+        for (idx, planned_frame) in planned.iter().enumerate() {
             let encode_allowed = j2k_non_passthrough_encode_allowed(
-                &planned_frame,
+                planned_frame,
                 options.transfer_syntax,
                 tile_size,
             );
-            if try_profile_existing_lossless_j2k_frame(
+            if try_profile_existing_lossless_j2k_frame(ExistingLosslessJ2kFrameContext {
                 idx,
-                &planned_frame,
-                &mut direct_routes,
-                &options,
-                &mut metrics,
-                &mut pixel_profile,
-            )? {
+                planned_frame,
+                direct_routes: &mut direct_routes,
+                options: &options,
+                metrics: &mut metrics,
+                pixel_profile: &mut pixel_profile,
+            })? {
                 remaining = remaining.saturating_sub(1);
                 continue;
             }
@@ -2046,18 +1756,15 @@ fn profile_lossless_j2k_routes(
                 remaining = remaining.saturating_sub(1);
                 continue;
             }
-            reject_lossy_j2k_lossless_fallback(&planned_frame, options.transfer_syntax, row)?;
+            reject_lossy_j2k_lossless_fallback(planned_frame, options.transfer_syntax, row)?;
 
             let resolved = resolve_lossless_j2k_fallback_frame(
-                slide,
+                batch_context,
                 &mut j2k_encoder,
-                location,
-                &planned_frame,
+                planned_frame,
                 &mut cpu_batch_results[idx],
                 #[cfg(all(feature = "metal", target_os = "macos"))]
                 routed_tiles[idx].take(),
-                options.transfer_syntax,
-                tile_size,
             )?;
             let encoded = record_resolved_lossless_j2k_fallback_frame(
                 &mut metrics,
@@ -2214,7 +1921,7 @@ fn profile_jpeg_baseline_routes(
                             JpegBackend::Cpu | JpegBackend::Auto => {
                                 metrics.record_jpeg_cpu_encode(encode_duration);
                             }
-                            JpegBackend::Metal | JpegBackend::Cuda => {}
+                            JpegBackend::Metal => {}
                         }
                         remaining = remaining.saturating_sub(1);
                     }
@@ -3245,15 +2952,11 @@ fn empty_jpeg_baseline_metal_run_with_input_duration(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn encode_cpu_input_tile(
     slide: &Slide,
     j2k_encoder: &mut DicomJ2kEncoder,
     location: JpegBaselineFrameLocation,
-    x: u64,
-    y: u64,
-    width: u32,
-    height: u32,
+    frame: OutputFrameRect,
     tile_size: u32,
 ) -> Result<
     (
@@ -3264,21 +2967,8 @@ fn encode_cpu_input_tile(
     ),
     Error,
 > {
-    let prepared = prepare_cpu_input_lossless_j2k_tile(
-        slide,
-        location.scene_idx,
-        location.series_idx,
-        location.level_idx,
-        location.z,
-        location.c,
-        location.t,
-        x,
-        y,
-        width,
-        height,
-        tile_size,
-        u64::MAX,
-    )?;
+    let prepared =
+        prepare_cpu_input_lossless_j2k_tile(slide, location, frame, tile_size, u64::MAX)?;
     let samples = lossless_j2k_samples_from_prepared_region(&prepared, tile_size)?;
     Ok((
         j2k_encoder.encode(samples),
@@ -3377,6 +3067,13 @@ mod tests {
     };
     use dicom_core::VR;
     use dicom_dictionary_std::{tags, uids};
+
+    #[test]
+    fn published_jpeg_backend_classification_only_treats_metal_as_device() {
+        assert!(!jpeg_backend_uses_device(JpegBackend::Auto));
+        assert!(!jpeg_backend_uses_device(JpegBackend::Cpu));
+        assert!(jpeg_backend_uses_device(JpegBackend::Metal));
+    }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
     mod auto_route_tests;

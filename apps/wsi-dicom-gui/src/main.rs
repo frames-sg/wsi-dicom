@@ -2,15 +2,13 @@
 
 mod theme;
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use eframe::egui::{self, Color32, Margin, RichText, Stroke, TextStyle, Vec2};
 use wsi_dicom::{
     validate_dicom_path, CodecValidation, EncodeBackendPreference, Export, ExportOptions,
     IccProfilePolicy, JpegDirectHtj2kProfile, MetadataSource, TransferSyntax, ValidationOptions,
-    METADATA_JSON_MAX_BYTES,
 };
 
 fn main() -> eframe::Result<()> {
@@ -567,8 +565,18 @@ impl WsiDicomGui {
         let Some(receiver) = &self.receiver else {
             return;
         };
-        let Ok(result) = receiver.try_recv() else {
-            return;
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                self.running = false;
+                self.receiver = None;
+                self.status = "Export failed.".to_string();
+                self.report_json =
+                    "Export worker stopped without returning a result. Review application logs and retry."
+                        .to_string();
+                return;
+            }
         };
         self.running = false;
         self.receiver = None;
@@ -691,29 +699,7 @@ fn load_metadata_source(
     let Some(path) = metadata_path else {
         return Err("Choose metadata JSON or enable research placeholder metadata.".to_string());
     };
-    let bytes = read_capped_file(path, METADATA_JSON_MAX_BYTES)?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|err| format!("parse metadata JSON {}: {err}", path.display()))?;
-    MetadataSource::from_json_value(value)
-        .map_err(|err| format!("parse strict DICOM metadata {}: {err}", path.display()))
-}
-
-fn read_capped_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {
-    let file =
-        std::fs::File::open(path).map_err(|err| format!("read {}: {err}", path.display()))?;
-    let mut limited = file.take(max_bytes.saturating_add(1));
-    let mut bytes = Vec::new();
-    limited
-        .read_to_end(&mut bytes)
-        .map_err(|err| format!("read {}: {err}", path.display()))?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max_bytes {
-        return Err(format!(
-            "metadata JSON {} exceeds {} byte limit",
-            path.display(),
-            max_bytes
-        ));
-    }
-    Ok(bytes)
+    MetadataSource::from_json_file(path).map_err(|err| err.to_string())
 }
 
 fn path_label(path: Option<&Path>) -> String {
@@ -851,5 +837,29 @@ fn codec_validation_label(value: CodecValidation) -> &'static str {
         CodecValidation::Disabled => "Disabled",
         CodecValidation::RoundTrip => "Round trip",
         _ => "Unknown validation",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disconnected_worker_reaches_visible_terminal_failure() {
+        let (sender, receiver) = mpsc::channel();
+        drop(sender);
+        let mut gui = WsiDicomGui {
+            receiver: Some(receiver),
+            running: true,
+            status: "Export running...".to_string(),
+            ..WsiDicomGui::default()
+        };
+
+        gui.poll_worker();
+
+        assert!(!gui.running);
+        assert!(gui.receiver.is_none());
+        assert_eq!(gui.status, "Export failed.");
+        assert!(gui.report_json.contains("worker stopped"));
     }
 }

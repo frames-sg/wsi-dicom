@@ -1,0 +1,24 @@
+  enum CodecValidation
+  enum EncodeBackendPreference
+  enum MetadataSource
+  enum TransferSyntax
+  enum wsi_dicom::DicomRouteCorpusCoverageProgress, previously in file src/request.rs:96
+  enum wsi_dicom::DicomRouteCoverageProgress, previously in file src/request.rs:81
+  enum wsi_dicom::WsiDicomError, previously in file src/error.rs:4
+  struct DefaultTransferSyntaxRequest
+  struct DicomMetadata
+  struct wsi_dicom::DicomEncodedFrame, previously in file src/report.rs:20
+  struct wsi_dicom::DicomExport, previously in file src/api.rs:19
+  struct wsi_dicom::DicomExportMetrics, previously in file src/report.rs:88
+  struct wsi_dicom::DicomExportOptions, previously in file src/options.rs:90
+  struct wsi_dicom::DicomExportReport, previously in file src/report.rs:12
+  struct wsi_dicom::DicomExportRequest, previously in file src/request.rs:15
+  struct wsi_dicom::DicomInstanceReport, previously in file src/report.rs:74
+  struct wsi_dicom::DicomJ2kFrameEncodeRequest, previously in file src/request.rs:46
+  struct wsi_dicom::DicomRouteCorpusCoverageFailure, previously in file src/report.rs:53
+  struct wsi_dicom::DicomRouteCorpusCoverageReport, previously in file src/report.rs:59
+  struct wsi_dicom::DicomRouteCorpusCoverageRequest, previously in file src/request.rs:86
+  struct wsi_dicom::DicomRouteCoverageReport, previously in file src/report.rs:41
+  struct wsi_dicom::DicomRouteCoverageRequest, previously in file src/request.rs:71
+  struct wsi_dicom::DicomRouteProfileReport, previously in file src/report.rs:30
+  struct wsi_dicom::DicomRouteProfileRequest, previously in file src/request.rs:54

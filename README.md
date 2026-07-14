@@ -22,16 +22,16 @@ Use the Rust API:
 
 ```toml
 [dependencies]
-wsi-dicom = "0.4.0"
+wsi-dicom = "0.7.0"
 ```
 
 GPU support is opt-in:
 
 ```toml
 [dependencies]
-wsi-dicom = { version = "0.4.0", features = ["metal"] } # macOS
+wsi-dicom = { version = "0.7.0", features = ["metal"] } # macOS
 # or
-wsi-dicom = { version = "0.4.0", features = ["cuda"] } # CUDA-capable Linux/Windows
+wsi-dicom = { version = "0.7.0", features = ["cuda"] } # CUDA-capable Linux/Windows
 ```
 
 Feature flags:
@@ -66,7 +66,13 @@ wsi-dicom convert slide.ndpi --out dicom-out --research-placeholder
 Use `--metadata metadata.json` for real metadata. `--metadata` and
 `--research-placeholder` are mutually exclusive. Existing generated `.dcm`
 paths are refused by default; pass `--overwrite` only when replacement is
-intentional.
+intentional. Each conversion is staged and committed as one generation, so an
+ordinary failure does not leave a partial set of final `.dcm` files.
+
+Generated DICOM UIDs are fresh for each conversion. Reproducible pipelines may
+opt into full source-content/configuration identity with
+`--uid-policy deterministic`; this hashes the complete source and is therefore
+more expensive on large slides.
 
 The default conversion preset is `lossless-review`, which emits HTJ2K Lossless
 RPCL. For explicit JPEG Baseline output:
@@ -164,6 +170,8 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
 - JPEG 2000 passthrough preserves eligible native source codestreams.
 - Route profile and coverage JSON reports expose available frame counts,
   sampled frame percentages, route counters, pixel profiles, and GPU counters.
+- Output names encode scene, series, level, Z, channel, and time coordinates;
+  consumers must use report paths rather than assuming the pre-0.7 name shape.
 - Passing validators is release evidence, not formal DICOM certification.
 
 ## Development
@@ -172,9 +180,9 @@ Core checks:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --no-default-features --all-targets -- -D warnings
-cargo test --workspace --no-default-features --all-targets
-cargo check -p wsi-dicom-gui
+cargo clippy --workspace --no-default-features --all-targets --locked -- -D warnings
+cargo test --workspace --no-default-features --all-targets --locked
+cargo check -p wsi-dicom-gui --locked
 ```
 
 Pre-1.0 release gates:

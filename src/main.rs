@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::{io::Read, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 use clap::{Args, Parser, Subcommand};
 use wsi_dicom::{
@@ -9,10 +9,11 @@ use wsi_dicom::{
     DoctorReport, EncodeBackendPreference, Error, Export, ExportOptions, ExportPreset,
     ExportReport, IccProfilePolicy, JpegDirectHtj2kProfile, MetadataSource, RouteCoverageReport,
     RouteCoverageRequest, RouteProfileRequest, RouteProgressSink, SelfTestOptions, SelfTestReport,
-    TransferSyntax, ValidationOptions, ValidationReport, METADATA_JSON_MAX_BYTES,
+    TransferSyntax, UidPolicy, ValidationOptions, ValidationReport,
 };
 
 mod cli_report;
+mod time;
 
 use cli_report::{
     format_corpus_coverage_summary, format_coverage_summary, format_profile_summary,
@@ -150,22 +151,25 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    SelfTest {
-        #[arg(long)]
-        out: Option<PathBuf>,
-        #[arg(long)]
-        keep_output: bool,
-        #[arg(long)]
-        strict: bool,
-        #[arg(long)]
-        dcmvalidate_iod: Option<PathBuf>,
-        #[arg(long)]
-        htj2k_decoder: Option<String>,
-        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
-        command_timeout_secs: u64,
-        #[arg(long)]
-        json: bool,
-    },
+    SelfTest(SelfTestArgs),
+}
+
+#[derive(Debug, Args)]
+struct SelfTestArgs {
+    #[arg(long)]
+    out: Option<PathBuf>,
+    #[arg(long)]
+    keep_output: bool,
+    #[arg(long)]
+    strict: bool,
+    #[arg(long)]
+    dcmvalidate_iod: Option<PathBuf>,
+    #[arg(long)]
+    htj2k_decoder: Option<String>,
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
+    command_timeout_secs: u64,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Clone, Copy, Args)]
@@ -233,6 +237,8 @@ struct ExportCliArgs {
     preset: ExportPreset,
     #[arg(long, value_enum, default_value_t = IccProfilePolicy::FallbackSrgb)]
     icc: IccProfilePolicy,
+    #[arg(long, value_enum, default_value_t = UidPolicy::Fresh)]
+    uid_policy: UidPolicy,
     #[arg(long)]
     overwrite: bool,
 }
@@ -247,6 +253,7 @@ impl ExportCliArgs {
             transfer_syntax,
         );
         options.icc_profile_policy = self.icc;
+        options.uid_policy = self.uid_policy;
         options.overwrite = self.overwrite;
         Ok(options)
     }
@@ -408,23 +415,7 @@ fn run() -> Result<(), Error> {
             htj2k_decoder,
             json,
         } => handle_doctor(strict, dcmvalidate_iod, htj2k_decoder, json),
-        Command::SelfTest {
-            out,
-            keep_output,
-            strict,
-            dcmvalidate_iod,
-            htj2k_decoder,
-            command_timeout_secs,
-            json,
-        } => handle_self_test(
-            out,
-            keep_output,
-            strict,
-            dcmvalidate_iod,
-            htj2k_decoder,
-            command_timeout_secs,
-            json,
-        ),
+        Command::SelfTest(arguments) => handle_self_test(arguments),
     }
 }
 
@@ -558,7 +549,7 @@ fn handle_sustain_convert(
             export = export.level(level);
         }
         let report = export.run()?;
-        let elapsed_micros = duration_as_reported_micros(started.elapsed());
+        let elapsed_micros = time::duration_as_reported_micros(started.elapsed());
         let thermal_state = process_thermal_state();
         let memory_pressure = process_memory_pressure();
         let rss_bytes = process_resident_memory_bytes();
@@ -710,29 +701,20 @@ fn handle_doctor(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn handle_self_test(
-    out: Option<PathBuf>,
-    keep_output: bool,
-    strict: bool,
-    dcmvalidate_iod: Option<PathBuf>,
-    htj2k_decoder: Option<String>,
-    command_timeout_secs: u64,
-    json: bool,
-) -> Result<(), Error> {
+fn handle_self_test(arguments: SelfTestArgs) -> Result<(), Error> {
     let mut validation = ValidationOptions::default();
-    validation.strict = strict;
-    validation.dcmvalidate_iod = dcmvalidate_iod;
-    validation.htj2k_decoder = htj2k_decoder;
-    validation.command_timeout_secs = command_timeout_secs;
+    validation.strict = arguments.strict;
+    validation.dcmvalidate_iod = arguments.dcmvalidate_iod;
+    validation.htj2k_decoder = arguments.htj2k_decoder;
+    validation.command_timeout_secs = arguments.command_timeout_secs;
     let mut options = SelfTestOptions::default();
-    options.output_dir = out;
-    options.keep_output = keep_output;
+    options.output_dir = arguments.out;
+    options.keep_output = arguments.keep_output;
     options.validation = validation;
     let report = run_dicom_self_test(options)?;
     let has_failures = report.validation_report.has_failures();
     let failed_checks = report.validation_report.failed_checks();
-    print_cli_output(json, &report, format_self_test_summary)?;
+    print_cli_output(arguments.json, &report, format_self_test_summary)?;
     if has_failures {
         Err(Error::Validation {
             reason: format!("{failed_checks} self-test validation check(s) failed"),
@@ -773,13 +755,6 @@ fn format_self_test_summary(report: &SelfTestReport) -> String {
         report.validation_report.skipped_checks(),
         report.kept_output
     )
-}
-
-fn duration_as_reported_micros(duration: Duration) -> u128 {
-    match duration.as_micros() {
-        0 if duration > Duration::ZERO => 1,
-        micros => micros,
-    }
 }
 
 #[derive(serde::Serialize)]
@@ -888,45 +863,14 @@ fn load_metadata_source(
         });
     };
 
-    let bytes = read_capped_file(&path, METADATA_JSON_MAX_BYTES)?;
-    let value: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|source| Error::Json {
-            path: path.clone(),
-            source,
-        })?;
-    MetadataSource::from_json_value(value).map_err(|source| Error::Json { path, source })
-}
-
-fn read_capped_file(path: &PathBuf, max_bytes: u64) -> Result<Vec<u8>, Error> {
-    let file = std::fs::File::open(path).map_err(|source| Error::Io {
-        path: path.clone(),
-        source,
-    })?;
-    let mut limited = file.take(max_bytes.saturating_add(1));
-    let mut bytes = Vec::new();
-    limited
-        .read_to_end(&mut bytes)
-        .map_err(|source| Error::Io {
-            path: path.clone(),
-            source,
-        })?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max_bytes {
-        return Err(Error::Metadata {
-            reason: format!(
-                "metadata JSON {} exceeds {} byte limit",
-                path.display(),
-                max_bytes
-            ),
-        });
-    }
-    Ok(bytes)
+    MetadataSource::from_json_file(path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         cli_output_line, effective_max_frames_per_level, load_metadata_source,
-        max_level_elapsed_from_ms, resolve_export_transfer_syntax, Cli, Command,
+        max_level_elapsed_from_ms, resolve_export_transfer_syntax, Cli, Command, SelfTestArgs,
     };
     use crate::cli_report::{
         format_corpus_coverage_summary_with_memory, format_coverage_summary_with_memory,
@@ -941,6 +885,7 @@ mod tests {
     };
     use wsi_dicom::{
         ExportPreset, IccProfilePolicy, JpegDirectHtj2kProfile, MetadataSource, TransferSyntax,
+        UidPolicy,
     };
 
     #[derive(serde::Serialize)]
@@ -1428,7 +1373,7 @@ mod tests {
         ])
         .unwrap();
 
-        let Command::SelfTest {
+        let Command::SelfTest(SelfTestArgs {
             strict,
             json,
             out,
@@ -1436,7 +1381,7 @@ mod tests {
             dcmvalidate_iod,
             htj2k_decoder,
             command_timeout_secs,
-        } = cli.command
+        }) = cli.command
         else {
             panic!("expected self-test command");
         };
@@ -1483,6 +1428,31 @@ mod tests {
         };
 
         assert_eq!(export.icc, IccProfilePolicy::FallbackDisplayP3);
+    }
+
+    #[test]
+    fn cli_convert_defaults_to_fresh_uids_and_accepts_deterministic_policy() {
+        let default =
+            Cli::try_parse_from(["wsi-dicom", "convert", "source.svs", "--out", "out"]).unwrap();
+        let Command::Convert { export, .. } = default.command else {
+            panic!("expected convert command");
+        };
+        assert_eq!(export.uid_policy, UidPolicy::Fresh);
+
+        let deterministic = Cli::try_parse_from([
+            "wsi-dicom",
+            "convert",
+            "source.svs",
+            "--out",
+            "out",
+            "--uid-policy",
+            "deterministic",
+        ])
+        .unwrap();
+        let Command::Convert { export, .. } = deterministic.command else {
+            panic!("expected convert command");
+        };
+        assert_eq!(export.uid_policy, UidPolicy::Deterministic);
     }
 
     #[test]

@@ -860,10 +860,7 @@ pub(super) fn encode_cpu_input_planned_tile_run(
                 slide,
                 j2k_encoder,
                 location,
-                planned_frame.x,
-                planned_frame.y,
-                planned_frame.width,
-                planned_frame.height,
+                planned_frame.rect(),
                 tile_size,
             )?;
         input_decode_duration = input_decode_duration.saturating_add(frame_input_decode_duration);
