@@ -43,13 +43,21 @@ baseline_root="$work_dir/wsi-dicom-${BASELINE_VERSION}"
 baseline_rustdoc="$baseline_root/target/doc/wsi_dicom.json"
 
 cd "$repo_root"
+current_target="$work_dir/current-target"
+RUSTDOCFLAGS="-Z unstable-options --output-format json" \
+  CARGO_TARGET_DIR="$current_target" \
+  cargo +nightly rustdoc --lib --locked --no-default-features
+current_rustdoc="$current_target/doc/wsi_dicom.json"
+
 cargo semver-checks check-release \
   --manifest-path Cargo.toml \
+  --current-rustdoc "$current_rustdoc" \
   --baseline-rustdoc "$baseline_rustdoc"
 
 set +e
 minor_report="$(cargo semver-checks check-release \
   --manifest-path Cargo.toml \
+  --current-rustdoc "$current_rustdoc" \
   --baseline-rustdoc "$baseline_rustdoc" \
   --release-type minor 2>&1)"
 minor_status=$?
@@ -67,7 +75,7 @@ printf '%s\n' "$minor_report" |
     capture && /^$/ { capture = 0; next }
     capture && /^  / { print }
   ' |
-  sed 's# in /.*##' |
+  sed -E '/, previously in file/! s# in [^ ]+:[0-9]+$##' |
   LC_ALL=C sort -u >"$actual_breaks"
 
 if ! diff -u .github/semver-0.2-to-0.7-allowed-breaks.txt "$actual_breaks"; then

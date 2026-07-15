@@ -678,29 +678,133 @@ pub(super) fn run_dicom_validators_for_test(path: &std::path::Path) {
     }
 }
 
+pub(super) fn run_htj2k_dicom_validators_for_test(path: &std::path::Path) {
+    let object = dicom_object::open_file(path).expect("open exported HTJ2K DICOM");
+    let transfer_syntax = object.meta().transfer_syntax.trim_end_matches('\0');
+    assert!(
+        matches!(
+            transfer_syntax,
+            "1.2.840.10008.1.2.4.201" | "1.2.840.10008.1.2.4.202" | "1.2.840.10008.1.2.4.203"
+        ),
+        "expected an HTJ2K transfer syntax, got {transfer_syntax}"
+    );
+
+    let mut ran = false;
+    if let Some(dciodvfy) = find_command_for_test("dciodvfy") {
+        let output = run_dicom_validator_command_for_test(&dciodvfy, &["-new"], &[path]);
+        if validator_output_succeeded(&output) {
+            ran = true;
+        } else if dciodvfy_lacks_htj2k_transfer_syntax_support(&output) {
+            eprintln!(
+                "dciodvfy is installed but does not recognize the HTJ2K transfer syntax; \
+                 retaining dcentvfy structural validation and the separate Grok decode gate"
+            );
+        } else {
+            assert_validator_output_succeeded("dciodvfy", &output);
+        }
+    } else {
+        eprintln!("skipping dciodvfy validation: dciodvfy not found");
+    }
+    if let Some(dcentvfy) = find_command_for_test("dcentvfy") {
+        run_dicom_validator_for_test("dcentvfy", &dcentvfy, &[], &[path]);
+        ran = true;
+    } else {
+        eprintln!("skipping dcentvfy validation: dcentvfy not found");
+    }
+    if !ran {
+        eprintln!("skipping external HTJ2K DICOM validator smoke: no capable validator found");
+    }
+}
+
 pub(super) fn run_dicom_validator_for_test(
     name: &str,
     command: &str,
     args: &[&str],
     paths: &[&std::path::Path],
 ) {
-    let output = std::process::Command::new(command)
+    let output = run_dicom_validator_command_for_test(command, args, paths);
+    assert_validator_output_succeeded(name, &output);
+}
+
+fn run_dicom_validator_command_for_test(
+    command: &str,
+    args: &[&str],
+    paths: &[&std::path::Path],
+) -> std::process::Output {
+    std::process::Command::new(command)
         .args(args)
         .args(paths)
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+fn validator_output_succeeded(output: &std::process::Output) -> bool {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let has_error = stdout
         .lines()
         .chain(stderr.lines())
         .any(|line| line.trim_start().starts_with("Error"));
+    output.status.success() && !has_error
+}
+
+fn assert_validator_output_succeeded(name: &str, output: &std::process::Output) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
-        output.status.success() && !has_error,
+        validator_output_succeeded(output),
         "{name} failed with status {}\nstdout:\n{}\nstderr:\n{}",
         output.status,
         stdout,
         stderr
     );
+}
+
+fn dciodvfy_lacks_htj2k_transfer_syntax_support(output: &std::process::Output) -> bool {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    dciodvfy_errors_are_unsupported_htj2k_cascade(&stderr)
+}
+
+fn dciodvfy_errors_are_unsupported_htj2k_cascade(stderr: &str) -> bool {
+    let errors: Vec<_> = stderr
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| line.starts_with("Error"))
+        .collect();
+
+    errors.len() == 3
+        && errors.iter().any(|line| {
+            line.contains(
+                "Undefined value length of other byte/word element is illegal in non-encapsulated transfer syntax",
+            )
+        })
+        && errors
+            .iter()
+            .any(|line| line.contains("Dicom dataset read failed"))
+        && errors.iter().any(|line| {
+            line.contains("</PixelData(7fe0,0010)>")
+                && line.contains("Missing attribute for Type 1C Conditional")
+        })
+}
+
+#[test]
+fn dciodvfy_htj2k_capability_classifier_accepts_only_the_known_parse_cascade() {
+    let unsupported = "\
+Error - Undefined value length of other byte/word element is illegal in non-encapsulated transfer syntax\n\
+Error - Dicom dataset read failed\n\
+Error - </PixelData(7fe0,0010)> - Missing attribute for Type 1C Conditional - Module=<ImagePixel>\n";
+
+    assert!(dciodvfy_errors_are_unsupported_htj2k_cascade(unsupported));
+}
+
+#[test]
+fn dciodvfy_htj2k_capability_classifier_rejects_additional_validation_errors() {
+    let invalid = "\
+Error - Undefined value length of other byte/word element is illegal in non-encapsulated transfer syntax\n\
+Error - Dicom dataset read failed\n\
+Error - </PixelData(7fe0,0010)> - Missing attribute for Type 1C Conditional - Module=<ImagePixel>\n\
+Error - </PatientID(0010,0020)> - Missing attribute for Type 2\n";
+
+    assert!(!dciodvfy_errors_are_unsupported_htj2k_cascade(invalid));
 }

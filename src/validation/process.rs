@@ -133,15 +133,10 @@ impl ValidationCommandRunner for SystemCommandRunner {
 
 #[cfg(unix)]
 fn terminate_validation_process_tree(child: &mut std::process::Child) -> io::Result<()> {
-    let process_group = format!("-{}", child.id());
-    let status = Command::new("/bin/kill")
-        .args(["-KILL", process_group.as_str()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    match status {
-        Ok(status) if status.success() => Ok(()),
-        Ok(_) | Err(_) => child.kill(),
+    let process_group = rustix::process::Pid::from_child(child);
+    match rustix::process::kill_process_group(process_group, rustix::process::Signal::KILL) {
+        Ok(()) => Ok(()),
+        Err(_) => child.kill(),
     }
 }
 

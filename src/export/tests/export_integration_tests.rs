@@ -345,7 +345,7 @@ fn external_dicom_validators_accept_htj2k_rpcl_when_available() {
     })
     .unwrap();
 
-    run_dicom_validators_for_test(&report.instances[0].path);
+    run_htj2k_dicom_validators_for_test(&report.instances[0].path);
 }
 
 #[test]
