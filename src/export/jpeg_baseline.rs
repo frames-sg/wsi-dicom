@@ -9,6 +9,11 @@ use crate::tile::PixelProfile;
 
 use super::frame_region::{FrameLocation, OutputFrameRect};
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
+mod metal;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) use metal::encode_jpeg_baseline_metal_device_tile_batch;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct JpegBaselineFrameGeometry {
     pub(crate) frame_columns: u32,

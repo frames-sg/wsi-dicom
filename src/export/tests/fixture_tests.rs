@@ -489,7 +489,11 @@ fn fixture_first_mappable_tiles_use_batched_wsi_rs_metal_input_decode_and_metal_
         assert!(frame.0.used_device_validation);
         assert_transfer_syntax_codestream(
             TransferSyntax::Jpeg2000Lossless,
-            frame.0.codestream_bytes().expect("codestream bytes"),
+            frame
+                .0
+                .codestream_bytes()
+                .expect("codestream bytes")
+                .as_ref(),
         );
     }
 }
@@ -693,7 +697,10 @@ fn ndpi_whole_level_metal_rows_do_not_turn_black_after_reused_encoder_state() {
         .unwrap();
     let expected = prepare_tile_samples(&cpu_region, tile_size, tile_size).unwrap();
     let actual = decode_j2k_frame_for_test(
-        encoded.codestream_bytes().expect("codestream bytes"),
+        encoded
+            .codestream_bytes()
+            .expect("codestream bytes")
+            .as_ref(),
         tile_size,
         tile_size,
         profile.components,
@@ -783,6 +790,9 @@ fn metal_strip_composer_returns_ordered_tiles_from_batched_compose() {
         .pack_tiles(&[tile_a, tile_b], layout, 0, 0, 2)
         .expect("pack test tiles");
 
+    assert_eq!(packed.image.dimensions(), (4, 8));
+    assert_eq!(packed.image.pitch_bytes(), 4);
+
     let composed = composer
         .compose_tiles(
             &packed,
@@ -812,6 +822,117 @@ fn metal_strip_composer_returns_ordered_tiles_from_batched_compose() {
     assert_eq!(composed[1].width, 4);
     assert_eq!(composed[0].height, 4);
     assert_eq!(composed[1].height, 4);
+    assert!(matches!(
+        composed[0].storage,
+        wsi_rs::output::metal::MetalDeviceStorage::Resident { .. }
+    ));
+    assert!(matches!(
+        composed[1].storage,
+        wsi_rs::output::metal::MetalDeviceStorage::Resident { .. }
+    ));
+    assert_eq!(
+        crate::metal_interop::test_tile_bytes(&composed[0]),
+        source_a
+    );
+    assert_eq!(
+        crate::metal_interop::test_tile_bytes(&composed[1]),
+        source_b
+    );
+}
+
+#[test]
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[allow(deprecated)]
+fn metal_strip_composer_rejects_legacy_raw_buffer_tiles() {
+    let Some(device) = metal::Device::system_default() else {
+        return;
+    };
+    let composer = MetalStripComposer::new(device.clone()).unwrap();
+    let source = [7u8; 16];
+    let mut tile = metal_test_tile(&device, &source, 4, 4, J2kPixelFormat::Gray8);
+    tile.storage = wsi_rs::output::metal::MetalDeviceStorage::Buffer {
+        buffer: j2k_metal_support::checked_shared_buffer_with_slice(&device, &source)
+            .expect("legacy test upload"),
+        byte_offset: 0,
+    };
+
+    let error = match composer.pack_tiles(
+        &[tile],
+        WholeLevelStripLayout {
+            width: 4,
+            height: 4,
+        },
+        0,
+        0,
+        1,
+    ) {
+        Ok(_) => panic!("legacy raw buffer storage must be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, Error::Unsupported { .. }));
+    assert!(error.to_string().contains("legacy raw Metal buffer"));
+}
+
+#[test]
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn metal_strip_composer_rejects_metadata_mismatch_and_out_of_grid_reads() {
+    let Some(device) = metal::Device::system_default() else {
+        return;
+    };
+    let composer = MetalStripComposer::new(device.clone()).unwrap();
+    let source = [13u8; 16];
+    let mut mismatched = metal_test_tile(&device, &source, 4, 4, J2kPixelFormat::Gray8);
+    mismatched.pitch_bytes += 1;
+    let error = match composer.pack_tiles(
+        &[mismatched],
+        WholeLevelStripLayout {
+            width: 4,
+            height: 4,
+        },
+        0,
+        0,
+        1,
+    ) {
+        Ok(_) => panic!("resident metadata mismatch must be rejected"),
+        Err(error) => error,
+    };
+    assert!(matches!(&error, Error::Unsupported { .. }));
+    assert!(error.to_string().contains("metadata"));
+
+    let packed = composer
+        .pack_tiles(
+            &[metal_test_tile(
+                &device,
+                &source,
+                4,
+                4,
+                J2kPixelFormat::Gray8,
+            )],
+            WholeLevelStripLayout {
+                width: 4,
+                height: 4,
+            },
+            0,
+            0,
+            1,
+        )
+        .expect("pack resident source");
+    let error = composer
+        .compose_tiles(
+            &packed,
+            &[MetalComposeTileRequest {
+                src_origin_x: 4,
+                src_origin_y: 0,
+                valid_width: 4,
+                valid_height: 4,
+                output_width: 4,
+                output_height: 4,
+            }],
+        )
+        .expect_err("out-of-grid source read must be rejected before submission");
+    assert!(matches!(&error, Error::Unsupported { .. }));
+    assert!(error.to_string().contains("outside the packed source"));
 }
 
 #[test]

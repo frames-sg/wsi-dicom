@@ -72,6 +72,43 @@ fn export_rs_line_budget_ratchets_down() {
 }
 
 #[test]
+fn metal_ownership_is_split_by_submission_lifecycle() {
+    let required = [
+        "src/encode/metal.rs",
+        "src/encode/metal/tests.rs",
+        "src/export/jpeg_baseline/metal.rs",
+        "src/export/metal_compose/types.rs",
+        "src/export/metal_compose/pack.rs",
+        "src/export/metal_compose/compose.rs",
+        "src/export/metal_compose/addressing.rs",
+        "src/export/metal_compose/compose.metal",
+        "src/export/metal_compose/tests.rs",
+    ];
+    for relative in required {
+        assert!(crate_root().join(relative).is_file(), "missing {relative}");
+    }
+
+    let compose_facade = fs::read_to_string(crate_root().join("src/export/metal_compose.rs"))
+        .expect("read Metal compose facade");
+    for required in ["mod addressing;", "mod compose;", "mod pack;", "mod types;"] {
+        assert!(
+            compose_facade.contains(required),
+            "compose facade is missing `{required}`"
+        );
+    }
+    for forbidden in [
+        "fn pack_tiles(",
+        "fn compose_tiles(",
+        "struct ComposeAddressPlan",
+    ] {
+        assert!(
+            !compose_facade.contains(forbidden),
+            "compose facade owns `{forbidden}`"
+        );
+    }
+}
+
+#[test]
 fn large_source_module_line_budgets_do_not_regress() {
     if !in_source_checkout() {
         return;
@@ -329,7 +366,7 @@ fn metal_feature_enables_wsi_rs_metal_decode_plumbing() {
 }
 
 #[test]
-fn cuda_feature_keeps_published_encode_plumbing_and_documents_blockers() {
+fn cuda_feature_keeps_encode_plumbing_and_documents_its_scope() {
     let manifest = fs::read_to_string(crate_root().join("Cargo.toml")).expect("read Cargo.toml");
     assert!(
         manifest.contains("cuda = [\"dep:j2k-cuda\"]"),
@@ -341,12 +378,10 @@ fn cuda_feature_keeps_published_encode_plumbing_and_documents_blockers() {
         "README.md must document cuda/metal features explicitly instead of a non-portable gpu aggregate"
     );
     assert!(
-        readme.contains("wsi-rs CUDA tile decode waits on a published wsi-rs crate/API"),
-        "README.md must document why wsi-rs CUDA tile decode is not yet wired"
-    );
-    assert!(
-        readme.contains("Direct JPEG-to-HTJ2K CUDA acceleration waits on a published `j2k-transcode-cuda` crate/API"),
-        "README.md must document why direct CUDA transcode is not yet wired"
+        readme.contains(
+            "wsi-rs CUDA tile decode and direct JPEG-to-HTJ2K CUDA transcode are not exposed by wsi-dicom 0.7.0"
+        ),
+        "README.md must state the CUDA feature's actual 0.7.0 scope"
     );
 }
 

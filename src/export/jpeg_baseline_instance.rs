@@ -271,7 +271,7 @@ pub(super) fn export_jpeg_passthrough_instance(
                             JpegBackend::Cpu | JpegBackend::Auto => {
                                 metrics.record_jpeg_cpu_encode(encode_duration);
                             }
-                            JpegBackend::Metal => {}
+                            JpegBackend::Metal | JpegBackend::Cuda => {}
                         }
                     }
                 }

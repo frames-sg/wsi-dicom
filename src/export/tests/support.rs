@@ -442,7 +442,7 @@ pub(super) fn assert_aperio_jp2k_metal_input_tile_matches_cpu(tile_size: u32) {
     assert!(frame.codestream_is_metal_buffer_backed());
     assert_transfer_syntax_codestream(
         TransferSyntax::Htj2kLosslessRpcl,
-        frame.codestream_bytes().expect("codestream bytes"),
+        frame.codestream_bytes().expect("codestream bytes").as_ref(),
     );
 
     let cpu_region = slide
@@ -456,7 +456,7 @@ pub(super) fn assert_aperio_jp2k_metal_input_tile_matches_cpu(tile_size: u32) {
         .unwrap();
     let expected = prepare_tile_samples(&cpu_region, tile_size, tile_size).unwrap();
     let actual = decode_j2k_frame_for_test(
-        frame.codestream_bytes().expect("codestream bytes"),
+        frame.codestream_bytes().expect("codestream bytes").as_ref(),
         tile_size,
         tile_size,
         profile.components,
@@ -556,19 +556,7 @@ pub(super) fn metal_test_tile(
     height: u32,
     format: J2kPixelFormat,
 ) -> wsi_rs::output::metal::MetalDeviceTile {
-    let buffer = device.new_buffer_with_data(
-        bytes.as_ptr().cast(),
-        bytes.len() as u64,
-        metal::MTLResourceOptions::StorageModeShared,
-    );
-    wsi_rs::output::metal::MetalDeviceTile::from_buffer(
-        buffer,
-        0,
-        width,
-        height,
-        width as usize * format.bytes_per_pixel(),
-        wsi_pixel_format_from_j2k(format).expect("supported test pixel format"),
-    )
+    crate::metal_interop::test_tile_from_shared_bytes(device, bytes, width, height, format)
 }
 
 pub(super) fn write_source_dicom(path: &std::path::Path) {

@@ -3,7 +3,7 @@ use std::time::Duration;
 use j2k_transcode::accelerator::{
     DctGridToDwt97Job, DctToWaveletStageAccelerator, TranscodeStageError,
 };
-use j2k_transcode::dct97_2d::{
+use j2k_transcode::{
     dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch, Dwt97TwoDimensional,
 };
 use j2k_transcode::{
@@ -48,7 +48,9 @@ impl DctToWaveletStageAccelerator for RayonDwt97BatchAccelerator {
                     job.height,
                     &mut scratch,
                 )
-                .map_err(|_| TranscodeStageError::from("CPU 9/7 batch transform failed"))
+                .map_err(|source| {
+                    TranscodeStageError::backend("cpu", "9/7 DCT batch transform", source)
+                })
             })
             .collect::<Result<Vec<_>, _>>()
             .map(Some)
