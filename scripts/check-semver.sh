@@ -37,16 +37,16 @@ tar --extract --file "$archive" --directory "$work_dir"
 baseline_root="$work_dir/wsi-dicom-${BASELINE_VERSION}"
 (
   cd "$baseline_root"
-  RUSTDOCFLAGS="-Z unstable-options --output-format json" \
-    cargo +nightly rustdoc --lib --locked
+  RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" \
+    cargo +1.96 rustdoc --lib --locked
 )
 baseline_rustdoc="$baseline_root/target/doc/wsi_dicom.json"
 
 cd "$repo_root"
 current_target="$work_dir/current-target"
-RUSTDOCFLAGS="-Z unstable-options --output-format json" \
+RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" \
   CARGO_TARGET_DIR="$current_target" \
-  cargo +nightly rustdoc --lib --locked --no-default-features
+  cargo +1.96 rustdoc --lib --locked --no-default-features
 current_rustdoc="$current_target/doc/wsi_dicom.json"
 
 cargo semver-checks check-release \
