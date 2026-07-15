@@ -91,6 +91,8 @@ static inline void compose_pixel(
     }
 }
 
+// Keep this hot path explicit. Routing it through compose_pixel regressed the
+// release-mode address-width performance guard on Apple GPU hardware.
 kernel void wsi_compose_strips_u32(
     device const uchar *src [[buffer(0)]],
     device uchar *dst [[buffer(1)]],
@@ -101,16 +103,19 @@ kernel void wsi_compose_strips_u32(
         return;
     }
 
+    const uint dst_idx = compose_destination_index_u32(gid, params);
     const bool inside = gid.x < params.valid_width && gid.y < params.valid_height;
-    const uint src_idx = inside ? compose_source_index_u32(gid, params) : 0u;
-    compose_pixel(
-        src,
-        dst,
-        src_idx,
-        compose_destination_index_u32(gid, params),
-        inside,
-        params.bytes_per_pixel
-    );
+    if (!inside) {
+        for (uint byte_idx = 0u; byte_idx < params.bytes_per_pixel; ++byte_idx) {
+            dst[dst_idx + byte_idx] = uchar(0);
+        }
+        return;
+    }
+
+    const uint src_idx = compose_source_index_u32(gid, params);
+    for (uint byte_idx = 0u; byte_idx < params.bytes_per_pixel; ++byte_idx) {
+        dst[dst_idx + byte_idx] = src[src_idx + byte_idx];
+    }
 }
 
 kernel void wsi_compose_strips(

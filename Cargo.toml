@@ -41,7 +41,7 @@ j2k-jpeg = "=0.7.2"
 j2k-jpeg-metal = { version = "=0.7.2", optional = true }
 j2k-transcode = "=0.7.2"
 j2k-transcode-metal = { version = "=0.7.2", optional = true }
-wsi-rs = { path = "../wsi-rs", version = "=0.5.0" }
+wsi-rs = "=0.5.0"
 tempfile = "3"
 thiserror = "2"
 

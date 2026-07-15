@@ -6,7 +6,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
-J2K_VERSION = "=0.6.2"
+J2K_VERSION = "=0.7.2"
 DIRECT_J2K_DEPENDENCIES = {
     "j2k",
     "j2k-core",
@@ -14,6 +14,7 @@ DIRECT_J2K_DEPENDENCIES = {
     "j2k-jpeg",
     "j2k-jpeg-metal",
     "j2k-metal",
+    "j2k-metal-support",
     "j2k-transcode",
     "j2k-transcode-metal",
 }
@@ -48,14 +49,14 @@ class DependencyTopologyTests(unittest.TestCase):
 
         self.assertNotIn("patch", manifest)
 
-    def test_only_documented_wsi_path_bridge_remains(self):
+    def test_published_wsi_dependency_uses_the_registry(self):
         root_dependencies = load_toml("Cargo.toml")["dependencies"]
         root_paths = {
             name: specification["path"]
             for name, specification in root_dependencies.items()
             if isinstance(specification, dict) and "path" in specification
         }
-        self.assertEqual(root_paths, {"wsi-rs": "../wsi-rs"})
+        self.assertEqual(root_paths, {})
         self.assertEqual(dependency_version(root_dependencies["wsi-rs"]), "=0.5.0")
 
         fuzz_dependencies = load_toml("fuzz/Cargo.toml")["dependencies"]
@@ -66,7 +67,7 @@ class DependencyTopologyTests(unittest.TestCase):
         }
         self.assertEqual(
             fuzz_paths,
-            {"wsi-rs": "../../wsi-rs", "wsi-dicom": ".."},
+            {"wsi-dicom": ".."},
         )
         self.assertEqual(dependency_version(fuzz_dependencies["wsi-rs"]), "=0.5.0")
 
@@ -92,7 +93,7 @@ class DependencyTopologyTests(unittest.TestCase):
                     f"duplicate j2k package identities in {relative_path}: {counts}",
                 )
                 for package in j2k_packages:
-                    self.assertEqual(package["version"], "0.6.2", package["name"])
+                    self.assertEqual(package["version"], "0.7.2", package["name"])
                     self.assertEqual(package.get("source"), REGISTRY_SOURCE, package["name"])
                     self.assertRegex(package.get("checksum", ""), r"^[0-9a-f]{64}$")
                 self.assertFalse(
