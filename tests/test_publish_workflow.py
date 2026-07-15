@@ -391,6 +391,16 @@ class PublishWorkflowTests(unittest.TestCase):
             ci,
         )
 
+    def test_actionlint_install_is_versioned_and_checksum_verified(self):
+        ci = CI_PATH.read_text(encoding="utf-8")
+        self.assertIn("ACTIONLINT_VERSION: 1.7.12", ci)
+        self.assertIn(
+            "ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8",
+            ci,
+        )
+        self.assertIn("sha256sum --check --strict", ci)
+        self.assertNotIn("tool: actionlint@", ci)
+
 
 class PublishScriptTests(unittest.TestCase):
     def run_script(self, arguments, *, cargo_token=None, legacy_token=None):
