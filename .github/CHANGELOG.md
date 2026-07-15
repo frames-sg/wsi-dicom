@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Updated the exact `j2k` dependency set to `0.7.3`, whose corrected TLM
+  descriptors make generated HTJ2K frames acceptable to conforming external
+  decoders.
 - Fixed Metal tile-composition source and destination addressing beyond 4 GiB
   with checked host-side spans and a 64-bit shader path, while retaining the
   validated 32-bit path for smaller compositions.

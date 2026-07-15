@@ -646,9 +646,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "j2k"
-version = "0.7.2"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc37c5c89b9754e9799af1293a99979070f6ee07e9c75e592f576d25d8a4ffc8"
+checksum = "da2022053e3160af9ed2f8c2c2efec84f9bb32670239d65327a17e7acee96431"
 dependencies = [
  "j2k-codec-math",
  "j2k-core",
@@ -659,24 +659,24 @@ dependencies = [
 
 [[package]]
 name = "j2k-codec-math"
-version = "0.7.2"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b83c3f37444193a790e46a4bb82b63c154c9439b9e6ac796d64255ef1907e0a"
+checksum = "6158bda69dce66921b5400bf99501223ddd1321a37da2e6d962c4b8e99de7b4e"
 
 [[package]]
 name = "j2k-core"
-version = "0.7.2"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb4dc6f8e6b0d0467c2734dcb0e8e748d0686a90933e43b95c1cbe6bd3afa9a3"
+checksum = "2b37a4f66e890e59ddadd91a6c991db1937be3e5e06faed97afec3fdc5a18b63"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "j2k-jpeg"
-version = "0.7.2"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffe7627b68bdabab22c620e60da04d1d5900cd9cd1e590b3fcff873e3850624f"
+checksum = "490ba70318c05005ff7bad5b26a58519e8b4537086a2d9f7dbe9cde0405b6c85"
 dependencies = [
  "j2k-codec-math",
  "j2k-core",
@@ -688,9 +688,9 @@ dependencies = [
 
 [[package]]
 name = "j2k-native"
-version = "0.7.2"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b71c1bd42a6d0944134cc26736684bb788f62171eb953cf30d3194d1f91ac9c"
+checksum = "e4eac8c7ac46016a59b6074565f58da3d1ad50129e016cc6617883baf01dacf7"
 dependencies = [
  "fearless_simd",
  "j2k-codec-math",
@@ -702,15 +702,15 @@ dependencies = [
 
 [[package]]
 name = "j2k-profile"
-version = "0.7.2"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de05122e266688ecfe33f9c25b232bfa294695e8cae17ab327e932fdc34688dc"
+checksum = "5880ea87167de55e18c76e607a405a966f1aeb25411ebfa76782112d0ac9cfd9"
 
 [[package]]
 name = "j2k-tilecodec"
-version = "0.7.2"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01489e1f633966a994623dd0e8372b2a4225726c8a9aee14ca9c81dec585160d"
+checksum = "7fa6efc5684ec1823a22a9eac612088c1465ea3716607d3696dff86433bb4216"
 dependencies = [
  "flate2",
  "j2k-core",
@@ -721,9 +721,9 @@ dependencies = [
 
 [[package]]
 name = "j2k-transcode"
-version = "0.7.2"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fea541f73285098330114a06fb4faf546fbb42abf5ddf50eb76d2db8a9ccabc"
+checksum = "09e03f5cd5a9ef1a8593b4bc6208dc74d1ce2e72221280037ec600311d20318e"
 dependencies = [
  "j2k",
  "j2k-codec-math",
@@ -736,9 +736,9 @@ dependencies = [
 
 [[package]]
 name = "j2k-types"
-version = "0.7.2"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b42324e2dda8ff1e9d8d2bdd0a233f5d069dffa895562b17a4d5e314098ed9f1"
+checksum = "d0094623ee4efb46049c2cae0409ddf9a784e48f1dc63cc77538528b622c89ed"
 
 [[package]]
 name = "jobserver"

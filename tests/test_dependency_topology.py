@@ -6,7 +6,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
-J2K_VERSION = "=0.7.2"
+J2K_VERSION = "=0.7.3"
 DIRECT_J2K_DEPENDENCIES = {
     "j2k",
     "j2k-core",
@@ -93,7 +93,7 @@ class DependencyTopologyTests(unittest.TestCase):
                     f"duplicate j2k package identities in {relative_path}: {counts}",
                 )
                 for package in j2k_packages:
-                    self.assertEqual(package["version"], "0.7.2", package["name"])
+                    self.assertEqual(package["version"], "0.7.3", package["name"])
                     self.assertEqual(package.get("source"), REGISTRY_SOURCE, package["name"])
                     self.assertRegex(package.get("checksum", ""), r"^[0-9a-f]{64}$")
                 self.assertFalse(
