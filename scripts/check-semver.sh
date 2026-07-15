@@ -51,12 +51,14 @@ current_rustdoc="$current_target/doc/wsi_dicom.json"
 
 cargo semver-checks check-release \
   --manifest-path Cargo.toml \
+  --color never \
   --current-rustdoc "$current_rustdoc" \
   --baseline-rustdoc "$baseline_rustdoc"
 
 set +e
 minor_report="$(cargo semver-checks check-release \
   --manifest-path Cargo.toml \
+  --color never \
   --current-rustdoc "$current_rustdoc" \
   --baseline-rustdoc "$baseline_rustdoc" \
   --release-type minor 2>&1)"
