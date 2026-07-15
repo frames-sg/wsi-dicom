@@ -1367,6 +1367,7 @@ dependencies = [
  "j2k-transcode",
  "moxcms",
  "rayon",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
