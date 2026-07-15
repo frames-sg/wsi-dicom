@@ -668,17 +668,8 @@ pub(super) fn run_dicom_validators_for_test(path: &std::path::Path) {
         eprintln!("skipping dciodvfy validation: dciodvfy not found");
     }
     if let Some(dcentvfy) = find_command_for_test("dcentvfy") {
-        let output = run_dicom_validator_command_for_test(&dcentvfy, &[], &[path]);
-        if validator_output_succeeded(&output) {
-            ran = true;
-        } else if dcentvfy_lacks_htj2k_transfer_syntax_support(&output) {
-            eprintln!(
-                "dcentvfy is installed but does not recognize the HTJ2K transfer syntax; \
-                 retaining the internal DICOM parse and the separate Grok decode gate"
-            );
-        } else {
-            assert_validator_output_succeeded("dcentvfy", &output);
-        }
+        run_dicom_validator_for_test("dcentvfy", &dcentvfy, &[], &[path]);
+        ran = true;
     } else {
         eprintln!("skipping dcentvfy validation: dcentvfy not found");
     }
@@ -700,28 +691,45 @@ pub(super) fn run_htj2k_dicom_validators_for_test(path: &std::path::Path) {
 
     let mut ran = false;
     if let Some(dciodvfy) = find_command_for_test("dciodvfy") {
-        let output = run_dicom_validator_command_for_test(&dciodvfy, &["-new"], &[path]);
-        if validator_output_succeeded(&output) {
-            ran = true;
-        } else if dciodvfy_lacks_htj2k_transfer_syntax_support(&output) {
-            eprintln!(
-                "dciodvfy is installed but does not recognize the HTJ2K transfer syntax; \
-                 retaining dcentvfy structural validation and the separate Grok decode gate"
-            );
-        } else {
-            assert_validator_output_succeeded("dciodvfy", &output);
-        }
+        ran |= run_htj2k_dicom3tools_validator_for_test("dciodvfy", &dciodvfy, &["-new"], path);
     } else {
         eprintln!("skipping dciodvfy validation: dciodvfy not found");
     }
     if let Some(dcentvfy) = find_command_for_test("dcentvfy") {
-        run_dicom_validator_for_test("dcentvfy", &dcentvfy, &[], &[path]);
-        ran = true;
+        ran |= run_htj2k_dicom3tools_validator_for_test("dcentvfy", &dcentvfy, &[], path);
     } else {
         eprintln!("skipping dcentvfy validation: dcentvfy not found");
     }
     if !ran {
         eprintln!("skipping external HTJ2K DICOM validator smoke: no capable validator found");
+    }
+}
+
+fn run_htj2k_dicom3tools_validator_for_test(
+    name: &str,
+    command: &str,
+    args: &[&str],
+    path: &std::path::Path,
+) -> bool {
+    let output = run_dicom_validator_command_for_test(command, args, &[path]);
+    if validator_output_succeeded(&output) {
+        return true;
+    }
+
+    let unsupported = match name {
+        "dciodvfy" => dciodvfy_lacks_htj2k_transfer_syntax_support(&output),
+        "dcentvfy" => dcentvfy_lacks_htj2k_transfer_syntax_support(&output),
+        _ => false,
+    };
+    if unsupported {
+        eprintln!(
+            "{name} is installed but does not recognize the HTJ2K transfer syntax; \
+             retaining the internal DICOM parse and the separate Grok decode gate"
+        );
+        false
+    } else {
+        assert_validator_output_succeeded(name, &output);
+        unreachable!("failed validator output must panic")
     }
 }
 
@@ -853,4 +861,19 @@ Error - </PatientID(0010,0020)> - Missing attribute for Type 2\n";
 
     assert!(dcentvfy_errors_are_unsupported_htj2k_cascade(unsupported));
     assert!(!dcentvfy_errors_are_unsupported_htj2k_cascade(invalid));
+}
+
+#[cfg(unix)]
+#[test]
+fn htj2k_validator_runner_accepts_the_known_dcentvfy_incapability() {
+    let script = "printf '%s\\n' \
+        'Error - Undefined value length of other byte/word element is illegal in non-encapsulated transfer syntax' \
+        'Error - Dicom dataset read failed' >&2; exit 1";
+
+    assert!(!run_htj2k_dicom3tools_validator_for_test(
+        "dcentvfy",
+        "/bin/sh",
+        &["-c", script],
+        std::path::Path::new("unused.dcm"),
+    ));
 }
