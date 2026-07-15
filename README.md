@@ -39,7 +39,7 @@ Feature flags:
 | Feature | Effect |
 | --- | --- |
 | `default` | CPU-only DICOM export. |
-| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. wsi-rs CUDA tile decode waits on a published wsi-rs crate/API. Direct JPEG-to-HTJ2K CUDA acceleration waits on a published `j2k-transcode-cuda` crate/API. |
+| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. wsi-rs CUDA tile decode and direct JPEG-to-HTJ2K CUDA transcode are not exposed by wsi-dicom 0.7.0. |
 | `metal` | Enables Metal JPEG 2000 encode acceleration on macOS, Metal codestream validation decode, and wsi-rs Metal tile decode plumbing. |
 
 For local maximum CPU throughput:

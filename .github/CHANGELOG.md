@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-07-11
+## [0.7.0] - 2026-07-14
 
 ### Changed
 
@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and cap external validator output capture.
 - FHIR Bundle metadata mapping now requires one `DiagnosticReport` anchor and
   maps only its referenced patient, specimen, and service request.
+- Metal strip packing and tile composition now retain resident image ownership
+  through command completion and reject unverified legacy raw-buffer tiles.
 
 ### Added
 
@@ -40,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed Metal tile-composition source and destination addressing beyond 4 GiB
+  with checked host-side spans and a 64-bit shader path, while retaining the
+  validated 32-bit path for smaller compositions.
 - Instance identity and paths now include scene, series, level, Z, channel, and
   time coordinates; synthetic multi-scene/multi-series export coverage prevents
   cross-instance collisions.

@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 
 //! DICOM whole-slide export for `wsi-rs` datasets.
@@ -7,8 +7,8 @@
 //! re-exported from focused internal modules, while implementation details live
 //! behind crate-private module boundaries.
 //!
-//! Optional `cuda`, `metal`, and aggregate `gpu` features enable acceleration
-//! plumbing where the corresponding platform runtime is available. The
+//! Optional `cuda` and `metal` features enable acceleration plumbing where the
+//! corresponding platform runtime is available. The
 //! `bench-internals` feature exposes unstable helpers for the repository's
 //! benchmark harness only.
 
@@ -24,6 +24,9 @@ mod error;
 mod export;
 mod instance_context;
 mod metadata;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[allow(unsafe_code)]
+mod metal_interop;
 mod options;
 mod passthrough;
 mod report;

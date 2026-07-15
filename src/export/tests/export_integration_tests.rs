@@ -614,7 +614,9 @@ fn export_dicom_jpeg_baseline_reencodes_non_passthrough_source() {
         assert!(fragment.starts_with(&[0xFF, 0xD8]));
         assert!(fragment.ends_with(&[0xFF, 0xD9]));
         let decoder = j2k_jpeg::Decoder::new(fragment).unwrap();
-        let (_rgb, outcome) = decoder.decode(j2k_jpeg::PixelFormat::Rgb8).unwrap();
+        let (_rgb, outcome) = decoder
+            .decode_request(j2k_jpeg::DecodeRequest::full(j2k_jpeg::PixelFormat::Rgb8))
+            .unwrap();
         assert_eq!((outcome.decoded.w, outcome.decoded.h), (2, 2));
     }
 }

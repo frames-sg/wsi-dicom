@@ -16,8 +16,6 @@ use j2k_core::CompressedTransferSyntax;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use j2k_core::PixelFormat as J2kPixelFormat;
 use j2k_jpeg::{EncodedJpeg, JpegBackend, JpegSamples, JpegSubsampling};
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use j2k_jpeg_metal::{encode_jpeg_baseline_batch_from_metal_buffers, JpegBaselineMetalEncodeTile};
 use rayon::prelude::*;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use wsi_rs::DeviceTile;
@@ -73,12 +71,9 @@ use crate::routing::{
 };
 #[cfg(test)]
 use crate::tile::prepare_tile_samples;
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use crate::tile::{
-    j2k_pixel_format_from_wsi, pixel_profile_from_device_format,
-    pixel_profile_from_wsi_device_format, wsi_pixel_format_from_j2k,
-};
 use crate::tile::{optical_path_groups, prepare_tile_samples_with_limit, PixelProfile};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use crate::tile::{pixel_profile_from_device_format, pixel_profile_from_wsi_device_format};
 use crate::time::duration_as_reported_micros;
 use crate::uid::DicomExportIdentity;
 use crate::writer::{
@@ -117,7 +112,7 @@ mod tile_grid;
 mod transaction;
 
 fn jpeg_backend_uses_device(backend: JpegBackend) -> bool {
-    matches!(backend, JpegBackend::Metal)
+    matches!(backend, JpegBackend::Metal | JpegBackend::Cuda)
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -169,6 +164,8 @@ use self::j2k_policy::{
     lossless_j2k_cpu_fallback_indices, reject_lossy_j2k_lossless_fallback,
 };
 use self::jobs::*;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use self::jpeg_baseline::encode_jpeg_baseline_metal_device_tile_batch;
 #[cfg(test)]
 use self::jpeg_baseline::jpeg_baseline_frame_geometry;
 use self::jpeg_baseline::{
@@ -1921,7 +1918,7 @@ fn profile_jpeg_baseline_routes(
                             JpegBackend::Cpu | JpegBackend::Auto => {
                                 metrics.record_jpeg_cpu_encode(encode_duration);
                             }
-                            JpegBackend::Metal => {}
+                            JpegBackend::Metal | JpegBackend::Cuda => {}
                         }
                         remaining = remaining.saturating_sub(1);
                     }
@@ -2874,66 +2871,6 @@ fn jpeg_baseline_metal_tile_entries(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-fn encode_jpeg_baseline_metal_device_tile_batch(
-    tiles: &[wsi_rs::output::metal::MetalDeviceTile],
-    frame_columns: u32,
-    frame_rows: u32,
-    jpeg_quality: u8,
-    session: &j2k_jpeg_metal::MetalBackendSession,
-) -> Result<Vec<(EncodedJpeg, PixelProfile)>, Error> {
-    let first = tiles.first().ok_or_else(|| Error::Unsupported {
-        reason: "JPEG Baseline Metal tile batch is empty".into(),
-    })?;
-    let source_profile = pixel_profile_from_wsi_device_format(first.format)?;
-    let (profile, subsampling) = jpeg_baseline_output_profile(source_profile)?;
-    let mut requests = Vec::with_capacity(tiles.len());
-    for tile in tiles {
-        if pixel_profile_from_wsi_device_format(tile.format)? != source_profile {
-            return Err(Error::UnsupportedPixelData {
-                reason: "JPEG Baseline Metal tile batch changed pixel profile".into(),
-            });
-        }
-        let format = j2k_pixel_format_from_wsi(tile.format)?;
-        let wsi_rs::output::metal::MetalDeviceStorage::Buffer {
-            buffer,
-            byte_offset,
-        } = &tile.storage
-        else {
-            return Err(Error::Unsupported {
-                reason: "JPEG Baseline Metal encode requires buffer-backed device tiles".into(),
-            });
-        };
-        requests.push(JpegBaselineMetalEncodeTile {
-            buffer,
-            byte_offset: *byte_offset,
-            width: tile.width,
-            height: tile.height,
-            pitch_bytes: tile.pitch_bytes,
-            output_width: frame_columns,
-            output_height: frame_rows,
-            format,
-        });
-    }
-    let encoded = encode_jpeg_baseline_batch_from_metal_buffers(
-        &requests,
-        j2k_jpeg::JpegEncodeOptions {
-            quality: jpeg_quality,
-            subsampling,
-            restart_interval: None,
-            backend: JpegBackend::Metal,
-        },
-        session,
-    )
-    .map_err(|source| Error::Encode {
-        message: format!("JPEG Baseline Metal encode failed: {source}"),
-    })?;
-    Ok(encoded
-        .into_iter()
-        .map(|encoded| (encoded, profile))
-        .collect())
-}
-
-#[cfg(all(feature = "metal", target_os = "macos"))]
 fn empty_jpeg_baseline_metal_run(tile_count: usize) -> JpegBaselineMetalEncodedRun {
     empty_jpeg_baseline_metal_run_with_input_duration(tile_count, Duration::ZERO)
 }
@@ -3069,10 +3006,11 @@ mod tests {
     use dicom_dictionary_std::{tags, uids};
 
     #[test]
-    fn published_jpeg_backend_classification_only_treats_metal_as_device() {
+    fn published_jpeg_backend_classification_treats_gpu_backends_as_device() {
         assert!(!jpeg_backend_uses_device(JpegBackend::Auto));
         assert!(!jpeg_backend_uses_device(JpegBackend::Cpu));
         assert!(jpeg_backend_uses_device(JpegBackend::Metal));
+        assert!(jpeg_backend_uses_device(JpegBackend::Cuda));
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]

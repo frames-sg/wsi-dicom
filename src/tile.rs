@@ -153,40 +153,10 @@ pub(crate) fn pixel_profile_from_device_format(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub(crate) fn j2k_pixel_format_from_wsi(format: WsiPixelFormat) -> Result<j2k::PixelFormat, Error> {
-    match format {
-        WsiPixelFormat::Gray8 => Ok(j2k::PixelFormat::Gray8),
-        WsiPixelFormat::Rgb8 => Ok(j2k::PixelFormat::Rgb8),
-        WsiPixelFormat::Rgba8 => Ok(j2k::PixelFormat::Rgba8),
-        WsiPixelFormat::Gray16 => Ok(j2k::PixelFormat::Gray16),
-        WsiPixelFormat::Rgb16 => Ok(j2k::PixelFormat::Rgb16),
-        WsiPixelFormat::Rgba16 => Ok(j2k::PixelFormat::Rgba16),
-        other => Err(Error::UnsupportedPixelData {
-            reason: format!("unsupported WSI device pixel format {other:?}"),
-        }),
-    }
-}
-
-#[cfg(all(feature = "metal", target_os = "macos"))]
-pub(crate) fn wsi_pixel_format_from_j2k(format: j2k::PixelFormat) -> Result<WsiPixelFormat, Error> {
-    match format {
-        j2k::PixelFormat::Gray8 => Ok(WsiPixelFormat::Gray8),
-        j2k::PixelFormat::Rgb8 => Ok(WsiPixelFormat::Rgb8),
-        j2k::PixelFormat::Rgba8 => Ok(WsiPixelFormat::Rgba8),
-        j2k::PixelFormat::Gray16 => Ok(WsiPixelFormat::Gray16),
-        j2k::PixelFormat::Rgb16 => Ok(WsiPixelFormat::Rgb16),
-        j2k::PixelFormat::Rgba16 => Ok(WsiPixelFormat::Rgba16),
-        other => Err(Error::UnsupportedPixelData {
-            reason: format!("unsupported Metal device pixel format {other:?}"),
-        }),
-    }
-}
-
-#[cfg(all(feature = "metal", target_os = "macos"))]
 pub(crate) fn pixel_profile_from_wsi_device_format(
     format: WsiPixelFormat,
 ) -> Result<PixelProfile, Error> {
-    pixel_profile_from_device_format(j2k_pixel_format_from_wsi(format)?)
+    pixel_profile_from_device_format(j2k::PixelFormat::from(format))
 }
 
 fn pixel_profile(tile: &CpuTile) -> Result<PixelProfile, Error> {
