@@ -370,6 +370,56 @@ pub(crate) struct StreamingPixelDataFrameWriter<'a> {
     streaming_write_duration: Duration,
 }
 
+struct ExactFrameLengthWriter<'a, W: Write + ?Sized> {
+    inner: &'a mut W,
+    expected: u64,
+    written: u64,
+}
+
+impl<W: Write + ?Sized> ExactFrameLengthWriter<'_, W> {
+    fn finish(self) -> io::Result<()> {
+        if self.written != self.expected {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "streamed PixelData wrote {} bytes, below declared frame length {}",
+                    self.written, self.expected
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<W: Write + ?Sized> Write for ExactFrameLengthWriter<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let requested = u64::try_from(bytes.len()).map_err(io::Error::other)?;
+        let next = self
+            .written
+            .checked_add(requested)
+            .ok_or_else(|| io::Error::other("streamed PixelData frame length overflow"))?;
+        if next > self.expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "streamed PixelData write exceeds declared frame length {}",
+                    self.expected
+                ),
+            ));
+        }
+        let written = self.inner.write(bytes)?;
+        self.written = self
+            .written
+            .checked_add(u64::try_from(written).map_err(io::Error::other)?)
+            .ok_or_else(|| io::Error::other("streamed PixelData frame length overflow"))?;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 impl StreamingPixelDataFrameWriter<'_> {
     pub(crate) fn push_frame(&mut self, codestream: &[u8]) -> Result<(), Error> {
         let raw_len = u64::try_from(codestream.len()).map_err(|_| Error::Unsupported {
@@ -400,7 +450,15 @@ impl StreamingPixelDataFrameWriter<'_> {
         raw_len: u64,
         write_frame: impl FnOnce(&mut dyn Write) -> io::Result<()>,
     ) -> Result<(), Error> {
-        self.push_frame_impl(raw_len, |output| write_frame(output))
+        self.push_frame_impl(raw_len, |output| {
+            let mut exact = ExactFrameLengthWriter {
+                inner: output,
+                expected: raw_len,
+                written: 0,
+            };
+            write_frame(&mut exact)?;
+            exact.finish()
+        })
     }
 
     fn push_frame_impl(

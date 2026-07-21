@@ -465,6 +465,35 @@ mod tests {
     }
 
     #[test]
+    fn streamed_pixel_data_writer_rejects_declared_frame_length_mismatches() {
+        for (case, declared_len, actual_bytes) in
+            [("short", 3u64, &[1, 2][..]), ("long", 2u64, &[1, 2, 3][..])]
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join(format!("{case}.dcm"));
+            let error = super::write_dicom_object_with_streamed_pixel_data(
+                &path,
+                super::StreamedDicomWritePlan {
+                    object: sample_object_with_offset_tables(vec![0], vec![0]),
+                    meta: sample_file_meta(),
+                    overwrite: false,
+                    per_frame_plan: sample_per_frame_plan(1),
+                    max_instance_metadata_bytes: u64::MAX,
+                    frame_count: 1,
+                },
+                |writer| {
+                    writer.push_frame_with(declared_len, |output| output.write_all(actual_bytes))
+                },
+            )
+            .unwrap_err();
+
+            assert!(error.to_string().contains("declared frame length"));
+            assert!(!path.exists());
+            assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
     fn decimal_string_formatting_stays_within_dicom_limit() {
         assert_eq!(format_ds(0.0002528), "0.0002528");
         assert!(format_ds(123_456.789_123_456).len() <= 16);
