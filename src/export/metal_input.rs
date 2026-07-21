@@ -34,7 +34,12 @@ impl PendingMetalEncodedTileRun {
         let batch_encoded = self.submission.wait()?;
         let gpu_encode_stats = batch_encoded.gpu_encode_stats;
         let mut batch_encoded = batch_encoded.frames.into_iter();
-        let mut encoded = Vec::with_capacity(self.tile_profiles.len());
+        let mut encoded = Vec::new();
+        encoded
+            .try_reserve_exact(self.tile_profiles.len())
+            .map_err(|_| Error::Unsupported {
+                reason: "Metal encoded tile batch exceeds available memory".into(),
+            })?;
         for profile in self.tile_profiles {
             let Some(profile) = profile else {
                 encoded.push(None);
@@ -851,7 +856,12 @@ pub(super) fn encode_cpu_input_planned_tile_run(
         c,
         t,
     };
-    let mut tiles = Vec::with_capacity(planned.len());
+    let mut tiles = Vec::new();
+    tiles
+        .try_reserve_exact(planned.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "CPU fallback tile batch exceeds available memory".into(),
+        })?;
     let mut input_decode_duration = Duration::ZERO;
     let mut compose_duration = Duration::ZERO;
     for planned_frame in planned {

@@ -30,12 +30,21 @@ impl MetalStripComposer {
             u32::try_from(bytes_per_pixel).map_err(|_| Error::Unsupported {
                 reason: "Metal composed tile bytes-per-pixel exceeds u32".into(),
             })?;
-        let address_plans = requests
-            .iter()
-            .map(|request| {
-                ComposeAddressPlan::new(*request, packed, first_col, first_row, bytes_per_pixel_u32)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut address_plans = Vec::new();
+        address_plans
+            .try_reserve_exact(requests.len())
+            .map_err(|_| Error::Unsupported {
+                reason: "Metal compose address-plan batch exceeds available memory".into(),
+            })?;
+        for request in requests {
+            address_plans.push(ComposeAddressPlan::new(
+                *request,
+                packed,
+                first_col,
+                first_row,
+                bytes_per_pixel_u32,
+            )?);
+        }
         let address_width = if address_plans
             .iter()
             .all(|plan| plan.address_width == ComposeAddressWidth::U32)
@@ -44,7 +53,12 @@ impl MetalStripComposer {
         } else {
             ComposeAddressWidth::U64
         };
-        let mut dispatches = Vec::with_capacity(address_plans.len());
+        let mut dispatches = Vec::new();
+        dispatches
+            .try_reserve_exact(address_plans.len())
+            .map_err(|_| Error::Unsupported {
+                reason: "Metal compose dispatch batch exceeds available memory".into(),
+            })?;
         for plan in address_plans {
             let dst_buffer = j2k_metal_support::checked_shared_buffer_for_len::<u8>(
                 &self.device,

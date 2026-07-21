@@ -17,7 +17,6 @@ mod api;
 #[doc(hidden)]
 pub mod bench_support;
 mod coordinate;
-mod defaults;
 mod diagnostics;
 mod encode;
 mod error;
@@ -43,9 +42,9 @@ mod writer;
 mod test_support;
 
 pub use api::Export;
-pub use defaults::default_transfer_syntax_for_source;
 pub use diagnostics::{run_dicom_self_test, SelfTestOptions, SelfTestReport};
 pub use error::Error;
+pub use export::default_transfer_syntax_for_source;
 pub use export::{
     encode_dicom_j2k_frame, export_dicom, profile_dicom_route_corpus_coverage,
     profile_dicom_route_coverage, profile_dicom_routes,

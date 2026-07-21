@@ -161,6 +161,20 @@ impl Export {
         self
     }
 
+    /// Set the streamed functional-group and frame-index byte budget for each instance.
+    #[must_use = "builder methods return the updated Export"]
+    pub fn max_instance_metadata_bytes(mut self, bytes: u64) -> Self {
+        self.options.max_instance_metadata_bytes = bytes;
+        self
+    }
+
+    /// Set the aggregate streamed functional-group and frame-index budget for the export.
+    #[must_use = "builder methods return the updated Export"]
+    pub fn max_total_metadata_bytes(mut self, bytes: u64) -> Self {
+        self.options.max_total_metadata_bytes = bytes;
+        self
+    }
+
     /// Set the optional GPU pipeline depth.
     #[must_use = "builder methods return the updated Export"]
     pub fn gpu_pipeline_depth(mut self, depth: Option<usize>) -> Self {
@@ -197,6 +211,10 @@ impl Export {
             .ok_or_else(|| Error::InvalidOptions {
                 reason: "output directory must be configured with to_directory".into(),
             })?;
+        let metadata = self.metadata.take().ok_or_else(|| Error::Metadata {
+            reason: "export metadata must be provided with with_metadata or with_research_placeholder_metadata".into(),
+        })?;
+        metadata.resolve()?;
         if self.transfer_syntax == TransferSyntaxSelection::SourceAware {
             self.options.transfer_syntax =
                 default_transfer_syntax_for_source(DefaultTransferSyntaxRequest {
@@ -208,9 +226,6 @@ impl Export {
             self.options.jpeg_direct_htj2k_profile =
                 JpegDirectHtj2kProfile::default_for_transfer_syntax(self.options.transfer_syntax);
         }
-        let metadata = self.metadata.take().ok_or_else(|| Error::Metadata {
-            reason: "export metadata must be provided with with_metadata or with_research_placeholder_metadata".into(),
-        })?;
         self.options.validate()?;
         Ok(ExportRequest {
             source_path: self.source_path,
@@ -265,6 +280,8 @@ mod tests {
             .j2k_decomposition_levels(Some(3))
             .gpu_encode_inflight_tiles(Some(8))
             .gpu_encode_memory_mib(Some(4096))
+            .max_instance_metadata_bytes(64 * 1024 * 1024)
+            .max_total_metadata_bytes(512 * 1024 * 1024)
             .gpu_pipeline_depth(Some(3))
             .gpu_row_batch_rows(Some(6))
             .gpu_row_batch_target_tiles(Some(96))
@@ -286,6 +303,11 @@ mod tests {
         assert_eq!(request.options.j2k_decomposition_levels, Some(3));
         assert_eq!(request.options.gpu_encode_inflight_tiles, Some(8));
         assert_eq!(request.options.gpu_encode_memory_mib, Some(4096));
+        assert_eq!(
+            request.options.max_instance_metadata_bytes,
+            64 * 1024 * 1024
+        );
+        assert_eq!(request.options.max_total_metadata_bytes, 512 * 1024 * 1024);
         assert_eq!(request.options.gpu_pipeline_depth, Some(3));
         assert_eq!(request.options.gpu_row_batch_rows, Some(6));
         assert_eq!(request.options.gpu_row_batch_target_tiles, Some(96));
@@ -300,5 +322,19 @@ mod tests {
             .expect_err("metadata policy must be explicit");
 
         assert!(err.to_string().contains("metadata"));
+    }
+
+    #[test]
+    fn builder_validates_metadata_before_source_aware_probing() {
+        let mut invalid = crate::DicomMetadata::research_placeholder();
+        invalid.imaged_volume_depth_mm = Some(0.0);
+        let error = Export::from_slide("missing-source.svs")
+            .to_directory("dicom-out")
+            .with_metadata(MetadataSource::Strict(Box::new(invalid)))
+            .build_request()
+            .unwrap_err();
+
+        assert!(error.to_string().contains("imaged_volume_depth_mm"));
+        assert!(!error.to_string().contains("missing-source.svs"));
     }
 }

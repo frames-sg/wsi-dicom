@@ -241,6 +241,10 @@ struct ExportCliArgs {
     uid_policy: UidPolicy,
     #[arg(long)]
     overwrite: bool,
+    #[arg(long, default_value_t = 256)]
+    max_instance_metadata_mib: u64,
+    #[arg(long, default_value_t = 1024)]
+    max_total_metadata_mib: u64,
 }
 
 impl ExportCliArgs {
@@ -255,8 +259,23 @@ impl ExportCliArgs {
         options.icc_profile_policy = self.icc;
         options.uid_policy = self.uid_policy;
         options.overwrite = self.overwrite;
+        options.max_instance_metadata_bytes = checked_metadata_mib_to_bytes(
+            "max_instance_metadata_mib",
+            self.max_instance_metadata_mib,
+        )?;
+        options.max_total_metadata_bytes =
+            checked_metadata_mib_to_bytes("max_total_metadata_mib", self.max_total_metadata_mib)?;
+        options.validate()?;
         Ok(options)
     }
+}
+
+fn checked_metadata_mib_to_bytes(field: &str, value: u64) -> Result<u64, Error> {
+    value
+        .checked_mul(1024 * 1024)
+        .ok_or_else(|| Error::InvalidOptions {
+            reason: format!("{field} exceeds the u64 byte range"),
+        })
 }
 
 #[derive(Debug, Clone, Copy, Default, Args)]
@@ -1201,6 +1220,46 @@ mod tests {
         };
 
         assert_eq!(export.encode.tile_size, 512);
+        assert_eq!(export.max_instance_metadata_mib, 256);
+        assert_eq!(export.max_total_metadata_mib, 1024);
+    }
+
+    #[test]
+    fn cli_convert_metadata_budgets_are_checked_and_converted_to_bytes() {
+        let cli = Cli::try_parse_from([
+            "wsi-dicom",
+            "convert",
+            "source.svs",
+            "--out",
+            "out",
+            "--max-instance-metadata-mib",
+            "64",
+            "--max-total-metadata-mib",
+            "512",
+        ])
+        .unwrap();
+
+        let Command::Convert { export, .. } = cli.command else {
+            panic!("expected convert command");
+        };
+        let options = export.options().unwrap();
+        assert_eq!(options.max_instance_metadata_bytes, 64 * 1024 * 1024);
+        assert_eq!(options.max_total_metadata_bytes, 512 * 1024 * 1024);
+
+        let cli = Cli::try_parse_from([
+            "wsi-dicom",
+            "convert",
+            "source.svs",
+            "--out",
+            "out",
+            "--max-instance-metadata-mib",
+            &u64::MAX.to_string(),
+        ])
+        .unwrap();
+        let Command::Convert { export, .. } = cli.command else {
+            panic!("expected convert command");
+        };
+        assert!(export.options().is_err());
     }
 
     #[test]

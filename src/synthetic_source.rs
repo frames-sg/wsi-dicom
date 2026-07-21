@@ -6,16 +6,32 @@ use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 
 use crate::Error;
 
-pub(crate) fn deterministic_rgb_pixels(width: u32, height: u32) -> Vec<u8> {
-    let mut pixels = Vec::with_capacity((width as usize) * (height as usize) * 3);
+pub(crate) fn deterministic_rgb_pixels(width: u32, height: u32) -> Result<Vec<u8>, Error> {
+    let byte_len = usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or_else(|| Error::Unsupported {
+            reason: "synthetic RGB source dimensions overflow platform limits".into(),
+        })?;
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(byte_len)
+        .map_err(|_| Error::Unsupported {
+            reason: "synthetic RGB source exceeds available memory".into(),
+        })?;
     for y in 0..height {
         for x in 0..width {
-            pixels.push((x * 37 + y * 11) as u8);
-            pixels.push((x * 17 + y * 29) as u8);
-            pixels.push((x * 7 + y * 43) as u8);
+            pixels.push((x.wrapping_mul(37).wrapping_add(y.wrapping_mul(11))) as u8);
+            pixels.push((x.wrapping_mul(17).wrapping_add(y.wrapping_mul(29))) as u8);
+            pixels.push((x.wrapping_mul(7).wrapping_add(y.wrapping_mul(43))) as u8);
         }
     }
-    pixels
+    Ok(pixels)
 }
 
 pub(crate) fn write_rgb_source_dicom(
@@ -26,7 +42,23 @@ pub(crate) fn write_rgb_source_dicom(
     height: u32,
     pixels: Vec<u8>,
 ) -> Result<(), Error> {
-    let expected_len = (width as usize) * (height as usize) * 3;
+    let rows = u16::try_from(height).map_err(|_| Error::Unsupported {
+        reason: "RGB source height exceeds DICOM Rows range".into(),
+    })?;
+    let columns = u16::try_from(width).map_err(|_| Error::Unsupported {
+        reason: "RGB source width exceeds DICOM Columns range".into(),
+    })?;
+    let expected_len = usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or_else(|| Error::Unsupported {
+            reason: "RGB source dimensions overflow platform limits".into(),
+        })?;
     if pixels.len() != expected_len {
         return Err(Error::DicomWrite {
             path: path.to_path_buf(),
@@ -61,12 +93,12 @@ pub(crate) fn write_rgb_source_dicom(
     object.put(DataElement::new(
         tags::ROWS,
         VR::US,
-        PrimitiveValue::from(height as u16),
+        PrimitiveValue::from(rows),
     ));
     object.put(DataElement::new(
         tags::COLUMNS,
         VR::US,
-        PrimitiveValue::from(width as u16),
+        PrimitiveValue::from(columns),
     ));
     object.put(DataElement::new(
         tags::TOTAL_PIXEL_MATRIX_ROWS,
@@ -144,4 +176,28 @@ pub(crate) fn write_rgb_source_dicom(
             path: path.to_path_buf(),
             message: source.to_string(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn synthetic_rgb_geometry_overflow_fails_before_allocation_or_write() {
+        assert!(deterministic_rgb_pixels(u32::MAX, u32::MAX).is_err());
+
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("oversized.dcm");
+        let error = write_rgb_source_dicom(
+            &path,
+            "1.2.826.0.1.3680043.10.999.1",
+            "1.2.826.0.1.3680043.10.999.2",
+            u32::from(u16::MAX) + 1,
+            1,
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Columns"));
+        assert!(!path.exists());
+    }
 }

@@ -9,7 +9,7 @@ use crate::tile::PixelProfile;
 use crate::uid::DicomExportIdentity;
 use crate::writer::{
     build_dicom_object, DicomObjectIdentifiers, DicomObjectParams, FrameGrid,
-    LossyCompressionMetadata, PixelDataOffsetTables,
+    LossyCompressionMetadata, PerFrameFunctionalGroupsPlan,
 };
 use crate::{Error, VL_WSI_SOP_CLASS_UID};
 
@@ -108,10 +108,22 @@ impl DicomInstanceContext {
             frame_count: params.frame_count,
             profile: params.profile,
             pixel_spacing_mm: Some(self.pixel_spacing_mm),
-            pixel_data_offsets: params.pixel_data_offsets,
             icc_profile: params.icc_profile,
             lossy_compression: params.lossy_compression,
         })
+    }
+
+    pub(crate) fn per_frame_plan(
+        &self,
+        frame_count: u32,
+        frame_grid: FrameGrid,
+    ) -> Result<PerFrameFunctionalGroupsPlan, Error> {
+        PerFrameFunctionalGroupsPlan::new(
+            frame_count,
+            frame_grid,
+            self.pixel_spacing_mm.0,
+            self.pixel_spacing_mm.1,
+        )
     }
 
     pub(crate) fn file_meta(&self, transfer_syntax_uid: &'static str) -> FileMetaTableBuilder {
@@ -153,7 +165,6 @@ pub(crate) struct InstanceDicomObjectParams<'a> {
     pub(crate) frame_grid: FrameGrid,
     pub(crate) frame_count: u32,
     pub(crate) profile: PixelProfile,
-    pub(crate) pixel_data_offsets: PixelDataOffsetTables,
     pub(crate) icc_profile: Option<&'a [u8]>,
     pub(crate) lossy_compression: Option<LossyCompressionMetadata>,
 }

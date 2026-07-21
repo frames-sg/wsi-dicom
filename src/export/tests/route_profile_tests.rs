@@ -434,6 +434,30 @@ fn corpus_route_coverage_aggregates_sources_and_records_failures() {
 }
 
 #[test]
+fn corpus_candidate_limits_apply_equally_to_direct_files_and_directories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("one.svs");
+    std::fs::write(&source, b"candidate").unwrap();
+
+    assert_eq!(
+        collect_wsi_candidate_paths(&source, 1, 64).unwrap(),
+        vec![source.clone()]
+    );
+    assert!(collect_wsi_candidate_paths(&source, 0, 64)
+        .unwrap_err()
+        .to_string()
+        .contains("max_sources"));
+    assert_eq!(
+        collect_wsi_candidate_paths(tmp.path(), 1, 64).unwrap(),
+        vec![source]
+    );
+    assert!(collect_wsi_candidate_paths(tmp.path(), 0, 64)
+        .unwrap_err()
+        .to_string()
+        .contains("max_sources"));
+}
+
+#[test]
 fn profile_dicom_route_coverage_classifies_jpeg_fallback_without_decoding() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source.dcm");

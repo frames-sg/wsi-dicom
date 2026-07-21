@@ -2,13 +2,13 @@
 
 use wsi_rs::Slide;
 
-use crate::error::Error;
-use crate::export::{
+use super::{
     jpeg_baseline_route_frame_geometry, pixel_profile_from_raw_jpeg_tile, plan_lossless_j2k_frames,
     raw_jpeg_profile_can_passthrough, raw_rgb_passthrough_has_no_geometry_fallback,
     read_raw_jpeg_passthrough_tile, FrameRectGrid, JpegBaselineFrameLocation,
     LosslessJ2kPlanRequest,
 };
+use crate::error::Error;
 use crate::options::{ExportOptions, TransferSyntax};
 use crate::request::DefaultTransferSyntaxRequest;
 use crate::routing::{j2k_route_tile_size, level_is_synthetic_downsample};
