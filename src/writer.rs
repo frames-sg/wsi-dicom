@@ -69,6 +69,29 @@ mod tests {
     }
 
     #[test]
+    fn per_frame_metadata_rejects_an_impossible_plan_from_its_structural_lower_bound() {
+        let plan = super::PerFrameFunctionalGroupsPlan::new(
+            u32::MAX,
+            super::FrameGrid {
+                frame_columns: 1,
+                frame_rows: 1,
+                matrix_columns: u64::from(u32::MAX),
+                matrix_rows: 1,
+            },
+            0.0005,
+            0.0005,
+        )
+        .unwrap();
+        let budget = 256 * 1024 * 1024;
+
+        assert!(plan.minimum_encoded_len().unwrap() > budget);
+        let error = plan.encoded_len_with_limit(budget).unwrap_err();
+
+        assert!(matches!(error, Error::InvalidOptions { .. }));
+        assert!(error.to_string().contains("metadata"));
+    }
+
+    #[test]
     fn frame_index_spool_round_trips_large_odd_and_even_tables() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("frame-index.tmp");

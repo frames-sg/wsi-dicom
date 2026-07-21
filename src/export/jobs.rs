@@ -157,20 +157,59 @@ pub(super) fn preflight_metadata_budgets(
             row_spacing_mm,
             column_spacing_mm,
         )?;
-        let estimate = plan
-            .encoded_len()?
-            .checked_add(extended_offset_table_metadata_bytes(frame_count)?)
+        let offset_table_bytes = extended_offset_table_metadata_bytes(frame_count)?;
+        let instance_per_frame_budget = request
+            .options
+            .max_instance_metadata_bytes
+            .checked_sub(offset_table_bytes)
+            .ok_or_else(|| Error::InvalidOptions {
+                reason: format!(
+                    "instance {} extended offset tables exceed max_instance_metadata_bytes={}",
+                    job.instance_number, request.options.max_instance_metadata_bytes
+                ),
+            })?;
+        let total_per_frame_budget = request
+            .options
+            .max_total_metadata_bytes
+            .checked_sub(total)
+            .and_then(|remaining| remaining.checked_sub(offset_table_bytes))
+            .ok_or_else(|| Error::InvalidOptions {
+                reason: format!(
+                    "instance {} extended offset tables exceed the remaining max_total_metadata_bytes={}",
+                    job.instance_number, request.options.max_total_metadata_bytes
+                ),
+            })?;
+        let (per_frame_budget, budget_name, budget_value) =
+            if instance_per_frame_budget <= total_per_frame_budget {
+                (
+                    instance_per_frame_budget,
+                    "max_instance_metadata_bytes",
+                    request.options.max_instance_metadata_bytes,
+                )
+            } else {
+                (
+                    total_per_frame_budget,
+                    "max_total_metadata_bytes",
+                    request.options.max_total_metadata_bytes,
+                )
+            };
+        let per_frame_bytes = match plan.encoded_len_with_limit(per_frame_budget) {
+            Ok(bytes) => bytes,
+            Err(Error::InvalidOptions { reason }) => {
+                return Err(Error::InvalidOptions {
+                    reason: format!(
+                        "instance {} metadata exceeds {budget_name}={budget_value}: {reason}",
+                        job.instance_number
+                    ),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let estimate = per_frame_bytes
+            .checked_add(offset_table_bytes)
             .ok_or_else(|| Error::InvalidOptions {
                 reason: "DICOM instance metadata estimate overflow".into(),
             })?;
-        if estimate > request.options.max_instance_metadata_bytes {
-            return Err(Error::InvalidOptions {
-                reason: format!(
-                    "instance {} metadata estimate of at least {estimate} bytes exceeds max_instance_metadata_bytes={}",
-                    job.instance_number, request.options.max_instance_metadata_bytes
-                ),
-            });
-        }
         total = total
             .checked_add(estimate)
             .ok_or_else(|| Error::InvalidOptions {
