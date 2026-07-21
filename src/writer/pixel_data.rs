@@ -506,9 +506,25 @@ pub(crate) fn write_dicom_object_with_streamed_pixel_data(
             message: "per-frame metadata plan does not match PixelData frame count".into(),
         });
     }
-    let minimum_metadata_bytes = per_frame_plan
-        .encoded_len()?
-        .checked_add(extended_offset_table_encoded_bytes(frame_count)?)
+    let offset_table_bytes = extended_offset_table_encoded_bytes(frame_count)?;
+    let per_frame_budget = max_instance_metadata_bytes
+        .checked_sub(offset_table_bytes)
+        .ok_or_else(|| Error::InvalidOptions {
+            reason: "max_instance_metadata_bytes is smaller than the extended offset tables".into(),
+        })?;
+    let per_frame_estimate = match per_frame_plan.encoded_len_with_limit(per_frame_budget) {
+        Ok(bytes) => bytes,
+        Err(Error::InvalidOptions { reason }) => {
+            return Err(Error::InvalidOptions {
+                reason: format!(
+                    "instance metadata exceeds max_instance_metadata_bytes={max_instance_metadata_bytes}: {reason}"
+                ),
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let minimum_metadata_bytes = per_frame_estimate
+        .checked_add(offset_table_bytes)
         .ok_or_else(|| Error::InvalidOptions {
             reason: "DICOM metadata estimate overflow".into(),
         })?;
@@ -536,12 +552,6 @@ pub(crate) fn write_dicom_object_with_streamed_pixel_data(
         .map_err(|err| Error::DicomWrite {
             path: path.to_path_buf(),
             message: err.to_string(),
-        })?;
-    let offset_table_bytes = extended_offset_table_encoded_bytes(frame_count)?;
-    let per_frame_budget = max_instance_metadata_bytes
-        .checked_sub(offset_table_bytes)
-        .ok_or_else(|| Error::InvalidOptions {
-            reason: "max_instance_metadata_bytes is smaller than the extended offset tables".into(),
         })?;
     let per_frame_bytes = per_frame_plan.write_to(&mut file, per_frame_budget)?;
     let extended_offset_table_locations =

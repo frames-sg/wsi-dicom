@@ -12,6 +12,9 @@ use dicom_object::InMemDicomObject;
 use super::encoding::{format_ds, write_item_header, write_tag};
 use crate::Error;
 
+const PER_FRAME_SEQUENCE_CONTAINER_BYTES: u64 = 20;
+const MIN_PER_FRAME_ITEM_BYTES: u64 = 158;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FrameGrid {
     pub(crate) frame_columns: u32,
@@ -94,10 +97,36 @@ impl PerFrameFunctionalGroupsPlan {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn encoded_len(self) -> Result<u64, Error> {
-        let mut counter = CountingWriter::default();
-        self.write_encoded(&mut counter)
-            .map_err(per_frame_stream_error)?;
+        self.encoded_len_with_limit(u64::MAX)
+    }
+
+    pub(crate) fn minimum_encoded_len(self) -> Result<u64, Error> {
+        u64::from(self.frame_count)
+            .checked_mul(MIN_PER_FRAME_ITEM_BYTES)
+            .and_then(|bytes| bytes.checked_add(PER_FRAME_SEQUENCE_CONTAINER_BYTES))
+            .ok_or_else(|| Error::InvalidOptions {
+                reason: "DICOM per-frame metadata lower-bound overflow".into(),
+            })
+    }
+
+    pub(crate) fn encoded_len_with_limit(self, max_metadata_bytes: u64) -> Result<u64, Error> {
+        let minimum = self.minimum_encoded_len()?;
+        if minimum > max_metadata_bytes {
+            return Err(metadata_budget_error(minimum, max_metadata_bytes));
+        }
+
+        let mut counter = CountingWriter {
+            written: 0,
+            limit: max_metadata_bytes,
+            required: None,
+        };
+        let result = self.write_encoded(&mut counter);
+        if let Some(required) = counter.required {
+            return Err(metadata_budget_error(required, max_metadata_bytes));
+        }
+        result.map_err(per_frame_stream_error)?;
         Ok(counter.written)
     }
 
@@ -110,21 +139,18 @@ impl PerFrameFunctionalGroupsPlan {
         output: &mut impl Write,
         max_metadata_bytes: u64,
     ) -> Result<u64, Error> {
-        let estimate = self.encoded_len()?;
-        if estimate > max_metadata_bytes {
-            return Err(Error::InvalidOptions {
-                reason: format!(
-                    "per-frame metadata estimate of {estimate} bytes exceeds max_instance_metadata_bytes={max_metadata_bytes}"
-                ),
-            });
-        }
+        self.encoded_len_with_limit(max_metadata_bytes)?;
         let mut bounded = MetadataBudgetWriter {
             inner: output,
             written: 0,
             limit: max_metadata_bytes,
+            required: None,
         };
-        self.write_encoded(&mut bounded)
-            .map_err(per_frame_stream_error)?;
+        let result = self.write_encoded(&mut bounded);
+        if let Some(required) = bounded.required {
+            return Err(metadata_budget_error(required, max_metadata_bytes));
+        }
+        result.map_err(per_frame_stream_error)?;
         Ok(bounded.written)
     }
 
@@ -153,9 +179,18 @@ fn per_frame_stream_error(source: io::Error) -> Error {
     }
 }
 
-#[derive(Default)]
+fn metadata_budget_error(required: u64, limit: u64) -> Error {
+    Error::InvalidOptions {
+        reason: format!(
+            "DICOM per-frame metadata requires at least {required} bytes, exceeding the {limit}-byte metadata budget"
+        ),
+    }
+}
+
 struct CountingWriter {
     written: u64,
+    limit: u64,
+    required: Option<u64>,
 }
 
 impl Write for CountingWriter {
@@ -164,6 +199,10 @@ impl Write for CountingWriter {
             .written
             .checked_add(u64::try_from(bytes.len()).map_err(io::Error::other)?)
             .ok_or_else(|| io::Error::other("metadata byte count overflow"))?;
+        if self.written > self.limit {
+            self.required = Some(self.written);
+            return Err(io::Error::other("metadata byte budget exceeded"));
+        }
         Ok(bytes.len())
     }
 
@@ -176,6 +215,7 @@ struct MetadataBudgetWriter<'a, W: Write + ?Sized> {
     inner: &'a mut W,
     written: u64,
     limit: u64,
+    required: Option<u64>,
 }
 
 impl<W: Write + ?Sized> Write for MetadataBudgetWriter<'_, W> {
@@ -186,6 +226,7 @@ impl<W: Write + ?Sized> Write for MetadataBudgetWriter<'_, W> {
             .checked_add(requested)
             .ok_or_else(|| io::Error::other("metadata byte count overflow"))?;
         if next > self.limit {
+            self.required = Some(next);
             return Err(io::Error::other(format!(
                 "metadata byte budget {} exceeded",
                 self.limit
