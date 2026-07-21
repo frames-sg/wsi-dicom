@@ -44,6 +44,26 @@ struct AutoMetalInputRouteCache {
 
 static AUTO_METAL_INPUT_ROUTE_CACHE: OnceLock<Mutex<AutoMetalInputRouteCache>> = OnceLock::new();
 
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+thread_local! {
+    static PERSISTENT_ROUTE_CACHE_PATH_OVERRIDE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+pub(super) struct PersistentRouteCachePathOverride {
+    previous: Option<PathBuf>,
+}
+
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+impl Drop for PersistentRouteCachePathOverride {
+    fn drop(&mut self) {
+        PERSISTENT_ROUTE_CACHE_PATH_OVERRIDE.with(|configured| {
+            configured.replace(self.previous.take());
+        });
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 struct PersistentAutoMetalInputRouteCacheEntry {
     source_path: PathBuf,
@@ -117,7 +137,22 @@ pub(super) fn clear_auto_metal_input_route_cache_state_for_tests() {
         AutoMetalInputRouteCache::default();
 }
 
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+pub(super) fn override_persistent_auto_metal_input_route_cache_path_for_tests(
+    path: PathBuf,
+) -> PersistentRouteCachePathOverride {
+    let previous =
+        PERSISTENT_ROUTE_CACHE_PATH_OVERRIDE.with(|configured| configured.replace(Some(path)));
+    PersistentRouteCachePathOverride { previous }
+}
+
 fn persistent_auto_metal_input_route_cache_path() -> Option<PathBuf> {
+    #[cfg(all(test, feature = "metal", target_os = "macos"))]
+    if let Some(path) =
+        PERSISTENT_ROUTE_CACHE_PATH_OVERRIDE.with(|configured| configured.borrow().clone())
+    {
+        return Some(path);
+    }
     std::env::var_os(WSI_DICOM_AUTO_ROUTE_CACHE_ENV)
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
@@ -347,6 +382,35 @@ fn read_route_cache_file_capped(path: &PathBuf) -> std::io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::reject_symlink_route_cache_path;
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn configured_test_path_is_scoped_to_the_current_thread() {
+        let environment_path = std::env::var_os(super::WSI_DICOM_AUTO_ROUTE_CACHE_ENV)
+            .filter(|path| !path.is_empty())
+            .map(std::path::PathBuf::from);
+        let configured = std::path::PathBuf::from("thread-local-route-cache.json");
+        let override_guard = super::override_persistent_auto_metal_input_route_cache_path_for_tests(
+            configured.clone(),
+        );
+
+        assert_eq!(
+            super::persistent_auto_metal_input_route_cache_path(),
+            Some(configured)
+        );
+        assert_eq!(
+            std::thread::spawn(super::persistent_auto_metal_input_route_cache_path)
+                .join()
+                .unwrap(),
+            environment_path
+        );
+
+        drop(override_guard);
+        assert_eq!(
+            super::persistent_auto_metal_input_route_cache_path(),
+            environment_path
+        );
+    }
 
     #[cfg(unix)]
     #[test]
