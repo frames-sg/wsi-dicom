@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-21
+
+### Added
+
+- Added bounded DICOM metadata preflight and write-time accounting. The default
+  limits are 256 MiB per instance and 1 GiB per export; Rust callers can set
+  `max_instance_metadata_bytes` / `max_total_metadata_bytes`, and the `convert`
+  and `sustain-convert` commands expose `--max-instance-metadata-mib` /
+  `--max-total-metadata-mib`.
+- Added an intrinsic Pixel Data structure check to every validation run,
+  independent of external tools and optional pixel decoding. It verifies frame
+  count, native-versus-encapsulated representation, nonempty data, and bounded
+  Basic/Extended Offset Table frame mapping.
+- Added side-effect-free `DicomMetadata::validate_for_export` preflight for
+  DICOM text, person-name structure, scalar delimiters and controls, and imaged
+  volume depth.
+
+### Changed
+
+- Per-frame functional groups are streamed as undefined-length sequences and
+  items rather than assembled as one in-memory object list. Pixel Data frame
+  offsets and lengths use a temporary disk-backed index that is replayed when
+  patching the Extended Offset Tables.
+- Non-ASCII metadata is emitted as UTF-8 with Specific Character Set
+  `ISO_IR 192`; ASCII-only output does not add the declaration.
+- Documented the exact flat-output transaction guarantee. Instances are staged
+  together and promoted sequentially under a writer lock. The journal restores
+  the prior generation after an ordinary commit failure and supports recovery
+  after interruption, but concurrent readers are not given simultaneous
+  generation visibility and can observe an in-progress promotion.
+
+### Fixed
+
+- Corrected `imaged_volume_depth_mm`: Imaged Volume Depth is now an FL value in
+  micrometers, while Slice Thickness remains a validated DS value in
+  millimeters. Non-finite, non-positive, underflowing, and unrepresentable
+  values are rejected before slide access or output staging.
+- Outputs made by wsi-dicom 0.7.0 or earlier should be regenerated if they used
+  imaged volume depth (including the 0.001 mm default) or non-ASCII metadata;
+  those outputs may contain incorrect Imaged Volume Depth units or omit the
+  required Specific Character Set declaration.
+
 ## [0.7.0] - 2026-07-14
 
 ### Changed
@@ -19,8 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Generated UIDs are fresh by default; deterministic content/configuration
   identity is now an explicit opt-in.
 - Instance filenames now include scene, series, level, Z, channel, and time.
-- Export requests now stage and atomically commit the complete generation,
-  restoring overwritten files if any commit step fails.
+- Export requests now stage the complete generation and use a journaled
+  flat-file commit, restoring overwritten files if any commit step fails.
 
 - Export metadata is now explicit. CLI, GUI, `Export`, and `ExportRequest::new`
   require either caller-provided metadata JSON/FHIR input or an explicit
@@ -224,7 +266,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation, and JPEG 2000 / HTJ2K frame encoding primitives.
 - Added passthrough-first planning for compatible compressed WSI source frames.
 
-[Unreleased]: https://github.com/frames-sg/wsi-dicom/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/frames-sg/wsi-dicom/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/frames-sg/wsi-dicom/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/frames-sg/wsi-dicom/compare/v0.2.0...v0.7.0
 [0.2.0]: https://github.com/frames-sg/wsi-dicom/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/frames-sg/wsi-dicom/releases/tag/v0.1.0

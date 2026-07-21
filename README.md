@@ -23,16 +23,16 @@ Use the Rust API:
 
 ```toml
 [dependencies]
-wsi-dicom = "0.7.0"
+wsi-dicom = "0.7.1"
 ```
 
 GPU support is opt-in:
 
 ```toml
 [dependencies]
-wsi-dicom = { version = "0.7.0", features = ["metal"] } # macOS
+wsi-dicom = { version = "0.7.1", features = ["metal"] } # macOS
 # or
-wsi-dicom = { version = "0.7.0", features = ["cuda"] } # CUDA-capable Linux/Windows
+wsi-dicom = { version = "0.7.1", features = ["cuda"] } # CUDA-capable Linux/Windows
 ```
 
 Feature flags:
@@ -40,7 +40,7 @@ Feature flags:
 | Feature | Effect |
 | --- | --- |
 | `default` | CPU-only DICOM export. |
-| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. wsi-rs CUDA tile decode and direct JPEG-to-HTJ2K CUDA transcode are not exposed by wsi-dicom 0.7.0. |
+| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. wsi-rs CUDA tile decode and direct JPEG-to-HTJ2K CUDA transcode are not exposed by wsi-dicom 0.7.1. |
 | `metal` | Enables Metal JPEG 2000 encode acceleration on macOS, Metal codestream validation decode, and wsi-rs Metal tile decode plumbing. |
 
 For local maximum CPU throughput:
@@ -67,8 +67,42 @@ wsi-dicom convert slide.ndpi --out dicom-out --research-placeholder
 Use `--metadata metadata.json` for real metadata. `--metadata` and
 `--research-placeholder` are mutually exclusive. Existing generated `.dcm`
 paths are refused by default; pass `--overwrite` only when replacement is
-intentional. Each conversion is staged and committed as one generation, so an
-ordinary failure does not leave a partial set of final `.dcm` files.
+intentional. Each conversion writes its complete set to a sibling staging
+directory, then promotes the flat `.dcm` files sequentially under an
+output-directory writer lock. The journaled commit is failure-atomic for
+ordinary reported errors: newly promoted files are removed and overwritten
+files are restored if commit fails. It is not visibility-atomic for concurrent
+readers, which may observe a mixed set or a temporarily absent overwritten file
+during promotion. An interrupted transaction is recovered before the next
+export; a failed rollback returns a recovery-required error and retains its
+journal and backups.
+
+Metadata is validated before slide access and output staging. Non-ASCII text is
+encoded as UTF-8 and declares DICOM Specific Character Set `ISO_IR 192`; scalar
+text rejects DICOM value delimiters and control characters. The
+`imaged_volume_depth_mm` input is always millimeters. It is converted to
+micrometers for Imaged Volume Depth (FL) and remains millimeters for Slice
+Thickness (DS).
+
+> [!IMPORTANT]
+> Regenerate output produced by wsi-dicom 0.7.0 or earlier if it used imaged
+> volume depth (including the 0.001 mm default) or non-ASCII metadata. Those
+> versions could write the depth with the wrong Imaged Volume Depth units or
+> omit the required Specific Character Set declaration.
+
+Per-frame functional-group and extended-offset-table metadata is bounded by
+default to 256 MiB per instance and 1 GiB across one export. Trusted large
+workloads can override these limits for `convert` and `sustain-convert`:
+
+```sh
+wsi-dicom convert slide.ndpi --out dicom-out --metadata metadata.json \
+  --max-instance-metadata-mib 512 --max-total-metadata-mib 2048
+```
+
+Library callers can set `ExportOptions::max_instance_metadata_bytes` and
+`ExportOptions::max_total_metadata_bytes`, or use the corresponding `Export`
+builder methods. The writer preflights both limits and enforces the per-instance
+limit while streaming metadata.
 
 Generated DICOM UIDs are fresh for each conversion. Reproducible pipelines may
 opt into full source-content/configuration identity with
@@ -99,9 +133,14 @@ wsi-dicom validate dicom-out \
   --htj2k-decoder "/opt/homebrew/bin/grk_decompress -i {input} -o {output}"
 ```
 
-Missing external tools are reported as skipped unless `--strict` is set.
-Directory validation is bounded by file count, depth, timeout, and child output
-capture limits; symlink traversal is refused.
+Every validation run performs an intrinsic Pixel Data structure check before
+optional external validation. It verifies Number of Frames, native versus
+encapsulated representation, nonempty data, and bounded frame mapping through
+Basic or Extended Offset Tables; it still runs when `--max-pixel-frames 0`.
+This structural check does not decode pixel values. Missing external tools are
+reported as skipped unless `--strict` is set. Directory validation is bounded
+by file count, depth, timeout, and child output capture limits; symlink
+traversal is refused.
 
 ## Rust API
 
@@ -171,6 +210,9 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
 - JPEG 2000 passthrough preserves eligible native source codestreams.
 - Route profile and coverage JSON reports expose available frame counts,
   sampled frame percentages, route counters, pixel profiles, and GPU counters.
+- Per-frame functional groups use streamed undefined-length sequences and items
+  instead of an in-memory item list. Frame offsets and lengths are kept in a
+  temporary disk-backed index and replayed when patching Extended Offset Tables.
 - Output names encode scene, series, level, Z, channel, and time coordinates;
   consumers must use report paths rather than assuming the pre-0.7 name shape.
 - Passing validators is release evidence, not formal DICOM certification.
