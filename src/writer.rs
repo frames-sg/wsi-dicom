@@ -92,6 +92,19 @@ mod tests {
     }
 
     #[test]
+    fn extended_offset_table_metadata_rejects_a_value_larger_than_u32_vl() {
+        let bytes_per_entry = u32::try_from(std::mem::size_of::<u64>()).unwrap();
+        let largest_frame_count = u32::MAX / bytes_per_entry;
+
+        assert!(super::extended_offset_table_metadata_bytes(largest_frame_count).is_ok());
+        let error =
+            super::extended_offset_table_metadata_bytes(largest_frame_count + 1).unwrap_err();
+
+        assert!(matches!(error, Error::InvalidOptions { .. }));
+        assert!(error.to_string().contains("element length"));
+    }
+
+    #[test]
     fn frame_index_spool_round_trips_large_odd_and_even_tables() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("frame-index.tmp");
