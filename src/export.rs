@@ -155,7 +155,8 @@ use route_cache::{
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 use route_cache::{
     clear_auto_metal_input_route_cache_for_tests,
-    clear_auto_metal_input_route_cache_state_for_tests, WSI_DICOM_AUTO_ROUTE_CACHE_ENV,
+    clear_auto_metal_input_route_cache_state_for_tests,
+    override_persistent_auto_metal_input_route_cache_path_for_tests,
 };
 
 pub(crate) use self::frame_region::FrameRectGrid;
