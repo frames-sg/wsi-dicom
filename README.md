@@ -6,7 +6,8 @@
 DICOM VL Whole Slide Microscopy instances. It provides a Rust API, a CLI, and an
 optional native GUI.
 
-`j2k` supplies JPEG, JPEG 2000, and HTJ2K codec primitives. `wsi-rs`
+[J2K, the pure-Rust JPEG 2000 codec](https://frames-sg.github.io/j2k/rust-jpeg2000-codec/),
+supplies JPEG, JPEG 2000, and HTJ2K codec primitives. `wsi-rs`
 opens vendor WSI formats such as SVS and NDPI. `wsi-dicom` owns DICOM export,
 metadata validation, transfer-syntax routing, reports, and writer errors.
 
