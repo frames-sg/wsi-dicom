@@ -815,6 +815,9 @@ fn extended_offset_table_encoded_bytes(frame_count: usize) -> Result<u64, Error>
         .ok_or_else(|| Error::InvalidOptions {
             reason: "extended offset table metadata estimate overflow".into(),
         })?;
+    u32::try_from(value_bytes).map_err(|_| Error::InvalidOptions {
+        reason: "extended offset table value exceeds the DICOM element length limit".into(),
+    })?;
     value_bytes
         .checked_mul(2)
         .and_then(|bytes| bytes.checked_add(24))
