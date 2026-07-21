@@ -38,12 +38,18 @@ pub(super) fn dicom_export_instance_jobs<'a>(
                 for z in 0..series.axes.z {
                     for t in 0..series.axes.t {
                         for c in optical_path_groups(series.axes.c) {
-                            let instance_number =
-                                u32::try_from(jobs.len() + 1).map_err(|_| Error::Unsupported {
+                            let ordinal = jobs.len();
+                            let instance_number = ordinal
+                                .checked_add(1)
+                                .and_then(|value| u32::try_from(value).ok())
+                                .ok_or_else(|| Error::Unsupported {
                                     reason: "DICOM instance count exceeds u32".into(),
                                 })?;
+                            jobs.try_reserve(1).map_err(|_| Error::Unsupported {
+                                reason: "DICOM instance plan exceeds available memory".into(),
+                            })?;
                             jobs.push(DicomExportInstanceJob {
-                                ordinal: jobs.len(),
+                                ordinal,
                                 instance_number,
                                 coordinate: InstanceCoordinate::new(
                                     scene_idx, series_idx, level_idx, z, c, t,
@@ -87,6 +93,9 @@ pub(super) fn dicom_route_profile_jobs(
                 for z in 0..series.axes.z {
                     for t in 0..series.axes.t {
                         for c in optical_path_groups(series.axes.c) {
+                            jobs.try_reserve(1).map_err(|_| Error::Unsupported {
+                                reason: "route profile job plan exceeds available memory".into(),
+                            })?;
                             jobs.push(DicomRouteProfileJob {
                                 coordinate: InstanceCoordinate::new(
                                     scene_idx, series_idx, level_idx, z, c, t,
@@ -106,7 +115,12 @@ pub(super) fn preflight_output_paths(
     request: &ExportRequest,
     jobs: &[DicomExportInstanceJob<'_>],
 ) -> Result<(), Error> {
-    let mut paths = HashSet::with_capacity(jobs.len());
+    let mut paths = HashSet::new();
+    paths
+        .try_reserve(jobs.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "DICOM output path preflight exceeds available memory".into(),
+        })?;
     for job in jobs {
         let path = job.coordinate.output_path(&request.output_dir);
         if !paths.insert(path.clone()) {
@@ -125,6 +139,92 @@ pub(super) fn preflight_output_paths(
         }
     }
     Ok(())
+}
+
+pub(super) fn preflight_metadata_budgets(
+    slide: &Slide,
+    request: &ExportRequest,
+    jobs: &[DicomExportInstanceJob<'_>],
+) -> Result<(), Error> {
+    let mut total = 0u64;
+    for job in jobs {
+        let (frame_count, frame_grid) = metadata_frame_plan(slide, request, job)?;
+        let (row_spacing_mm, column_spacing_mm) =
+            require_pixel_spacing_mm(level_pixel_spacing_mm(slide, job.level))?;
+        let plan = PerFrameFunctionalGroupsPlan::new(
+            frame_count,
+            frame_grid,
+            row_spacing_mm,
+            column_spacing_mm,
+        )?;
+        let estimate = plan
+            .encoded_len()?
+            .checked_add(extended_offset_table_metadata_bytes(frame_count)?)
+            .ok_or_else(|| Error::InvalidOptions {
+                reason: "DICOM instance metadata estimate overflow".into(),
+            })?;
+        if estimate > request.options.max_instance_metadata_bytes {
+            return Err(Error::InvalidOptions {
+                reason: format!(
+                    "instance {} metadata estimate of at least {estimate} bytes exceeds max_instance_metadata_bytes={}",
+                    job.instance_number, request.options.max_instance_metadata_bytes
+                ),
+            });
+        }
+        total = total
+            .checked_add(estimate)
+            .ok_or_else(|| Error::InvalidOptions {
+                reason: "total DICOM metadata estimate overflow".into(),
+            })?;
+        if total > request.options.max_total_metadata_bytes {
+            return Err(Error::InvalidOptions {
+                reason: format!(
+                    "total metadata estimate of at least {total} bytes exceeds max_total_metadata_bytes={}",
+                    request.options.max_total_metadata_bytes
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn metadata_frame_plan(
+    slide: &Slide,
+    request: &ExportRequest,
+    job: &DicomExportInstanceJob<'_>,
+) -> Result<(u32, FrameGrid), Error> {
+    let (matrix_columns, matrix_rows) = job.level.dimensions;
+    if request.options.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
+        let geometry = jpeg_baseline_route_frame_geometry(
+            slide,
+            job.level,
+            job.coordinate,
+            request.options.tile_size,
+        )?;
+        let frame_count = checked_frame_count_u32(geometry.tiles_across, geometry.tiles_down)?;
+        Ok((
+            frame_count,
+            FrameGrid {
+                frame_columns: geometry.frame_columns,
+                frame_rows: geometry.frame_rows,
+                matrix_columns,
+                matrix_rows,
+            },
+        ))
+    } else {
+        let tile_size = j2k_route_tile_size(&request.options, job.level)?;
+        let frame_count =
+            TileGrid::square(matrix_columns, matrix_rows, tile_size)?.frame_count_u32()?;
+        Ok((
+            frame_count,
+            FrameGrid {
+                frame_columns: tile_size,
+                frame_rows: tile_size,
+                matrix_columns,
+                matrix_rows,
+            },
+        ))
+    }
 }
 
 pub(super) fn export_dicom_instance_jobs(

@@ -258,6 +258,10 @@ pub struct ExportOptions {
     pub overwrite: bool,
     /// Maximum prepared uncompressed frame buffer size in bytes.
     pub max_prepared_frame_bytes: u64,
+    /// Maximum streamed per-frame and frame-index metadata bytes for one instance.
+    pub max_instance_metadata_bytes: u64,
+    /// Maximum streamed per-frame and frame-index metadata bytes across one export.
+    pub max_total_metadata_bytes: u64,
     /// Requested output transfer syntax.
     pub transfer_syntax: TransferSyntax,
     /// Direct JPEG-to-HTJ2K profile used when eligible.
@@ -294,6 +298,8 @@ impl Default for ExportOptions {
             tile_size: 512,
             overwrite: false,
             max_prepared_frame_bytes: 256 * 1024 * 1024,
+            max_instance_metadata_bytes: 256 * 1024 * 1024,
+            max_total_metadata_bytes: 1024 * 1024 * 1024,
             transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
             jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossless53,
             jpeg_quality: 90,
@@ -340,6 +346,16 @@ impl ExportOptions {
         if self.max_prepared_frame_bytes == 0 {
             return Err(Error::InvalidOptions {
                 reason: "max_prepared_frame_bytes must be greater than zero".into(),
+            });
+        }
+        if self.max_instance_metadata_bytes == 0 {
+            return Err(Error::InvalidOptions {
+                reason: "max_instance_metadata_bytes must be greater than zero".into(),
+            });
+        }
+        if self.max_total_metadata_bytes == 0 {
+            return Err(Error::InvalidOptions {
+                reason: "max_total_metadata_bytes must be greater than zero".into(),
             });
         }
         if !(1..=100).contains(&self.jpeg_quality) {
@@ -520,6 +536,27 @@ mod tests {
 
         let err = options.validate().expect_err("invalid quality");
         assert!(err.to_string().contains("jpeg_quality"));
+
+        for options in [
+            ExportOptions {
+                max_instance_metadata_bytes: 0,
+                ..ExportOptions::default()
+            },
+            ExportOptions {
+                max_total_metadata_bytes: 0,
+                ..ExportOptions::default()
+            },
+        ] {
+            let error = options.validate().expect_err("zero metadata budget");
+            assert!(error.to_string().contains("metadata_bytes"));
+        }
+    }
+
+    #[test]
+    fn export_options_default_to_bounded_metadata_budgets() {
+        let options = ExportOptions::default();
+        assert_eq!(options.max_instance_metadata_bytes, 256 * 1024 * 1024);
+        assert_eq!(options.max_total_metadata_bytes, 1024 * 1024 * 1024);
     }
 
     #[test]
@@ -528,6 +565,8 @@ mod tests {
             tile_size: 384,
             overwrite: true,
             max_prepared_frame_bytes: 128 * 1024 * 1024,
+            max_instance_metadata_bytes: 64 * 1024 * 1024,
+            max_total_metadata_bytes: 512 * 1024 * 1024,
             transfer_syntax: TransferSyntax::Htj2k,
             jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossy97Aggressive,
             jpeg_quality: 77,

@@ -343,7 +343,11 @@ fn cache_split_metal_grid_run(
         });
     }
 
-    let mut rows = Vec::with_capacity(row_count);
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(row_count)
+        .map_err(|_| Error::Unsupported {
+            reason: "Metal row batch result allocation exceeds available memory".into(),
+        })?;
     for _ in 0..row_count {
         let row_tiles = grid_run.tiles.drain(..tiles_per_row).collect::<Vec<_>>();
         rows.push(MetalEncodedTileRun {
@@ -499,7 +503,7 @@ fn encode_metal_tile_entries(
     preference: EncodeBackendPreference,
     missing_encode_message: &'static str,
 ) -> Result<EncodedMetalTileEntries, Error> {
-    let (batch_tiles, tile_profiles) = split_metal_tile_entries(tile_entries);
+    let (batch_tiles, tile_profiles) = split_metal_tile_entries(tile_entries)?;
     let encode_batches = metal_j2k_encode_batch_count(&batch_tiles, tile_width, tile_height);
     let batch_encoded = j2k_encoder.encode_metal_tiles(&batch_tiles, tile_width, tile_height)?;
     let gpu_encode_stats = batch_encoded.gpu_encode_stats;
@@ -519,9 +523,19 @@ fn encode_metal_tile_entries(
 #[cfg(all(feature = "metal", target_os = "macos"))]
 fn split_metal_tile_entries(
     tile_entries: Vec<MetalTileEntry>,
-) -> (Vec<MetalDeviceTile>, Vec<Option<PixelProfile>>) {
+) -> Result<(Vec<MetalDeviceTile>, Vec<Option<PixelProfile>>), Error> {
     let mut batch_tiles = Vec::new();
-    let mut tile_profiles = Vec::with_capacity(tile_entries.len());
+    batch_tiles
+        .try_reserve_exact(tile_entries.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "Metal input tile batch exceeds available memory".into(),
+        })?;
+    let mut tile_profiles = Vec::new();
+    tile_profiles
+        .try_reserve_exact(tile_entries.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "Metal tile profile batch exceeds available memory".into(),
+        })?;
     for entry in tile_entries {
         if let Some((tile, profile)) = entry {
             batch_tiles.push(tile);
@@ -530,7 +544,7 @@ fn split_metal_tile_entries(
             tile_profiles.push(None);
         }
     }
-    (batch_tiles, tile_profiles)
+    Ok((batch_tiles, tile_profiles))
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -541,7 +555,12 @@ fn merge_metal_tile_batch_frames(
     missing_encode_message: &'static str,
 ) -> Result<Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>>, Error> {
     let mut frames = frames.into_iter();
-    let mut encoded = Vec::with_capacity(tile_profiles.len());
+    let mut encoded = Vec::new();
+    encoded
+        .try_reserve_exact(tile_profiles.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "Metal encoded tile batch exceeds available memory".into(),
+        })?;
     for profile in tile_profiles {
         let Some(profile) = profile else {
             encoded.push(None);

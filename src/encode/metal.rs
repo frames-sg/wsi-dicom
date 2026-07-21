@@ -120,8 +120,15 @@ impl SubmittedDicomJ2kMetalTileBatch {
         } = self;
 
         if preference == EncodeBackendPreference::CpuOnly {
+            let mut frames = Vec::new();
+            frames
+                .try_reserve_exact(tiles.len())
+                .map_err(|_| Error::Unsupported {
+                    reason: "Metal fallback result batch exceeds available memory".into(),
+                })?;
+            frames.resize_with(tiles.len(), || None);
             return Ok(EncodedDicomJ2kMetalTileBatch {
-                frames: (0..tiles.len()).map(|_| None).collect(),
+                frames,
                 gpu_encode_stats: DicomJ2kGpuEncodeBatchStats::default(),
             });
         }
@@ -129,7 +136,12 @@ impl SubmittedDicomJ2kMetalTileBatch {
         let session = session.ok_or_else(|| Error::Encode {
             message: "submitted JPEG 2000 Metal tile batch is missing its session".into(),
         })?;
-        let mut encoded = Vec::with_capacity(tiles.len());
+        let mut encoded = Vec::new();
+        encoded
+            .try_reserve_exact(tiles.len())
+            .map_err(|_| Error::Unsupported {
+                reason: "Metal encoded tile batch exceeds available memory".into(),
+            })?;
         let mut gpu_encode_stats = DicomJ2kGpuEncodeBatchStats::default();
         for group in groups {
             match group {
@@ -333,7 +345,12 @@ pub(super) fn metal_encode_requests_from_device_tiles(
     output_width: u32,
     output_height: u32,
 ) -> Result<Vec<j2k_metal::MetalLosslessEncodeTile<'_>>, Error> {
-    let mut requests = Vec::with_capacity(tiles.len());
+    let mut requests = Vec::new();
+    requests
+        .try_reserve_exact(tiles.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "Metal encode request batch exceeds available memory".into(),
+        })?;
     for tile in tiles {
         let image = crate::metal_interop::device_tile_image(tile)?;
         requests.push(j2k_metal::MetalLosslessEncodeTile::from_resident(

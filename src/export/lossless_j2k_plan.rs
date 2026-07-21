@@ -85,7 +85,15 @@ pub(crate) fn plan_lossless_j2k_frames(
     let tiles = usize::try_from(request.tile_count).map_err(|_| Error::Unsupported {
         reason: "J2K row planning tile count exceeds platform addressable memory".into(),
     })?;
-    let mut planned = Vec::with_capacity(rows.saturating_mul(tiles));
+    let frame_capacity = rows.checked_mul(tiles).ok_or_else(|| Error::Unsupported {
+        reason: "J2K frame plan count overflow".into(),
+    })?;
+    let mut planned = Vec::new();
+    planned
+        .try_reserve_exact(frame_capacity)
+        .map_err(|_| Error::Unsupported {
+            reason: "J2K frame plan exceeds available memory".into(),
+        })?;
     for offset in 0..request.row_count {
         let row = request
             .start_row
@@ -109,7 +117,12 @@ fn plan_lossless_j2k_row_at(
     let row_i64 = i64::try_from(row).map_err(|_| Error::Unsupported {
         reason: "J2K row planning tile row exceeds i64".into(),
     })?;
-    let mut planned = Vec::with_capacity(tile_count);
+    let mut planned = Vec::new();
+    planned
+        .try_reserve_exact(tile_count)
+        .map_err(|_| Error::Unsupported {
+            reason: "J2K row plan exceeds available memory".into(),
+        })?;
     for offset in 0..tile_count {
         let col = request
             .start_col

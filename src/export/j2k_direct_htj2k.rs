@@ -56,27 +56,45 @@ pub(super) fn encode_planned_batch(
     transfer_syntax: TransferSyntax,
     codec_validation: CodecValidation,
 ) -> Result<Vec<Option<Result<BatchOutcome, Error>>>, Error> {
-    let indices = planned
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, planned_frame)| planned_frame.source_j2k.is_some().then_some(idx))
-        .collect::<Vec<_>>();
-    let mut outcomes = (0..planned.len()).map(|_| None).collect::<Vec<_>>();
+    let mut indices = Vec::new();
+    indices
+        .try_reserve_exact(planned.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "direct J2K batch index exceeds available memory".into(),
+        })?;
+    indices.extend(
+        planned
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, frame)| frame.source_j2k.is_some().then_some(idx)),
+    );
+    let mut outcomes = Vec::new();
+    outcomes
+        .try_reserve_exact(planned.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "direct J2K batch outcome exceeds available memory".into(),
+        })?;
+    outcomes.resize_with(planned.len(), || None);
     if indices.is_empty() {
         return Ok(outcomes);
     }
 
-    let frames = indices
-        .iter()
-        .map(|&idx| {
+    let mut frames = Vec::new();
+    frames
+        .try_reserve_exact(indices.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "direct J2K batch frame list exceeds available memory".into(),
+        })?;
+    for &idx in &indices {
+        frames.push(
             planned[idx]
                 .source_j2k
                 .as_ref()
                 .ok_or_else(|| Error::Encode {
                     message: "direct J2K route missing source J2K frame".into(),
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+                })?,
+        );
+    }
     let batch = encode_frame_refs_batch(&frames, transfer_syntax, codec_validation)?;
 
     for (input_idx, encoded) in batch.into_iter().enumerate() {

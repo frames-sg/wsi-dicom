@@ -31,69 +31,68 @@ pub(super) fn export_jpeg_passthrough_instance(
         level,
     )?;
 
-    if let Some(direct_frames) =
+    if let Some(direct_plan) =
         try_plan_direct_jpeg_passthrough_frames(slide, location, level, geometry)?
     {
-        let mut pixel_profile = None;
         let mut metrics = ExportMetrics::default();
-        let mut compressed_bytes = 0u64;
-        let mut uncompressed_bytes = 0u64;
-        let mut lengths = Vec::with_capacity(direct_frames.len());
-        for frame in &direct_frames {
-            ensure_consistent_pixel_profile(
-                &mut pixel_profile,
-                frame.profile,
-                "JPEG passthrough pixel profile changed across frames",
-            )?;
-            compressed_bytes = compressed_bytes.saturating_add(frame.compressed_bytes);
-            uncompressed_bytes = uncompressed_bytes.saturating_add(frame.uncompressed_bytes);
-            lengths.push(frame.compressed_bytes);
+        for _ in 0..direct_plan.frame_count {
             metrics.record_passthrough_frame();
-            metrics.record_pixel_profile(frame.profile);
+            metrics.record_pixel_profile(direct_plan.profile);
         }
 
-        let profile = pixel_profile.ok_or_else(|| Error::Unsupported {
-            reason: "slide level produced no frames".into(),
-        })?;
-        let offsets = pixel_data_offsets_from_lengths(&lengths)?;
+        let frame_grid = FrameGrid {
+            frame_columns,
+            frame_rows,
+            matrix_columns,
+            matrix_rows,
+        };
         let object = context.build_dicom_object(InstanceDicomObjectParams {
             metadata,
             study_uid: identity.study_uid(),
             instance_number,
-            frame_grid: FrameGrid {
-                frame_columns,
-                frame_rows,
-                matrix_columns,
-                matrix_rows,
-            },
+            frame_grid,
             frame_count,
-            profile,
-            pixel_data_offsets: PixelDataOffsetTables {
-                offsets,
-                lengths: lengths.clone(),
-            },
+            profile: direct_plan.profile,
             icc_profile: icc_profile.bytes.as_deref(),
             lossy_compression: Some(LossyCompressionMetadata {
                 method: "ISO_10918_1",
-                ratio: (compressed_bytes > 0)
-                    .then_some(uncompressed_bytes as f64 / compressed_bytes as f64),
+                ratio: (direct_plan.compressed_bytes > 0).then_some(
+                    direct_plan.uncompressed_bytes as f64 / direct_plan.compressed_bytes as f64,
+                ),
             }),
         })?;
         let mut direct_writer = DirectJpegPassthroughFrameWriter::new(
             slide,
             location,
             geometry,
-            direct_frames.len(),
+            direct_plan.frame_count,
             DIRECT_JPEG_PASSTHROUGH_WRITE_CHUNK_FRAMES,
         );
+        let per_frame_plan = context.per_frame_plan(frame_count, frame_grid)?;
         let write_started = Instant::now();
-        write_dicom_object_with_direct_pixel_data(
+        write_dicom_object_with_streamed_pixel_data(
             &context.path,
-            object,
-            context.file_meta(request.options.transfer_syntax.uid()),
-            request.options.overwrite,
-            &lengths,
-            |idx, output| direct_writer.write_frame(idx, output),
+            StreamedDicomWritePlan {
+                object,
+                meta: context.file_meta(request.options.transfer_syntax.uid()),
+                overwrite: request.options.overwrite,
+                per_frame_plan,
+                max_instance_metadata_bytes: request.options.max_instance_metadata_bytes,
+                frame_count: direct_plan.frame_count,
+            },
+            |writer| {
+                for idx in 0..direct_plan.frame_count {
+                    let compressed_bytes =
+                        direct_writer.frame_len(idx).map_err(|source| Error::Io {
+                            path: context.path.clone(),
+                            source,
+                        })?;
+                    writer.push_frame_with(compressed_bytes, |output| {
+                        direct_writer.write_frame(idx, output)
+                    })?;
+                }
+                Ok(())
+            },
         )?;
         metrics.record_write_duration(write_started.elapsed());
 
@@ -282,22 +281,19 @@ pub(super) fn export_jpeg_passthrough_instance(
     let profile = pixel_profile.ok_or_else(|| Error::Unsupported {
         reason: "slide level produced no frames".into(),
     })?;
+    let frame_grid = FrameGrid {
+        frame_columns,
+        frame_rows,
+        matrix_columns,
+        matrix_rows,
+    };
     let object = context.build_dicom_object(InstanceDicomObjectParams {
         metadata,
         study_uid: identity.study_uid(),
         instance_number,
-        frame_grid: FrameGrid {
-            frame_columns,
-            frame_rows,
-            matrix_columns,
-            matrix_rows,
-        },
+        frame_grid,
         frame_count,
         profile,
-        pixel_data_offsets: PixelDataOffsetTables {
-            offsets: pixel_spool.offsets(),
-            lengths: pixel_spool.lengths(),
-        },
         icc_profile: icc_profile.bytes.as_deref(),
         lossy_compression: Some(LossyCompressionMetadata {
             method: "ISO_10918_1",
@@ -305,13 +301,19 @@ pub(super) fn export_jpeg_passthrough_instance(
                 .then_some(uncompressed_bytes as f64 / compressed_bytes as f64),
         }),
     })?;
+    let per_frame_plan = context.per_frame_plan(frame_count, frame_grid)?;
     let write_started = Instant::now();
-    write_dicom_object_with_spooled_pixel_data(
+    write_dicom_object_with_streamed_pixel_data(
         &context.path,
-        object,
-        context.file_meta(request.options.transfer_syntax.uid()),
-        request.options.overwrite,
-        &mut pixel_spool,
+        StreamedDicomWritePlan {
+            object,
+            meta: context.file_meta(request.options.transfer_syntax.uid()),
+            overwrite: request.options.overwrite,
+            per_frame_plan,
+            max_instance_metadata_bytes: request.options.max_instance_metadata_bytes,
+            frame_count: frame_count as usize,
+        },
+        |writer| pixel_spool.stream_frames_to(writer),
     )?;
     metrics.record_write_duration(write_started.elapsed());
 
