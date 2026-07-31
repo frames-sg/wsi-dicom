@@ -11,6 +11,7 @@ use crate::{Error, TransferSyntax};
 
 pub(super) const WSI_DICOM_AUTO_ROUTE_CACHE_ENV: &str = "WSI_DICOM_AUTO_ROUTE_CACHE";
 const ROUTE_CACHE_JSON_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const ROUTE_CACHE_MAX_ENTRIES: usize = 65_536;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,6 +36,30 @@ pub(super) struct AutoMetalInputRouteCacheKey {
     pub(super) route_scope_frames: u64,
 }
 
+fn insert_bounded_route_cache_entry(
+    entries: &mut HashMap<AutoMetalInputRouteCacheKey, AutoLosslessJ2kRouteDecision>,
+    key: &AutoMetalInputRouteCacheKey,
+    route: AutoLosslessJ2kRouteDecision,
+    max_entries: usize,
+) -> bool {
+    if entries.len() >= max_entries && !entries.contains_key(key) {
+        return false;
+    }
+    entries.insert(key.clone(), route);
+    true
+}
+
+fn ensure_route_cache_entry_limit(entry_count: usize) -> Result<(), Error> {
+    if entry_count > ROUTE_CACHE_MAX_ENTRIES {
+        return Err(Error::Unsupported {
+            reason: format!(
+                "auto route cache entry limit of {ROUTE_CACHE_MAX_ENTRIES} was exceeded"
+            ),
+        });
+    }
+    Ok(())
+}
+
 #[derive(Debug, Default)]
 struct AutoMetalInputRouteCache {
     entries: HashMap<AutoMetalInputRouteCacheKey, AutoLosslessJ2kRouteDecision>,
@@ -43,26 +68,6 @@ struct AutoMetalInputRouteCache {
 }
 
 static AUTO_METAL_INPUT_ROUTE_CACHE: OnceLock<Mutex<AutoMetalInputRouteCache>> = OnceLock::new();
-
-#[cfg(all(test, feature = "metal", target_os = "macos"))]
-thread_local! {
-    static PERSISTENT_ROUTE_CACHE_PATH_OVERRIDE: std::cell::RefCell<Option<PathBuf>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(all(test, feature = "metal", target_os = "macos"))]
-pub(super) struct PersistentRouteCachePathOverride {
-    previous: Option<PathBuf>,
-}
-
-#[cfg(all(test, feature = "metal", target_os = "macos"))]
-impl Drop for PersistentRouteCachePathOverride {
-    fn drop(&mut self) {
-        PERSISTENT_ROUTE_CACHE_PATH_OVERRIDE.with(|configured| {
-            configured.replace(self.previous.take());
-        });
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 struct PersistentAutoMetalInputRouteCacheEntry {
@@ -111,8 +116,14 @@ pub(super) fn store_cached_auto_metal_input_decision(
     }
     match auto_metal_input_route_cache().lock() {
         Ok(mut cache) => {
-            cache.entries.insert(key.clone(), route);
-            cache.dirty = true;
+            if insert_bounded_route_cache_entry(
+                &mut cache.entries,
+                key,
+                route,
+                ROUTE_CACHE_MAX_ENTRIES,
+            ) {
+                cache.dirty = true;
+            }
         }
         Err(_) => {
             eprintln!("wsi-dicom: auto Metal input route cache state mutex is poisoned");
@@ -137,22 +148,7 @@ pub(super) fn clear_auto_metal_input_route_cache_state_for_tests() {
         AutoMetalInputRouteCache::default();
 }
 
-#[cfg(all(test, feature = "metal", target_os = "macos"))]
-pub(super) fn override_persistent_auto_metal_input_route_cache_path_for_tests(
-    path: PathBuf,
-) -> PersistentRouteCachePathOverride {
-    let previous =
-        PERSISTENT_ROUTE_CACHE_PATH_OVERRIDE.with(|configured| configured.replace(Some(path)));
-    PersistentRouteCachePathOverride { previous }
-}
-
 fn persistent_auto_metal_input_route_cache_path() -> Option<PathBuf> {
-    #[cfg(all(test, feature = "metal", target_os = "macos"))]
-    if let Some(path) =
-        PERSISTENT_ROUTE_CACHE_PATH_OVERRIDE.with(|configured| configured.borrow().clone())
-    {
-        return Some(path);
-    }
     std::env::var_os(WSI_DICOM_AUTO_ROUTE_CACHE_ENV)
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
@@ -162,6 +158,12 @@ pub(super) fn load_persistent_auto_metal_input_route_cache_if_requested() -> Res
     let Some(path) = persistent_auto_metal_input_route_cache_path() else {
         return Ok(());
     };
+    load_persistent_auto_metal_input_route_cache_from_path(path)
+}
+
+pub(super) fn load_persistent_auto_metal_input_route_cache_from_path(
+    path: PathBuf,
+) -> Result<(), Error> {
     let mut cache = auto_metal_input_route_cache()
         .lock()
         .map_err(|_| Error::Unsupported {
@@ -191,6 +193,12 @@ pub(super) fn load_persistent_auto_metal_input_route_cache_if_requested() -> Res
             .map_err(|source| Error::Json {
                 path: path.clone(),
                 source,
+            })?;
+        ensure_route_cache_entry_limit(entries.len())?;
+        loaded_entries
+            .try_reserve(entries.len())
+            .map_err(|_| Error::Unsupported {
+                reason: "auto route cache entry index exceeds available memory".into(),
             })?;
         for entry in entries {
             let Some(route) = entry
@@ -237,6 +245,12 @@ pub(super) fn flush_persistent_auto_metal_input_route_cache_if_requested() -> Re
     let Some(path) = persistent_auto_metal_input_route_cache_path() else {
         return Ok(());
     };
+    flush_persistent_auto_metal_input_route_cache_to_path(path)
+}
+
+pub(super) fn flush_persistent_auto_metal_input_route_cache_to_path(
+    path: PathBuf,
+) -> Result<(), Error> {
     let mut cache = auto_metal_input_route_cache()
         .lock()
         .map_err(|_| Error::Unsupported {
@@ -360,10 +374,32 @@ fn atomic_write_route_cache(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-fn read_route_cache_file_capped(path: &PathBuf) -> std::io::Result<Vec<u8>> {
+fn read_route_cache_file_capped(path: &Path) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
 
-    let file = fs::File::open(path)?;
+    let path_metadata = fs::symlink_metadata(path)?;
+    if path_metadata.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "auto route cache must not be a symbolic link",
+        ));
+    }
+    if !path_metadata.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "auto route cache must be a regular file",
+        ));
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    configure_route_cache_no_follow(&mut options);
+    let file = options.open(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "auto route cache changed to a non-regular file",
+        ));
+    }
     let mut limited = file.take(ROUTE_CACHE_JSON_MAX_BYTES.saturating_add(1));
     let mut bytes = Vec::new();
     limited.read_to_end(&mut bytes)?;
@@ -379,37 +415,80 @@ fn read_route_cache_file_capped(path: &PathBuf) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+#[cfg(unix)]
+fn configure_route_cache_no_follow(options: &mut fs::OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+}
+
+#[cfg(not(unix))]
+fn configure_route_cache_no_follow(_options: &mut fs::OpenOptions) {}
+
 #[cfg(test)]
 mod tests {
-    use super::reject_symlink_route_cache_path;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
 
-    #[cfg(all(feature = "metal", target_os = "macos"))]
+    use super::{
+        ensure_route_cache_entry_limit, insert_bounded_route_cache_entry,
+        read_route_cache_file_capped, reject_symlink_route_cache_path,
+        AutoLosslessJ2kRouteDecision, AutoMetalInputRouteCacheKey, ROUTE_CACHE_MAX_ENTRIES,
+    };
+    use crate::TransferSyntax;
+
+    fn key(source_path: &str) -> AutoMetalInputRouteCacheKey {
+        AutoMetalInputRouteCacheKey {
+            source_path: PathBuf::from(source_path),
+            scene_idx: 0,
+            series_idx: 0,
+            level: 0,
+            z: 0,
+            c: 0,
+            t: 0,
+            tile_size: 512,
+            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+            route_scope_frames: 1,
+        }
+    }
+
     #[test]
-    fn configured_test_path_is_scoped_to_the_current_thread() {
-        let environment_path = std::env::var_os(super::WSI_DICOM_AUTO_ROUTE_CACHE_ENV)
-            .filter(|path| !path.is_empty())
-            .map(std::path::PathBuf::from);
-        let configured = std::path::PathBuf::from("thread-local-route-cache.json");
-        let override_guard = super::override_persistent_auto_metal_input_route_cache_path_for_tests(
-            configured.clone(),
-        );
+    fn route_cache_entry_budget_allows_updates_but_rejects_new_keys() {
+        let mut entries = HashMap::new();
+        let first = key("first.svs");
+        let second = key("second.svs");
 
+        assert!(insert_bounded_route_cache_entry(
+            &mut entries,
+            &first,
+            AutoLosslessJ2kRouteDecision::CpuOnly,
+            1,
+        ));
+        assert!(!insert_bounded_route_cache_entry(
+            &mut entries,
+            &second,
+            AutoLosslessJ2kRouteDecision::GpuInputDeviceEncode,
+            1,
+        ));
+        assert!(insert_bounded_route_cache_entry(
+            &mut entries,
+            &first,
+            AutoLosslessJ2kRouteDecision::CpuInputDeviceEncode,
+            1,
+        ));
+        assert_eq!(entries.len(), 1);
         assert_eq!(
-            super::persistent_auto_metal_input_route_cache_path(),
-            Some(configured)
+            entries.get(&first),
+            Some(&AutoLosslessJ2kRouteDecision::CpuInputDeviceEncode)
         );
-        assert_eq!(
-            std::thread::spawn(super::persistent_auto_metal_input_route_cache_path)
-                .join()
-                .unwrap(),
-            environment_path
-        );
+    }
 
-        drop(override_guard);
-        assert_eq!(
-            super::persistent_auto_metal_input_route_cache_path(),
-            environment_path
-        );
+    #[test]
+    fn persistent_route_cache_rejects_excessive_entry_counts() {
+        ensure_route_cache_entry_limit(ROUTE_CACHE_MAX_ENTRIES).unwrap();
+        let error = ensure_route_cache_entry_limit(ROUTE_CACHE_MAX_ENTRIES + 1)
+            .expect_err("oversized persistent cache must be rejected");
+        assert!(error.to_string().contains("entry limit"));
     }
 
     #[cfg(unix)]
@@ -429,5 +508,21 @@ mod tests {
             .expect("read symlink metadata")
             .file_type()
             .is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn route_cache_reader_does_not_follow_symlinks() {
+        let temp = tempfile::tempdir().expect("create temporary directory");
+        let target = temp.path().join("target.json");
+        let link = temp.path().join("cache.json");
+        std::fs::write(&target, b"[]").expect("write target");
+        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+
+        let error = read_route_cache_file_capped(&link)
+            .expect_err("route cache reads must reject symbolic links");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(std::fs::read(target).expect("read target"), b"[]");
     }
 }

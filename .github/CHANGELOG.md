@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Upgraded the complete `j2k` codec family to 0.8 and raised the `wsi-rs`
+  dependency floor to 0.5.2 so export, passthrough, transcode, and optional
+  accelerator routes resolve one codec generation.
+
+### Security
+
+- Hardened transaction recovery and persistent route-cache reads against
+  symlink substitution, rejected duplicate recovery entries, and bounded the
+  process-wide route cache.
+- Added a workspace-wide RustSec audit gate and updated the vulnerable GUI
+  transitive dependencies to patched releases.
+
 ## [0.7.1] - 2026-07-21
 
 ### Added

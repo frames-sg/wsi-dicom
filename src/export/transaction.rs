@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -45,16 +45,30 @@ impl OutputDirectoryLock {
                 return Err(Error::Io { path, source });
             }
         }
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&path)
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(false).read(true).write(true);
+        configure_no_follow(&mut options);
+        let file = options.open(&path).map_err(|source| Error::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if !file
+            .metadata()
             .map_err(|source| Error::Io {
                 path: path.clone(),
                 source,
-            })?;
+            })?
+            .file_type()
+            .is_file()
+        {
+            return Err(Error::Io {
+                path,
+                source: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "export lock path changed to a non-regular file",
+                ),
+            });
+        }
         file.try_lock().map_err(|source| Error::Io {
             path: path.clone(),
             source: io::Error::new(
@@ -65,6 +79,16 @@ impl OutputDirectoryLock {
         Ok(Self { _file: file })
     }
 }
+
+#[cfg(unix)]
+fn configure_no_follow(options: &mut OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+}
+
+#[cfg(not(unix))]
+fn configure_no_follow(_options: &mut OpenOptions) {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -526,20 +550,68 @@ fn write_manifest(transaction_dir: &Path, manifest: &TransactionManifest) -> Res
 
 fn read_manifest(transaction_dir: &Path) -> Result<TransactionManifest, Error> {
     let path = transaction_dir.join(MANIFEST_FILE_NAME);
-    let metadata = fs::metadata(&path).map_err(|source| Error::Io {
+    let path_metadata = fs::symlink_metadata(&path).map_err(|source| Error::Io {
         path: path.clone(),
         source,
     })?;
+    if path_metadata.file_type().is_symlink() {
+        return Err(Error::Io {
+            path,
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "transaction manifest must not be a symbolic link",
+            ),
+        });
+    }
+    if !path_metadata.file_type().is_file() {
+        return Err(Error::Io {
+            path,
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "transaction manifest must be a regular file",
+            ),
+        });
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    configure_no_follow(&mut options);
+    let file = options.open(&path).map_err(|source| Error::Io {
+        path: path.clone(),
+        source,
+    })?;
+    let metadata = file.metadata().map_err(|source| Error::Io {
+        path: path.clone(),
+        source,
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(Error::Io {
+            path,
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "transaction manifest changed to a non-regular file",
+            ),
+        });
+    }
     if metadata.len() > MANIFEST_LIMIT_BYTES {
         return Err(Error::ExportTransaction {
             recovery_path: transaction_dir.to_path_buf(),
             reason: "abandoned transaction manifest exceeds the 1 MiB safety limit".into(),
         });
     }
-    let bytes = fs::read(&path).map_err(|source| Error::Io {
-        path: path.clone(),
-        source,
-    })?;
+    let mut bytes = Vec::new();
+    let mut limited = file.take(MANIFEST_LIMIT_BYTES.saturating_add(1));
+    limited
+        .read_to_end(&mut bytes)
+        .map_err(|source| Error::Io {
+            path: path.clone(),
+            source,
+        })?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MANIFEST_LIMIT_BYTES {
+        return Err(Error::ExportTransaction {
+            recovery_path: transaction_dir.to_path_buf(),
+            reason: "abandoned transaction manifest exceeds the 1 MiB safety limit".into(),
+        });
+    }
     let manifest: TransactionManifest =
         serde_json::from_slice(&bytes).map_err(|source| Error::Json {
             path: path.clone(),
@@ -562,6 +634,13 @@ fn validate_manifest_names(
     transaction_dir: &Path,
     manifest: &TransactionManifest,
 ) -> Result<(), Error> {
+    let mut names = HashSet::new();
+    names
+        .try_reserve(manifest.entries.len())
+        .map_err(|_| Error::ExportTransaction {
+            recovery_path: transaction_dir.to_path_buf(),
+            reason: "transaction manifest entry index exceeds available memory".into(),
+        })?;
     for entry in &manifest.entries {
         let path = Path::new(&entry.name);
         if entry.name.is_empty()
@@ -570,6 +649,15 @@ fn validate_manifest_names(
             return Err(Error::ExportTransaction {
                 recovery_path: transaction_dir.to_path_buf(),
                 reason: "transaction manifest contains an unsafe output file name".into(),
+            });
+        }
+        if !names.insert(entry.name.as_str()) {
+            return Err(Error::ExportTransaction {
+                recovery_path: transaction_dir.to_path_buf(),
+                reason: format!(
+                    "transaction manifest contains duplicate output file name {}",
+                    entry.name
+                ),
             });
         }
     }
@@ -817,6 +905,50 @@ mod tests {
 
         assert!(error.to_string().contains("symbolic link"));
         assert_eq!(fs::read(target).unwrap(), b"do not modify");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_manifest_rejects_symlink_without_reading_target() {
+        let transaction = tempfile::tempdir().unwrap();
+        let target = transaction.path().join("outside.json");
+        let manifest_path = transaction.path().join(MANIFEST_FILE_NAME);
+        fs::write(
+            &target,
+            br#"{"version":1,"phase":"committed","entries":[]}"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&target, &manifest_path).unwrap();
+
+        let error = read_manifest(transaction.path())
+            .expect_err("transaction manifests must not be symbolic links");
+
+        assert!(error.to_string().contains("symbolic link"));
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            br#"{"version":1,"phase":"committed","entries":[]}"#
+        );
+    }
+
+    #[test]
+    fn read_manifest_rejects_duplicate_output_names() {
+        let transaction = tempfile::tempdir().unwrap();
+        let duplicate = TransactionEntry {
+            name: "one.dcm".into(),
+            had_original: false,
+            state: EntryState::Staged,
+        };
+        let manifest = TransactionManifest {
+            version: 1,
+            phase: TransactionPhase::Prepared,
+            entries: vec![duplicate.clone(), duplicate],
+        };
+        write_manifest(transaction.path(), &manifest).unwrap();
+
+        let error = read_manifest(transaction.path())
+            .expect_err("duplicate transaction entries must be rejected");
+
+        assert!(error.to_string().contains("duplicate"));
     }
 
     #[test]

@@ -156,7 +156,8 @@ use route_cache::{
 use route_cache::{
     clear_auto_metal_input_route_cache_for_tests,
     clear_auto_metal_input_route_cache_state_for_tests,
-    override_persistent_auto_metal_input_route_cache_path_for_tests,
+    flush_persistent_auto_metal_input_route_cache_to_path,
+    load_persistent_auto_metal_input_route_cache_from_path,
 };
 
 pub(crate) use self::frame_region::FrameRectGrid;

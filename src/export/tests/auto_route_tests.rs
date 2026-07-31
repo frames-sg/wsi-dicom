@@ -468,8 +468,6 @@ fn auto_metal_input_route_cache_can_persist_when_path_is_configured() {
     clear_auto_metal_input_route_cache_state_for_tests();
     let tmp = tempfile::tempdir().unwrap();
     let cache_path = tmp.path().join("auto-route-cache.json");
-    let _cache_path_override =
-        override_persistent_auto_metal_input_route_cache_path_for_tests(cache_path.clone());
 
     let key = AutoMetalInputRouteCacheKey {
         source_path: PathBuf::from("slide.svs"),
@@ -487,11 +485,11 @@ fn auto_metal_input_route_cache_can_persist_when_path_is_configured() {
         &key,
         AutoLosslessJ2kRouteDecision::GpuInputDeviceEncode,
     );
-    flush_persistent_auto_metal_input_route_cache_if_requested().unwrap();
+    flush_persistent_auto_metal_input_route_cache_to_path(cache_path.clone()).unwrap();
 
     clear_auto_metal_input_route_cache_for_tests();
     clear_auto_metal_input_route_cache_state_for_tests();
-    load_persistent_auto_metal_input_route_cache_if_requested().unwrap();
+    load_persistent_auto_metal_input_route_cache_from_path(cache_path).unwrap();
 
     assert_eq!(
         cached_auto_metal_input_decision(&key),
