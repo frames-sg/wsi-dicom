@@ -8,8 +8,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
+
+
 def load_toml(relative_path):
     return tomllib.loads((REPO_ROOT / relative_path).read_text(encoding="utf-8"))
+
+
+def dependency_version(manifest, name):
+    dependency = manifest["dependencies"][name]
+    requirement = dependency if isinstance(dependency, str) else dependency["version"]
+    return tuple(map(int, requirement.split(".")))
 
 
 def cargo_package(manifest_path, package_name):
@@ -42,6 +50,20 @@ def cargo_package(manifest_path, package_name):
 
 
 class DependencyTopologyTests(unittest.TestCase):
+    def test_ci_runs_a_workspace_wide_rustsec_scan(self):
+        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "cargo install cargo-audit --locked --version 0.22.1",
+            workflow,
+        )
+        self.assertIn(
+            "cargo audit --file Cargo.lock "
+            "--ignore RUSTSEC-2021-0153 --ignore RUSTSEC-2024-0436",
+            workflow,
+        )
+
     def test_cargo_metadata_uses_registry_codec_dependencies(self):
         package = cargo_package("Cargo.toml", "wsi-dicom")
         codecs = [
@@ -64,7 +86,9 @@ class DependencyTopologyTests(unittest.TestCase):
             REPO_ROOT.resolve(),
         )
 
-    def test_lockfiles_pin_one_checksummed_registry_j2k_family(self):
+    def test_lockfiles_match_the_manifest_j2k_family(self):
+        minimum_version = dependency_version(load_toml("Cargo.toml"), "j2k")
+        minimum_wsi_version = dependency_version(load_toml("Cargo.toml"), "wsi-rs")
         for relative_path in ("Cargo.lock", "fuzz/Cargo.lock"):
             with self.subTest(lockfile=relative_path):
                 packages = load_toml(relative_path)["package"]
@@ -86,14 +110,23 @@ class DependencyTopologyTests(unittest.TestCase):
                     f"mixed j2k release families in {relative_path}: {versions}",
                 )
                 major, minor, patch = map(int, next(iter(versions)).split("."))
-                self.assertEqual((major, minor), (0, 7))
-                self.assertGreaterEqual(patch, 3)
+                self.assertEqual((major, minor), minimum_version[:2])
+                self.assertGreaterEqual((major, minor, patch), minimum_version)
                 for package in j2k_packages:
                     self.assertEqual(package.get("source"), REGISTRY_SOURCE, package["name"])
                     self.assertRegex(package.get("checksum", ""), r"^[0-9a-f]{64}$")
                 self.assertFalse(
                     any(package["name"].startswith("signinum") for package in packages)
                 )
+                wsi_packages = [
+                    package for package in packages if package["name"] == "wsi-rs"
+                ]
+                self.assertEqual(len(wsi_packages), 1)
+                locked_wsi_version = tuple(
+                    map(int, wsi_packages[0]["version"].split("."))
+                )
+                self.assertEqual(locked_wsi_version[:2], minimum_wsi_version[:2])
+                self.assertGreaterEqual(locked_wsi_version, minimum_wsi_version)
 
 if __name__ == "__main__":
     unittest.main()
