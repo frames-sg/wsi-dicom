@@ -1,3 +1,5 @@
+import json
+import subprocess
 import tomllib
 import unittest
 from collections import Counter
@@ -6,78 +8,87 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
-J2K_VERSION = "=0.7.3"
-DIRECT_J2K_DEPENDENCIES = {
-    "j2k",
-    "j2k-core",
-    "j2k-cuda",
-    "j2k-jpeg",
-    "j2k-jpeg-metal",
-    "j2k-metal",
-    "j2k-metal-support",
-    "j2k-transcode",
-    "j2k-transcode-metal",
-}
 
 
 def load_toml(relative_path):
     return tomllib.loads((REPO_ROOT / relative_path).read_text(encoding="utf-8"))
 
 
-def dependency_version(specification):
-    if isinstance(specification, str):
-        return specification
-    return specification.get("version")
+def dependency_version(manifest, name):
+    dependency = manifest["dependencies"][name]
+    requirement = dependency if isinstance(dependency, str) else dependency["version"]
+    return tuple(map(int, requirement.split(".")))
+
+
+def cargo_package(manifest_path, package_name):
+    result = subprocess.run(
+        [
+            "cargo",
+            "metadata",
+            "--locked",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--manifest-path",
+            str(REPO_ROOT / manifest_path),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"cargo metadata failed: {result.stderr}")
+    packages = [
+        package
+        for package in json.loads(result.stdout)["packages"]
+        if package["name"] == package_name
+    ]
+    if len(packages) != 1:
+        raise AssertionError(f"expected one {package_name} package, found {len(packages)}")
+    return packages[0]
 
 
 class DependencyTopologyTests(unittest.TestCase):
-    def test_root_manifest_uses_registry_j2k_dependencies(self):
-        manifest = load_toml("Cargo.toml")
-        dependencies = manifest["dependencies"]
-        direct_j2k = {
-            name for name in dependencies if name.startswith("j2k")
-        }
-        self.assertEqual(direct_j2k, DIRECT_J2K_DEPENDENCIES)
-
-        for name in sorted(direct_j2k):
-            specification = dependencies[name]
-            self.assertEqual(dependency_version(specification), J2K_VERSION, name)
-            if isinstance(specification, dict):
-                self.assertNotIn("path", specification, name)
-                self.assertNotIn("git", specification, name)
-                self.assertNotIn("registry", specification, name)
-
-        self.assertNotIn("patch", manifest)
-
-    def test_published_wsi_dependency_uses_the_registry(self):
-        root_dependencies = load_toml("Cargo.toml")["dependencies"]
-        root_paths = {
-            name: specification["path"]
-            for name, specification in root_dependencies.items()
-            if isinstance(specification, dict) and "path" in specification
-        }
-        self.assertEqual(root_paths, {})
-        self.assertEqual(dependency_version(root_dependencies["wsi-rs"]), "=0.5.0")
-
-        fuzz_dependencies = load_toml("fuzz/Cargo.toml")["dependencies"]
-        fuzz_paths = {
-            name: specification["path"]
-            for name, specification in fuzz_dependencies.items()
-            if isinstance(specification, dict) and "path" in specification
-        }
-        self.assertEqual(
-            fuzz_paths,
-            {"wsi-dicom": ".."},
+    def test_ci_runs_a_workspace_wide_rustsec_scan(self):
+        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
         )
-        self.assertEqual(dependency_version(fuzz_dependencies["wsi-rs"]), "=0.5.0")
+        self.assertIn(
+            "cargo install cargo-audit --locked --version 0.22.1",
+            workflow,
+        )
+        self.assertIn(
+            "cargo audit --file Cargo.lock "
+            "--ignore RUSTSEC-2021-0153 --ignore RUSTSEC-2024-0436",
+            workflow,
+        )
 
-    def test_fuzz_manifest_does_not_patch_codec_crates(self):
-        manifest = load_toml("fuzz/Cargo.toml")
-        source = (REPO_ROOT / "fuzz/Cargo.toml").read_text(encoding="utf-8")
-        self.assertNotIn("patch", manifest)
-        self.assertNotIn("../j2k/", source)
+    def test_cargo_metadata_uses_registry_codec_dependencies(self):
+        package = cargo_package("Cargo.toml", "wsi-dicom")
+        codecs = [
+            dependency
+            for dependency in package["dependencies"]
+            if dependency["name"].startswith("j2k") or dependency["name"] == "wsi-rs"
+        ]
+        self.assertGreater(len(codecs), 0)
+        for dependency in codecs:
+            self.assertTrue(dependency["req"], dependency["name"])
+            self.assertEqual(dependency["source"], REGISTRY_SOURCE, dependency["name"])
 
-    def test_lockfiles_pin_one_checksummed_registry_j2k_family(self):
+    def test_fuzz_cargo_metadata_keeps_only_the_local_fuzz_target_path(self):
+        package = cargo_package("fuzz/Cargo.toml", "wsi-dicom-fuzz")
+        dependencies = {dependency["name"]: dependency for dependency in package["dependencies"]}
+        self.assertEqual(dependencies["wsi-rs"]["source"], REGISTRY_SOURCE)
+        self.assertIsNone(dependencies["wsi-dicom"]["source"])
+        self.assertEqual(
+            Path(dependencies["wsi-dicom"]["path"]).resolve(),
+            REPO_ROOT.resolve(),
+        )
+
+    def test_lockfiles_match_the_manifest_j2k_family(self):
+        minimum_version = dependency_version(load_toml("Cargo.toml"), "j2k")
+        minimum_wsi_version = dependency_version(load_toml("Cargo.toml"), "wsi-rs")
         for relative_path in ("Cargo.lock", "fuzz/Cargo.lock"):
             with self.subTest(lockfile=relative_path):
                 packages = load_toml(relative_path)["package"]
@@ -92,21 +103,30 @@ class DependencyTopologyTests(unittest.TestCase):
                     all(count == 1 for count in counts.values()),
                     f"duplicate j2k package identities in {relative_path}: {counts}",
                 )
+                versions = {package["version"] for package in j2k_packages}
+                self.assertEqual(
+                    len(versions),
+                    1,
+                    f"mixed j2k release families in {relative_path}: {versions}",
+                )
+                major, minor, patch = map(int, next(iter(versions)).split("."))
+                self.assertEqual((major, minor), minimum_version[:2])
+                self.assertGreaterEqual((major, minor, patch), minimum_version)
                 for package in j2k_packages:
-                    self.assertEqual(package["version"], "0.7.3", package["name"])
                     self.assertEqual(package.get("source"), REGISTRY_SOURCE, package["name"])
                     self.assertRegex(package.get("checksum", ""), r"^[0-9a-f]{64}$")
                 self.assertFalse(
                     any(package["name"].startswith("signinum") for package in packages)
                 )
-
-    def test_ci_runs_dependency_policy_without_cargo(self):
-        workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        self.assertIn(
-            "python -m unittest discover -s tests -p 'test_dependency_topology.py'",
-            workflow,
-        )
-
+                wsi_packages = [
+                    package for package in packages if package["name"] == "wsi-rs"
+                ]
+                self.assertEqual(len(wsi_packages), 1)
+                locked_wsi_version = tuple(
+                    map(int, wsi_packages[0]["version"].split("."))
+                )
+                self.assertEqual(locked_wsi_version[:2], minimum_wsi_version[:2])
+                self.assertGreaterEqual(locked_wsi_version, minimum_wsi_version)
 
 if __name__ == "__main__":
     unittest.main()

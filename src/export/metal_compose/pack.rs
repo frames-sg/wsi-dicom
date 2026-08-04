@@ -66,7 +66,12 @@ impl MetalStripComposer {
         let destination_pitch = u64::try_from(slot_stride).map_err(|_| Error::Unsupported {
             reason: "Metal packed WholeLevel destination pitch exceeds u64".into(),
         })?;
-        let mut validated_tiles = Vec::with_capacity(tiles.len());
+        let mut validated_tiles = Vec::new();
+        validated_tiles
+            .try_reserve_exact(tiles.len())
+            .map_err(|_| Error::Unsupported {
+                reason: "Metal pack dispatch batch exceeds available memory".into(),
+            })?;
         for (idx, tile) in tiles.iter().enumerate() {
             if tile.format != format {
                 return Err(Error::Unsupported {

@@ -1,5 +1,6 @@
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -44,16 +45,30 @@ impl OutputDirectoryLock {
                 return Err(Error::Io { path, source });
             }
         }
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&path)
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(false).read(true).write(true);
+        configure_no_follow(&mut options);
+        let file = options.open(&path).map_err(|source| Error::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if !file
+            .metadata()
             .map_err(|source| Error::Io {
                 path: path.clone(),
                 source,
-            })?;
+            })?
+            .file_type()
+            .is_file()
+        {
+            return Err(Error::Io {
+                path,
+                source: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "export lock path changed to a non-regular file",
+                ),
+            });
+        }
         file.try_lock().map_err(|source| Error::Io {
             path: path.clone(),
             source: io::Error::new(
@@ -64,6 +79,16 @@ impl OutputDirectoryLock {
         Ok(Self { _file: file })
     }
 }
+
+#[cfg(unix)]
+fn configure_no_follow(options: &mut OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+}
+
+#[cfg(not(unix))]
+fn configure_no_follow(_options: &mut OpenOptions) {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -128,14 +153,14 @@ impl ExportTransaction {
         reports: &mut [InstanceReport],
         overwrite: bool,
     ) -> Result<(), Error> {
-        self.commit_inner(reports, overwrite, None)
+        self.commit_inner(reports, overwrite, CommitFaults::default())
     }
 
     fn commit_inner(
         &mut self,
         reports: &mut [InstanceReport],
         overwrite: bool,
-        fail_after_installs: Option<usize>,
+        faults: CommitFaults,
     ) -> Result<(), Error> {
         let transaction_dir = self.staging_dir().to_path_buf();
         let backup_dir = transaction_dir.join("backups");
@@ -158,14 +183,48 @@ impl ExportTransaction {
                 &self.output_dir,
                 &transaction_dir,
                 &mut manifest,
-                fail_after_installs,
+                faults.fail_after_installs,
+                faults.fail_install_rename_at,
             )?;
+            if faults.fail_output_sync {
+                return Err(Error::Io {
+                    path: self.output_dir.clone(),
+                    source: io::Error::other("injected export output directory sync failure"),
+                });
+            }
             sync_directory(&self.output_dir)?;
             manifest.phase = TransactionPhase::Committed;
-            write_manifest(&transaction_dir, &manifest)
+            write_manifest(&transaction_dir, &manifest)?;
+            if faults.fail_after_committed_manifest {
+                return Err(Error::Io {
+                    path: transaction_dir.join(MANIFEST_FILE_NAME),
+                    source: io::Error::other(
+                        "injected failure after persisting the committed transaction marker",
+                    ),
+                });
+            }
+            Ok(())
         })();
         if let Err(commit_error) = commit_result {
-            return match rollback_entries(&self.output_dir, &transaction_dir, &manifest) {
+            manifest.phase = TransactionPhase::Committing;
+            if let Err(journal_error) = write_manifest(&transaction_dir, &manifest) {
+                let recovery_path = self.keep_directory();
+                return Err(Error::ExportTransaction {
+                    recovery_path,
+                    reason: format!(
+                        "commit failed ({commit_error}); rollback could not start because its journal marker failed ({journal_error})"
+                    ),
+                });
+            }
+            let rollback_result = if faults.fail_rollback {
+                Err(Error::Io {
+                    path: transaction_dir.clone(),
+                    source: io::Error::other("injected export rollback failure"),
+                })
+            } else {
+                rollback_entries(&self.output_dir, &transaction_dir, &manifest)
+            };
+            return match rollback_result {
                 Ok(()) => Err(commit_error),
                 Err(rollback_error) => {
                     let recovery_path = self.keep_directory();
@@ -194,16 +253,44 @@ impl ExportTransaction {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct CommitFaults {
+    fail_after_installs: Option<usize>,
+    fail_install_rename_at: Option<usize>,
+    fail_output_sync: bool,
+    fail_after_committed_manifest: bool,
+    fail_rollback: bool,
+}
+
 fn prepare_entries(
     reports: &[InstanceReport],
     transaction_dir: &Path,
     output_dir: &Path,
     overwrite: bool,
 ) -> Result<Vec<TransactionEntry>, Error> {
-    let mut entries = Vec::with_capacity(reports.len());
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(reports.len())
+        .map_err(|_| Error::ExportTransaction {
+            recovery_path: transaction_dir.to_path_buf(),
+            reason: "export transaction manifest exceeds available memory".into(),
+        })?;
+    let mut names = HashSet::new();
+    names
+        .try_reserve(reports.len())
+        .map_err(|_| Error::ExportTransaction {
+            recovery_path: transaction_dir.to_path_buf(),
+            reason: "export transaction manifest exceeds available memory".into(),
+        })?;
     for report in reports {
         let name = staged_file_name(&report.path, transaction_dir)?;
         let staged = transaction_dir.join(&name);
+        if !names.insert(name.clone()) {
+            return Err(Error::DicomWrite {
+                path: staged,
+                message: format!("duplicate flat output file name {name}"),
+            });
+        }
         let metadata = fs::symlink_metadata(&staged).map_err(|source| Error::Io {
             path: staged.clone(),
             source,
@@ -277,6 +364,7 @@ fn commit_entries(
     transaction_dir: &Path,
     manifest: &mut TransactionManifest,
     fail_after_installs: Option<usize>,
+    fail_install_rename_at: Option<usize>,
 ) -> Result<(), Error> {
     for index in 0..manifest.entries.len() {
         if fail_after_installs == Some(index) {
@@ -297,6 +385,12 @@ fn commit_entries(
             manifest.entries[index].state = EntryState::BackupMoved;
             write_manifest(transaction_dir, manifest)?;
         }
+        if fail_install_rename_at == Some(index) {
+            return Err(Error::Io {
+                path: final_path,
+                source: io::Error::other("injected staged output rename failure"),
+            });
+        }
         fs::rename(&staged_path, &final_path).map_err(|source| Error::Io {
             path: final_path,
             source,
@@ -316,21 +410,32 @@ fn rollback_entries(
         let staged_path = transaction_dir.join(&entry.name);
         let final_path = output_dir.join(&entry.name);
         let backup_path = transaction_dir.join("backups").join(&entry.name);
-        let backup_exists = backup_path.try_exists().map_err(|source| Error::Io {
-            path: backup_path.clone(),
-            source,
-        })?;
+        let backup_metadata = match fs::symlink_metadata(&backup_path) {
+            Ok(metadata) if metadata.file_type().is_file() => Some(metadata),
+            Ok(_) => {
+                return Err(Error::Io {
+                    path: backup_path,
+                    source: io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "transaction backup must be a regular file and not a symlink",
+                    ),
+                });
+            }
+            Err(source) if source.kind() == io::ErrorKind::NotFound => None,
+            Err(source) => {
+                return Err(Error::Io {
+                    path: backup_path,
+                    source,
+                });
+            }
+        };
         let staged_exists = staged_path.try_exists().map_err(|source| Error::Io {
             path: staged_path.clone(),
             source,
         })?;
 
-        if backup_exists {
-            remove_installed_file_if_present(&final_path)?;
-            fs::rename(&backup_path, &final_path).map_err(|source| Error::Io {
-                path: final_path,
-                source,
-            })?;
+        if let Some(backup_metadata) = backup_metadata {
+            restore_backup(output_dir, &backup_path, &backup_metadata, &final_path)?;
         } else if !staged_exists {
             if entry.had_original {
                 return Err(Error::ExportTransaction {
@@ -345,6 +450,46 @@ fn rollback_entries(
         }
     }
     sync_directory(output_dir)
+}
+
+fn restore_backup(
+    output_dir: &Path,
+    backup_path: &Path,
+    backup_metadata: &fs::Metadata,
+    final_path: &Path,
+) -> Result<(), Error> {
+    let mut restored = tempfile::Builder::new()
+        .prefix(".wsi-dicom-rollback-")
+        .tempfile_in(output_dir)
+        .map_err(|source| Error::Io {
+            path: output_dir.to_path_buf(),
+            source,
+        })?;
+    let mut backup = File::open(backup_path).map_err(|source| Error::Io {
+        path: backup_path.to_path_buf(),
+        source,
+    })?;
+    io::copy(&mut backup, &mut restored).map_err(|source| Error::Io {
+        path: restored.path().to_path_buf(),
+        source,
+    })?;
+    restored
+        .as_file()
+        .set_permissions(backup_metadata.permissions())
+        .map_err(|source| Error::Io {
+            path: restored.path().to_path_buf(),
+            source,
+        })?;
+    restored.as_file().sync_all().map_err(|source| Error::Io {
+        path: restored.path().to_path_buf(),
+        source,
+    })?;
+    remove_installed_file_if_present(final_path)?;
+    restored.persist(final_path).map_err(|error| Error::Io {
+        path: final_path.to_path_buf(),
+        source: error.error,
+    })?;
+    Ok(())
 }
 
 fn remove_installed_file_if_present(path: &Path) -> Result<(), Error> {
@@ -405,20 +550,68 @@ fn write_manifest(transaction_dir: &Path, manifest: &TransactionManifest) -> Res
 
 fn read_manifest(transaction_dir: &Path) -> Result<TransactionManifest, Error> {
     let path = transaction_dir.join(MANIFEST_FILE_NAME);
-    let metadata = fs::metadata(&path).map_err(|source| Error::Io {
+    let path_metadata = fs::symlink_metadata(&path).map_err(|source| Error::Io {
         path: path.clone(),
         source,
     })?;
+    if path_metadata.file_type().is_symlink() {
+        return Err(Error::Io {
+            path,
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "transaction manifest must not be a symbolic link",
+            ),
+        });
+    }
+    if !path_metadata.file_type().is_file() {
+        return Err(Error::Io {
+            path,
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "transaction manifest must be a regular file",
+            ),
+        });
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    configure_no_follow(&mut options);
+    let file = options.open(&path).map_err(|source| Error::Io {
+        path: path.clone(),
+        source,
+    })?;
+    let metadata = file.metadata().map_err(|source| Error::Io {
+        path: path.clone(),
+        source,
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(Error::Io {
+            path,
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "transaction manifest changed to a non-regular file",
+            ),
+        });
+    }
     if metadata.len() > MANIFEST_LIMIT_BYTES {
         return Err(Error::ExportTransaction {
             recovery_path: transaction_dir.to_path_buf(),
             reason: "abandoned transaction manifest exceeds the 1 MiB safety limit".into(),
         });
     }
-    let bytes = fs::read(&path).map_err(|source| Error::Io {
-        path: path.clone(),
-        source,
-    })?;
+    let mut bytes = Vec::new();
+    let mut limited = file.take(MANIFEST_LIMIT_BYTES.saturating_add(1));
+    limited
+        .read_to_end(&mut bytes)
+        .map_err(|source| Error::Io {
+            path: path.clone(),
+            source,
+        })?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MANIFEST_LIMIT_BYTES {
+        return Err(Error::ExportTransaction {
+            recovery_path: transaction_dir.to_path_buf(),
+            reason: "abandoned transaction manifest exceeds the 1 MiB safety limit".into(),
+        });
+    }
     let manifest: TransactionManifest =
         serde_json::from_slice(&bytes).map_err(|source| Error::Json {
             path: path.clone(),
@@ -441,6 +634,13 @@ fn validate_manifest_names(
     transaction_dir: &Path,
     manifest: &TransactionManifest,
 ) -> Result<(), Error> {
+    let mut names = HashSet::new();
+    names
+        .try_reserve(manifest.entries.len())
+        .map_err(|_| Error::ExportTransaction {
+            recovery_path: transaction_dir.to_path_buf(),
+            reason: "transaction manifest entry index exceeds available memory".into(),
+        })?;
     for entry in &manifest.entries {
         let path = Path::new(&entry.name);
         if entry.name.is_empty()
@@ -449,6 +649,15 @@ fn validate_manifest_names(
             return Err(Error::ExportTransaction {
                 recovery_path: transaction_dir.to_path_buf(),
                 reason: "transaction manifest contains an unsafe output file name".into(),
+            });
+        }
+        if !names.insert(entry.name.as_str()) {
+            return Err(Error::ExportTransaction {
+                recovery_path: transaction_dir.to_path_buf(),
+                reason: format!(
+                    "transaction manifest contains duplicate output file name {}",
+                    entry.name
+                ),
             });
         }
     }
@@ -496,7 +705,14 @@ fn recover_abandoned_transactions(output_dir: &Path) -> Result<(), Error> {
         }
         let manifest = read_manifest(&transaction_dir)?;
         if manifest.phase != TransactionPhase::Committed {
-            rollback_entries(output_dir, &transaction_dir, &manifest)?;
+            if let Err(rollback_error) = rollback_entries(output_dir, &transaction_dir, &manifest) {
+                return Err(Error::ExportTransaction {
+                    recovery_path: transaction_dir.clone(),
+                    reason: format!(
+                        "recovery rollback failed ({rollback_error}); the journal and backups were retained"
+                    ),
+                });
+            }
         }
         fs::remove_dir_all(&transaction_dir).map_err(|source| Error::ExportTransaction {
             recovery_path: transaction_dir.clone(),
@@ -545,6 +761,24 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_output_names_are_rejected_before_overwrite_promotion() {
+        let output = tempfile::tempdir().unwrap();
+        let final_path = output.path().join("one.dcm");
+        fs::write(&final_path, b"old").unwrap();
+        let transaction = ExportTransaction::begin(output.path()).unwrap();
+        let staged = transaction.staging_dir().join("one.dcm");
+        fs::write(&staged, b"new").unwrap();
+        let mut reports = vec![report(staged.clone()), report(staged)];
+
+        let error = transaction
+            .commit(&mut reports, true)
+            .expect_err("duplicate flat output names must be rejected");
+
+        assert!(error.to_string().contains("duplicate"));
+        assert_eq!(fs::read(final_path).unwrap(), b"old");
+    }
+
+    #[test]
     fn commit_failure_restores_every_overwritten_file() {
         let output = tempfile::tempdir().unwrap();
         fs::write(output.path().join("one.dcm"), b"old-one").unwrap();
@@ -557,7 +791,14 @@ mod tests {
         let mut reports = vec![report(first), report(second)];
 
         transaction
-            .commit_inner(&mut reports, true, Some(1))
+            .commit_inner(
+                &mut reports,
+                true,
+                CommitFaults {
+                    fail_after_installs: Some(1),
+                    ..CommitFaults::default()
+                },
+            )
             .expect_err("injected failure should roll back");
 
         assert_eq!(fs::read(output.path().join("one.dcm")).unwrap(), b"old-one");
@@ -575,10 +816,68 @@ mod tests {
         let mut reports = vec![report(first), report(second)];
 
         transaction
-            .commit_inner(&mut reports, false, Some(1))
+            .commit_inner(
+                &mut reports,
+                false,
+                CommitFaults {
+                    fail_after_installs: Some(1),
+                    ..CommitFaults::default()
+                },
+            )
             .expect_err("injected failure should roll back");
 
         assert!(!output.path().join("one.dcm").exists());
+        assert!(!output.path().join("two.dcm").exists());
+    }
+
+    #[test]
+    fn install_rename_failure_restores_the_moved_original() {
+        let output = tempfile::tempdir().unwrap();
+        let final_path = output.path().join("one.dcm");
+        fs::write(&final_path, b"old").unwrap();
+        let mut transaction = ExportTransaction::begin(output.path()).unwrap();
+        let staged = transaction.staging_dir().join("one.dcm");
+        fs::write(&staged, b"new").unwrap();
+        let mut reports = vec![report(staged)];
+
+        transaction
+            .commit_inner(
+                &mut reports,
+                true,
+                CommitFaults {
+                    fail_install_rename_at: Some(0),
+                    ..CommitFaults::default()
+                },
+            )
+            .expect_err("injected install rename failure should roll back");
+
+        assert_eq!(fs::read(final_path).unwrap(), b"old");
+    }
+
+    #[test]
+    fn output_sync_failure_rolls_back_every_promoted_file() {
+        let output = tempfile::tempdir().unwrap();
+        let overwritten_path = output.path().join("one.dcm");
+        fs::write(&overwritten_path, b"old").unwrap();
+        let mut transaction = ExportTransaction::begin(output.path()).unwrap();
+        let overwritten_staged = transaction.staging_dir().join("one.dcm");
+        let new_staged = transaction.staging_dir().join("two.dcm");
+        fs::write(&overwritten_staged, b"new-one").unwrap();
+        fs::write(&new_staged, b"new-two").unwrap();
+        let mut reports = vec![report(overwritten_staged), report(new_staged)];
+
+        transaction
+            .commit_inner(
+                &mut reports,
+                true,
+                CommitFaults {
+                    fail_output_sync: true,
+                    ..CommitFaults::default()
+                },
+            )
+            .expect_err("injected output directory sync failure should roll back");
+
+        assert_eq!(fs::read(overwritten_path).unwrap(), b"old");
         assert!(!output.path().join("two.dcm").exists());
     }
 
@@ -606,6 +905,50 @@ mod tests {
 
         assert!(error.to_string().contains("symbolic link"));
         assert_eq!(fs::read(target).unwrap(), b"do not modify");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_manifest_rejects_symlink_without_reading_target() {
+        let transaction = tempfile::tempdir().unwrap();
+        let target = transaction.path().join("outside.json");
+        let manifest_path = transaction.path().join(MANIFEST_FILE_NAME);
+        fs::write(
+            &target,
+            br#"{"version":1,"phase":"committed","entries":[]}"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&target, &manifest_path).unwrap();
+
+        let error = read_manifest(transaction.path())
+            .expect_err("transaction manifests must not be symbolic links");
+
+        assert!(error.to_string().contains("symbolic link"));
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            br#"{"version":1,"phase":"committed","entries":[]}"#
+        );
+    }
+
+    #[test]
+    fn read_manifest_rejects_duplicate_output_names() {
+        let transaction = tempfile::tempdir().unwrap();
+        let duplicate = TransactionEntry {
+            name: "one.dcm".into(),
+            had_original: false,
+            state: EntryState::Staged,
+        };
+        let manifest = TransactionManifest {
+            version: 1,
+            phase: TransactionPhase::Prepared,
+            entries: vec![duplicate.clone(), duplicate],
+        };
+        write_manifest(transaction.path(), &manifest).unwrap();
+
+        let error = read_manifest(transaction.path())
+            .expect_err("duplicate transaction entries must be rejected");
+
+        assert!(error.to_string().contains("duplicate"));
     }
 
     #[test]
@@ -639,5 +982,217 @@ mod tests {
         assert_eq!(fs::read(&final_path).unwrap(), b"old");
         assert!(!retained_path.exists());
         drop(recovered);
+    }
+
+    #[test]
+    fn rollback_failure_retains_recoverable_state_and_reports_both_failures() {
+        let output = tempfile::tempdir().unwrap();
+        let final_path = output.path().join("one.dcm");
+        let second_final_path = output.path().join("two.dcm");
+        fs::write(&final_path, b"old").unwrap();
+        fs::write(&second_final_path, b"old-two").unwrap();
+        let mut transaction = ExportTransaction::begin(output.path()).unwrap();
+        let staged = transaction.staging_dir().join("one.dcm");
+        let second_staged = transaction.staging_dir().join("two.dcm");
+        fs::write(&staged, b"new").unwrap();
+        fs::write(&second_staged, b"new-two").unwrap();
+        let mut reports = vec![report(staged), report(second_staged)];
+
+        let error = transaction
+            .commit_inner(
+                &mut reports,
+                true,
+                CommitFaults {
+                    fail_after_installs: Some(1),
+                    fail_rollback: true,
+                    ..CommitFaults::default()
+                },
+            )
+            .expect_err("injected rollback failure must require recovery");
+        let (recovery_path, reason) = match error {
+            Error::ExportTransaction {
+                recovery_path,
+                reason,
+            } => (recovery_path, reason),
+            other => panic!("unexpected error: {other}"),
+        };
+        assert!(reason.contains("commit failed"));
+        assert!(reason.contains("rollback also failed"));
+        assert!(recovery_path.is_dir());
+        assert_eq!(
+            fs::read(recovery_path.join("backups/one.dcm")).unwrap(),
+            b"old"
+        );
+        assert_eq!(fs::read(&final_path).unwrap(), b"new");
+
+        let recovered = ExportTransaction::begin(output.path()).unwrap();
+        assert_eq!(fs::read(&final_path).unwrap(), b"old");
+        assert_eq!(fs::read(&second_final_path).unwrap(), b"old-two");
+        assert!(!recovery_path.exists());
+        drop(recovered);
+    }
+
+    #[test]
+    fn committed_marker_error_rejournals_rollback_before_recovery_is_retained() {
+        let output = tempfile::tempdir().unwrap();
+        let final_path = output.path().join("one.dcm");
+        fs::write(&final_path, b"old").unwrap();
+        let mut transaction = ExportTransaction::begin(output.path()).unwrap();
+        let staged = transaction.staging_dir().join("one.dcm");
+        fs::write(&staged, b"new").unwrap();
+        let mut reports = vec![report(staged)];
+
+        let error = transaction
+            .commit_inner(
+                &mut reports,
+                true,
+                CommitFaults {
+                    fail_after_committed_manifest: true,
+                    fail_rollback: true,
+                    ..CommitFaults::default()
+                },
+            )
+            .expect_err("a failed rollback after the committed marker requires recovery");
+        let recovery_path = match error {
+            Error::ExportTransaction { recovery_path, .. } => recovery_path,
+            other => panic!("unexpected error: {other}"),
+        };
+        assert_eq!(
+            read_manifest(&recovery_path).unwrap().phase,
+            TransactionPhase::Committing,
+            "recovery must not mistake a failed rollback for a committed export"
+        );
+
+        let recovered = ExportTransaction::begin(output.path()).unwrap();
+        assert_eq!(fs::read(final_path).unwrap(), b"old");
+        assert!(!recovery_path.exists());
+        drop(recovered);
+    }
+
+    #[test]
+    fn rollback_keeps_backups_until_the_transaction_is_cleaned() {
+        let output = tempfile::tempdir().unwrap();
+        let transaction_dir = output.path().join("transaction");
+        let backup_dir = transaction_dir.join("backups");
+        fs::create_dir_all(&backup_dir).unwrap();
+        let first_final = output.path().join("one.dcm");
+        let second_final = output.path().join("two.dcm");
+        fs::write(&first_final, b"new-one").unwrap();
+        fs::write(&second_final, b"new-two").unwrap();
+        fs::write(backup_dir.join("one.dcm"), b"old-one").unwrap();
+        fs::write(backup_dir.join("two.dcm"), b"old-two").unwrap();
+        let manifest = TransactionManifest {
+            version: 1,
+            phase: TransactionPhase::Committing,
+            entries: vec![
+                TransactionEntry {
+                    name: "one.dcm".into(),
+                    had_original: true,
+                    state: EntryState::Installed,
+                },
+                TransactionEntry {
+                    name: "two.dcm".into(),
+                    had_original: true,
+                    state: EntryState::Installed,
+                },
+            ],
+        };
+
+        rollback_entries(output.path(), &transaction_dir, &manifest).unwrap();
+
+        assert_eq!(fs::read(&first_final).unwrap(), b"old-one");
+        assert_eq!(fs::read(&second_final).unwrap(), b"old-two");
+        assert_eq!(fs::read(backup_dir.join("one.dcm")).unwrap(), b"old-one");
+        assert_eq!(fs::read(backup_dir.join("two.dcm")).unwrap(), b"old-two");
+    }
+
+    #[test]
+    fn rollback_can_resume_after_a_partial_restore_failure() {
+        let output = tempfile::tempdir().unwrap();
+        let transaction_dir = output.path().join("transaction");
+        let backup_dir = transaction_dir.join("backups");
+        fs::create_dir_all(&backup_dir).unwrap();
+        let first_final = output.path().join("one.dcm");
+        let second_final = output.path().join("two.dcm");
+        fs::create_dir(&first_final).unwrap();
+        fs::write(&second_final, b"new-two").unwrap();
+        fs::write(backup_dir.join("one.dcm"), b"old-one").unwrap();
+        fs::write(backup_dir.join("two.dcm"), b"old-two").unwrap();
+        let manifest = TransactionManifest {
+            version: 1,
+            phase: TransactionPhase::Committing,
+            entries: vec![
+                TransactionEntry {
+                    name: "one.dcm".into(),
+                    had_original: true,
+                    state: EntryState::Installed,
+                },
+                TransactionEntry {
+                    name: "two.dcm".into(),
+                    had_original: true,
+                    state: EntryState::Installed,
+                },
+            ],
+        };
+
+        rollback_entries(output.path(), &transaction_dir, &manifest)
+            .expect_err("a non-file destination must interrupt rollback");
+        assert_eq!(fs::read(&second_final).unwrap(), b"old-two");
+        assert_eq!(
+            fs::read(backup_dir.join("two.dcm")).unwrap(),
+            b"old-two",
+            "a completed partial restore must retain its backup for restart"
+        );
+
+        fs::rename(&first_final, output.path().join("obstruction")).unwrap();
+        fs::write(&first_final, b"new-one").unwrap();
+        rollback_entries(output.path(), &transaction_dir, &manifest)
+            .expect("rollback should be idempotent after the obstruction is removed");
+
+        assert_eq!(fs::read(&first_final).unwrap(), b"old-one");
+        assert_eq!(fs::read(&second_final).unwrap(), b"old-two");
+    }
+
+    #[test]
+    fn restart_recovery_failure_is_typed_and_retains_the_journal() {
+        let output = tempfile::tempdir().unwrap();
+        let final_path = output.path().join("one.dcm");
+        fs::create_dir(&final_path).unwrap();
+        let mut interrupted = ExportTransaction::begin(output.path()).unwrap();
+        let transaction_dir = interrupted.staging_dir().to_path_buf();
+        let backup_dir = transaction_dir.join("backups");
+        fs::create_dir(&backup_dir).unwrap();
+        fs::write(backup_dir.join("one.dcm"), b"old-one").unwrap();
+        let manifest = TransactionManifest {
+            version: 1,
+            phase: TransactionPhase::Committing,
+            entries: vec![TransactionEntry {
+                name: "one.dcm".into(),
+                had_original: true,
+                state: EntryState::Installed,
+            }],
+        };
+        write_manifest(&transaction_dir, &manifest).unwrap();
+        let retained_path = interrupted.keep_directory();
+
+        let error = ExportTransaction::begin(output.path())
+            .err()
+            .expect("restart recovery should report the obstruction");
+
+        match error {
+            Error::ExportTransaction {
+                recovery_path,
+                reason,
+            } => {
+                assert_eq!(recovery_path, retained_path);
+                assert!(reason.contains("recovery rollback failed"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        assert!(retained_path.join(MANIFEST_FILE_NAME).is_file());
+        assert_eq!(
+            fs::read(retained_path.join("backups/one.dcm")).unwrap(),
+            b"old-one"
+        );
     }
 }

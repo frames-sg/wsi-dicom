@@ -340,6 +340,8 @@ fn dicom_export_builder_with_options_preserves_explicit_option_fields() {
         tile_size: 256,
         overwrite: true,
         max_prepared_frame_bytes: 128 * 1024 * 1024,
+        max_instance_metadata_bytes: 64 * 1024 * 1024,
+        max_total_metadata_bytes: 512 * 1024 * 1024,
         transfer_syntax: TransferSyntax::Jpeg2000Lossless,
         jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossless53,
         jpeg_quality: 80,

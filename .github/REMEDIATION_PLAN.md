@@ -14,37 +14,37 @@ documentation and is excluded from the published crate.
 
 ## Live handoff
 
-Updated: 2026-07-09
-Current phase: Phase 1 registry dependency topology; publication remains
-fail-closed
-Active items: BUILD-001 is blocked after completing the registry `j2k 0.6.2`
-migration; owner `/root`, assigned files are the root/fuzz manifests and
-lockfiles, dependency integrity tests, the published-API adaptation, `deny.toml`,
-and this plan
-Last completed: SEC-000 remote workflow disablement and repository-secret
-removal; SEC-001 local workflow, script, CI, regression-test, trusted-publisher,
-and exposed-token containment changes
-Next exact action: obtain separate authority to harden and publish the `wsi-rs`
-`0.5.0` release; then replace the final temporary `wsi-rs` path with `=0.5.0` from
-crates.io and prove a standalone package. Add a second GitHub reviewer before
-any discussion of re-enabling publication
-Blocked by: no compatible published `wsi-rs` exists. Registry `0.4.0` is not
-fresh-resolvable because it requires yanked `signinum` packages and would mix
-the `j2k 0.5` and `0.6` families. Compatible local `0.5.0` requires security
-hardening and separately authorized publication. The release environment also
-remains intentionally fail-closed pending an independent reviewer
+Updated: 2026-07-21
+Current phase: coordinated 0.7.1 correctness, bounded-metadata, validation, and
+release-documentation hardening; publication remains fail-closed
+Active items: CORE-002, META-001, META-002, TX-001, VAL-003, and CLEAN-002 have
+verified 0.7.1 subwork but remain in progress for their broader acceptance
+criteria. Release metadata now targets 0.7.1; no tag or publication was created
+Last completed: scoped depth-unit correction, Unicode declaration and text
+preflight, metadata budgets and CLI overrides, streamed per-frame metadata and
+disk frame index, intrinsic Pixel Data validation, and accurate flat-transaction
+documentation
+Next exact action: after the coordinated changes are integrated, rerun the two
+tests interrupted by `ENOSPC` and the full release matrix, then capture
+dedicated independent-conformance, platform, protected-fixture, and real-device
+evidence before any release decision. Add a second GitHub reviewer before
+re-enabling publication
+Blocked by: no local storage blocker remains after 5.7 GiB of reproducible build
+artifacts was reclaimed centrally. Independent release-tier conformance and
+supported Metal/CUDA device evidence remain outstanding
 Token verification: the owner attests that the token disclosed on 2026-07-09 was
 revoked. Two other `codex` tokens remain; their presence does not contradict the
 owner's revocation and they are outside this incident's scope.
-Tests last run: 278 Rust tests passed, including all 26 repository-integrity
-tests, and 7 fixture tests were ignored. Default workspace, Metal/CUDA, and fuzz
-compile checks, Clippy with warnings denied, formatting, 39 Python tests, and
-Pyright passed. Package creation stops correctly because registry `wsi-rs 0.5.0`
-does not yet exist
-Working-tree state at plan creation: `main` ahead of `origin/main` by three;
-the plan and two Cargo-independent policy tests are the intended new repository
-files
-Open decisions: DEC-001 through DEC-009
+Tests last run: locked metadata resolved wsi-dicom 0.7.1, formatting passed, and
+all 18 publish-policy tests passed. The locked library run passed 250 tests and
+ignored 7 protected-fixture tests; two remaining tests hit OS error 28 while
+creating temporary output. Relevant depth, Unicode, metadata-budget, streamed-
+writer, transaction, offset-table, and intrinsic-validation tests passed,
+including local `dciodvfy`/`dcentvfy` smoke validation of the Unicode object
+Working-tree state: `release/0.7.0` contains coordinated uncommitted production
+and test changes. Release/docs files are scoped separately so unrelated changes
+can be preserved and committed independently
+Open decisions: DEC-002, DEC-003, and DEC-006 through DEC-009
 
 Update this block at every handoff. Keep it short; detailed evidence belongs in
 the work item, decision log, and execution log.
@@ -877,7 +877,7 @@ Acceptance criteria:
 - Release builds with `panic = "abort"` return normal errors for tested invalid
   geometry.
 
-### [ ] CORE-002 — enforce explicit resource budgets and fallible allocation
+### [~] CORE-002 — enforce explicit resource budgets and fallible allocation
 
 Priority: P1 availability
 Dependencies: CORE-001, DEC-006, BASE-001
@@ -920,7 +920,24 @@ Acceptance criteria:
 - Resource failures leave no final or temporary output behind.
 - Normal representative slides show no material throughput regression.
 
-### [ ] META-001 — validate all numeric clinical and spatial metadata
+Partial 0.7.1 implementation record:
+
+- Scoped subwork complete: `ExportOptions` now defaults to a 256 MiB
+  per-instance and 1 GiB per-export budget for per-frame functional groups and
+  Extended Offset Tables. The CLI exposes checked MiB overrides, and the
+  `Export` builder exposes byte overrides.
+- Per-frame functional groups are emitted as undefined-length streamed
+  sequences/items. Pixel Data frame offsets and lengths are stored in a
+  temporary disk-backed index rather than per-frame in-memory vectors, and the
+  index is replayed when patching Extended Offset Tables.
+- Exact-limit and limit-minus-one export tests, metadata streaming tests, and a
+  large disk-index replay test passed during the 2026-07-21 library run.
+- Remaining scope: the umbrella `ResourceBudget`, aggregate parallel resource
+  reservations, encoded-byte and temporary-storage enforcement, complete
+  allocation audit, measured defaults, peak-RSS/performance evidence, and
+  real-device coverage. CORE-002 therefore remains in progress.
+
+### [~] META-001 — validate all numeric clinical and spatial metadata
 
 Priority: P1 correctness
 Dependencies: BUILD-001
@@ -954,7 +971,21 @@ Acceptance criteria:
 - Invalid spatial metadata never reaches `writer.rs`.
 - All emitted decimal values meet DICOM length and syntax constraints.
 
-### [ ] META-002 — make DICOM text and character-set handling explicit
+Partial 0.7.1 implementation record:
+
+- Scoped depth subwork complete: `imaged_volume_depth_mm` is validated as finite
+  and positive before slide access or output staging, converted from
+  millimeters to a finite positive FL micrometer value for Imaged Volume Depth,
+  and separately formatted as a maximum-16-byte DS millimeter value for Slice
+  Thickness. Zero, negative, non-finite, FL overflow/underflow, and DS
+  underflow/unrepresentable values are rejected with a field-specific error.
+- Unit and export round-trip tests for corrected depth passed on 2026-07-21,
+  including external `dciodvfy` and `dcentvfy` smoke validation on this host.
+- Remaining scope: the same boundary audit for every other numeric clinical and
+  spatial field, fuzz evidence, and the complete independent conformance tier.
+  META-001 therefore remains in progress.
+
+### [~] META-002 — make DICOM text and character-set handling explicit
 
 Priority: P1 clinical interoperability
 Dependencies: BUILD-001, DEC-005
@@ -986,6 +1017,20 @@ Acceptance criteria:
 - No scalar metadata field can accidentally create multiple DICOM values.
 - Every non-ASCII output has an appropriate character-set declaration.
 - JSON and Rust API inputs have consistent validation behavior.
+
+Partial 0.7.1 implementation record:
+
+- Scoped text-policy subwork complete: exported scalar PN/LO/SH/CS and related
+  metadata rejects backslash delimiters and unsupported controls before slide
+  access or output staging; PN representation-group and component counts are
+  bounded. Non-ASCII metadata emits `ISO_IR 192`, while ASCII-only metadata
+  does not add a Specific Character Set declaration.
+- Accented, CJK, combining-character, PN, delimiter, and control regressions
+  passed on 2026-07-21. The generated Unicode object also passed local
+  `dciodvfy` and `dcentvfy` smoke validation.
+- Remaining scope: complete target-VR/encoded-length review, fuzz evidence,
+  typed treatment of every intentional multi-value field, and the dedicated
+  independent conformance tier. META-002 therefore remains in progress.
 
 ## 10. Phase 4 — correct instance coordinates, paths, and DICOM identity
 
@@ -1085,7 +1130,7 @@ Acceptance criteria:
 
 ## 11. Phase 5 — make output and route-cache state transactional
 
-### [ ] TX-001 — stage, validate, and commit an export as one generation
+### [~] TX-001 — stage, validate, and commit an export as one generation
 
 Priority: P1 data integrity
 Dependencies: IDENT-001, UID-001, CORE-001, DEC-004
@@ -1146,6 +1191,25 @@ simultaneously through one portable rename. Promise failure-atomic ordinary
 errors and crash recovery, not instantaneous multi-file visibility. Stronger
 visibility requires a versioned-directory plus atomic pointer design and a
 separate compatibility decision.
+
+Partial 0.7.1 documentation and verification record:
+
+- Implemented flat-output behavior stages all instances in a sibling
+  transaction directory, serializes writers with an output-directory lock,
+  journals backup/install transitions, and promotes files sequentially. An
+  ordinary commit error removes newly installed files and restores overwritten
+  files; a rollback failure retains the journal/backups and returns the distinct
+  recovery-required error. The next export rolls back an abandoned in-progress
+  journal before creating new staging state.
+- README and changelog wording now explicitly says this is failure atomicity for
+  ordinary reported errors, not simultaneous visibility. Concurrent readers can
+  observe a mixed generation or a temporarily absent overwritten file during
+  sequential promotion.
+- Existing success, ordinary rollback, overwrite restoration, lock, symlink,
+  interrupted-recovery, and rollback-failure unit tests passed on 2026-07-21.
+- Remaining scope: the complete first/middle/last and fsync/rename/permission/
+  out-of-space fault matrix, strict staged validation, platform evidence, and
+  all TX-001 acceptance criteria. TX-001 therefore remains in progress.
 
 ### [ ] TX-002 — define and test overwrite, retry, and recovery behavior
 
@@ -1299,7 +1363,7 @@ Acceptance criteria:
   not weaken the normal decoder contract.
 - Captured output is bounded and truncation is explicit.
 
-### [ ] VAL-003 — validate encapsulated frames using DICOM offset semantics
+### [~] VAL-003 — validate encapsulated frames using DICOM offset semantics
 
 Priority: P1 interoperability
 Dependencies: BUILD-001, CORE-002
@@ -1337,6 +1401,21 @@ Acceptance criteria:
 - Standards-compliant multi-fragment objects do not fail merely because of
   fragment layout.
 - Malformed offsets return bounded errors without panic or excessive allocation.
+
+Partial 0.7.1 implementation record:
+
+- Scoped intrinsic-validation subwork complete: every DICOM validation run now
+  checks Number of Frames, transfer-syntax agreement with native versus
+  encapsulated Pixel Data, nonempty data, and bounded frame spans from Basic or
+  Extended Offset Tables. This check runs independently of external tools and
+  still runs when optional decode is disabled with `max_pixel_frames = 0`.
+- Offset/length, ambiguous-layout, empty-data, transfer-syntax mismatch, and
+  zero-optional-decode regressions passed on 2026-07-21.
+- Remaining scope: a fully streaming/spooled reconstruction path for selected
+  decoded frames, conflict/padding/truncation expansion, fuzzing, and real files
+  from at least two independent encoders. VAL-003 therefore remains in
+  progress; the intrinsic check is structural evidence, not pixel decoding or
+  full DICOM conformance.
 
 ### [ ] VAL-004 — prevent missing tools from becoming a green conformance result
 
@@ -2013,7 +2092,7 @@ Acceptance criteria:
 - Supply-chain and unused-dependency tools no longer analyze nested dead
   manifests or emit misleading success after errors.
 
-### [ ] CLEAN-002 — reconcile features, dependencies, release narrative, and docs
+### [~] CLEAN-002 — reconcile features, dependencies, release narrative, and docs
 
 Priority: P2
 Dependencies: BUILD-003, all user-visible correctness decisions
@@ -2039,6 +2118,18 @@ Acceptance criteria:
   matching executable check.
 - Compatibility changes have migration notes appropriate for a pre-1.0 release.
 - Documentation links and examples pass their gates.
+
+Partial 0.7.1 implementation record:
+
+- Scoped release documentation is complete for corrected depth units, Unicode
+  and `ISO_IR 192`, metadata budgets and CLI flags, streamed functional groups
+  and the disk frame index, intrinsic validation, and the exact sequential flat
+  transaction guarantee. README and changelog advise regenerating outputs from
+  0.7.0 or earlier that used depth or non-ASCII metadata.
+- Remaining scope includes the broader feature/platform matrix, all test-tier
+  documentation, final dependency/advisory narrative, link/example gates, and
+  independently reviewed release evidence. CLEAN-002 therefore remains in
+  progress.
 
 ### [ ] CLEAN-003 — consolidate remaining small duplicated utilities
 
@@ -2444,9 +2535,9 @@ items. Never rewrite old rationale; append a superseding row.
 | DEC-001 dependency topology          | Accepted | Registry-first release graph; local overrides outside publishable manifest                             | 2026-07-09, owner directed `wsi-dicom` to use actual published crates; registry `j2k 0.6.2` is complete and `wsi-rs 0.5.0` must be hardened/published before final conversion |
 | DEC-002 output filenames             | Proposed | Always-explicit v2 scene/series/level/Z/C/T names                                                      | —                                                                                                                                                                             |
 | DEC-003 UID semantics                | Proposed | Random per export by default; versioned content-derived opt-in                                         | —                                                                                                                                                                             |
-| DEC-004 transaction semantics        | Proposed | Failure-atomic ordinary errors plus journaled crash recovery; no false simultaneous-visibility promise | —                                                                                                                                                                             |
-| DEC-005 text repertoire              | Proposed | Unicode with conditional `ISO_IR 192`; reject scalar delimiters/controls                               | —                                                                                                                                                                             |
-| DEC-006 resource policy              | Proposed | Measured conservative defaults with explicit override and checked arithmetic                           | —                                                                                                                                                                             |
+| DEC-004 transaction semantics        | Accepted | Failure-atomic ordinary errors plus journaled crash recovery; no false simultaneous-visibility promise | 2026-07-21, coordinated 0.7.1 hardening retains flat output with sibling staging, a durable journal, sequential promotion, ordinary-error rollback, and restart recovery; concurrent readers do not receive snapshot visibility and TX-001 remains partial |
+| DEC-005 text repertoire              | Accepted | Unicode with conditional `ISO_IR 192`; reject scalar delimiters/controls                               | 2026-07-21, coordinated 0.7.1 hardening accepts UTF-8 metadata with conditional `ISO_IR 192`, rejects scalar backslash/control injection, and validates PN structure; the full META-002 conformance tier remains open                         |
+| DEC-006 resource policy              | Proposed | Measured conservative defaults with explicit override and checked arithmetic                           | 2026-07-21, the metadata-only sub-budget landed with 256 MiB per-instance and 1 GiB per-export defaults plus explicit overrides; the measured cross-resource policy and full CORE-002 acceptance criteria remain undecided                  |
 | DEC-007 GUI panic policy             | Proposed | Decide unwind/recover versus documented process abort; never claim unsupported recovery                | —                                                                                                                                                                             |
 | DEC-008 report warning compatibility | Proposed | Additive structured warnings while preserving existing 99 metric fields/types                          | —                                                                                                                                                                             |
 | DEC-009 Metal release claim          | Proposed | Block advertised registry release if clean external consumer cannot enable Metal                       | —                                                                                                                                                                             |
@@ -2467,6 +2558,7 @@ exist. Results must say what was not run as well as what passed.
 | 2026-07-09 | crates.io Trusted Publishing     | Configured and enforced                 | Registered `frames-sg/wsi-dicom`, `publish.yml`, environment `crates-io`; enabled required trusted publishing for all new versions                                                                                          | Add independent reviewer                                         |
 | 2026-07-09 | Trusted-publishing enforcement   | Disabled at owner direction             | Verified the `Require trusted publishing for all new versions` checkbox is off; the existing trusted publisher registration remains intact and API-token publishing is allowed                                             | Do not re-enable without explicit owner authorization             |
 | 2026-07-09 | BUILD-001 registry j2k migration | Partial; blocked on `wsi-rs` release    | Root and fuzz graphs now use crates.io `j2k 0.6.2`; 278 Rust tests, Clippy, default/Metal/CUDA/fuzz checks, metadata, formatting, Python, Pyright, and deny policy passed; package fails only on unpublished `wsi-rs 0.5.0` | Obtain authority for WSI-001 and publish hardened `wsi-rs 0.5.0` |
+| 2026-07-21 | 0.7.1 bounded-metadata release slice | Scoped implementation and docs verified; full matrix blocked | Locked metadata reported 0.7.1, formatting passed, and 18 publish-policy tests passed. The locked library run passed 250 tests with 7 protected fixtures ignored; 2 tests failed only on `ENOSPC`. Relevant depth, Unicode, budget, stream/index, intrinsic-validation, and transaction tests passed, including local `dciodvfy`/`dcentvfy` Unicode smoke validation | Reclaim reproducible build space, rerun the two affected tests and full matrix, then obtain independent conformance and real-device evidence |
 
 ### 22.3 Blocker log
 
@@ -2475,6 +2567,7 @@ exist. Results must say what was not run as well as what passed.
 | 2026-07-09 | SEC-000   | Secret/environment/repository settings were external state | Resolved: workflow disabled, repository secret deleted, environment created                                                                                                               | Resolved 2026-07-09                                             |
 | 2026-07-09 | SEC-001   | Independent approval needs a second reviewer               | Owner attests that the disclosed token was revoked; Trusted Publishing is configured but optional by owner choice; only `jcwal1516` is currently available and self-review is prevented   | A second repository/org reviewer                                |
 | 2026-07-09 | BUILD-001 | Compatible `wsi-rs 0.5.0` is unpublished                   | Registry `j2k 0.6.2` migration and local checks pass. Registry `wsi-rs 0.4.0` requires yanked `signinum` packages and a mixed `j2k 0.5/0.6` graph; package proof fails on missing `0.5.0` | Separate authority to harden and publish sibling `wsi-rs 0.5.0` |
+| 2026-07-21 | 0.7.1 verification | Resolved local storage interruption                        | `cargo test --lib --locked` passed 250 tests before two temporary-output writes failed with OS error 28; only 116 MiB remained and further builds were stopped without deleting shared artifacts. The coordinator later reclaimed 5.7 GiB of reproducible build artifacts | Rerun the two affected tests and full release checks after coordinated integration |
 
 ### 22.4 Final closure record
 

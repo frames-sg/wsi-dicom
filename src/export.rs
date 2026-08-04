@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -37,7 +37,6 @@ use wsi_rs::{TileOutputPreference, TilePixels};
 #[cfg(test)]
 use crate::api::Export;
 use crate::coordinate::InstanceCoordinate;
-use crate::defaults::default_transfer_syntax_for_source;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use crate::encode;
 use crate::encode::{DicomJ2kEncoder, EncodedDicomJ2kFrame};
@@ -77,12 +76,14 @@ use crate::tile::{pixel_profile_from_device_format, pixel_profile_from_wsi_devic
 use crate::time::duration_as_reported_micros;
 use crate::uid::DicomExportIdentity;
 use crate::writer::{
-    pixel_data_offsets_from_lengths, unique_spool_path, write_dicom_object_with_direct_pixel_data,
-    write_dicom_object_with_spooled_pixel_data, write_dicom_object_with_streamed_pixel_data,
-    BufferedPixelDataSink, FrameGrid, LossyCompressionMetadata, PixelDataOffsetTables,
-    PixelDataSink, PixelDataSpool,
+    extended_offset_table_metadata_bytes, unique_spool_path,
+    write_dicom_object_with_streamed_pixel_data, BufferedPixelDataSink, FrameGrid,
+    LossyCompressionMetadata, PerFrameFunctionalGroupsPlan, PixelDataSink, PixelDataSpool,
+    StreamedDicomWritePlan,
 };
 
+mod corpus_discovery;
+mod defaults;
 mod frame_region;
 mod hybrid_lane;
 mod icc_profile;
@@ -110,6 +111,10 @@ mod profiling;
 mod route_cache;
 mod tile_grid;
 mod transaction;
+
+pub use self::defaults::default_transfer_syntax_for_source;
+
+use self::corpus_discovery::collect_wsi_candidate_paths;
 
 fn jpeg_backend_uses_device(backend: JpegBackend) -> bool {
     matches!(backend, JpegBackend::Metal | JpegBackend::Cuda)
@@ -150,7 +155,9 @@ use route_cache::{
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 use route_cache::{
     clear_auto_metal_input_route_cache_for_tests,
-    clear_auto_metal_input_route_cache_state_for_tests, WSI_DICOM_AUTO_ROUTE_CACHE_ENV,
+    clear_auto_metal_input_route_cache_state_for_tests,
+    flush_persistent_auto_metal_input_route_cache_to_path,
+    load_persistent_auto_metal_input_route_cache_from_path,
 };
 
 pub(crate) use self::frame_region::FrameRectGrid;
@@ -437,6 +444,7 @@ pub fn export_dicom(request: ExportRequest) -> Result<ExportReport, Error> {
     )?;
     let jobs = dicom_export_instance_jobs(&slide, &request)?;
     preflight_output_paths(&request, &jobs)?;
+    preflight_metadata_budgets(&slide, &request, &jobs)?;
     let transaction = ExportTransaction::begin(&request.output_dir)?;
     let mut staged_request = request.clone();
     staged_request.output_dir = transaction.staging_dir().to_path_buf();
@@ -641,13 +649,19 @@ pub fn profile_dicom_route_coverage(
     let transfer_syntax_uid = options.transfer_syntax.uid();
     let mut jobs_by_level: BTreeMap<u32, Vec<DicomRouteProfileJob<'_>>> = BTreeMap::new();
     for job in jobs {
-        jobs_by_level
-            .entry(job.coordinate.level_idx)
-            .or_default()
-            .push(job);
+        let level_jobs = jobs_by_level.entry(job.coordinate.level_idx).or_default();
+        level_jobs.try_reserve(1).map_err(|_| Error::Unsupported {
+            reason: "route coverage level plan exceeds available memory".into(),
+        })?;
+        level_jobs.push(job);
     }
     let level_count = jobs_by_level.len();
-    let mut levels = Vec::with_capacity(level_count);
+    let mut levels = Vec::new();
+    levels
+        .try_reserve_exact(level_count)
+        .map_err(|_| Error::Unsupported {
+            reason: "route coverage level report exceeds available memory".into(),
+        })?;
     let mut metrics = ExportMetrics::default();
     let mut available_frames = 0u64;
 
@@ -786,7 +800,17 @@ pub fn profile_dicom_route_corpus_coverage(
     let sources =
         collect_wsi_candidate_paths(&source_root, request.max_sources, request.max_depth)?;
     let mut reports = Vec::new();
+    reports
+        .try_reserve_exact(sources.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "corpus coverage report plan exceeds available memory".into(),
+        })?;
     let mut failures = Vec::new();
+    failures
+        .try_reserve_exact(sources.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "corpus coverage failure plan exceeds available memory".into(),
+        })?;
     let mut metrics = ExportMetrics::default();
     let mut available_frames = 0u64;
 
@@ -848,7 +872,7 @@ pub fn profile_dicom_route_corpus_coverage(
             }
         }
     }
-    let transfer_syntax_uids = corpus_transfer_syntax_uids(&reports);
+    let transfer_syntax_uids = corpus_transfer_syntax_uids(&reports)?;
 
     Ok(RouteCorpusCoverageReport {
         source_root,
@@ -867,14 +891,19 @@ pub fn profile_dicom_route_corpus_coverage(
     })
 }
 
-fn corpus_transfer_syntax_uids(reports: &[RouteCoverageReport]) -> Vec<&'static str> {
-    let mut transfer_syntax_uids = reports
-        .iter()
-        .map(|report| report.transfer_syntax_uid)
-        .collect::<Vec<_>>();
+fn corpus_transfer_syntax_uids(
+    reports: &[RouteCoverageReport],
+) -> Result<Vec<&'static str>, Error> {
+    let mut transfer_syntax_uids = Vec::new();
+    transfer_syntax_uids
+        .try_reserve_exact(reports.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "corpus transfer syntax summary exceeds available memory".into(),
+        })?;
+    transfer_syntax_uids.extend(reports.iter().map(|report| report.transfer_syntax_uid));
     transfer_syntax_uids.sort_unstable();
     transfer_syntax_uids.dedup();
-    transfer_syntax_uids
+    Ok(transfer_syntax_uids)
 }
 
 fn common_corpus_transfer_syntax_uid(
@@ -885,98 +914,6 @@ fn common_corpus_transfer_syntax_uid(
         .iter()
         .all(|uid| *uid == first)
         .then_some(first)
-}
-
-fn collect_wsi_candidate_paths(
-    root: &Path,
-    max_sources: usize,
-    max_depth: usize,
-) -> Result<Vec<PathBuf>, Error> {
-    let root_metadata = fs::symlink_metadata(root).map_err(|source| Error::Io {
-        path: root.to_path_buf(),
-        source,
-    })?;
-    if root_metadata.file_type().is_symlink() {
-        return Err(Error::Unsupported {
-            reason: format!("corpus coverage refuses symlink root {}", root.display()),
-        });
-    }
-    if root_metadata.is_file() {
-        return Ok(if is_wsi_candidate_path(root) {
-            vec![root.to_path_buf()]
-        } else {
-            Vec::new()
-        });
-    }
-    if !root_metadata.is_dir() {
-        return Err(Error::Unsupported {
-            reason: format!(
-                "corpus coverage root is not a file or directory: {}",
-                root.display()
-            ),
-        });
-    }
-
-    let mut pending = vec![(root.to_path_buf(), 0usize)];
-    let mut candidates = Vec::new();
-    while let Some((dir, depth)) = pending.pop() {
-        if depth > max_depth {
-            return Err(Error::Unsupported {
-                reason: format!(
-                    "corpus coverage directory depth exceeds max_depth={} at {}",
-                    max_depth,
-                    dir.display()
-                ),
-            });
-        }
-        let entries = fs::read_dir(&dir).map_err(|source| Error::Io {
-            path: dir.clone(),
-            source,
-        })?;
-        for entry in entries {
-            let entry = entry.map_err(|source| Error::Io {
-                path: dir.clone(),
-                source,
-            })?;
-            let path = entry.path();
-            let file_type = entry.file_type().map_err(|source| Error::Io {
-                path: path.clone(),
-                source,
-            })?;
-            if file_type.is_symlink() {
-                return Err(Error::Unsupported {
-                    reason: format!(
-                        "corpus coverage refuses symlink traversal at {}",
-                        path.display()
-                    ),
-                });
-            } else if file_type.is_dir() {
-                pending.push((path, depth + 1));
-            } else if file_type.is_file() && is_wsi_candidate_path(&path) {
-                candidates.push(path);
-                if candidates.len() > max_sources {
-                    return Err(Error::Unsupported {
-                        reason: format!(
-                            "corpus coverage found more than max_sources={} candidate files",
-                            max_sources
-                        ),
-                    });
-                }
-            }
-        }
-    }
-    candidates.sort();
-    Ok(candidates)
-}
-
-fn is_wsi_candidate_path(path: &Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|extension| extension.to_str())
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
-        Some("svs" | "tif" | "tiff" | "ndpi" | "scn" | "dcm" | "mrxs" | "vms" | "vmu")
-    )
 }
 
 struct GeneratedJpegDirectHtj2kOutcome {
@@ -2244,7 +2181,12 @@ fn plan_jpeg_baseline_row(
     let row_frame_capacity = usize::try_from(row_tile_count).map_err(|_| Error::Unsupported {
         reason: row_frame_count_error.into(),
     })?;
-    let mut planned = Vec::with_capacity(row_frame_capacity);
+    let mut planned = Vec::new();
+    planned
+        .try_reserve_exact(row_frame_capacity)
+        .map_err(|_| Error::Unsupported {
+            reason: row_frame_count_error.into(),
+        })?;
     let mut retile_rejections = Vec::new();
 
     for col in 0..row_tile_count {
@@ -2690,7 +2632,12 @@ fn try_encode_jpeg_baseline_metal_input_tile_run(
         let row_i64 = i64::try_from(row).map_err(|_| Error::Unsupported {
             reason: "JPEG Baseline Metal tile row exceeds i64".into(),
         })?;
-        let mut requests = Vec::with_capacity(frames.len());
+        let mut requests = Vec::new();
+        requests
+            .try_reserve_exact(frames.len())
+            .map_err(|_| Error::Unsupported {
+                reason: "JPEG Baseline Metal request batch exceeds available memory".into(),
+            })?;
         for frame in frames {
             requests.push(
                 TileRequest::new(
@@ -2810,7 +2757,12 @@ fn try_encode_jpeg_baseline_metal_input_tile_run(
         }
         let encode_duration = encode_started.elapsed();
         let mut encoded = encoded.into_iter();
-        let mut output_frames = Vec::with_capacity(frames.len());
+        let mut output_frames = Vec::new();
+        output_frames
+            .try_reserve_exact(frames.len())
+            .map_err(|_| Error::Unsupported {
+                reason: "JPEG Baseline Metal output batch exceeds available memory".into(),
+            })?;
         for entry in tile_entries {
             if entry.is_some() {
                 output_frames.push(Some(encoded.next().ok_or_else(|| {
@@ -2840,7 +2792,12 @@ fn jpeg_baseline_metal_tile_entries(
     frames: &[JpegBaselineFallbackFrame],
     preference: EncodeBackendPreference,
 ) -> Result<Vec<Option<wsi_rs::output::metal::MetalDeviceTile>>, Error> {
-    let mut entries = Vec::with_capacity(frames.len());
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(frames.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "JPEG Baseline Metal tile batch exceeds available memory".into(),
+        })?;
     for (pixels, frame) in pixels.into_iter().zip(frames.iter()) {
         let TilePixels::Device(DeviceTile::Metal(tile)) = pixels else {
             if preference == EncodeBackendPreference::RequireDevice {

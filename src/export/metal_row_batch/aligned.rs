@@ -39,7 +39,12 @@ fn aligned_tile_row_requests(
     let start_col_i64 = i64::try_from(start_col).map_err(|_| Error::Unsupported {
         reason: "tile column exceeds i64".into(),
     })?;
-    let mut requests = Vec::with_capacity(tile_count);
+    let mut requests = Vec::new();
+    requests
+        .try_reserve_exact(tile_count)
+        .map_err(|_| Error::Unsupported {
+            reason: "Metal aligned row request batch exceeds available memory".into(),
+        })?;
     for offset in 0..tile_count {
         let col = start_col_i64
             .checked_add(i64::try_from(offset).map_err(|_| Error::Unsupported {
@@ -68,7 +73,12 @@ fn aligned_tile_grid_requests(
     let start_row_i64 = i64::try_from(start_row).map_err(|_| Error::Unsupported {
         reason: "tile row exceeds i64".into(),
     })?;
-    let mut requests = Vec::with_capacity(tile_count);
+    let mut requests = Vec::new();
+    requests
+        .try_reserve_exact(tile_count)
+        .map_err(|_| Error::Unsupported {
+            reason: "Metal aligned grid request batch exceeds available memory".into(),
+        })?;
     for row_offset in 0..row_count {
         let row_i64 = start_row_i64
             .checked_add(i64::try_from(row_offset).map_err(|_| Error::Unsupported {
@@ -137,7 +147,12 @@ fn read_aligned_tile_grid_entries(
         });
     }
 
-    let mut tile_entries = Vec::with_capacity(tile_count);
+    let mut tile_entries = Vec::new();
+    tile_entries
+        .try_reserve_exact(tile_count)
+        .map_err(|_| Error::Unsupported {
+            reason: "Metal aligned grid tile batch exceeds available memory".into(),
+        })?;
     for (idx, pixels) in pixels.into_iter().enumerate() {
         let row_offset = idx / tiles_across;
         let col = idx % tiles_across;
@@ -257,7 +272,12 @@ pub(in crate::export) fn try_encode_metal_aligned_tile_run(
         return Ok(empty_metal_tile_run(tile_count));
     }
 
-    let mut tile_entries = Vec::with_capacity(tile_count);
+    let mut tile_entries = Vec::new();
+    tile_entries
+        .try_reserve_exact(tile_count)
+        .map_err(|_| Error::Unsupported {
+            reason: "Metal aligned row tile batch exceeds available memory".into(),
+        })?;
     for (offset, pixels) in pixels.into_iter().enumerate() {
         let col = start_col
             .checked_add(u64::try_from(offset).map_err(|_| Error::Unsupported {
@@ -427,7 +447,7 @@ pub(super) fn try_submit_metal_aligned_tile_grid_run(
         );
     };
 
-    let (batch_tiles, tile_profiles) = split_metal_tile_entries(tile_entries);
+    let (batch_tiles, tile_profiles) = split_metal_tile_entries(tile_entries)?;
     let encode_batches = metal_j2k_encode_batch_count(&batch_tiles, tile_size, tile_size);
     let submission = j2k_encoder.submit_metal_tiles_owned(batch_tiles, tile_size, tile_size)?;
 

@@ -19,7 +19,12 @@ pub(in crate::export) fn encode_jpeg_baseline_metal_device_tile_batch(
     })?;
     let source_profile = pixel_profile_from_wsi_device_format(first.format)?;
     let (profile, subsampling) = jpeg_baseline_output_profile(source_profile)?;
-    let mut requests = Vec::with_capacity(tiles.len());
+    let mut requests = Vec::new();
+    requests
+        .try_reserve_exact(tiles.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "JPEG Baseline Metal encode request batch exceeds available memory".into(),
+        })?;
     for tile in tiles {
         if pixel_profile_from_wsi_device_format(tile.format)? != source_profile {
             return Err(Error::UnsupportedPixelData {
