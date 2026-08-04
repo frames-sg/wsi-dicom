@@ -158,27 +158,45 @@ pub(super) fn encode_planned_batch_with_encoder(
     planned: &[super::LosslessJ2kPlannedFrame],
     encoder: &mut BatchEncoder,
 ) -> Result<Vec<Option<Result<BatchOutcome, Error>>>, Error> {
-    let indices = planned
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, planned_frame)| planned_frame.source_jpeg.is_some().then_some(idx))
-        .collect::<Vec<_>>();
-    let mut outcomes = (0..planned.len()).map(|_| None).collect::<Vec<_>>();
+    let mut indices = Vec::new();
+    indices
+        .try_reserve_exact(planned.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "direct JPEG batch index exceeds available memory".into(),
+        })?;
+    indices.extend(
+        planned
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, frame)| frame.source_jpeg.is_some().then_some(idx)),
+    );
+    let mut outcomes = Vec::new();
+    outcomes
+        .try_reserve_exact(planned.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "direct JPEG batch outcome exceeds available memory".into(),
+        })?;
+    outcomes.resize_with(planned.len(), || None);
     if indices.is_empty() {
         return Ok(outcomes);
     }
 
-    let frames = indices
-        .iter()
-        .map(|&idx| {
+    let mut frames = Vec::new();
+    frames
+        .try_reserve_exact(indices.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "direct JPEG batch frame list exceeds available memory".into(),
+        })?;
+    for &idx in &indices {
+        frames.push(
             planned[idx]
                 .source_jpeg
                 .as_ref()
                 .ok_or_else(|| Error::Encode {
                     message: "direct JPEG route missing source JPEG frame".into(),
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+                })?,
+        );
+    }
     let batch = encoder.encode_frame_refs_batch(&frames)?;
 
     for (input_idx, encoded) in batch.into_iter().enumerate() {
@@ -207,7 +225,13 @@ pub(super) fn encode_frames_batch_with_encoder(
     frames: &[Frame],
     encoder: &mut BatchEncoder,
 ) -> Result<Vec<Result<BatchOutcome, Error>>, Error> {
-    let frame_refs = frames.iter().collect::<Vec<_>>();
+    let mut frame_refs = Vec::new();
+    frame_refs
+        .try_reserve_exact(frames.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "direct JPEG frame reference batch exceeds available memory".into(),
+        })?;
+    frame_refs.extend(frames.iter());
     encoder.encode_frame_refs_batch(&frame_refs)
 }
 
@@ -245,12 +269,15 @@ impl BatchEncoder {
         if frames.is_empty() {
             return Ok(Vec::new());
         }
-        let inputs = frames
-            .iter()
-            .map(|frame| JpegTileBatchInput {
-                bytes: frame.data.as_slice(),
-            })
-            .collect::<Vec<_>>();
+        let mut inputs = Vec::new();
+        inputs
+            .try_reserve_exact(frames.len())
+            .map_err(|_| Error::Unsupported {
+                reason: "direct JPEG transcode input batch exceeds available memory".into(),
+            })?;
+        inputs.extend(frames.iter().map(|frame| JpegTileBatchInput {
+            bytes: frame.data.as_slice(),
+        }));
         let batch = self.transcode_batch(&inputs)?;
         let batch_timings = batch.report.timings;
         let mut timing_recorded = false;

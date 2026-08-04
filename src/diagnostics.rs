@@ -160,7 +160,7 @@ fn write_self_test_source_dicom(path: &Path) -> Result<(), Error> {
         "1.2.826.0.1.3680043.10.999.200",
         width,
         height,
-        deterministic_rgb_pixels(width, height),
+        deterministic_rgb_pixels(width, height)?,
     )
 }
 

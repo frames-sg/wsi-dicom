@@ -220,6 +220,154 @@ fn export_dicom_writes_jpeg2000_lossless_vl_wsi_instances() {
 }
 
 #[test]
+fn unicode_metadata_and_corrected_depth_round_trip_through_a_dicom_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source.dcm");
+    write_source_dicom(&source);
+    let mut metadata = DicomMetadata::research_placeholder();
+    metadata.patient_name = Some("山田^太郎".into());
+    metadata.study_description = Some("Café 病理 e\u{301}".into());
+    metadata.imaged_volume_depth_mm = Some(0.001);
+
+    let report = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 2,
+            transfer_syntax: TransferSyntax::Jpeg2000Lossless,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            ..ExportOptions::default()
+        },
+        metadata: MetadataSource::Strict(Box::new(metadata)),
+        level_filter: None,
+    })
+    .unwrap();
+
+    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+    assert_eq!(
+        object
+            .element(tags::SPECIFIC_CHARACTER_SET)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "ISO_IR 192"
+    );
+    assert_eq!(
+        object
+            .element(tags::PATIENT_NAME)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "山田^太郎"
+    );
+    assert_eq!(
+        object
+            .element(tags::STUDY_DESCRIPTION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "Café 病理 e\u{301}"
+    );
+    assert_eq!(
+        object
+            .element(tags::IMAGED_VOLUME_DEPTH)
+            .unwrap()
+            .to_float32()
+            .unwrap(),
+        1.0
+    );
+    let shared = object
+        .element(tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE)
+        .unwrap()
+        .items()
+        .unwrap();
+    let pixel_measures = shared[0]
+        .element(tags::PIXEL_MEASURES_SEQUENCE)
+        .unwrap()
+        .items()
+        .unwrap();
+    assert_eq!(
+        pixel_measures[0]
+            .element(tags::SLICE_THICKNESS)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "0.001"
+    );
+
+    run_dicom_validators_for_test(&report.instances[0].path);
+}
+
+#[test]
+fn export_metadata_budget_preflight_accepts_exact_and_rejects_one_byte_less() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source.dcm");
+    write_source_dicom(&source);
+    let slide = Slide::open(&source).unwrap();
+    let request = ExportRequest {
+        source_path: source.clone(),
+        output_dir: tmp.path().join("estimate"),
+        options: ExportOptions {
+            tile_size: 2,
+            transfer_syntax: TransferSyntax::Jpeg2000Lossless,
+            ..ExportOptions::default()
+        },
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: None,
+    };
+    let jobs = dicom_export_instance_jobs(&slide, &request).unwrap();
+    let (frame_count, frame_grid) = metadata_frame_plan(&slide, &request, &jobs[0]).unwrap();
+    let spacing = require_pixel_spacing_mm(level_pixel_spacing_mm(&slide, jobs[0].level)).unwrap();
+    let estimate = PerFrameFunctionalGroupsPlan::new(frame_count, frame_grid, spacing.0, spacing.1)
+        .unwrap()
+        .encoded_len()
+        .unwrap()
+        + extended_offset_table_metadata_bytes(frame_count).unwrap();
+    drop(slide);
+
+    let exact_out = tmp.path().join("exact");
+    let exact = export_dicom(ExportRequest {
+        output_dir: exact_out,
+        options: ExportOptions {
+            max_instance_metadata_bytes: estimate,
+            max_total_metadata_bytes: estimate,
+            tile_size: 2,
+            transfer_syntax: TransferSyntax::Jpeg2000Lossless,
+            ..ExportOptions::default()
+        },
+        ..request.clone()
+    });
+    assert!(exact.is_ok(), "exact metadata budget failed: {exact:?}");
+
+    let rejected_out = tmp.path().join("rejected");
+    let error = export_dicom(ExportRequest {
+        output_dir: rejected_out.clone(),
+        options: ExportOptions {
+            max_instance_metadata_bytes: estimate - 1,
+            max_total_metadata_bytes: estimate,
+            tile_size: 2,
+            transfer_syntax: TransferSyntax::Jpeg2000Lossless,
+            ..ExportOptions::default()
+        },
+        ..request
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("max_instance_metadata_bytes"));
+    assert!(
+        !rejected_out.exists()
+            || std::fs::read_dir(rejected_out).unwrap().all(|entry| entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_none_or(|ext| ext != "dcm"))
+    );
+}
+
+#[test]
 fn export_dicom_refuses_existing_output_unless_overwrite_is_enabled() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source.dcm");

@@ -135,7 +135,11 @@ fn whole_level_source_window(
             reason: "source tile batch size overflow".into(),
         })?;
 
-    let mut keys = Vec::with_capacity(tile_count);
+    let mut keys = Vec::new();
+    keys.try_reserve_exact(tile_count)
+        .map_err(|_| Error::Unsupported {
+            reason: "Metal whole-level source-key batch exceeds available memory".into(),
+        })?;
     for source_row_offset in 0..row_count {
         let source_row = first_row
             .checked_add(
@@ -316,7 +320,12 @@ fn whole_level_grid_compose_requests(
     tile_size: u32,
 ) -> Result<Vec<MetalComposeTileRequest>, Error> {
     let tile_size_u64 = u64::from(tile_size);
-    let mut compose_requests = Vec::with_capacity(tile_count);
+    let mut compose_requests = Vec::new();
+    compose_requests
+        .try_reserve_exact(tile_count)
+        .map_err(|_| Error::Unsupported {
+            reason: "Metal whole-level compose batch exceeds available memory".into(),
+        })?;
     for row_offset in 0..row_count {
         let output_row = start_row
             .checked_add(u64::try_from(row_offset).map_err(|_| Error::Unsupported {
@@ -469,7 +478,12 @@ pub(in crate::export) fn try_encode_metal_whole_level_strip_run(
     let src_origin_y = u32::try_from(y).map_err(|_| Error::Unsupported {
         reason: "Metal WholeLevel tile source y offset exceeds u32".into(),
     })?;
-    let mut compose_requests = Vec::with_capacity(tile_count);
+    let mut compose_requests = Vec::new();
+    compose_requests
+        .try_reserve_exact(tile_count)
+        .map_err(|_| Error::Unsupported {
+            reason: "Metal whole-level strip compose batch exceeds available memory".into(),
+        })?;
     for offset in 0..tile_count {
         let col = start_col
             .checked_add(u64::try_from(offset).map_err(|_| Error::Unsupported {
@@ -499,7 +513,12 @@ pub(in crate::export) fn try_encode_metal_whole_level_strip_run(
     let composed_tiles = composer.compose_tiles(&packed, &compose_requests)?;
     let compose_duration = compose_started.elapsed();
 
-    let mut encoded = Vec::with_capacity(tile_count);
+    let mut encoded = Vec::new();
+    encoded
+        .try_reserve_exact(tile_count)
+        .map_err(|_| Error::Unsupported {
+            reason: "Metal whole-level encoded batch exceeds available memory".into(),
+        })?;
     let encode_batches = metal_j2k_encode_batch_count(&composed_tiles, tile_size, tile_size);
     let batch_encoded = j2k_encoder.encode_metal_tiles(&composed_tiles, tile_size, tile_size)?;
     let gpu_encode_stats = batch_encoded.gpu_encode_stats;
@@ -696,7 +715,12 @@ pub(super) fn try_encode_metal_whole_level_strip_grid_run(
         Err(empty) => return Ok(empty_metal_tile_run(empty.tile_count)),
     };
 
-    let mut encoded = Vec::with_capacity(composed.tile_count);
+    let mut encoded = Vec::new();
+    encoded
+        .try_reserve_exact(composed.tile_count)
+        .map_err(|_| Error::Unsupported {
+            reason: "Metal whole-level grid output exceeds available memory".into(),
+        })?;
     let encode_batches =
         metal_j2k_encode_batch_count(&composed.composed_tiles, tile_size, tile_size);
     let batch_encoded =

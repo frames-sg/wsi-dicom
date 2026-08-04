@@ -38,36 +38,39 @@ pub(super) struct PendingLosslessJ2kInstance {
     metrics: ExportMetrics,
     transfer_syntax: TransferSyntax,
     overwrite: bool,
+    max_instance_metadata_bytes: u64,
 }
 
 impl PendingLosslessJ2kInstance {
     pub(super) fn finish(mut self) -> Result<InstanceReport, Error> {
+        let frame_grid = FrameGrid {
+            frame_columns: self.tile_size,
+            frame_rows: self.tile_size,
+            matrix_columns: self.matrix_columns,
+            matrix_rows: self.matrix_rows,
+        };
         let object = self.context.build_dicom_object(InstanceDicomObjectParams {
             metadata: &self.metadata,
             study_uid: &self.study_uid,
             instance_number: self.instance_number,
-            frame_grid: FrameGrid {
-                frame_columns: self.tile_size,
-                frame_rows: self.tile_size,
-                matrix_columns: self.matrix_columns,
-                matrix_rows: self.matrix_rows,
-            },
+            frame_grid,
             frame_count: self.frame_count,
             profile: self.profile,
-            pixel_data_offsets: PixelDataOffsetTables {
-                offsets: vec![0; self.frame_count as usize],
-                lengths: vec![0; self.frame_count as usize],
-            },
             icc_profile: self.icc_profile.as_deref(),
             lossy_compression: self.j2k_lossy_compression,
         })?;
+        let per_frame_plan = self.context.per_frame_plan(self.frame_count, frame_grid)?;
         let write_started = Instant::now();
         let streamed = write_dicom_object_with_streamed_pixel_data(
             &self.context.path,
-            object,
-            self.context.file_meta(self.transfer_syntax.uid()),
-            self.overwrite,
-            self.frame_count as usize,
+            StreamedDicomWritePlan {
+                object,
+                meta: self.context.file_meta(self.transfer_syntax.uid()),
+                overwrite: self.overwrite,
+                per_frame_plan,
+                max_instance_metadata_bytes: self.max_instance_metadata_bytes,
+                frame_count: self.frame_count as usize,
+            },
             |writer| self.pixel_data.stream_frames_to(writer),
         )?;
         self.metrics
@@ -282,7 +285,7 @@ pub(super) fn prepare_lossless_j2k_instance(
     })?;
     let j2k_lossy_compression =
         if j2k_passthrough_lossy || request.options.transfer_syntax == TransferSyntax::Htj2k {
-            let compressed_bytes = pixel_data.lengths().into_iter().sum::<u64>();
+            let compressed_bytes = pixel_data.total_raw_bytes();
             let bytes_per_sample = u64::from(profile.bits_allocated).div_ceil(8);
             let uncompressed_bytes = u64::from(frame_count)
                 .saturating_mul(u64::from(tile_size))
@@ -315,5 +318,6 @@ pub(super) fn prepare_lossless_j2k_instance(
         metrics,
         transfer_syntax: request.options.transfer_syntax,
         overwrite: request.options.overwrite,
+        max_instance_metadata_bytes: request.options.max_instance_metadata_bytes,
     })
 }

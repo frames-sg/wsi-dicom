@@ -577,7 +577,7 @@ pub(super) fn write_source_dicom_with_dimensions(
     width: u32,
     height: u32,
 ) {
-    let pixels = crate::synthetic_source::deterministic_rgb_pixels(width, height);
+    let pixels = crate::synthetic_source::deterministic_rgb_pixels(width, height).unwrap();
     write_source_dicom_with_pixels(path, sop_instance_uid, width, height, pixels);
 }
 

@@ -462,14 +462,12 @@ fn auto_metal_input_route_cache_reuses_probe_decision() {
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
-fn auto_metal_input_route_cache_can_persist_when_env_path_is_set() {
+fn auto_metal_input_route_cache_can_persist_when_path_is_configured() {
     let _guard = DEVICE_DECODE_ENV_MUTEX.lock().unwrap();
     clear_auto_metal_input_route_cache_for_tests();
     clear_auto_metal_input_route_cache_state_for_tests();
-    let old_cache = std::env::var_os(WSI_DICOM_AUTO_ROUTE_CACHE_ENV);
     let tmp = tempfile::tempdir().unwrap();
     let cache_path = tmp.path().join("auto-route-cache.json");
-    std::env::set_var(WSI_DICOM_AUTO_ROUTE_CACHE_ENV, &cache_path);
 
     let key = AutoMetalInputRouteCacheKey {
         source_path: PathBuf::from("slide.svs"),
@@ -487,21 +485,17 @@ fn auto_metal_input_route_cache_can_persist_when_env_path_is_set() {
         &key,
         AutoLosslessJ2kRouteDecision::GpuInputDeviceEncode,
     );
-    flush_persistent_auto_metal_input_route_cache_if_requested().unwrap();
+    flush_persistent_auto_metal_input_route_cache_to_path(cache_path.clone()).unwrap();
 
     clear_auto_metal_input_route_cache_for_tests();
     clear_auto_metal_input_route_cache_state_for_tests();
-    load_persistent_auto_metal_input_route_cache_if_requested().unwrap();
+    load_persistent_auto_metal_input_route_cache_from_path(cache_path).unwrap();
 
     assert_eq!(
         cached_auto_metal_input_decision(&key),
         Some(AutoLosslessJ2kRouteDecision::GpuInputDeviceEncode)
     );
 
-    match old_cache {
-        Some(value) => std::env::set_var(WSI_DICOM_AUTO_ROUTE_CACHE_ENV, value),
-        None => std::env::remove_var(WSI_DICOM_AUTO_ROUTE_CACHE_ENV),
-    }
     clear_auto_metal_input_route_cache_for_tests();
     clear_auto_metal_input_route_cache_state_for_tests();
 }
