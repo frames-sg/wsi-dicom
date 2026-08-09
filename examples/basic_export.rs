@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use wsi_dicom::Export;
+use wsi_dicom::{ColorManagement, Export};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = std::env::args_os()
@@ -15,6 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let report = Export::from_slide(source)
         .to_directory(output)
         .with_research_placeholder_metadata()
+        .color_management(ColorManagement::SourceOrSrgb)
         .run()?;
 
     println!(

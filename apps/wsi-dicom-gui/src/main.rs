@@ -7,9 +7,26 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use eframe::egui::{self, Color32, Margin, RichText, Stroke, TextStyle, Vec2};
 use wsi_dicom::{
-    validate_dicom_path, CodecValidation, EncodeBackendPreference, Export, ExportOptions,
-    IccProfilePolicy, JpegDirectHtj2kProfile, MetadataSource, TransferSyntax, ValidationOptions,
+    validate_dicom_path, CodecValidation, ColorManagement, EncodeBackendPreference, Export,
+    ExportOptions, JpegDirectHtj2kProfile, MetadataSource, TransferSyntax, ValidationOptions,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuiColorManagement {
+    RequireSource,
+    SourceOrSrgb,
+    SourceOrDisplayP3,
+}
+
+impl From<GuiColorManagement> for ColorManagement {
+    fn from(value: GuiColorManagement) -> Self {
+        match value {
+            GuiColorManagement::RequireSource => Self::RequireSource,
+            GuiColorManagement::SourceOrSrgb => Self::SourceOrSrgb,
+            GuiColorManagement::SourceOrDisplayP3 => Self::SourceOrDisplayP3,
+        }
+    }
+}
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -36,7 +53,7 @@ struct WsiDicomGui {
     research_placeholder: bool,
     transfer_syntax: TransferSyntax,
     jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile,
-    icc_profile_policy: IccProfilePolicy,
+    color_management: GuiColorManagement,
     codec_validation: CodecValidation,
     tile_size: u32,
     jpeg_quality: u8,
@@ -60,7 +77,7 @@ impl Default for WsiDicomGui {
             research_placeholder: false,
             transfer_syntax: options.transfer_syntax,
             jpeg_direct_htj2k_profile: options.jpeg_direct_htj2k_profile,
-            icc_profile_policy: options.icc_profile_policy,
+            color_management: GuiColorManagement::SourceOrSrgb,
             codec_validation: options.codec_validation,
             tile_size: options.tile_size,
             jpeg_quality: options.jpeg_quality,
@@ -373,22 +390,21 @@ impl WsiDicomGui {
             .spacing([10.0, 10.0])
             .min_col_width(100.0)
             .show(ui, |ui| {
-                grid_label(ui, "ICC policy");
+                grid_label(ui, "Color management");
                 inline_combo(
                     ui,
                     "icc_policy",
-                    icc_policy_label(self.icc_profile_policy),
+                    color_management_label(self.color_management),
                     |ui| {
                         for candidate in [
-                            IccProfilePolicy::FallbackSrgb,
-                            IccProfilePolicy::FallbackDisplayP3,
-                            IccProfilePolicy::Strict,
-                            IccProfilePolicy::OmitIfMissing,
+                            GuiColorManagement::SourceOrSrgb,
+                            GuiColorManagement::SourceOrDisplayP3,
+                            GuiColorManagement::RequireSource,
                         ] {
                             ui.selectable_value(
-                                &mut self.icc_profile_policy,
+                                &mut self.color_management,
                                 candidate,
-                                icc_policy_label(candidate),
+                                color_management_label(candidate),
                             );
                         }
                     },
@@ -541,7 +557,7 @@ impl WsiDicomGui {
             research_placeholder: self.research_placeholder,
             transfer_syntax: self.transfer_syntax,
             jpeg_direct_htj2k_profile: self.jpeg_direct_htj2k_profile,
-            icc_profile_policy: self.icc_profile_policy,
+            color_management: self.color_management,
             codec_validation: self.codec_validation,
             tile_size: self.tile_size,
             jpeg_quality: self.jpeg_quality,
@@ -618,7 +634,7 @@ struct GuiRunRequest {
     research_placeholder: bool,
     transfer_syntax: TransferSyntax,
     jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile,
-    icc_profile_policy: IccProfilePolicy,
+    color_management: GuiColorManagement,
     codec_validation: CodecValidation,
     tile_size: u32,
     jpeg_quality: u8,
@@ -646,7 +662,6 @@ fn run_export(request: GuiRunRequest) -> GuiRunResult {
     options.jpeg_direct_htj2k_profile = request.jpeg_direct_htj2k_profile;
     options.jpeg_quality = request.jpeg_quality;
     options.overwrite = request.overwrite;
-    options.icc_profile_policy = request.icc_profile_policy;
     options.codec_validation = request.codec_validation;
     options.encode_backend = EncodeBackendPreference::Auto;
     options.validate().map_err(|err| err.to_string())?;
@@ -658,6 +673,7 @@ fn run_export(request: GuiRunRequest) -> GuiRunResult {
         .to_directory(&request.output_dir)
         .with_metadata(metadata)
         .with_options(options)
+        .color_management(request.color_management.into())
         .run()
         .map_err(|err| err.to_string())?;
     let validation_report = if request.validate_after_export {
@@ -822,13 +838,11 @@ fn htj2k_profile_label(value: JpegDirectHtj2kProfile) -> &'static str {
     }
 }
 
-fn icc_policy_label(value: IccProfilePolicy) -> &'static str {
+fn color_management_label(value: GuiColorManagement) -> &'static str {
     match value {
-        IccProfilePolicy::Strict => "Strict",
-        IccProfilePolicy::FallbackSrgb => "Fallback sRGB",
-        IccProfilePolicy::FallbackDisplayP3 => "Fallback Display P3",
-        IccProfilePolicy::OmitIfMissing => "Omit if missing",
-        _ => "Unknown ICC policy",
+        GuiColorManagement::RequireSource => "Require source",
+        GuiColorManagement::SourceOrSrgb => "Source or sRGB",
+        GuiColorManagement::SourceOrDisplayP3 => "Source or Display P3",
     }
 }
 

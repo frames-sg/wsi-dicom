@@ -9,11 +9,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-08-08
+
+### Added
+
+- Added first-class scanner calibration through a bounded, portable JSON
+  registry. Matching requires exact, case-sensitive governed DICOM
+  manufacturer, model, and serial metadata after outer-whitespace trimming;
+  verified ICC bytes are retained in memory and local paths never enter DICOM
+  output.
+- Added `calibration inspect` and `calibration create`. Creation packages an
+  existing vendor- or target-generated RGB input-device ICC profile and does
+  not claim to derive calibration from an ordinary tissue slide.
+- Added per-instance ICC SHA-256, calibration/profile ID, source, and conflict
+  decision provenance. Effective profile digests participate in deterministic
+  UID identity.
+- Added stable `intrinsic-wsi-dicom-2026c-*` validation checks for ICC profiles,
+  MONOCHROME2 presentation attributes, lossy declarations, specimen identity,
+  dimension ordering, and set-level Specimen UID consistency. They run for VL
+  WSI objects independently of external validators.
+- Added optional governed Specimen UIDs and structured HL7 identifier issuers
+  to `DicomMetadata`. FHIR `Specimen.identifier.system` maps to a universal URI
+  issuer.
+
 ### Changed
 
+- This is a deliberate pre-1.0 API transition. `IccProfilePolicy` and
+  `OmitIfMissing` were removed. Every `ExportRequest` and `Export` builder now
+  requires one explicit `ColorManagement`; callers should migrate to
+  `RequireSource`, a documented source/fallback choice, a calibration registry,
+  or an explicit verified profile.
+- Configured/source profile conflicts default to failure before staging or
+  output creation. Callers may explicitly prefer the configured or source
+  bytes; identical SHA-256 digests are recorded as a match.
 - Upgraded the complete `j2k` codec family to 0.8 and raised the `wsi-rs`
   dependency floor to 0.5.2 so export, passthrough, transcode, and optional
   accelerator routes resolve one codec generation.
+- Color output now requires a valid DICOM input-device ICC profile. Generated
+  sRGB and Display P3 fallbacks identify as `scnr` and remain explicit research
+  assumptions rather than scanner calibrations.
+- Generated Specimen UIDs now include export identity and identifier issuer
+  scope. Governed UIDs are preserved, fresh exports remain fresh, and
+  deterministic exports remain repeatable.
+
+### Fixed
+
+- MONOCHROME2 WSI output now writes Presentation LUT Shape `IDENTITY`, Rescale
+  Intercept `0`, and Rescale Slope `1` without emitting ICC data.
+- Lossy compression history now survives lossless transcoding and retains
+  ordered method/ratio stages independently of the final transfer syntax.
+- Dimension Index Sequence and per-frame Dimension Index Values now use row
+  then column, matching row-major frame production.
+- Outputs produced before these fixes should be regenerated when they contain
+  color or MONOCHROME2 pixels, previously lossy source pixels, or specimen
+  identifiers whose issuer scope matters.
+
+### Release engineering
+
+- The protected release workflow can rehearse without publication and builds
+  CPU-only CLI archives for Linux x86-64 GNU, macOS x86-64, macOS arm64, and
+  Windows x86-64 MSVC. Archives contain the CLI, licenses, README, and version
+  metadata alongside the exact crate candidate and `SHA256SUMS`.
+- Release candidates receive per-artifact SPDX JSON SBOMs plus GitHub/Sigstore
+  build-provenance and SBOM attestations from immutable action pins. The
+  evidence manifest records the source commit, toolchain, feature set, lockfile
+  digest, artifacts, validators, workflow identity, and approval state.
+- crates.io OIDC remains confined to the protected publication job. A release
+  stays draft until the published registry checksum is compared with the
+  attested crate candidate and a human explicitly approves finalization.
+- These attestations establish artifact origin; they do not turn the documented
+  cargo-vet exemption baseline into audited dependency provenance.
+
+### Clinical limitations
+
+- This release is not a clinical certification or deployment claim. Protected
+  real-slide validation, PACS/viewer interoperability, GPU-hardware evidence,
+  pathologist color assessment, clinical workflow validation, clean candidate
+  CI, independent review, and explicit release approval remain required before
+  clinical deployment.
 
 ### Security
 
@@ -280,7 +353,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation, and JPEG 2000 / HTJ2K frame encoding primitives.
 - Added passthrough-first planning for compatible compressed WSI source frames.
 
-[Unreleased]: https://github.com/frames-sg/wsi-dicom/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/frames-sg/wsi-dicom/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/frames-sg/wsi-dicom/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/frames-sg/wsi-dicom/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/frames-sg/wsi-dicom/compare/v0.2.0...v0.7.0
 [0.2.0]: https://github.com/frames-sg/wsi-dicom/compare/v0.1.0...v0.2.0

@@ -38,7 +38,7 @@ pub(super) fn test_lossless_j2k_planned_frame(col: u64) -> LosslessJ2kPlannedFra
         source_jpeg_retile_duration: Duration::ZERO,
         source_jpeg_retile_rejection: None,
         source_jpeg_direct_rejected: false,
-        source_raw_probe_failed: false,
+        source_lossy_compression: None,
         passthrough: None,
     }
 }
@@ -103,6 +103,7 @@ pub(super) fn export_general_j2k_passthrough_for_test(
             source_device_decode: true,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -179,6 +180,7 @@ pub(super) fn write_htj2k_rpcl_dicom_source_for_test(
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -213,6 +215,7 @@ pub(super) fn export_htj2k_rpcl_dicom_passthrough_for_test(
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -247,6 +250,7 @@ pub(super) fn write_external_j2k_decoder_frame_for_test(
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -413,19 +417,16 @@ pub(super) fn assert_aperio_jp2k_metal_input_tile_matches_cpu(tile_size: u32) {
         &slide,
         &mut metal_input,
         &mut encoder,
-        level,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        1,
-        level.dimensions.0,
-        level.dimensions.1,
-        tile_size,
+        MetalInputTileRunRequest {
+            level,
+            location: JpegBaselineFrameLocation::first_series_level(0),
+            row: 0,
+            start_col: 0,
+            tile_count: 1,
+            matrix_columns: level.dimensions.0,
+            matrix_rows: level.dimensions.1,
+            tile_size,
+        },
     )
     .unwrap();
 

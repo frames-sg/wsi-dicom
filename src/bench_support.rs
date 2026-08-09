@@ -5,7 +5,7 @@ use wsi_rs::CpuTile;
 use crate::coordinate::InstanceCoordinate;
 use crate::instance_context::DicomInstanceContext;
 use crate::options::TransferSyntax;
-use crate::report::{ExportMetrics, IccProfileSource};
+use crate::report::{ExportMetrics, IccProfileReport, IccProfileSource};
 use crate::tile::prepare_tile_samples;
 use crate::uid::DicomExportIdentity;
 use crate::writer::pixel_data_offsets_from_lengths;
@@ -83,7 +83,10 @@ pub fn instance_context_summary(
     let report = context.report(
         TransferSyntax::Htj2kLosslessRpcl.uid(),
         1024,
-        IccProfileSource::SynthesizedSrgb,
+        IccProfileReport {
+            source: IccProfileSource::SynthesizedSrgb,
+            ..IccProfileReport::default()
+        },
         ExportMetrics::default(),
     );
     InstanceContextBenchSummary {

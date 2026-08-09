@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "publish-crate.sh"
+WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "publish.yml"
 
 
 class PublishScriptTests(unittest.TestCase):
@@ -130,6 +132,100 @@ class PublishScriptTests(unittest.TestCase):
             ],
         )
         self.assertEqual(observed_token, "temporary-sentinel")
+
+
+class ReleaseWorkflowPolicyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    def job(self, name):
+        match = re.search(
+            rf"(?ms)^  {re.escape(name)}:\n(?P<body>.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)",
+            self.workflow,
+        )
+        self.assertIsNotNone(match, f"missing workflow job {name}")
+        return match.group("body")
+
+    def test_every_action_is_pinned_to_an_immutable_commit(self):
+        action_uses = re.findall(r"(?m)^\s*- uses:\s*([^\s#]+)", self.workflow)
+        self.assertTrue(action_uses)
+        for action in action_uses:
+            with self.subTest(action=action):
+                self.assertRegex(action, r"^[^@]+@[0-9a-f]{40}$")
+
+    def test_manual_rehearsal_cannot_publish_or_create_a_release(self):
+        rehearsal = self.job("rehearsal")
+        self.assertIn("github.event_name == 'workflow_dispatch'", rehearsal)
+        self.assertIn("scripts/publish-crate.sh --dry-run", rehearsal)
+        self.assertNotIn("--publish", rehearsal)
+        self.assertNotIn("gh release", rehearsal)
+        self.assertNotIn("CARGO_REGISTRY_TOKEN", rehearsal)
+
+        publish = self.job("publish")
+        draft_release = self.job("draft_release")
+        for protected_job in (publish, draft_release):
+            self.assertIn("github.event_name == 'push'", protected_job)
+            self.assertIn("github.ref_type == 'tag'", protected_job)
+
+    def test_cpu_archives_cover_the_four_release_targets(self):
+        build = self.job("build_cli_archives")
+        for target in (
+            "x86_64-unknown-linux-gnu",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+            "x86_64-pc-windows-msvc",
+        ):
+            self.assertEqual(build.count(target), 1)
+        self.assertIn("--no-default-features", build)
+        self.assertIn(".tar.gz", build)
+        self.assertIn(".zip", build)
+        for required_file in ("README.md", "LICENSE-MIT", "LICENSE-APACHE", "VERSION.json"):
+            self.assertIn(required_file, build)
+
+    def test_candidate_contains_crate_checksums_spdx_sboms_and_evidence(self):
+        crate = self.job("crate_candidate")
+        evidence = self.job("release_evidence")
+        self.assertIn("cargo package --locked", crate)
+        self.assertIn(".crate", crate)
+        self.assertIn("SYFT_VERSION: 1.50.0", evidence)
+        self.assertIn(
+            "bf7b29ff57f06da30918266a0e1c2885a8f99784798d1bdb1628886aa015d788",
+            evidence,
+        )
+        self.assertIn("spdx-json", evidence)
+        self.assertIn("SHA256SUMS", evidence)
+        self.assertIn("scripts/build-release-evidence.py", evidence)
+
+    def test_attestation_permissions_are_isolated_from_crates_credentials(self):
+        attest = self.job("attest")
+        publish = self.job("publish")
+        self.assertIn("id-token: write", attest)
+        self.assertIn("attestations: write", attest)
+        self.assertIn("artifact-metadata: write", attest)
+        self.assertIn(
+            "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d", attest
+        )
+        self.assertIn("subject-path", attest)
+        self.assertIn("sbom-path", attest)
+        self.assertNotIn("crates-io-auth-action", attest)
+        self.assertNotIn("CARGO_REGISTRY_TOKEN", attest)
+
+        self.assertIn("environment: crates-io", publish)
+        self.assertIn("crates-io-auth-action", publish)
+        self.assertNotIn("attestations: write", publish)
+
+    def test_tag_binding_registry_checksum_and_draft_release_are_controlled(self):
+        verify = self.job("verify_release")
+        checksum = self.job("verify_registry_checksum")
+        draft = self.job("draft_release")
+        self.assertIn('expected_tag="v${version}"', verify)
+        self.assertIn("successful CI", verify)
+        self.assertIn("scripts/verify-registry-checksum.py", checksum)
+        self.assertIn("scripts/extract-release-notes.py", draft)
+        self.assertIn("gh release create", draft)
+        self.assertIn("--draft", draft)
+        self.assertNotIn("--latest", draft)
 
 
 if __name__ == "__main__":

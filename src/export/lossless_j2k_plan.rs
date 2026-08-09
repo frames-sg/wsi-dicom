@@ -9,6 +9,9 @@ use super::jpeg_retile::{read_raw_jpeg_retile_display_tile, RawJpegRetileProbe};
 use super::{j2k_direct_htj2k, jpeg_direct_htj2k};
 use crate::coordinate::InstanceCoordinate;
 use crate::error::Error;
+use crate::lossy::{
+    LossyCompressionByteCounts, HTJ2K_METHOD, JPEG_2000_METHOD, JPEG_BASELINE_METHOD,
+};
 use crate::options::TransferSyntax;
 use crate::report::JpegRetileRejectionReason;
 use crate::tile::PixelProfile;
@@ -29,7 +32,7 @@ pub(crate) struct LosslessJ2kPlannedFrame {
     pub(super) source_jpeg_retile_duration: Duration,
     pub(super) source_jpeg_retile_rejection: Option<JpegRetileRejectionReason>,
     pub(super) source_jpeg_direct_rejected: bool,
-    pub(super) source_raw_probe_failed: bool,
+    pub(super) source_lossy_compression: Option<LossyCompressionByteCounts>,
     pub(super) passthrough: Option<J2kPassthroughFrame>,
 }
 
@@ -51,16 +54,8 @@ impl LosslessJ2kPlannedFrame {
 pub(super) struct J2kPassthroughFrame {
     pub(super) codestream: Vec<u8>,
     pub(super) profile: PixelProfile,
+    #[cfg(test)]
     pub(super) transfer_syntax: CompressedTransferSyntax,
-}
-
-impl J2kPassthroughFrame {
-    pub(super) fn is_lossy(&self) -> bool {
-        matches!(
-            self.transfer_syntax,
-            CompressedTransferSyntax::Jpeg2000Lossy | CompressedTransferSyntax::HtJpeg2000Lossy
-        )
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -153,7 +148,7 @@ fn plan_lossless_j2k_row_at(
             source_j2k,
             mut source_jpeg,
             source_jpeg_direct_rejected,
-            source_raw_probe_failed,
+            mut source_lossy_compression,
             passthrough,
         ) = if allow_raw_probe {
             let tile_request = request.location.tile_request(col_i64, row_i64);
@@ -162,6 +157,8 @@ fn plan_lossless_j2k_row_at(
                     let source_j2k_dimensions = Some((raw.width(), raw.height()));
                     let (source_j2k_syntax, source_j2k_profile) =
                         j2k_raw_frame_syntax_and_profile(&raw);
+                    let source_lossy_compression =
+                        lossy_compression_from_raw(&raw, source_j2k_syntax)?;
                     let source_j2k = j2k_direct_htj2k::frame(
                         &raw,
                         request.grid.frame_columns,
@@ -196,14 +193,14 @@ fn plan_lossless_j2k_row_at(
                         source_j2k,
                         source_jpeg,
                         source_jpeg_direct_rejected,
-                        false,
+                        source_lossy_compression,
                         passthrough,
                     )
                 }
-                Err(_) => (None, None, None, None, None, false, true, None),
+                Err(_) => (None, None, None, None, None, false, None, None),
             }
         } else {
-            (None, None, None, None, None, false, false, None)
+            (None, None, None, None, None, false, None, None)
         };
         let mut source_jpeg_retiled = false;
         let mut source_jpeg_retile_duration = Duration::ZERO;
@@ -218,6 +215,9 @@ fn plan_lossless_j2k_row_at(
                 request.grid.frame_rows,
             )? {
                 RawJpegRetileProbe::Accepted(retiled) => {
+                    if source_lossy_compression.is_none() {
+                        source_lossy_compression = lossy_compression_from_raw(&retiled.raw, None)?;
+                    }
                     source_jpeg = jpeg_direct_htj2k::frame(
                         &retiled.raw,
                         request.grid.frame_columns,
@@ -253,9 +253,30 @@ fn plan_lossless_j2k_row_at(
             source_jpeg_retile_duration,
             source_jpeg_retile_rejection,
             source_jpeg_direct_rejected,
-            source_raw_probe_failed,
+            source_lossy_compression,
             passthrough,
         });
     }
     Ok(planned)
+}
+
+fn lossy_compression_from_raw(
+    raw: &wsi_rs::RawCompressedTile,
+    j2k_syntax: Option<CompressedTransferSyntax>,
+) -> Result<Option<LossyCompressionByteCounts>, Error> {
+    let method = match raw.compression() {
+        Compression::Jpeg => Some(JPEG_BASELINE_METHOD),
+        Compression::Jp2kRgb | Compression::Jp2kYcbcr => match j2k_syntax {
+            Some(CompressedTransferSyntax::Jpeg2000Lossy) => Some(JPEG_2000_METHOD),
+            Some(CompressedTransferSyntax::HtJpeg2000Lossy) => Some(HTJ2K_METHOD),
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some(method) = method else {
+        return Ok(None);
+    };
+    Ok(Some(LossyCompressionByteCounts::from_raw_tile(
+        method, raw,
+    )?))
 }

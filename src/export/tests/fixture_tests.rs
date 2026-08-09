@@ -33,6 +33,7 @@ fn export_dicom_can_export_source_synthetic_downsample_level() {
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: Some(level_idx),
     })
@@ -108,6 +109,7 @@ fn export_dicom_requires_device_encode_for_synthetic_level_with_cpu_source_input
             j2k_decomposition_levels: Some(1),
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: Some(level_idx),
     })
@@ -244,13 +246,19 @@ fn ndpi_fixture_exports_full_jpeg_baseline_passthrough_instance() {
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     };
     let metadata = request.metadata.resolve().unwrap();
-    let identity =
-        DicomExportIdentity::for_export(&source, &request.options, &metadata, request.level_filter)
-            .unwrap();
+    let identity = DicomExportIdentity::for_export(
+        &source,
+        &request.options,
+        &metadata,
+        request.level_filter,
+        &[],
+    )
+    .unwrap();
     let slide = Slide::open(&source).unwrap();
     let (level_idx, geometry) = ndpi_jpeg_passthrough_level(&slide, request.options.tile_size);
     let level = &slide.dataset().scenes[0].series[0].levels[level_idx];
@@ -356,13 +364,19 @@ fn ndpi_fixture_exports_jpeg_baseline_passthrough_pyramid_subset_for_qupath() {
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     };
     let metadata = request.metadata.resolve().unwrap();
-    let identity =
-        DicomExportIdentity::for_export(&source, &request.options, &metadata, request.level_filter)
-            .unwrap();
+    let identity = DicomExportIdentity::for_export(
+        &source,
+        &request.options,
+        &metadata,
+        request.level_filter,
+        &[],
+    )
+    .unwrap();
     let slide = Slide::open(&source).unwrap();
     let levels = ndpi_jpeg_passthrough_levels(&slide, request.options.tile_size);
     assert!(
@@ -465,19 +479,16 @@ fn fixture_first_mappable_tiles_use_batched_wsi_rs_metal_input_decode_and_metal_
         &slide,
         &mut metal_input,
         &mut encoder,
-        level,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        tile_count,
-        level.dimensions.0,
-        level.dimensions.1,
-        tile_size,
+        MetalInputTileRunRequest {
+            level,
+            location: JpegBaselineFrameLocation::first_series_level(0),
+            row: 0,
+            start_col: 0,
+            tile_count: usize::try_from(tile_count).unwrap(),
+            matrix_columns: level.dimensions.0,
+            matrix_rows: level.dimensions.1,
+            tile_size,
+        },
     )
     .unwrap();
 
@@ -658,19 +669,16 @@ fn ndpi_whole_level_metal_rows_do_not_turn_black_after_reused_encoder_state() {
             &slide,
             &mut metal_input,
             &mut j2k_encoder,
-            level,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            row,
-            0,
-            tiles_across,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
+            MetalInputTileRunRequest {
+                level,
+                location: JpegBaselineFrameLocation::first_series_level(0),
+                row,
+                start_col: 0,
+                tile_count: usize::try_from(tiles_across).unwrap(),
+                matrix_columns,
+                matrix_rows,
+                tile_size,
+            },
         )
         .unwrap();
         if row == target_row {
@@ -746,19 +754,17 @@ fn ndpi_whole_level_metal_composes_multi_tile_run_in_one_batch() {
         &slide,
         &mut metal_input,
         &mut j2k_encoder,
+        MetalInputTileRunRequest {
+            level,
+            location: JpegBaselineFrameLocation::first_series_level(0),
+            row: 0,
+            start_col: 0,
+            tile_count: usize::try_from(tile_count).unwrap(),
+            matrix_columns,
+            matrix_rows,
+            tile_size,
+        },
         strip_layout,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        tile_count as usize,
-        matrix_columns,
-        matrix_rows,
-        tile_size,
     )
     .unwrap();
 

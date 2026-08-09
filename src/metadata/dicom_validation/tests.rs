@@ -1,4 +1,28 @@
-use super::DicomMetadata;
+use crate::metadata::{DicomMetadata, SpecimenIdentifierIssuer, UniversalEntityIdType};
+
+#[test]
+fn specimen_uid_and_issuer_are_validated_before_export() {
+    let mut metadata = DicomMetadata::research_placeholder();
+    metadata.specimen_uid = Some("not-a-dicom-uid".into());
+    let error = metadata.validate_for_export().unwrap_err();
+    assert!(error.to_string().contains("specimen_uid"));
+
+    metadata.specimen_uid = Some("1.2.826.0.1.3680043.10.999.700".into());
+    metadata.specimen_identifier_issuer = Some(SpecimenIdentifierIssuer {
+        universal_entity_id: Some("https://hospital.example/specimens".into()),
+        universal_entity_id_type: None,
+        ..SpecimenIdentifierIssuer::default()
+    });
+    let error = metadata.validate_for_export().unwrap_err();
+    assert!(error.to_string().contains("universal_entity_id_type"));
+
+    metadata.specimen_identifier_issuer = Some(SpecimenIdentifierIssuer {
+        universal_entity_id: Some("https://hospital.example/specimens".into()),
+        universal_entity_id_type: Some(UniversalEntityIdType::Uri),
+        ..SpecimenIdentifierIssuer::default()
+    });
+    metadata.validate_for_export().unwrap();
+}
 
 #[test]
 fn writer_metadata_validation_rejects_invalid_vr_values() {

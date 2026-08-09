@@ -16,12 +16,15 @@ mod api;
 #[cfg(feature = "bench-internals")]
 #[doc(hidden)]
 pub mod bench_support;
+mod calibration;
 mod coordinate;
 mod diagnostics;
 mod encode;
 mod error;
 mod export;
+mod icc;
 mod instance_context;
+mod lossy;
 mod metadata;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[allow(unsafe_code)]
@@ -42,6 +45,10 @@ mod writer;
 mod test_support;
 
 pub use api::Export;
+pub use calibration::{
+    create_icc_calibration_bundle, ColorManagement, IccCalibrationRegistry, IccConflictPolicy,
+    IccProfile, ScannerIdentity, ICC_CALIBRATION_REGISTRY_MAX_BYTES, ICC_PROFILE_MAX_BYTES,
+};
 pub use diagnostics::{run_dicom_self_test, SelfTestOptions, SelfTestReport};
 pub use error::Error;
 pub use export::default_transfer_syntax_for_source;
@@ -49,15 +56,19 @@ pub use export::{
     encode_dicom_j2k_frame, export_dicom, profile_dicom_route_corpus_coverage,
     profile_dicom_route_coverage, profile_dicom_routes,
 };
-pub use metadata::{DicomMetadata, MetadataSource, METADATA_JSON_MAX_BYTES};
+pub use metadata::{
+    DicomMetadata, MetadataSource, SpecimenIdentifierIssuer, UniversalEntityIdType,
+    METADATA_JSON_MAX_BYTES,
+};
 pub use options::{
-    CodecValidation, EncodeBackendPreference, ExportOptions, ExportPreset, IccProfilePolicy,
-    JpegDirectHtj2kProfile, TransferSyntax, UidPolicy,
+    CodecValidation, EncodeBackendPreference, ExportOptions, ExportPreset, JpegDirectHtj2kProfile,
+    TransferSyntax, UidPolicy,
 };
 pub use report::{
-    EncodedFrame, ExportMetrics, ExportReport, GpuEncodeMetrics, IccProfileSource, InstanceReport,
-    JpegDirectHtj2kMetrics, RouteCorpusCoverageFailure, RouteCorpusCoverageReport, RouteCounters,
-    RouteCoverageReport, RouteProfileReport, WriteTimings,
+    EncodedFrame, ExportMetrics, ExportReport, GpuEncodeMetrics, IccConflictDecision,
+    IccProfileSource, InstanceReport, JpegDirectHtj2kMetrics, RouteCorpusCoverageFailure,
+    RouteCorpusCoverageReport, RouteCounters, RouteCoverageReport, RouteProfileReport,
+    WriteTimings,
 };
 pub use request::{
     DefaultTransferSyntaxRequest, ExportRequest, FrameSamples, J2kFrameEncodeRequest,
@@ -72,10 +83,12 @@ pub mod prelude {
     //! Common imports for applications using `wsi-dicom`.
 
     pub use crate::{
-        CodecValidation, DefaultTransferSyntaxRequest, Error, Export, ExportOptions, ExportPreset,
-        ExportReport, ExportRequest, FrameSamples, IccProfilePolicy, IccProfileSource,
-        J2kFrameEncodeRequest, JpegDirectHtj2kProfile, MetadataSource, TransferSyntax, UidPolicy,
-        ValidationOptions,
+        CodecValidation, ColorManagement, DefaultTransferSyntaxRequest, Error, Export,
+        ExportOptions, ExportPreset, ExportReport, ExportRequest, FrameSamples,
+        IccCalibrationRegistry, IccConflictDecision, IccConflictPolicy, IccProfile,
+        IccProfileSource, J2kFrameEncodeRequest, JpegDirectHtj2kProfile, MetadataSource,
+        ScannerIdentity, SpecimenIdentifierIssuer, TransferSyntax, UidPolicy,
+        UniversalEntityIdType, ValidationOptions,
     };
 }
 

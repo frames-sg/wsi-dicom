@@ -1,0 +1,7 @@
+  Export::icc_profile_policy, previously in file src/api.rs:117
+  enum wsi_dicom::IccProfilePolicy, previously in file src/options.rs:67
+  enum wsi_dicom::prelude::IccProfilePolicy, previously in file src/options.rs:67
+  field icc_profile_policy of struct ExportOptions, previously in file src/options.rs:272
+  variant IccProfileSource::OmittedMissing, previously in file src/report.rs:171
+  wsi_dicom::ExportRequest::new takes 4 parameters in src/request.rs:28, but now takes 5 parameters
+  wsi_dicom::prelude::ExportRequest::new takes 4 parameters in src/request.rs:28, but now takes 5 parameters

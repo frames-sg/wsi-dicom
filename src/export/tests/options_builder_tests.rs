@@ -251,6 +251,7 @@ fn source_aware_builder_writes_requested_tile_geometry_for_oversized_jpeg2000_so
         .encode_backend(EncodeBackendPreference::CpuOnly)
         .codec_validation(CodecValidation::Disabled)
         .with_research_placeholder_metadata()
+        .color_management(ColorManagement::SourceOrSrgb)
         .run()
         .unwrap();
 
@@ -302,6 +303,7 @@ fn dicom_export_builder_defaults_to_source_aware_transfer_syntax() {
     let request = Export::from_slide(&source)
         .to_directory(&output_dir)
         .with_research_placeholder_metadata()
+        .color_management(ColorManagement::SourceOrSrgb)
         .build_request()
         .unwrap();
 
@@ -324,6 +326,7 @@ fn dicom_export_builder_explicit_transfer_syntax_overrides_auto() {
     let request = Export::from_slide("source.ndpi")
         .to_directory("dicom-out")
         .with_research_placeholder_metadata()
+        .color_management(ColorManagement::SourceOrSrgb)
         .transfer_syntax(TransferSyntax::Htj2kLossless)
         .build_request()
         .unwrap();
@@ -345,7 +348,6 @@ fn dicom_export_builder_with_options_preserves_explicit_option_fields() {
         transfer_syntax: TransferSyntax::Jpeg2000Lossless,
         jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossless53,
         jpeg_quality: 80,
-        icc_profile_policy: IccProfilePolicy::FallbackSrgb,
         uid_policy: UidPolicy::Deterministic,
         encode_backend: EncodeBackendPreference::CpuOnly,
         codec_validation: CodecValidation::RoundTrip,
@@ -361,6 +363,7 @@ fn dicom_export_builder_with_options_preserves_explicit_option_fields() {
     let request = Export::from_slide("source.ndpi")
         .to_directory("dicom-out")
         .with_research_placeholder_metadata()
+        .color_management(ColorManagement::SourceOrSrgb)
         .with_options(options.clone())
         .build_request()
         .unwrap();
@@ -374,6 +377,7 @@ fn dicom_export_builder_metadata_and_level_flow_into_request() {
         .to_directory("dicom-out")
         .transfer_syntax(TransferSyntax::Htj2kLosslessRpcl)
         .with_metadata(MetadataSource::ResearchPlaceholder)
+        .color_management(ColorManagement::SourceOrSrgb)
         .level(3)
         .build_request()
         .unwrap();
@@ -393,6 +397,7 @@ fn dicom_export_builder_can_return_to_source_aware_transfer_syntax() {
     let request = Export::from_slide(&source)
         .to_directory(&output_dir)
         .with_research_placeholder_metadata()
+        .color_management(ColorManagement::SourceOrSrgb)
         .with_options(ExportOptions {
             tile_size: 512,
             transfer_syntax: TransferSyntax::Htj2kLossless,
@@ -419,6 +424,7 @@ fn export_request_rejects_zero_tile_size() {
             tile_size: 0,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     }
@@ -436,6 +442,7 @@ fn export_request_keeps_source_and_output_paths() {
         PathBuf::from("source.ndpi"),
         PathBuf::from("dicom-out"),
         ExportOptions::default(),
+        ColorManagement::SourceOrSrgb,
         MetadataSource::ResearchPlaceholder,
     )
     .unwrap();

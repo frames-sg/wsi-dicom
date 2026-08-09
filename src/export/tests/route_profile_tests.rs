@@ -247,6 +247,7 @@ fn profile_and_export_route_classification_match_for_cpu_pipelines() {
             source_path: source.clone(),
             output_dir: temporary_directory.path().join(case_name),
             options,
+            color_management: ColorManagement::SourceOrSrgb,
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: Some(0),
         })

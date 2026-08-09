@@ -159,6 +159,7 @@ fn j2k_decomposition_level_override_reaches_lossless_encoders() {
                     j2k_decomposition_levels: Some(requested_levels),
                     ..ExportOptions::default()
                 },
+                color_management: ColorManagement::SourceOrSrgb,
                 metadata: MetadataSource::ResearchPlaceholder,
                 level_filter: None,
             })
@@ -341,6 +342,7 @@ fn export_j2k_passthrough_does_not_touch_gpu_even_when_device_required() {
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -436,6 +438,7 @@ fn export_general_j2k_edge_fallback_preserves_interior_passthrough() {
             source_device_decode: true,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -493,6 +496,7 @@ fn export_general_j2k_rgb_edge_fallback_matches_passthrough_profile() {
             codec_validation: CodecValidation::Disabled,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -558,6 +562,7 @@ fn dicom_roundtrip_lossless_pixel_identical() {
                 codec_validation: CodecValidation::Disabled,
                 ..ExportOptions::default()
             },
+            color_management: ColorManagement::SourceOrSrgb,
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
         })
@@ -611,6 +616,7 @@ fn export_general_j2k_lossy_passthrough_writes_compression_ratio() {
             codec_validation: CodecValidation::Disabled,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -674,6 +680,7 @@ fn jpeg2000_lossless_rejects_lossy_edge_fallback() {
             codec_validation: CodecValidation::Disabled,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -950,8 +957,8 @@ fn jpeg_baseline_cpu_batch_matches_serial_ordered_frames() {
 
     assert_eq!(batch.len(), serial.len());
     for (batch, serial) in batch.iter().zip(serial.iter()) {
-        assert_eq!(batch.0.data, serial.0.data);
-        assert_eq!(batch.1, serial.1);
+        assert_eq!(batch.encoded.data, serial.encoded.data);
+        assert_eq!(batch.profile, serial.profile);
     }
 }
 
@@ -972,6 +979,7 @@ fn jpeg_quality_option_changes_fallback_frame_size() {
             jpeg_quality: 40,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -987,6 +995,7 @@ fn jpeg_quality_option_changes_fallback_frame_size() {
             jpeg_quality: 95,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -1019,6 +1028,7 @@ fn jpeg_baseline_cpu_fallback_writes_restart_markers_for_large_frames() {
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })

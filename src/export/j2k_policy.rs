@@ -2,11 +2,21 @@ use j2k::{J2kView, ReversibleTransform};
 use j2k_core::{Colorspace, CompressedPayloadKind, PassthroughRequirements};
 use wsi_rs::{Compression, EncodedTilePhotometricInterpretation, RawCompressedTile};
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use std::path::Path;
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::jpeg_baseline::JpegBaselineFrameLocation;
+use super::jpeg_direct_htj2k;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::route_cache::AutoMetalInputRouteCacheKey;
 use super::{J2kPassthroughFrame, LosslessJ2kPlannedFrame};
 use crate::error::Error;
-use crate::options::TransferSyntax;
+use crate::options::{EncodeBackendPreference, ExportOptions, TransferSyntax};
 use crate::passthrough::j2k_codestream_is_rpcl;
-use crate::routing::{j2k_encoded_lossless_profile, required_passthrough_syntax};
+use crate::routing::{
+    j2k_encode_backend, j2k_encoded_lossless_profile, required_passthrough_syntax,
+};
 use crate::tile::PixelProfile;
 
 fn j2k_edge_fallback_allowed(
@@ -129,7 +139,7 @@ pub(super) fn j2k_passthrough_frame(
     if raw.bits_allocated() > u8::MAX as u16 || raw.samples_per_pixel() > u8::MAX as u16 {
         return Ok(None);
     }
-    let (passthrough_syntax, photometric_interpretation) = {
+    let (_passthrough_syntax, photometric_interpretation) = {
         let view = match J2kView::parse(raw.data()) {
             Ok(view) => view,
             Err(_) => return Ok(None),
@@ -173,7 +183,8 @@ pub(super) fn j2k_passthrough_frame(
             bits_allocated,
             photometric_interpretation,
         },
-        transfer_syntax: passthrough_syntax,
+        #[cfg(test)]
+        transfer_syntax: _passthrough_syntax,
     }))
 }
 
@@ -230,4 +241,194 @@ fn j2k_passthrough_photometric_interpretation(
         },
         _ => None,
     }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) const WSI_DICOM_METAL_ROW_BATCH_ROWS_ENV: &str = "WSI_DICOM_METAL_ROW_BATCH_ROWS";
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) const DEFAULT_METAL_ROW_BATCH_TARGET_TILES: usize = 384;
+pub(super) const PREFER_DEVICE_TINY_HTJ2K_RPCL_CPU_MAX_FRAMES: u64 = 128;
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) const DEFAULT_GPU_PIPELINE_DEPTH: usize = 2;
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) fn effective_gpu_pipeline_depth(options: &ExportOptions) -> usize {
+    options
+        .gpu_pipeline_depth
+        .unwrap_or(DEFAULT_GPU_PIPELINE_DEPTH)
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) fn effective_gpu_row_batch_target_tiles(options: &ExportOptions) -> Option<usize> {
+    Some(
+        options
+            .gpu_row_batch_target_tiles
+            .unwrap_or(DEFAULT_METAL_ROW_BATCH_TARGET_TILES),
+    )
+}
+
+pub(super) fn effective_lossless_j2k_encode_backend(
+    options: &ExportOptions,
+    frame_count: u64,
+) -> EncodeBackendPreference {
+    if options.encode_backend == EncodeBackendPreference::PreferDevice {
+        if options.transfer_syntax == TransferSyntax::Jpeg2000Lossless {
+            // Keep classic J2K lossless on CPU until Metal beats CPU in route-level benchmarks.
+            return EncodeBackendPreference::CpuOnly;
+        }
+        if options.transfer_syntax == TransferSyntax::Htj2kLosslessRpcl
+            && frame_count <= PREFER_DEVICE_TINY_HTJ2K_RPCL_CPU_MAX_FRAMES
+        {
+            return EncodeBackendPreference::CpuOnly;
+        }
+    }
+    j2k_encode_backend(options.transfer_syntax, options.encode_backend)
+}
+
+pub(super) fn jpeg_direct_htj2k_supported_for_backend(
+    transfer_syntax: TransferSyntax,
+    backend: EncodeBackendPreference,
+) -> bool {
+    if !jpeg_direct_htj2k::transfer_syntax(transfer_syntax) {
+        return false;
+    }
+    backend != EncodeBackendPreference::RequireDevice
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) const LOSSLESS_J2K_AUTO_ROUTE_PROBE_MAX_FRAMES: usize = 16;
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) const LOSSLESS_J2K_AUTO_ROUTE_MIN_FRAMES: u64 = 16;
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) const LOSSLESS_J2K_AUTO_PARTIAL_GPU_MIN_FRAMES: usize = 32;
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) const LOSSLESS_J2K_AUTO_ROUTE_SPEEDUP_NUMERATOR: u128 = 92;
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) const LOSSLESS_J2K_AUTO_ROUTE_SPEEDUP_DENOMINATOR: u128 = 100;
+
+#[cfg(any(test, not(all(feature = "metal", target_os = "macos"))))]
+pub(super) const LOSSLESS_J2K_CPU_ROW_BATCH_TARGET_TILES: u64 = 256;
+pub(super) const LOSSLESS_J2K_DIRECT_PIXELDATA_MAX_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
+pub(super) const LOSSLESS_J2K_DIRECT_PIXELDATA_BYTES_PER_PIXEL: u64 = 6;
+
+#[cfg(any(test, not(all(feature = "metal", target_os = "macos"))))]
+pub(super) fn lossless_j2k_cpu_row_batch_count(tiles_across: u64, remaining_rows: u64) -> u64 {
+    if tiles_across == 0 {
+        return 1;
+    }
+    let rows = LOSSLESS_J2K_CPU_ROW_BATCH_TARGET_TILES
+        .div_ceil(tiles_across)
+        .max(1);
+    rows.min(remaining_rows.max(1))
+}
+
+pub(super) fn lossless_j2k_direct_pixel_data_memory_bytes(rayon_threads: usize) -> u64 {
+    let scaled = u64::try_from(rayon_threads)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(32 * 1024 * 1024);
+    scaled.clamp(
+        64 * 1024 * 1024,
+        LOSSLESS_J2K_DIRECT_PIXELDATA_MAX_MEMORY_BYTES,
+    )
+}
+
+pub(super) fn lossless_j2k_use_direct_pixel_data(
+    frame_count: u32,
+    tile_size: u32,
+    rayon_threads: usize,
+) -> bool {
+    if frame_count == 0 || rayon_threads <= 1 {
+        return false;
+    }
+    let estimated_bytes = u64::from(frame_count)
+        .saturating_mul(u64::from(tile_size))
+        .saturating_mul(u64::from(tile_size))
+        .saturating_mul(LOSSLESS_J2K_DIRECT_PIXELDATA_BYTES_PER_PIXEL);
+    estimated_bytes <= lossless_j2k_direct_pixel_data_memory_bytes(rayon_threads)
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) fn lossless_j2k_auto_allows_metal_input(
+    preference: EncodeBackendPreference,
+    transfer_syntax: TransferSyntax,
+    frame_count: u64,
+    _source_device_decode: bool,
+) -> bool {
+    if !transfer_syntax.is_lossless_j2k_family() {
+        return false;
+    }
+    match preference {
+        EncodeBackendPreference::CpuOnly => false,
+        EncodeBackendPreference::PreferDevice | EncodeBackendPreference::RequireDevice => true,
+        EncodeBackendPreference::Auto => {
+            if frame_count < LOSSLESS_J2K_AUTO_ROUTE_MIN_FRAMES {
+                return false;
+            }
+            matches!(
+                transfer_syntax,
+                TransferSyntax::Htj2kLossless | TransferSyntax::Htj2kLosslessRpcl
+            )
+        }
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) fn lossless_j2k_metal_input_preference(
+    preference: EncodeBackendPreference,
+    source_device_decode: bool,
+) -> EncodeBackendPreference {
+    if preference == EncodeBackendPreference::RequireDevice && !source_device_decode {
+        EncodeBackendPreference::CpuOnly
+    } else {
+        preference
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) fn lossless_j2k_auto_should_start_cpu_only(
+    preference: EncodeBackendPreference,
+    transfer_syntax: TransferSyntax,
+    frame_count: u64,
+    source_device_decode: bool,
+) -> bool {
+    preference == EncodeBackendPreference::Auto
+        && transfer_syntax.is_lossless_j2k_family()
+        && !lossless_j2k_auto_allows_metal_input(
+            preference,
+            transfer_syntax,
+            frame_count,
+            source_device_decode,
+        )
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) fn auto_metal_input_route_cache_key(
+    source_path: &Path,
+    options: ExportOptions,
+    location: JpegBaselineFrameLocation,
+    route_scope_frames: u64,
+) -> Option<AutoMetalInputRouteCacheKey> {
+    (options.encode_backend == EncodeBackendPreference::Auto
+        && matches!(
+            options.transfer_syntax,
+            TransferSyntax::Htj2kLossless | TransferSyntax::Htj2kLosslessRpcl
+        ))
+    .then(|| AutoMetalInputRouteCacheKey {
+        source_path: source_path.to_path_buf(),
+        scene_idx: location.scene_idx,
+        series_idx: location.series_idx,
+        level: location.level_idx,
+        z: location.z,
+        c: location.c,
+        t: location.t,
+        tile_size: options.tile_size,
+        transfer_syntax: options.transfer_syntax,
+        route_scope_frames,
+    })
 }

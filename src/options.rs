@@ -60,24 +60,6 @@ impl CodecValidation {
     }
 }
 
-/// Policy for DICOM Optical Path ICC profile handling when source color
-/// metadata is unavailable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
-#[non_exhaustive]
-pub enum IccProfilePolicy {
-    /// Require a real source or embedded JPEG ICC profile.
-    Strict,
-    /// Preserve source ICC when available; otherwise embed a synthesized sRGB
-    /// ICC profile and report it as an assumption.
-    FallbackSrgb,
-    /// Preserve source ICC when available; otherwise embed a synthesized
-    /// Display P3 ICC profile and report it as an assumption.
-    FallbackDisplayP3,
-    /// Preserve source ICC when available; otherwise omit the ICC Profile
-    /// attribute.
-    OmitIfMissing,
-}
-
 /// Policy for identifiers generated when the caller does not supply them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -268,8 +250,6 @@ pub struct ExportOptions {
     pub jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile,
     /// JPEG quality used for JPEG Baseline fallback encoding.
     pub jpeg_quality: u8,
-    /// ICC profile policy for missing source color metadata.
-    pub icc_profile_policy: IccProfilePolicy,
     /// Policy for generated Study, Series, SOP, and related DICOM UIDs.
     pub uid_policy: UidPolicy,
     /// Runtime encoder backend preference.
@@ -303,7 +283,6 @@ impl Default for ExportOptions {
             transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
             jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossless53,
             jpeg_quality: 90,
-            icc_profile_policy: IccProfilePolicy::FallbackSrgb,
             uid_policy: UidPolicy::Fresh,
             encode_backend: EncodeBackendPreference::Auto,
             codec_validation: CodecValidation::Disabled,
@@ -570,7 +549,6 @@ mod tests {
             transfer_syntax: TransferSyntax::Htj2k,
             jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossy97Aggressive,
             jpeg_quality: 77,
-            icc_profile_policy: IccProfilePolicy::OmitIfMissing,
             uid_policy: UidPolicy::Deterministic,
             encode_backend: EncodeBackendPreference::PreferDevice,
             codec_validation: CodecValidation::RoundTrip,

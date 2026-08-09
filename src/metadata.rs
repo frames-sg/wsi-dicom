@@ -13,6 +13,64 @@ pub(crate) use dicom_validation::ValidatedDicomMetadata;
 /// Maximum accepted metadata JSON file size.
 pub const METADATA_JSON_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
+/// Issuer that gives a specimen identifier its organizational scope.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+#[non_exhaustive]
+pub struct SpecimenIdentifierIssuer {
+    /// Locally governed namespace name, when available.
+    ///
+    /// At least one of this field and [`Self::universal_entity_id`] is
+    /// required.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_namespace_entity_id: Option<String>,
+    /// Globally unique namespace identifier, when available.
+    ///
+    /// This must be supplied together with [`Self::universal_entity_id_type`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub universal_entity_id: Option<String>,
+    /// Kind of globally unique namespace identifier.
+    ///
+    /// This must be supplied together with [`Self::universal_entity_id`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub universal_entity_id_type: Option<UniversalEntityIdType>,
+}
+
+/// DICOM/HL7 universal entity identifier type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+#[non_exhaustive]
+pub enum UniversalEntityIdType {
+    /// Internet Domain Name System identifier.
+    Dns,
+    /// IEEE EUI-64 identifier.
+    Eui64,
+    /// ISO object identifier.
+    Iso,
+    /// Uniform Resource Identifier.
+    Uri,
+    /// Universally Unique Identifier.
+    Uuid,
+    /// X.400 identifier.
+    X400,
+    /// X.500 identifier.
+    X500,
+}
+
+impl UniversalEntityIdType {
+    pub(crate) fn as_dicom_code(self) -> &'static str {
+        match self {
+            Self::Dns => "DNS",
+            Self::Eui64 => "EUI64",
+            Self::Iso => "ISO",
+            Self::Uri => "URI",
+            Self::Uuid => "UUID",
+            Self::X400 => "X400",
+            Self::X500 => "X500",
+        }
+    }
+}
+
 /// Metadata accepted by the DICOM writer after strict JSON or FHIR mapping.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -59,6 +117,15 @@ pub struct DicomMetadata {
     pub container_identifier: Option<String>,
     /// Specimen identifier.
     pub specimen_identifier: Option<String>,
+    /// Optional governed DICOM Specimen UID.
+    ///
+    /// The exporter preserves a supplied value verbatim. When absent, it
+    /// derives a UID from the export identity, specimen identifier, and issuer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub specimen_uid: Option<String>,
+    /// Issuer that scopes the specimen identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub specimen_identifier_issuer: Option<SpecimenIdentifierIssuer>,
     /// Human-readable specimen description.
     pub specimen_description: Option<String>,
     /// Imaged volume depth in millimeters.
@@ -91,6 +158,8 @@ impl DicomMetadata {
             acquisition_date_time: Some("19700101000000".into()),
             container_identifier: Some("RESEARCH-CONTAINER".into()),
             specimen_identifier: Some("RESEARCH-SPECIMEN".into()),
+            specimen_uid: None,
+            specimen_identifier_issuer: None,
             specimen_description: Some("Research placeholder specimen".into()),
             imaged_volume_depth_mm: Some(0.001),
             focus_method: Some("AUTO".into()),
@@ -132,6 +201,12 @@ impl DicomMetadata {
 
     pub(crate) fn validated_for_writer(&self) -> Result<ValidatedDicomMetadata<'_>, Error> {
         dicom_validation::validate(self)
+    }
+
+    pub(crate) fn specimen_identifier_or_default(&self) -> &str {
+        self.specimen_identifier
+            .as_deref()
+            .unwrap_or("RESEARCH-SPECIMEN")
     }
 }
 
@@ -259,6 +334,14 @@ mod tests {
                 ..DicomMetadata::default()
             }
         );
+    }
+
+    #[test]
+    fn absent_specimen_identity_extensions_do_not_change_serialized_metadata() {
+        let value = serde_json::to_value(DicomMetadata::research_placeholder()).unwrap();
+
+        assert!(value.get("specimen_uid").is_none());
+        assert!(value.get("specimen_identifier_issuer").is_none());
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use super::*;
+use crate::lossy::{uncompressed_pixel_bytes, LossyCompressionAccumulator, HTJ2K_METHOD};
 
 pub(super) fn export_instance(
     slide: &Slide,
@@ -25,6 +26,7 @@ pub(super) struct PendingLosslessJ2kInstance {
     context: DicomInstanceContext,
     metadata: DicomMetadata,
     study_uid: String,
+    specimen_uid: String,
     instance_number: u32,
     tile_size: u32,
     matrix_columns: u64,
@@ -33,8 +35,8 @@ pub(super) struct PendingLosslessJ2kInstance {
     profile: PixelProfile,
     pixel_data: BufferedPixelDataSink,
     icc_profile: Option<Vec<u8>>,
-    icc_profile_source: IccProfileSource,
-    j2k_lossy_compression: Option<LossyCompressionMetadata>,
+    icc_profile_report: IccProfileReport,
+    lossy_compression: LossyCompressionHistory,
     metrics: ExportMetrics,
     transfer_syntax: TransferSyntax,
     overwrite: bool,
@@ -52,12 +54,13 @@ impl PendingLosslessJ2kInstance {
         let object = self.context.build_dicom_object(InstanceDicomObjectParams {
             metadata: &self.metadata,
             study_uid: &self.study_uid,
+            specimen_uid: &self.specimen_uid,
             instance_number: self.instance_number,
             frame_grid,
             frame_count: self.frame_count,
             profile: self.profile,
             icc_profile: self.icc_profile.as_deref(),
-            lossy_compression: self.j2k_lossy_compression,
+            lossy_compression: self.lossy_compression,
         })?;
         let per_frame_plan = self.context.per_frame_plan(self.frame_count, frame_grid)?;
         let write_started = Instant::now();
@@ -82,7 +85,7 @@ impl PendingLosslessJ2kInstance {
         Ok(self.context.report(
             self.transfer_syntax.uid(),
             self.frame_count,
-            self.icc_profile_source,
+            self.icc_profile_report,
             self.metrics,
         ))
     }
@@ -109,16 +112,9 @@ pub(super) fn prepare_lossless_j2k_instance(
         require_pixel_spacing_mm(level_pixel_spacing_mm(slide, level))?,
         coordinate,
     )?;
+    let declared_lossy_compression =
+        super::lossy_provenance::declared_source_lossy_history(&request.source_path)?;
     let location = coordinate;
-    let icc_profile = resolve_icc_profile(
-        slide,
-        request,
-        coordinate.scene_idx,
-        coordinate.series_idx,
-        coordinate.level_idx,
-        level,
-    )?;
-
     let spool_path = unique_spool_path(&context.path);
     let mut pixel_data = BufferedPixelDataSink::create(
         spool_path,
@@ -138,7 +134,8 @@ pub(super) fn prepare_lossless_j2k_instance(
         location,
         u64::from(frame_count),
     )?;
-    let mut j2k_passthrough_lossy = false;
+    let mut source_lossy_compression = LossyCompressionAccumulator::default();
+    let mut target_lossy_compression = LossyCompressionAccumulator::default();
     let allow_passthrough_probe =
         j2k_family_passthrough_probe_allowed(&request.source_path, request.options.transfer_syntax);
 
@@ -166,14 +163,12 @@ pub(super) fn prepare_lossless_j2k_instance(
                 allow_passthrough_probe,
             },
         )?;
-        #[cfg(all(feature = "metal", target_os = "macos"))]
-        let generated_jpeg_direct_allowed = jpeg_direct_encoder.is_some()
-            && generated_jpeg_direct_htj2k_allowed_for_route(
-                request.options.transfer_syntax,
-                &metal_input,
-            );
-        #[cfg(not(all(feature = "metal", target_os = "macos")))]
-        let generated_jpeg_direct_allowed = jpeg_direct_encoder.is_some();
+        for source in planned
+            .iter()
+            .filter_map(|frame| frame.source_lossy_compression.as_ref())
+        {
+            source_lossy_compression.observe(source)?;
+        }
         let batch_context = LosslessJ2kBatchContext {
             slide,
             level,
@@ -182,11 +177,8 @@ pub(super) fn prepare_lossless_j2k_instance(
             location,
             tile_size,
         };
-        let mut direct_routes = encode_direct_lossless_j2k_routes(
-            batch_context,
-            &mut jpeg_direct_encoder,
-            generated_jpeg_direct_allowed,
-        )?;
+        let mut direct_routes =
+            encode_direct_lossless_j2k_routes(batch_context, &mut jpeg_direct_encoder)?;
         #[cfg(all(feature = "metal", target_os = "macos"))]
         let mut routed_tiles = route_lossless_j2k_metal_input_runs(
             batch_context,
@@ -219,6 +211,7 @@ pub(super) fn prepare_lossless_j2k_instance(
                 request.options.transfer_syntax,
                 tile_size,
             );
+            let compressed_bytes_before = pixel_data.total_raw_bytes();
             if try_write_existing_lossless_j2k_frame(
                 ExistingLosslessJ2kFrameContext {
                     idx,
@@ -229,8 +222,30 @@ pub(super) fn prepare_lossless_j2k_instance(
                     pixel_profile: &mut pixel_profile,
                 },
                 &mut pixel_data,
-                &mut j2k_passthrough_lossy,
             )? {
+                if request.options.transfer_syntax == TransferSyntax::Htj2k
+                    && planned_frame.passthrough.is_none()
+                {
+                    let compressed_bytes = pixel_data
+                        .total_raw_bytes()
+                        .checked_sub(compressed_bytes_before)
+                        .ok_or_else(|| Error::Metadata {
+                            reason: "encoded HTJ2K byte count decreased unexpectedly".into(),
+                        })?;
+                    let profile = pixel_profile.ok_or_else(|| Error::Metadata {
+                        reason: "encoded HTJ2K frame did not establish a pixel profile".into(),
+                    })?;
+                    target_lossy_compression.observe_bytes(
+                        HTJ2K_METHOD,
+                        uncompressed_pixel_bytes(
+                            u64::from(tile_size),
+                            u64::from(tile_size),
+                            u64::from(profile.components),
+                            profile.bits_allocated,
+                        )?,
+                        compressed_bytes,
+                    )?;
+                }
                 continue;
             }
             if !encode_allowed {
@@ -245,7 +260,6 @@ pub(super) fn prepare_lossless_j2k_instance(
                 request.options.transfer_syntax,
                 planned_frame.row,
             )?;
-
             let resolved = resolve_lossless_j2k_fallback_frame(
                 batch_context,
                 &mut j2k_encoder,
@@ -269,8 +283,24 @@ pub(super) fn prepare_lossless_j2k_instance(
                     other => other,
                 },
             )?;
+            let codestream = encoded.into_codestream()?;
+            if request.options.transfer_syntax == TransferSyntax::Htj2k {
+                let profile = pixel_profile.ok_or_else(|| Error::Metadata {
+                    reason: "encoded HTJ2K frame did not establish a pixel profile".into(),
+                })?;
+                target_lossy_compression.observe_encoded_frame(
+                    HTJ2K_METHOD,
+                    uncompressed_pixel_bytes(
+                        u64::from(tile_size),
+                        u64::from(tile_size),
+                        u64::from(profile.components),
+                        profile.bits_allocated,
+                    )?,
+                    &codestream,
+                )?;
+            }
             let byte_started = Instant::now();
-            pixel_data.push_owned_frame(encoded.into_codestream()?)?;
+            pixel_data.push_owned_frame(codestream)?;
             metrics.record_write_duration(byte_started.elapsed());
         }
         row = row
@@ -283,28 +313,20 @@ pub(super) fn prepare_lossless_j2k_instance(
     let profile = pixel_profile.ok_or_else(|| Error::Unsupported {
         reason: "slide level produced no frames".into(),
     })?;
-    let j2k_lossy_compression =
-        if j2k_passthrough_lossy || request.options.transfer_syntax == TransferSyntax::Htj2k {
-            let compressed_bytes = pixel_data.total_raw_bytes();
-            let bytes_per_sample = u64::from(profile.bits_allocated).div_ceil(8);
-            let uncompressed_bytes = u64::from(frame_count)
-                .saturating_mul(u64::from(tile_size))
-                .saturating_mul(u64::from(tile_size))
-                .saturating_mul(u64::from(profile.components))
-                .saturating_mul(bytes_per_sample);
-            Some(LossyCompressionMetadata {
-                method: j2k_lossy_compression_method(request.options.transfer_syntax),
-                ratio: (compressed_bytes > 0)
-                    .then_some(uncompressed_bytes as f64 / compressed_bytes as f64),
-            })
-        } else {
-            None
-        };
+    let icc_profile = resolve_icc_profile(slide, request, metadata, coordinate, level, profile)?;
+    let observed_lossy_compression = source_lossy_compression.into_history()?;
+    let mut lossy_compression = if declared_lossy_compression.is_empty() {
+        observed_lossy_compression
+    } else {
+        declared_lossy_compression
+    };
+    lossy_compression.append(target_lossy_compression.into_history()?);
 
     Ok(PendingLosslessJ2kInstance {
         context,
         metadata: metadata.clone(),
         study_uid: identity.study_uid().to_string(),
+        specimen_uid: identity.specimen_uid().to_string(),
         instance_number,
         tile_size,
         matrix_columns,
@@ -313,8 +335,8 @@ pub(super) fn prepare_lossless_j2k_instance(
         profile,
         pixel_data,
         icc_profile: icc_profile.bytes,
-        icc_profile_source: icc_profile.source,
-        j2k_lossy_compression,
+        icc_profile_report: icc_profile.report,
+        lossy_compression,
         metrics,
         transfer_syntax: request.options.transfer_syntax,
         overwrite: request.options.overwrite,

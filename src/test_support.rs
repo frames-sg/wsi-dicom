@@ -63,6 +63,15 @@ pub(crate) fn read_binary_ppm_for_test(path: &Path) -> (u32, u32, Vec<u8>) {
 }
 
 pub(crate) fn encode_test_jpeg(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
+    encode_test_jpeg_with_subsampling(width, height, rgb, JpegSubsampling::Ybr422)
+}
+
+pub(crate) fn encode_test_jpeg_with_subsampling(
+    width: u32,
+    height: u32,
+    rgb: [u8; 3],
+    subsampling: JpegSubsampling,
+) -> Vec<u8> {
     let pixels = vec![rgb; (width * height) as usize]
         .into_iter()
         .flatten()
@@ -75,7 +84,26 @@ pub(crate) fn encode_test_jpeg(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8>
         },
         j2k_jpeg::JpegEncodeOptions {
             quality: 90,
-            subsampling: JpegSubsampling::Ybr422,
+            subsampling,
+            restart_interval: None,
+            backend: JpegBackend::Cpu,
+        },
+    )
+    .unwrap()
+    .data
+}
+
+pub(crate) fn encode_test_gray_jpeg(width: u32, height: u32, value: u8) -> Vec<u8> {
+    let pixels = vec![value; (width * height) as usize];
+    j2k_jpeg::encode_jpeg_baseline(
+        JpegSamples::Gray8 {
+            data: &pixels,
+            width,
+            height,
+        },
+        j2k_jpeg::JpegEncodeOptions {
+            quality: 90,
+            subsampling: JpegSubsampling::Gray,
             restart_interval: None,
             backend: JpegBackend::Cpu,
         },
@@ -110,7 +138,18 @@ pub(crate) fn write_tiled_jpeg_tiff(
     tile_height: u32,
     tiles: &[Vec<u8>],
 ) {
-    write_tiled_compressed_tiff(path, width, height, tile_width, tile_height, 7, 6, tiles);
+    write_tiled_compressed_tiff(path, width, height, tile_width, tile_height, 7, 6, 3, tiles);
+}
+
+pub(crate) fn write_tiled_grayscale_jpeg_tiff(
+    path: &Path,
+    width: u32,
+    height: u32,
+    tile_width: u32,
+    tile_height: u32,
+    tiles: &[Vec<u8>],
+) {
+    write_tiled_compressed_tiff(path, width, height, tile_width, tile_height, 7, 1, 1, tiles);
 }
 
 pub(crate) fn write_tiled_jp2k_rgb_tiff(
@@ -129,6 +168,7 @@ pub(crate) fn write_tiled_jp2k_rgb_tiff(
         tile_height,
         33004,
         2,
+        3,
         tiles,
     );
 }
@@ -149,6 +189,7 @@ pub(crate) fn write_tiled_jp2k_ycbcr_tiff(
         tile_height,
         33005,
         6,
+        3,
         tiles,
     );
 }
@@ -162,6 +203,7 @@ pub(crate) fn write_tiled_compressed_tiff(
     tile_height: u32,
     compression: u16,
     photometric: u16,
+    samples_per_pixel: u16,
     tiles: &[Vec<u8>],
 ) {
     let mut buf = Vec::new();
@@ -201,7 +243,7 @@ pub(crate) fn write_tiled_compressed_tiff(
         tiff_tag(258, 3, 1, tiff_short_value(8)),
         tiff_tag(259, 3, 1, tiff_short_value(compression)),
         tiff_tag(262, 3, 1, tiff_short_value(photometric)),
-        tiff_tag(277, 3, 1, tiff_short_value(3)),
+        tiff_tag(277, 3, 1, tiff_short_value(samples_per_pixel)),
         tiff_tag(282, 5, 1, x_resolution_offset.to_le_bytes()),
         tiff_tag(283, 5, 1, y_resolution_offset.to_le_bytes()),
         tiff_tag(296, 3, 1, tiff_short_value(3)),

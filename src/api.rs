@@ -3,9 +3,9 @@
 use std::path::PathBuf;
 
 use crate::{
-    default_transfer_syntax_for_source, export_dicom, CodecValidation,
+    default_transfer_syntax_for_source, export_dicom, CodecValidation, ColorManagement,
     DefaultTransferSyntaxRequest, EncodeBackendPreference, Error, ExportOptions, ExportReport,
-    ExportRequest, IccProfilePolicy, JpegDirectHtj2kProfile, MetadataSource, TransferSyntax,
+    ExportRequest, JpegDirectHtj2kProfile, MetadataSource, TransferSyntax,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +21,7 @@ pub struct Export {
     source_path: PathBuf,
     output_dir: Option<PathBuf>,
     options: ExportOptions,
+    color_management: Option<ColorManagement>,
     metadata: Option<MetadataSource>,
     level_filter: Option<u32>,
     transfer_syntax: TransferSyntaxSelection,
@@ -39,6 +40,7 @@ impl Export {
             source_path: source_path.into(),
             output_dir: None,
             options: ExportOptions::default(),
+            color_management: None,
             metadata: None,
             level_filter: None,
             transfer_syntax: TransferSyntaxSelection::SourceAware,
@@ -112,10 +114,10 @@ impl Export {
         self
     }
 
-    /// Set the ICC profile policy for missing source color metadata.
+    /// Set the required color-management behavior for color output.
     #[must_use = "builder methods return the updated Export"]
-    pub fn icc_profile_policy(mut self, policy: IccProfilePolicy) -> Self {
-        self.options.icc_profile_policy = policy;
+    pub fn color_management(mut self, color_management: ColorManagement) -> Self {
+        self.color_management = Some(color_management);
         self
     }
 
@@ -214,6 +216,12 @@ impl Export {
         let metadata = self.metadata.take().ok_or_else(|| Error::Metadata {
             reason: "export metadata must be provided with with_metadata or with_research_placeholder_metadata".into(),
         })?;
+        let color_management =
+            self.color_management
+                .take()
+                .ok_or_else(|| Error::InvalidOptions {
+                    reason: "color management must be configured with color_management".into(),
+                })?;
         metadata.resolve()?;
         if self.transfer_syntax == TransferSyntaxSelection::SourceAware {
             self.options.transfer_syntax =
@@ -231,6 +239,7 @@ impl Export {
             source_path: self.source_path,
             output_dir,
             options: self.options,
+            color_management,
             metadata,
             level_filter: self.level_filter,
         })
@@ -245,7 +254,7 @@ impl Export {
 #[cfg(test)]
 mod tests {
     use crate::{
-        CodecValidation, EncodeBackendPreference, Export, IccProfilePolicy, JpegDirectHtj2kProfile,
+        CodecValidation, ColorManagement, EncodeBackendPreference, Export, JpegDirectHtj2kProfile,
         MetadataSource, TransferSyntax,
     };
 
@@ -254,6 +263,7 @@ mod tests {
         let request = Export::from_slide("source.ndpi")
             .to_directory("dicom-out")
             .with_research_placeholder_metadata()
+            .color_management(ColorManagement::SourceOrSrgb)
             .transfer_syntax(TransferSyntax::Htj2k)
             .build_request()
             .unwrap();
@@ -273,7 +283,7 @@ mod tests {
             .transfer_syntax(TransferSyntax::Htj2kLossless)
             .tile_size(256)
             .jpeg_quality(80)
-            .icc_profile_policy(IccProfilePolicy::OmitIfMissing)
+            .color_management(ColorManagement::RequireSource)
             .encode_backend(EncodeBackendPreference::CpuOnly)
             .codec_validation(CodecValidation::RoundTrip)
             .source_device_decode(true)
@@ -290,10 +300,7 @@ mod tests {
 
         assert_eq!(request.options.tile_size, 256);
         assert_eq!(request.options.jpeg_quality, 80);
-        assert_eq!(
-            request.options.icc_profile_policy,
-            IccProfilePolicy::OmitIfMissing
-        );
+        assert_eq!(request.color_management, ColorManagement::RequireSource);
         assert_eq!(
             request.options.encode_backend,
             EncodeBackendPreference::CpuOnly
@@ -325,12 +332,25 @@ mod tests {
     }
 
     #[test]
+    fn builder_requires_explicit_color_management() {
+        let err = Export::from_slide("source.ndpi")
+            .to_directory("dicom-out")
+            .with_research_placeholder_metadata()
+            .transfer_syntax(TransferSyntax::Htj2kLossless)
+            .build_request()
+            .expect_err("color management must be explicit");
+
+        assert!(err.to_string().contains("color management"));
+    }
+
+    #[test]
     fn builder_validates_metadata_before_source_aware_probing() {
         let mut invalid = crate::DicomMetadata::research_placeholder();
         invalid.imaged_volume_depth_mm = Some(0.0);
         let error = Export::from_slide("missing-source.svs")
             .to_directory("dicom-out")
             .with_metadata(MetadataSource::Strict(Box::new(invalid)))
+            .color_management(ColorManagement::SourceOrSrgb)
             .build_request()
             .unwrap_err();
 

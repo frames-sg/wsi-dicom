@@ -1,4 +1,5 @@
 use super::*;
+use crate::lossy::{LossyCompressionAccumulator, JPEG_BASELINE_METHOD};
 
 pub(super) fn export_jpeg_passthrough_instance(
     slide: &Slide,
@@ -22,18 +23,19 @@ pub(super) fn export_jpeg_passthrough_instance(
         require_pixel_spacing_mm(level_pixel_spacing_mm(slide, level))?,
         coordinate,
     )?;
-    let icc_profile = resolve_icc_profile(
-        slide,
-        request,
-        coordinate.scene_idx,
-        coordinate.series_idx,
-        coordinate.level_idx,
-        level,
-    )?;
-
+    let declared_lossy_compression =
+        super::lossy_provenance::declared_source_lossy_history(&request.source_path)?;
     if let Some(direct_plan) =
         try_plan_direct_jpeg_passthrough_frames(slide, location, level, geometry)?
     {
+        let icc_profile = resolve_icc_profile(
+            slide,
+            request,
+            metadata,
+            coordinate,
+            level,
+            direct_plan.profile,
+        )?;
         let mut metrics = ExportMetrics::default();
         for _ in 0..direct_plan.frame_count {
             metrics.record_passthrough_frame();
@@ -46,20 +48,25 @@ pub(super) fn export_jpeg_passthrough_instance(
             matrix_columns,
             matrix_rows,
         };
+        let lossy_compression = if declared_lossy_compression.is_empty() {
+            LossyCompressionHistory::from_byte_counts(
+                JPEG_BASELINE_METHOD,
+                direct_plan.uncompressed_bytes,
+                direct_plan.compressed_bytes,
+            )?
+        } else {
+            declared_lossy_compression.clone()
+        };
         let object = context.build_dicom_object(InstanceDicomObjectParams {
             metadata,
             study_uid: identity.study_uid(),
+            specimen_uid: identity.specimen_uid(),
             instance_number,
             frame_grid,
             frame_count,
             profile: direct_plan.profile,
             icc_profile: icc_profile.bytes.as_deref(),
-            lossy_compression: Some(LossyCompressionMetadata {
-                method: "ISO_10918_1",
-                ratio: (direct_plan.compressed_bytes > 0).then_some(
-                    direct_plan.uncompressed_bytes as f64 / direct_plan.compressed_bytes as f64,
-                ),
-            }),
+            lossy_compression,
         })?;
         let mut direct_writer = DirectJpegPassthroughFrameWriter::new(
             slide,
@@ -99,7 +106,7 @@ pub(super) fn export_jpeg_passthrough_instance(
         return Ok(context.report(
             request.options.transfer_syntax.uid(),
             frame_count,
-            icc_profile.source,
+            icc_profile.report,
             metrics,
         ));
     }
@@ -113,27 +120,28 @@ pub(super) fn export_jpeg_passthrough_instance(
         request.options.source_device_decode,
     );
     let mut metrics = ExportMetrics::default();
-    let mut compressed_bytes = 0u64;
-    let mut uncompressed_bytes = 0u64;
+    let mut source_lossy_compression = LossyCompressionAccumulator::default();
+    let mut target_lossy_compression = LossyCompressionAccumulator::default();
     let allow_raw_rgb_passthrough = raw_rgb_passthrough_has_no_geometry_fallback(level, geometry);
     let mut blank_jpeg_cache = None;
 
     for row in 0..tiles_down {
         let row_plan = plan_jpeg_baseline_row(
             slide,
-            location,
-            row,
-            tiles_across,
-            matrix_columns,
-            matrix_rows,
-            frame_columns,
-            frame_rows,
-            allow_raw_rgb_passthrough,
-            request.options.jpeg_quality,
+            JpegBaselineRowPlanRequest {
+                location,
+                row,
+                tile_count: tiles_across,
+                grid: FrameRectGrid {
+                    matrix_columns,
+                    matrix_rows,
+                    frame_columns,
+                    frame_rows,
+                },
+                allow_raw_rgb_passthrough,
+                jpeg_quality: request.options.jpeg_quality,
+            },
             &mut blank_jpeg_cache,
-            "JPEG Baseline row frame count exceeds platform addressable memory",
-            "JPEG Baseline tile x offset overflow",
-            "JPEG Baseline tile y offset overflow",
         )?;
         record_jpeg_retile_rejections(&mut metrics, &row_plan.retile_rejections);
         let planned = row_plan.frames;
@@ -151,10 +159,11 @@ pub(super) fn export_jpeg_passthrough_instance(
                         *profile,
                         "JPEG passthrough pixel profile changed across frames",
                     )?;
-                    compressed_bytes = compressed_bytes
-                        .saturating_add(u64::try_from(data.len()).unwrap_or(u64::MAX));
-                    uncompressed_bytes =
-                        uncompressed_bytes.saturating_add(*frame_uncompressed_bytes);
+                    source_lossy_compression.observe_encoded_frame(
+                        JPEG_BASELINE_METHOD,
+                        *frame_uncompressed_bytes,
+                        data,
+                    )?;
                     let byte_started = Instant::now();
                     pixel_spool.push_frame(data)?;
                     metrics.record_write_duration(byte_started.elapsed());
@@ -173,10 +182,11 @@ pub(super) fn export_jpeg_passthrough_instance(
                         *profile,
                         "JPEG retile pixel profile changed across frames",
                     )?;
-                    compressed_bytes = compressed_bytes
-                        .saturating_add(u64::try_from(data.len()).unwrap_or(u64::MAX));
-                    uncompressed_bytes =
-                        uncompressed_bytes.saturating_add(*frame_uncompressed_bytes);
+                    source_lossy_compression.observe_encoded_frame(
+                        JPEG_BASELINE_METHOD,
+                        *frame_uncompressed_bytes,
+                        data,
+                    )?;
                     let byte_started = Instant::now();
                     pixel_spool.push_frame(data)?;
                     metrics.record_write_duration(byte_started.elapsed());
@@ -195,10 +205,11 @@ pub(super) fn export_jpeg_passthrough_instance(
                         *profile,
                         "blank JPEG Baseline pixel profile changed across frames",
                     )?;
-                    compressed_bytes = compressed_bytes
-                        .saturating_add(u64::try_from(data.len()).unwrap_or(u64::MAX));
-                    uncompressed_bytes =
-                        uncompressed_bytes.saturating_add(*frame_uncompressed_bytes);
+                    target_lossy_compression.observe_encoded_frame(
+                        JPEG_BASELINE_METHOD,
+                        *frame_uncompressed_bytes,
+                        data,
+                    )?;
                     let byte_started = Instant::now();
                     pixel_spool.push_frame(data)?;
                     metrics.record_write_duration(byte_started.elapsed());
@@ -209,49 +220,70 @@ pub(super) fn export_jpeg_passthrough_instance(
                     metrics.record_jpeg_cpu_encode(*encode_duration);
                     index += 1;
                 }
-                JpegBaselinePlannedFrame::Fallback(_) => {
+                JpegBaselinePlannedFrame::Fallback { .. } => {
+                    let start_index = index;
                     let (next_index, fallback_frames) = jpeg_baseline_fallback_run(&planned, index);
                     index = next_index;
+                    for source in planned[start_index..next_index].iter().filter_map(|frame| {
+                        let JpegBaselinePlannedFrame::Fallback {
+                            source_lossy_compression,
+                            ..
+                        } = frame
+                        else {
+                            return None;
+                        };
+                        source_lossy_compression.as_ref()
+                    }) {
+                        source_lossy_compression.observe(source)?;
+                    }
 
-                    let mut fallback_batch = prepare_jpeg_baseline_fallback_batch_for_options(
-                        slide,
+                    let mut fallback_batch = prepare_jpeg_baseline_fallback_batch(
+                        JpegBaselineFallbackBatchRequest {
+                            slide,
+                            #[cfg(all(feature = "metal", target_os = "macos"))]
+                            level,
+                            location,
+                            #[cfg(all(feature = "metal", target_os = "macos"))]
+                            row,
+                            frames: &fallback_frames,
+                            encode_backend: request.options.encode_backend,
+                            settings: JpegBaselineCpuEncodeSettings {
+                                frame_columns,
+                                frame_rows,
+                                jpeg_quality: request.options.jpeg_quality,
+                                max_prepared_frame_bytes: request.options.max_prepared_frame_bytes,
+                            },
+                        },
                         #[cfg(all(feature = "metal", target_os = "macos"))]
                         &mut metal_input,
-                        level,
-                        location,
-                        row,
-                        &fallback_frames,
-                        &request.options,
-                        frame_columns,
-                        frame_rows,
                         &mut metrics,
                     )?;
 
                     for (idx, metal_encoded) in
                         fallback_batch.metal_run.frames.iter_mut().enumerate()
                     {
-                        let (
+                        let EncodedJpegBaselineFrame {
                             encoded,
                             profile,
                             input_decode_duration,
                             compose_duration,
                             encode_duration,
-                        ) = take_consistent_jpeg_baseline_fallback_frame(
+                        } = take_consistent_jpeg_baseline_fallback_frame(
                             metal_encoded,
                             &mut fallback_batch.cpu_batch_results[idx],
                             request.options.encode_backend,
                             &mut pixel_profile,
                             "JPEG Baseline pixel profile changed across frames",
                         )?;
-                        compressed_bytes = compressed_bytes
-                            .saturating_add(u64::try_from(encoded.data.len()).unwrap_or(u64::MAX));
-                        uncompressed_bytes = uncompressed_bytes.saturating_add(
+                        target_lossy_compression.observe_encoded_frame(
+                            JPEG_BASELINE_METHOD,
                             jpeg_baseline_fallback_uncompressed_bytes(
                                 frame_columns,
                                 frame_rows,
                                 profile,
                             )?,
-                        );
+                            &encoded.data,
+                        )?;
                         let byte_started = Instant::now();
                         pixel_spool.push_frame(&encoded.data)?;
                         metrics.record_write_duration(byte_started.elapsed());
@@ -281,25 +313,30 @@ pub(super) fn export_jpeg_passthrough_instance(
     let profile = pixel_profile.ok_or_else(|| Error::Unsupported {
         reason: "slide level produced no frames".into(),
     })?;
+    let icc_profile = resolve_icc_profile(slide, request, metadata, coordinate, level, profile)?;
     let frame_grid = FrameGrid {
         frame_columns,
         frame_rows,
         matrix_columns,
         matrix_rows,
     };
+    let observed_lossy_compression = source_lossy_compression.into_history()?;
+    let mut lossy_compression = if declared_lossy_compression.is_empty() {
+        observed_lossy_compression
+    } else {
+        declared_lossy_compression
+    };
+    lossy_compression.append(target_lossy_compression.into_history()?);
     let object = context.build_dicom_object(InstanceDicomObjectParams {
         metadata,
         study_uid: identity.study_uid(),
+        specimen_uid: identity.specimen_uid(),
         instance_number,
         frame_grid,
         frame_count,
         profile,
         icc_profile: icc_profile.bytes.as_deref(),
-        lossy_compression: Some(LossyCompressionMetadata {
-            method: "ISO_10918_1",
-            ratio: (compressed_bytes > 0)
-                .then_some(uncompressed_bytes as f64 / compressed_bytes as f64),
-        }),
+        lossy_compression,
     })?;
     let per_frame_plan = context.per_frame_plan(frame_count, frame_grid)?;
     let write_started = Instant::now();
@@ -320,7 +357,7 @@ pub(super) fn export_jpeg_passthrough_instance(
     Ok(context.report(
         request.options.transfer_syntax.uid(),
         frame_count,
-        icc_profile.source,
+        icc_profile.report,
         metrics,
     ))
 }

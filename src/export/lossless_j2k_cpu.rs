@@ -11,7 +11,8 @@ use crate::tile::{prepare_tile_samples_with_limit, PixelProfile};
 
 use super::{
     frame_region::{OutputFrameRect, PreparedCpuRegion},
-    read_and_prepare_region, JpegBaselineFrameLocation, LosslessJ2kPlannedFrame,
+    read_and_prepare_region, CpuRegionReadRequest, JpegBaselineFrameLocation,
+    LosslessJ2kPlannedFrame,
 };
 
 const CPU_INPUT_BATCH_PARALLEL_MEMORY_BYTES: u64 = 128 * 1024 * 1024;
@@ -265,14 +266,13 @@ pub(super) fn prepare_cpu_input_lossless_j2k_tile(
 ) -> Result<PreparedCpuRegion, Error> {
     read_and_prepare_region(
         slide,
-        location,
-        frame.x,
-        frame.y,
-        frame.width,
-        frame.height,
-        tile_size,
-        tile_size,
-        max_prepared_frame_bytes,
+        CpuRegionReadRequest {
+            location,
+            frame,
+            output_width: tile_size,
+            output_height: tile_size,
+            max_prepared_frame_bytes,
+        },
     )
 }
 

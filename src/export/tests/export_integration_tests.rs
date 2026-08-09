@@ -6,6 +6,7 @@ fn dicom_export_request_accepts_explicit_research_placeholder_metadata() {
         PathBuf::from("source.svs"),
         PathBuf::from("out"),
         ExportOptions::default(),
+        ColorManagement::SourceOrSrgb,
         MetadataSource::ResearchPlaceholder,
     )
     .unwrap();
@@ -43,7 +44,10 @@ fn fhir_bundle_maps_patient_specimen_service_request_and_report() {
                 "resource": {
                     "resourceType": "Specimen",
                     "id": "spec-1",
-                    "identifier": [{"value": "S-42"}],
+                    "identifier": [{
+                        "system": "https://hospital.example/specimens",
+                        "value": "S-42"
+                    }],
                     "type": {"text": "colon biopsy"}
                 }
             },
@@ -73,6 +77,15 @@ fn fhir_bundle_maps_patient_specimen_service_request_and_report() {
     assert_eq!(metadata.patient_id.as_deref(), Some("MRN123"));
     assert_eq!(metadata.patient_name.as_deref(), Some("Doe^Jane Q"));
     assert_eq!(metadata.specimen_identifier.as_deref(), Some("S-42"));
+    let issuer = metadata.specimen_identifier_issuer.as_ref().unwrap();
+    assert_eq!(
+        issuer.universal_entity_id.as_deref(),
+        Some("https://hospital.example/specimens")
+    );
+    assert_eq!(
+        issuer.universal_entity_id_type,
+        Some(crate::UniversalEntityIdType::Uri)
+    );
     assert_eq!(metadata.accession_number.as_deref(), Some("ORDER-7"));
     assert_eq!(
         metadata.study_description.as_deref(),
@@ -96,6 +109,7 @@ fn export_dicom_writes_jpeg2000_lossless_vl_wsi_instances() {
             encode_backend: EncodeBackendPreference::PreferDevice,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -132,6 +146,19 @@ fn export_dicom_writes_jpeg2000_lossless_vl_wsi_instances() {
         object.meta().transfer_syntax,
         TransferSyntax::Jpeg2000Lossless.uid()
     );
+    assert_eq!(
+        object
+            .element(tags::LOSSY_IMAGE_COMPRESSION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "00"
+    );
+    assert!(object
+        .element(tags::LOSSY_IMAGE_COMPRESSION_METHOD)
+        .is_err());
+    assert!(object.element(tags::LOSSY_IMAGE_COMPRESSION_RATIO).is_err());
     assert_eq!(
         object
             .element(tags::SOP_CLASS_UID)
@@ -220,6 +247,157 @@ fn export_dicom_writes_jpeg2000_lossless_vl_wsi_instances() {
 }
 
 #[test]
+fn grayscale_export_writes_the_monochrome2_conformance_attributes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("grayscale-source.tif");
+    let jpeg = encode_test_gray_jpeg(8, 8, 128);
+    write_tiled_grayscale_jpeg_tiff(&source, 8, 8, 8, 8, &[jpeg]);
+    let registry_path = tmp.path().join("empty-registry.json");
+    std::fs::write(&registry_path, br#"{"schema_version":1,"calibrations":[]}"#).unwrap();
+    let registry = crate::IccCalibrationRegistry::from_file(&registry_path).unwrap();
+
+    let report = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 8,
+            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::Calibration {
+            registry,
+            conflict: crate::IccConflictPolicy::Fail,
+        },
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: None,
+    })
+    .unwrap();
+
+    assert_eq!(
+        report.instances[0].icc_profile_source,
+        IccProfileSource::NotApplicableMonochrome
+    );
+    assert_eq!(
+        report.instances[0].icc_conflict_decision,
+        crate::IccConflictDecision::NotApplicableMonochrome
+    );
+    assert!(report.instances[0].icc_profile_sha256.is_none());
+    assert!(report.instances[0].icc_calibration_id.is_none());
+    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+    assert_eq!(
+        object
+            .element(tags::PHOTOMETRIC_INTERPRETATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "MONOCHROME2"
+    );
+    assert_eq!(
+        object
+            .element(tags::PRESENTATION_LUT_SHAPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "IDENTITY"
+    );
+    assert_eq!(
+        object
+            .element(tags::RESCALE_INTERCEPT)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "0"
+    );
+    assert_eq!(
+        object
+            .element(tags::RESCALE_SLOPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "1"
+    );
+    let optical_path = object
+        .element(tags::OPTICAL_PATH_SEQUENCE)
+        .unwrap()
+        .items()
+        .unwrap();
+    assert!(optical_path[0].element(tags::ICC_PROFILE).is_err());
+}
+
+#[test]
+fn lossless_export_preserves_declared_source_lossy_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let raw_source = tmp.path().join("raw-source.dcm");
+    let source = tmp.path().join("lossy-history-source.dcm");
+    write_source_dicom(&raw_source);
+    let mut source_object = dicom_object::open_file(&raw_source).unwrap();
+    source_object.put(dicom_core::DataElement::new(
+        tags::LOSSY_IMAGE_COMPRESSION,
+        VR::CS,
+        "01",
+    ));
+    source_object.put(dicom_core::DataElement::new(
+        tags::LOSSY_IMAGE_COMPRESSION_METHOD,
+        VR::CS,
+        "ISO_10918_1\\ISO_15444_1",
+    ));
+    source_object.put(dicom_core::DataElement::new(
+        tags::LOSSY_IMAGE_COMPRESSION_RATIO,
+        VR::DS,
+        "8.5\\3.25",
+    ));
+    source_object.write_to_file(&source).unwrap();
+
+    let report = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 2,
+            transfer_syntax: TransferSyntax::Jpeg2000Lossless,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: None,
+    })
+    .unwrap();
+
+    let output = dicom_object::open_file(&report.instances[0].path).unwrap();
+    assert_eq!(
+        output
+            .element(tags::LOSSY_IMAGE_COMPRESSION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "01"
+    );
+    assert_eq!(
+        output
+            .element(tags::LOSSY_IMAGE_COMPRESSION_METHOD)
+            .unwrap()
+            .to_multi_str()
+            .unwrap()
+            .as_ref(),
+        ["ISO_10918_1", "ISO_15444_1"]
+    );
+    assert_eq!(
+        output
+            .element(tags::LOSSY_IMAGE_COMPRESSION_RATIO)
+            .unwrap()
+            .to_multi_float64()
+            .unwrap(),
+        vec![8.5, 3.25]
+    );
+}
+
+#[test]
 fn unicode_metadata_and_corrected_depth_round_trip_through_a_dicom_file() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source.dcm");
@@ -238,6 +416,7 @@ fn unicode_metadata_and_corrected_depth_round_trip_through_a_dicom_file() {
             encode_backend: EncodeBackendPreference::CpuOnly,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::Strict(Box::new(metadata)),
         level_filter: None,
     })
@@ -316,6 +495,7 @@ fn export_metadata_budget_preflight_accepts_exact_and_rejects_one_byte_less() {
             transfer_syntax: TransferSyntax::Jpeg2000Lossless,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     };
@@ -383,6 +563,7 @@ fn export_dicom_refuses_existing_output_unless_overwrite_is_enabled() {
             encode_backend: EncodeBackendPreference::CpuOnly,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     };
@@ -443,6 +624,7 @@ fn external_dicom_validators_accept_jpeg_baseline_passthrough_when_available() {
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -488,6 +670,7 @@ fn external_dicom_validators_accept_htj2k_rpcl_when_available() {
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -514,6 +697,7 @@ fn export_dicom_writes_htj2k_lossless_vl_wsi_instances() {
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -575,6 +759,7 @@ fn export_dicom_tags_sibling_levels_as_one_pyramid_series() {
             encode_backend: EncodeBackendPreference::CpuOnly,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -614,6 +799,27 @@ fn export_dicom_tags_sibling_levels_as_one_pyramid_series() {
             .to_str()
             .unwrap(),
         frame_of_reference_uid
+    );
+    let level0_specimen_uid = level0
+        .element(tags::SPECIMEN_DESCRIPTION_SEQUENCE)
+        .unwrap()
+        .items()
+        .unwrap()[0]
+        .element(tags::SPECIMEN_UID)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(
+        level1
+            .element(tags::SPECIMEN_DESCRIPTION_SEQUENCE)
+            .unwrap()
+            .items()
+            .unwrap()[0]
+            .element(tags::SPECIMEN_UID)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        level0_specimen_uid
     );
     assert_eq!(
         level0
@@ -675,6 +881,7 @@ fn export_dicom_can_limit_to_single_pyramid_level() {
             encode_backend: EncodeBackendPreference::CpuOnly,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: Some(1),
     })
@@ -721,6 +928,7 @@ fn export_dicom_jpeg_baseline_reencodes_non_passthrough_source() {
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -802,6 +1010,7 @@ fn external_djpeg_decodes_jpeg_baseline_fallback_when_available() {
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })

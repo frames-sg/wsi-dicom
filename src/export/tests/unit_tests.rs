@@ -75,6 +75,7 @@ fn multi_scene_multi_series_jobs_export_unique_instances() {
             encode_backend: EncodeBackendPreference::CpuOnly,
             ..ExportOptions::default()
         },
+        ColorManagement::SourceOrSrgb,
         MetadataSource::ResearchPlaceholder,
     )
     .unwrap();
@@ -119,6 +120,7 @@ fn preflight_accepts_same_axes_from_different_scenes_and_series() {
         source,
         tmp.path().join("out"),
         ExportOptions::default(),
+        ColorManagement::SourceOrSrgb,
         MetadataSource::ResearchPlaceholder,
     )
     .unwrap();
@@ -176,14 +178,13 @@ fn read_and_prepare_region_pads_cpu_region_to_requested_output_geometry() {
 
     let prepared = read_and_prepare_region(
         &slide,
-        JpegBaselineFrameLocation::first_series_level(0),
-        0,
-        0,
-        2,
-        2,
-        3,
-        3,
-        u64::MAX,
+        CpuRegionReadRequest {
+            location: JpegBaselineFrameLocation::first_series_level(0),
+            frame: OutputFrameRect::new(0, 0, 2, 2),
+            output_width: 3,
+            output_height: 3,
+            max_prepared_frame_bytes: u64::MAX,
+        },
     )
     .unwrap();
 
@@ -400,16 +401,16 @@ fn lossless_j2k_cpu_fallback_indices_skip_ineligible_and_already_encoded_frames(
 }
 
 #[test]
-fn generated_jpeg_direct_htj2k_indices_centralize_candidate_selection() {
-    let mut planned = vec![test_lossless_j2k_planned_frame(0)];
-    planned[0].source_jpeg_direct_rejected = true;
+fn lossy_htj2k_rejection_does_not_advertise_an_intermediate_jpeg_fallback() {
+    let error = unsupported_j2k_route_error(TransferSyntax::Htj2k, 3, 7);
+    let Error::Unsupported { reason } = error else {
+        panic!("lossy HTJ2K route rejection should be unsupported");
+    };
 
-    assert!(generated_jpeg_direct_htj2k_indices(
-        &planned,
-        TransferSyntax::Htj2kLosslessRpcl,
-        |_| false,
-    )
-    .is_empty());
+    assert_eq!(
+        reason,
+        "HTJ2K 9/7 export requires direct source JPEG-to-HTJ2K transcoding; frame row=3 col=7 was not eligible"
+    );
 }
 
 #[test]
@@ -424,15 +425,24 @@ fn missing_metal_frame_indices_selects_only_unencoded_slots() {
 #[test]
 fn jpeg_baseline_fallback_run_collects_contiguous_fallback_frames() {
     let planned = vec![
-        JpegBaselinePlannedFrame::Fallback(test_jpeg_baseline_fallback_frame(0)),
-        JpegBaselinePlannedFrame::Fallback(test_jpeg_baseline_fallback_frame(1)),
+        JpegBaselinePlannedFrame::Fallback {
+            frame: test_jpeg_baseline_fallback_frame(0),
+            source_lossy_compression: None,
+        },
+        JpegBaselinePlannedFrame::Fallback {
+            frame: test_jpeg_baseline_fallback_frame(1),
+            source_lossy_compression: None,
+        },
         JpegBaselinePlannedFrame::Blank {
             data: vec![255],
             profile: test_rgb8_pixel_profile(),
             uncompressed_bytes: 1,
             encode_duration: Duration::ZERO,
         },
-        JpegBaselinePlannedFrame::Fallback(test_jpeg_baseline_fallback_frame(2)),
+        JpegBaselinePlannedFrame::Fallback {
+            frame: test_jpeg_baseline_fallback_frame(2),
+            source_lossy_compression: None,
+        },
     ];
 
     let (next_index, fallback_frames) = jpeg_baseline_fallback_run(&planned, 0);
@@ -458,9 +468,17 @@ fn jpeg_baseline_fallback_run_collects_contiguous_fallback_frames() {
 
 #[test]
 fn jpeg_baseline_fallback_frame_clips_edge_frames() {
-    let frame =
-        jpeg_baseline_fallback_frame(2, 1, 10, 7, 4, 4, "test x overflow", "test y overflow")
-            .expect("edge frame should fit inside matrix");
+    let frame = jpeg_baseline_fallback_frame(
+        2,
+        1,
+        FrameRectGrid {
+            matrix_columns: 10,
+            matrix_rows: 7,
+            frame_columns: 4,
+            frame_rows: 4,
+        },
+    )
+    .expect("edge frame should fit inside matrix");
 
     assert_eq!((frame.x, frame.y, frame.width, frame.height), (8, 4, 2, 3));
 }

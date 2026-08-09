@@ -26,12 +26,7 @@ struct EncodedMetalTileEntries {
 #[derive(Clone, Copy)]
 pub(super) struct MetalTileGridRunRequest<'a> {
     pub(super) level: &'a wsi_rs::Level,
-    pub(super) scene_idx: usize,
-    pub(super) series_idx: usize,
-    pub(super) level_idx: u32,
-    pub(super) z: u32,
-    pub(super) c: u32,
-    pub(super) t: u32,
+    pub(super) location: JpegBaselineFrameLocation,
     pub(super) row: u64,
     pub(super) start_col: u64,
     pub(super) tile_count: usize,
@@ -39,6 +34,18 @@ pub(super) struct MetalTileGridRunRequest<'a> {
     pub(super) matrix_rows: u64,
     pub(super) tile_size: u32,
     pub(super) first_row_key: MetalEncodedRowRunKey,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[derive(Debug, Clone, Copy)]
+pub(super) struct MetalTileGridBatchRequest {
+    pub(super) location: JpegBaselineFrameLocation,
+    pub(super) start_row: u64,
+    pub(super) tiles_across: usize,
+    pub(super) row_count: usize,
+    pub(super) matrix_columns: u64,
+    pub(super) matrix_rows: u64,
+    pub(super) tile_size: u32,
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -66,13 +73,14 @@ impl MetalTileGridRunRequest<'_> {
     ) -> WholeLevelStripGridRunRequest {
         WholeLevelStripGridRunRequest {
             strip_layout,
-            scene_idx: self.scene_idx,
-            series_idx: self.series_idx,
-            level_idx: self.level_idx,
-            z: self.z,
-            c: self.c,
-            t: self.t,
-            start_row: self.row,
+            batch: self.batch_request(self.row, row_count),
+        }
+    }
+
+    fn batch_request(self, start_row: u64, row_count: usize) -> MetalTileGridBatchRequest {
+        MetalTileGridBatchRequest {
+            location: self.location,
+            start_row,
             tiles_across: self.tile_count,
             row_count,
             matrix_columns: self.matrix_columns,
@@ -103,18 +111,7 @@ pub(super) fn try_encode_metal_input_tile_grid_run(
             slide,
             metal_input,
             j2k_encoder,
-            request.scene_idx,
-            request.series_idx,
-            request.level_idx,
-            request.z,
-            request.c,
-            request.t,
-            request.row,
-            request.tile_count,
-            row_count,
-            request.matrix_columns,
-            request.matrix_rows,
-            request.tile_size,
+            request.batch_request(request.row, row_count),
         )?
     } else if let Some(source_layout) = regular_tiled_source_layout(request.level) {
         try_encode_metal_whole_level_strip_grid_run(
@@ -183,12 +180,12 @@ pub(super) fn try_encode_metal_input_tile_grid_pipeline_run(
             break;
         }
         let submit_key = MetalEncodedRowRunKey {
-            scene: request.scene_idx,
-            series: request.series_idx,
-            level: request.level_idx,
-            z: request.z,
-            c: request.c,
-            t: request.t,
+            scene: request.location.scene_idx,
+            series: request.location.series_idx,
+            level: request.location.level_idx,
+            z: request.location.z,
+            c: request.location.c,
+            t: request.location.t,
             row: submit_row,
             start_col: request.start_col,
             tile_count: request.tile_count,
@@ -210,18 +207,7 @@ pub(super) fn try_encode_metal_input_tile_grid_pipeline_run(
             metal_input,
             j2k_encoder,
             request.level,
-            request.scene_idx,
-            request.series_idx,
-            request.level_idx,
-            request.z,
-            request.c,
-            request.t,
-            submit_row,
-            request.tile_count,
-            row_count,
-            request.matrix_columns,
-            request.matrix_rows,
-            request.tile_size,
+            request.batch_request(submit_row, row_count),
         )?
         else {
             break;
@@ -390,59 +376,20 @@ fn cache_split_metal_grid_run(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
 fn try_submit_metal_input_tile_grid_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
     j2k_encoder: &mut DicomJ2kEncoder,
     level: &wsi_rs::Level,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-    start_row: u64,
-    tiles_across: usize,
-    row_count: usize,
-    matrix_columns: u64,
-    matrix_rows: u64,
-    tile_size: u32,
+    request: MetalTileGridBatchRequest,
 ) -> Result<Option<PendingMetalEncodedTileRun>, Error> {
-    if output_tile_maps_to_wsi_rs_tile(level, tile_size) {
-        return try_submit_metal_aligned_tile_grid_run(
-            slide,
-            metal_input,
-            j2k_encoder,
-            scene_idx,
-            series_idx,
-            level_idx,
-            z,
-            c,
-            t,
-            start_row,
-            tiles_across,
-            row_count,
-            matrix_columns,
-            matrix_rows,
-            tile_size,
-        )
-        .map(Some);
+    if output_tile_maps_to_wsi_rs_tile(level, request.tile_size) {
+        return try_submit_metal_aligned_tile_grid_run(slide, metal_input, j2k_encoder, request)
+            .map(Some);
     }
     let whole_level_request = |strip_layout| WholeLevelStripGridRunRequest {
         strip_layout,
-        scene_idx,
-        series_idx,
-        level_idx,
-        z,
-        c,
-        t,
-        start_row,
-        tiles_across,
-        row_count,
-        matrix_columns,
-        matrix_rows,
-        tile_size,
+        batch: request,
     };
     if let Some(source_layout) = regular_tiled_source_layout(level) {
         return try_submit_metal_whole_level_strip_grid_run(

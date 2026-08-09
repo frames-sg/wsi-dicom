@@ -47,6 +47,7 @@ jobs:
           printf '%s\n' "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
       - run: actionlint
       - run: python -m unittest discover -s tests -p 'test_publish_workflow.py'
+      - run: python -m unittest discover -s tests -p 'test_release_evidence.py'
       - run: python -m unittest discover -s tests -p 'test_dependency_topology.py'
 
   fmt:
@@ -196,6 +197,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: wsi-dicom
+          fetch-depth: 0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9

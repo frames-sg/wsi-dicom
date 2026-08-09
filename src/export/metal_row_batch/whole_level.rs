@@ -11,18 +11,17 @@ pub(in crate::export) struct WholeLevelStripLayout {
 #[derive(Debug, Clone, Copy)]
 pub(in crate::export) struct WholeLevelStripGridRunRequest {
     pub(in crate::export) strip_layout: WholeLevelStripLayout,
-    pub(in crate::export) scene_idx: usize,
-    pub(in crate::export) series_idx: usize,
-    pub(in crate::export) level_idx: u32,
-    pub(in crate::export) z: u32,
-    pub(in crate::export) c: u32,
-    pub(in crate::export) t: u32,
-    pub(in crate::export) start_row: u64,
-    pub(in crate::export) tiles_across: usize,
-    pub(in crate::export) row_count: usize,
-    pub(in crate::export) matrix_columns: u64,
-    pub(in crate::export) matrix_rows: u64,
-    pub(in crate::export) tile_size: u32,
+    pub(in crate::export) batch: MetalTileGridBatchRequest,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[derive(Clone, Copy)]
+struct WholeLevelSourceWindowRequest {
+    location: JpegBaselineFrameLocation,
+    first_source_col: u64,
+    first_source_row: u64,
+    source_col_count: u64,
+    source_row_count: u64,
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -104,19 +103,16 @@ const WHOLE_LEVEL_GRID_SOURCE_READ_MESSAGES: WholeLevelSourceReadMessages =
     };
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
 fn whole_level_source_window(
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-    first_source_col: u64,
-    first_source_row: u64,
-    source_col_count: u64,
-    source_row_count: u64,
+    request: WholeLevelSourceWindowRequest,
 ) -> Result<WholeLevelSourceWindow, Error> {
+    let WholeLevelSourceWindowRequest {
+        location,
+        first_source_col,
+        first_source_row,
+        source_col_count,
+        source_row_count,
+    } = request;
     let first_col = i64::try_from(first_source_col).map_err(|_| Error::Unsupported {
         reason: "source tile column exceeds i64".into(),
     })?;
@@ -161,12 +157,12 @@ fn whole_level_source_window(
                     reason: "source tile column overflow".into(),
                 })?;
             keys.push(MetalSourceTileKey {
-                scene: scene_idx,
-                series: series_idx,
-                level: level_idx,
-                z,
-                c,
-                t,
+                scene: location.scene_idx,
+                series: location.series_idx,
+                level: location.level_idx,
+                z: location.z,
+                c: location.c,
+                t: location.t,
                 col: source_col,
                 row: source_row,
             });
@@ -309,16 +305,19 @@ fn read_whole_level_source_tiles(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
 fn whole_level_grid_compose_requests(
-    start_row: u64,
-    tiles_across: usize,
-    row_count: usize,
+    request: MetalTileGridBatchRequest,
     tile_count: usize,
-    matrix_columns: u64,
-    matrix_rows: u64,
-    tile_size: u32,
 ) -> Result<Vec<MetalComposeTileRequest>, Error> {
+    let MetalTileGridBatchRequest {
+        start_row,
+        tiles_across,
+        row_count,
+        matrix_columns,
+        matrix_rows,
+        tile_size,
+        ..
+    } = request;
     let tile_size_u64 = u64::from(tile_size);
     let mut compose_requests = Vec::new();
     compose_requests
@@ -370,25 +369,23 @@ fn whole_level_grid_compose_requests(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
 pub(in crate::export) fn try_encode_metal_whole_level_strip_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
     j2k_encoder: &mut DicomJ2kEncoder,
+    request: MetalInputTileRunRequest<'_>,
     strip_layout: WholeLevelStripLayout,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-    row: u64,
-    start_col: u64,
-    tile_count: usize,
-    matrix_columns: u64,
-    matrix_rows: u64,
-    tile_size: u32,
 ) -> Result<MetalEncodedTileRun, Error> {
+    let MetalInputTileRunRequest {
+        location,
+        row,
+        start_col,
+        tile_count,
+        matrix_columns,
+        matrix_rows,
+        tile_size,
+        ..
+    } = request;
     let preference = metal_input.preference;
     let tile_size_u64 = u64::from(tile_size);
     let x_start = start_col
@@ -431,18 +428,13 @@ pub(in crate::export) fn try_encode_metal_whole_level_strip_run(
         })?
         .div_ceil(source_tile_height)
         .saturating_sub(first_source_row);
-    let source_window = whole_level_source_window(
-        scene_idx,
-        series_idx,
-        level_idx,
-        z,
-        c,
-        t,
+    let source_window = whole_level_source_window(WholeLevelSourceWindowRequest {
+        location,
         first_source_col,
         first_source_row,
         source_col_count,
         source_row_count,
-    )?;
+    })?;
     if source_window.keys.is_empty() {
         if preference == EncodeBackendPreference::RequireDevice {
             return Err(Error::Unsupported {
@@ -550,7 +542,6 @@ pub(in crate::export) fn try_encode_metal_whole_level_strip_run(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
 fn prepare_metal_whole_level_strip_grid_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
@@ -559,19 +550,17 @@ fn prepare_metal_whole_level_strip_grid_run(
 ) -> Result<WholeLevelGridPreparedRun, Error> {
     let WholeLevelStripGridRunRequest {
         strip_layout,
-        scene_idx,
-        series_idx,
-        level_idx,
-        z,
-        c,
-        t,
+        batch,
+    } = request;
+    let MetalTileGridBatchRequest {
+        location,
         start_row,
         tiles_across,
         row_count,
         matrix_columns,
         matrix_rows,
         tile_size,
-    } = request;
+    } = batch;
     let tile_count = tiles_across
         .checked_mul(row_count)
         .ok_or_else(|| Error::Unsupported {
@@ -624,18 +613,13 @@ fn prepare_metal_whole_level_strip_grid_run(
         })?
         .div_ceil(source_tile_height)
         .saturating_sub(first_source_row);
-    let source_window = whole_level_source_window(
-        scene_idx,
-        series_idx,
-        level_idx,
-        z,
-        c,
-        t,
+    let source_window = whole_level_source_window(WholeLevelSourceWindowRequest {
+        location,
         first_source_col,
         first_source_row,
         source_col_count,
         source_row_count,
-    )?;
+    })?;
     if source_window.tile_count == 0 {
         if preference == EncodeBackendPreference::RequireDevice {
             return Err(Error::Unsupported {
@@ -674,15 +658,7 @@ fn prepare_metal_whole_level_strip_grid_run(
         source_window.col_count,
     )?;
     let profile = pixel_profile_from_device_format(packed.format)?;
-    let compose_requests = whole_level_grid_compose_requests(
-        start_row,
-        tiles_across,
-        row_count,
-        tile_count,
-        matrix_columns,
-        matrix_rows,
-        tile_size,
-    )?;
+    let compose_requests = whole_level_grid_compose_requests(batch, tile_count)?;
     let composed_tiles = composer.compose_tiles(&packed, &compose_requests)?;
     let compose_duration = compose_started.elapsed();
 
@@ -699,7 +675,6 @@ fn prepare_metal_whole_level_strip_grid_run(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
 pub(super) fn try_encode_metal_whole_level_strip_grid_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
@@ -707,7 +682,7 @@ pub(super) fn try_encode_metal_whole_level_strip_grid_run(
     request: WholeLevelStripGridRunRequest,
 ) -> Result<MetalEncodedTileRun, Error> {
     let preference = metal_input.preference;
-    let tile_size = request.tile_size;
+    let tile_size = request.batch.tile_size;
     let prepared =
         prepare_metal_whole_level_strip_grid_run(slide, metal_input, preference, request)?;
     let composed = match prepared.into_composed() {
@@ -754,7 +729,6 @@ pub(super) fn try_encode_metal_whole_level_strip_grid_run(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
 pub(super) fn try_submit_metal_whole_level_strip_grid_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
@@ -762,7 +736,7 @@ pub(super) fn try_submit_metal_whole_level_strip_grid_run(
     request: WholeLevelStripGridRunRequest,
 ) -> Result<PendingMetalEncodedTileRun, Error> {
     let preference = metal_input.preference;
-    let tile_size = request.tile_size;
+    let tile_size = request.batch.tile_size;
     let prepared =
         prepare_metal_whole_level_strip_grid_run(slide, metal_input, preference, request)?;
     let composed = match prepared.into_composed() {
