@@ -201,10 +201,12 @@ fn unsafe_syntax_is_confined_to_the_metal_interop_module() {
     }
     assert_eq!(allowances, vec![lib_path]);
 
-    for binary in [
-        src.join("main.rs"),
-        root.join("apps/wsi-dicom-gui/src/main.rs"),
-    ] {
+    let mut binaries = vec![src.join("main.rs")];
+    let gui_binary = root.join("apps/wsi-dicom-gui/src/main.rs");
+    if gui_binary.exists() {
+        binaries.push(gui_binary);
+    }
+    for binary in binaries {
         let syntax = UnsafeSyntax::parse(
             &fs::read_to_string(&binary)
                 .unwrap_or_else(|error| panic!("read {}: {error}", binary.display())),

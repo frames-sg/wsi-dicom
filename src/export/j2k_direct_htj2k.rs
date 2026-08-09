@@ -223,6 +223,7 @@ mod tests {
                 source_device_decode: true,
                 ..ExportOptions::default()
             },
+            color_management: crate::ColorManagement::SourceOrSrgb,
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
         })

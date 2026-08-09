@@ -1,4 +1,4 @@
-use super::DicomMetadata;
+use super::{DicomMetadata, SpecimenIdentifierIssuer, UniversalEntityIdType};
 use crate::Error;
 
 pub(super) fn is_supported_json(value: &serde_json::Value) -> bool {
@@ -192,9 +192,22 @@ fn map_fhir_patient(resource: &serde_json::Value, metadata: &mut DicomMetadata) 
 }
 
 fn map_fhir_specimen(resource: &serde_json::Value, metadata: &mut DicomMetadata) {
-    metadata.specimen_identifier = json_string(resource, "/accessionIdentifier/value")
-        .or_else(|| first_identifier(resource))
-        .or_else(|| json_string(resource, "/id"));
+    let identifier = if let Some(value) = json_string(resource, "/accessionIdentifier/value") {
+        Some((value, json_string(resource, "/accessionIdentifier/system")))
+    } else if let Some(identifier) = first_identifier_with_system(resource) {
+        Some(identifier)
+    } else {
+        json_string(resource, "/id").map(|value| (value, None))
+    };
+    metadata.specimen_identifier = identifier.as_ref().map(|(value, _)| value.clone());
+    metadata.specimen_identifier_issuer =
+        identifier
+            .and_then(|(_, system)| system)
+            .map(|universal_entity_id| SpecimenIdentifierIssuer {
+                local_namespace_entity_id: None,
+                universal_entity_id: Some(universal_entity_id),
+                universal_entity_id_type: Some(UniversalEntityIdType::Uri),
+            });
     if metadata.container_identifier.is_none() {
         metadata.container_identifier = metadata.specimen_identifier.clone();
     }
@@ -218,11 +231,15 @@ fn map_fhir_diagnostic_report(resource: &serde_json::Value, metadata: &mut Dicom
 }
 
 fn first_identifier(resource: &serde_json::Value) -> Option<String> {
+    first_identifier_with_system(resource).map(|(value, _)| value)
+}
+
+fn first_identifier_with_system(resource: &serde_json::Value) -> Option<(String, Option<String>)> {
     resource
         .get("identifier")
         .and_then(serde_json::Value::as_array)
         .and_then(|ids| ids.first())
-        .and_then(|id| json_string(id, "/value"))
+        .and_then(|id| json_string(id, "/value").map(|value| (value, json_string(id, "/system"))))
 }
 
 fn fhir_human_name_to_pn(name: &serde_json::Value) -> Option<String> {

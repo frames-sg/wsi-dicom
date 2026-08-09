@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::{
-    CodecValidation, EncodeBackendPreference, Error, ExportOptions, MetadataSource, TransferSyntax,
+    CodecValidation, ColorManagement, EncodeBackendPreference, Error, ExportOptions,
+    MetadataSource, TransferSyntax,
 };
 
 /// A validated request to export one vendor WSI into one DICOM output directory.
@@ -15,8 +16,10 @@ pub struct ExportRequest {
     pub source_path: PathBuf,
     /// Directory where generated DICOM instances are written.
     pub output_dir: PathBuf,
-    /// Export routing, encoding, ICC, and backend options.
+    /// Export routing, encoding, and backend options.
     pub options: ExportOptions,
+    /// Required, explicit color-management behavior for color output.
+    pub color_management: ColorManagement,
     /// Metadata policy used to populate required DICOM identifying fields.
     pub metadata: MetadataSource,
     /// Optional single source pyramid level to export.
@@ -29,6 +32,7 @@ impl ExportRequest {
         source_path: PathBuf,
         output_dir: PathBuf,
         options: ExportOptions,
+        color_management: ColorManagement,
         metadata: MetadataSource,
     ) -> Result<Self, Error> {
         options.validate()?;
@@ -36,6 +40,7 @@ impl ExportRequest {
             source_path,
             output_dir,
             options,
+            color_management,
             metadata,
             level_filter: None,
         })
@@ -282,11 +287,13 @@ mod tests {
             source.clone(),
             output.clone(),
             options.clone(),
+            ColorManagement::SourceOrSrgb,
             MetadataSource::ResearchPlaceholder,
         )
         .unwrap();
         assert_eq!(export.source_path, source);
         assert_eq!(export.output_dir, output);
+        assert_eq!(export.color_management, ColorManagement::SourceOrSrgb);
         assert_eq!(export.metadata, MetadataSource::ResearchPlaceholder);
         assert_eq!(export.level_filter, None);
         export.validate().unwrap();
@@ -298,6 +305,7 @@ mod tests {
                 tile_size: 0,
                 ..ExportOptions::default()
             },
+            ColorManagement::SourceOrSrgb,
             MetadataSource::ResearchPlaceholder,
         )
         .expect_err("zero tile size should be rejected");

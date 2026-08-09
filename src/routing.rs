@@ -152,7 +152,7 @@ pub(crate) fn unsupported_j2k_route_error(
 ) -> Error {
     let reason = if transfer_syntax == TransferSyntax::Htj2k {
         format!(
-            "HTJ2K 9/7 export requires direct JPEG-to-HTJ2K or generated JPEG-direct transcode; frame row={row} col={col} was not eligible"
+            "HTJ2K 9/7 export requires direct source JPEG-to-HTJ2K transcoding; frame row={row} col={col} was not eligible"
         )
     } else {
         format!(

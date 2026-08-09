@@ -8,25 +8,6 @@ struct MetalAlignedGridRead {
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-fn aligned_tile_location(
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-) -> JpegBaselineFrameLocation {
-    JpegBaselineFrameLocation {
-        scene_idx,
-        series_idx,
-        level_idx,
-        z,
-        c,
-        t,
-    }
-}
-
-#[cfg(all(feature = "metal", target_os = "macos"))]
 fn aligned_tile_row_requests(
     location: JpegBaselineFrameLocation,
     row: u64,
@@ -98,18 +79,20 @@ fn aligned_tile_grid_requests(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
 fn read_aligned_tile_grid_entries(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
-    location: JpegBaselineFrameLocation,
-    start_row: u64,
-    tiles_across: usize,
-    row_count: usize,
-    matrix_columns: u64,
-    matrix_rows: u64,
-    tile_size: u32,
+    request: MetalTileGridBatchRequest,
 ) -> Result<MetalAlignedGridRead, Error> {
+    let MetalTileGridBatchRequest {
+        location,
+        start_row,
+        tiles_across,
+        row_count,
+        matrix_columns,
+        matrix_rows,
+        tile_size,
+    } = request;
     let requests = aligned_tile_grid_requests(location, start_row, tiles_across, row_count)?;
     let tile_count = requests.len();
 
@@ -210,25 +193,22 @@ fn read_aligned_tile_grid_entries(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
 pub(in crate::export) fn try_encode_metal_aligned_tile_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
     j2k_encoder: &mut DicomJ2kEncoder,
-    level: &wsi_rs::Level,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-    row: u64,
-    start_col: u64,
-    tile_count: usize,
-    matrix_columns: u64,
-    matrix_rows: u64,
-    tile_size: u32,
+    request: MetalInputTileRunRequest<'_>,
 ) -> Result<MetalEncodedTileRun, Error> {
+    let MetalInputTileRunRequest {
+        level,
+        location,
+        row,
+        start_col,
+        tile_count,
+        matrix_columns,
+        matrix_rows,
+        tile_size,
+    } = request;
     if !output_tile_maps_to_wsi_rs_tile(level, tile_size) {
         if metal_input.preference == EncodeBackendPreference::RequireDevice {
             return Err(Error::Unsupported {
@@ -240,12 +220,7 @@ pub(in crate::export) fn try_encode_metal_aligned_tile_run(
         return Ok(empty_metal_tile_run(tile_count));
     }
 
-    let requests = aligned_tile_row_requests(
-        aligned_tile_location(scene_idx, series_idx, level_idx, z, c, t),
-        row,
-        start_col,
-        tile_count,
-    )?;
+    let requests = aligned_tile_row_requests(location, row, start_col, tile_count)?;
 
     let input_decode_started = Instant::now();
     let pixels = match slide.read_tiles(&requests, metal_input.source_tile_output_preference()?) {
@@ -351,35 +326,15 @@ pub(in crate::export) fn try_encode_metal_aligned_tile_run(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
 pub(super) fn try_encode_metal_aligned_tile_grid_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
     j2k_encoder: &mut DicomJ2kEncoder,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-    start_row: u64,
-    tiles_across: usize,
-    row_count: usize,
-    matrix_columns: u64,
-    matrix_rows: u64,
-    tile_size: u32,
+    request: MetalTileGridBatchRequest,
 ) -> Result<MetalEncodedTileRun, Error> {
-    let read = read_aligned_tile_grid_entries(
-        slide,
-        metal_input,
-        aligned_tile_location(scene_idx, series_idx, level_idx, z, c, t),
-        start_row,
-        tiles_across,
-        row_count,
-        matrix_columns,
-        matrix_rows,
-        tile_size,
-    )?;
+    let tile_size = request.tile_size;
+    let row_count = request.row_count;
+    let read = read_aligned_tile_grid_entries(slide, metal_input, request)?;
     let Some(tile_entries) = read.tile_entries else {
         return Ok(empty_metal_tile_run(read.tile_count));
     };
@@ -407,35 +362,15 @@ pub(super) fn try_encode_metal_aligned_tile_grid_run(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
 pub(super) fn try_submit_metal_aligned_tile_grid_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
     j2k_encoder: &mut DicomJ2kEncoder,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
-    z: u32,
-    c: u32,
-    t: u32,
-    start_row: u64,
-    tiles_across: usize,
-    row_count: usize,
-    matrix_columns: u64,
-    matrix_rows: u64,
-    tile_size: u32,
+    request: MetalTileGridBatchRequest,
 ) -> Result<PendingMetalEncodedTileRun, Error> {
-    let read = read_aligned_tile_grid_entries(
-        slide,
-        metal_input,
-        aligned_tile_location(scene_idx, series_idx, level_idx, z, c, t),
-        start_row,
-        tiles_across,
-        row_count,
-        matrix_columns,
-        matrix_rows,
-        tile_size,
-    )?;
+    let tile_size = request.tile_size;
+    let row_count = request.row_count;
+    let read = read_aligned_tile_grid_entries(slide, metal_input, request)?;
     let Some(tile_entries) = read.tile_entries else {
         return empty_pending_metal_tile_run(
             j2k_encoder,

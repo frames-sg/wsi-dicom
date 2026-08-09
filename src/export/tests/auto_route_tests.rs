@@ -194,7 +194,7 @@ fn auto_lossless_j2k_probe_covers_minimum_decision_scope() {
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
-fn generated_jpeg_direct_5_3_remains_allowed_with_active_metal_route() {
+fn direct_source_jpeg_transcoding_support_is_independent_of_metal_route() {
     let auto_reader = MetalInputTileReader::new_for_lossless_j2k(
         EncodeBackendPreference::Auto,
         true,
@@ -202,9 +202,8 @@ fn generated_jpeg_direct_5_3_remains_allowed_with_active_metal_route() {
         false,
     );
     assert!(auto_reader.enabled());
-    assert!(generated_jpeg_direct_htj2k_allowed_for_route(
-        TransferSyntax::Htj2kLosslessRpcl,
-        &auto_reader,
+    assert!(jpeg_direct_htj2k::transfer_syntax(
+        TransferSyntax::Htj2kLosslessRpcl
     ));
 
     let cpu_reader = MetalInputTileReader::new_for_lossless_j2k(
@@ -213,9 +212,9 @@ fn generated_jpeg_direct_5_3_remains_allowed_with_active_metal_route() {
         None,
         false,
     );
-    assert!(generated_jpeg_direct_htj2k_allowed_for_route(
-        TransferSyntax::Htj2kLosslessRpcl,
-        &cpu_reader,
+    assert!(!cpu_reader.enabled());
+    assert!(jpeg_direct_htj2k::transfer_syntax(
+        TransferSyntax::Htj2kLosslessRpcl
     ));
 }
 

@@ -70,17 +70,6 @@ pub(super) fn transfer_syntax(transfer_syntax: TransferSyntax) -> bool {
     )
 }
 
-pub(super) fn generated_candidate(
-    _transfer_syntax: TransferSyntax,
-    _row_has_jpeg_source: bool,
-    _direct_jpeg_ok: bool,
-    _source_jpeg_direct_rejected: bool,
-    _source_raw_probe_failed: bool,
-    _has_passthrough: bool,
-) -> bool {
-    false
-}
-
 pub(super) fn frame(
     raw: &RawCompressedTile,
     frame_columns: u32,
@@ -508,6 +497,7 @@ mod tests {
                 source_device_decode: false,
                 ..ExportOptions::default()
             },
+            color_management: crate::ColorManagement::SourceOrSrgb,
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
         })
@@ -582,6 +572,7 @@ mod tests {
                 source_device_decode: false,
                 ..ExportOptions::default()
             },
+            color_management: crate::ColorManagement::SourceOrSrgb,
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
         })
@@ -610,6 +601,7 @@ mod tests {
                 source_device_decode: false,
                 ..ExportOptions::default()
             })
+            .color_management(crate::ColorManagement::SourceOrSrgb)
             .source_aware_transfer_syntax()
             .run()
             .unwrap();

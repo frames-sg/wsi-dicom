@@ -4,12 +4,12 @@ use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 
 use crate::coordinate::InstanceCoordinate;
 use crate::metadata::DicomMetadata;
-use crate::report::{ExportMetrics, IccProfileSource, InstanceReport};
+use crate::report::{ExportMetrics, IccProfileReport, InstanceReport};
 use crate::tile::PixelProfile;
 use crate::uid::DicomExportIdentity;
 use crate::writer::{
     build_dicom_object, DicomObjectIdentifiers, DicomObjectParams, FrameGrid,
-    LossyCompressionMetadata, PerFrameFunctionalGroupsPlan,
+    LossyCompressionHistory, PerFrameFunctionalGroupsPlan,
 };
 use crate::{Error, VL_WSI_SOP_CLASS_UID};
 
@@ -94,6 +94,7 @@ impl DicomInstanceContext {
             metadata: params.metadata,
             identifiers: DicomObjectIdentifiers {
                 study_uid: params.study_uid,
+                specimen_uid: params.specimen_uid,
                 series_uid: &self.series_uid,
                 sop_instance_uid: &self.sop_instance_uid,
                 frame_of_reference_uid: &self.frame_of_reference_uid,
@@ -137,7 +138,7 @@ impl DicomInstanceContext {
         &self,
         transfer_syntax_uid: &'static str,
         frame_count: u32,
-        icc_profile_source: IccProfileSource,
+        icc_profile: IccProfileReport,
         metrics: ExportMetrics,
     ) -> InstanceReport {
         InstanceReport {
@@ -145,7 +146,10 @@ impl DicomInstanceContext {
             sop_instance_uid: self.sop_instance_uid.clone(),
             series_instance_uid: self.series_uid.clone(),
             transfer_syntax_uid,
-            icc_profile_source,
+            icc_profile_source: icc_profile.source,
+            icc_profile_sha256: icc_profile.sha256,
+            icc_calibration_id: icc_profile.calibration_id,
+            icc_conflict_decision: icc_profile.conflict_decision,
             scene: self.coordinate.scene_idx,
             series: self.coordinate.series_idx,
             level: self.coordinate.level_idx,
@@ -161,12 +165,13 @@ impl DicomInstanceContext {
 pub(crate) struct InstanceDicomObjectParams<'a> {
     pub(crate) metadata: &'a DicomMetadata,
     pub(crate) study_uid: &'a str,
+    pub(crate) specimen_uid: &'a str,
     pub(crate) instance_number: u32,
     pub(crate) frame_grid: FrameGrid,
     pub(crate) frame_count: u32,
     pub(crate) profile: PixelProfile,
     pub(crate) icc_profile: Option<&'a [u8]>,
-    pub(crate) lossy_compression: Option<LossyCompressionMetadata>,
+    pub(crate) lossy_compression: LossyCompressionHistory,
 }
 
 #[cfg(test)]
@@ -176,7 +181,9 @@ mod tests {
     use super::DicomInstanceContext;
     use crate::coordinate::InstanceCoordinate;
     use crate::options::ExportOptions;
-    use crate::report::{ExportMetrics, IccProfileSource, InstanceReport};
+    use crate::report::{
+        ExportMetrics, IccConflictDecision, IccProfileReport, IccProfileSource, InstanceReport,
+    };
     use crate::uid::DicomExportIdentity;
 
     #[test]
@@ -210,7 +217,12 @@ mod tests {
         let report = context.report(
             ExportOptions::default().transfer_syntax.uid(),
             7,
-            IccProfileSource::SynthesizedSrgb,
+            IccProfileReport {
+                source: IccProfileSource::SynthesizedSrgb,
+                sha256: Some("abc123".into()),
+                calibration_id: None,
+                conflict_decision: IccConflictDecision::NoConflict,
+            },
             ExportMetrics::default(),
         );
         assert_eq!(
@@ -221,6 +233,9 @@ mod tests {
                 series_instance_uid: context.series_uid,
                 transfer_syntax_uid: ExportOptions::default().transfer_syntax.uid(),
                 icc_profile_source: IccProfileSource::SynthesizedSrgb,
+                icc_profile_sha256: Some("abc123".into()),
+                icc_calibration_id: None,
+                icc_conflict_decision: IccConflictDecision::NoConflict,
                 scene: 1,
                 series: 2,
                 level: 3,

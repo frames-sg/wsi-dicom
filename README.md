@@ -23,16 +23,16 @@ Use the Rust API:
 
 ```toml
 [dependencies]
-wsi-dicom = "0.7.1"
+wsi-dicom = "0.7.2"
 ```
 
 GPU support is opt-in:
 
 ```toml
 [dependencies]
-wsi-dicom = { version = "0.7.1", features = ["metal"] } # macOS
+wsi-dicom = { version = "0.7.2", features = ["metal"] } # macOS
 # or
-wsi-dicom = { version = "0.7.1", features = ["cuda"] } # CUDA-capable Linux/Windows
+wsi-dicom = { version = "0.7.2", features = ["cuda"] } # CUDA-capable Linux/Windows
 ```
 
 Feature flags:
@@ -40,7 +40,7 @@ Feature flags:
 | Feature | Effect |
 | --- | --- |
 | `default` | CPU-only DICOM export. |
-| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. wsi-rs CUDA tile decode and direct JPEG-to-HTJ2K CUDA transcode are not exposed by wsi-dicom 0.7.1. |
+| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. wsi-rs CUDA tile decode and direct JPEG-to-HTJ2K CUDA transcode are not exposed by wsi-dicom 0.7.2. |
 | `metal` | Enables Metal JPEG 2000 encode acceleration on macOS, Metal codestream validation decode, and wsi-rs Metal tile decode plumbing. |
 
 For local maximum CPU throughput:
@@ -61,7 +61,8 @@ Always provide metadata JSON/FHIR input or explicitly select research
 placeholder metadata.
 
 ```sh
-wsi-dicom convert slide.ndpi --out dicom-out --research-placeholder
+wsi-dicom convert slide.ndpi --out dicom-out --research-placeholder \
+  --icc source-or-srgb
 ```
 
 Use `--metadata metadata.json` for real metadata. `--metadata` and
@@ -107,13 +108,92 @@ limit while streaming metadata.
 Generated DICOM UIDs are fresh for each conversion. Reproducible pipelines may
 opt into full source-content/configuration identity with
 `--uid-policy deterministic`; this hashes the complete source and is therefore
-more expensive on large slides.
+more expensive on large slides. The deterministic identity also includes the
+SHA-256 digest of the effective ICC profile for each generated instance.
+
+`DicomMetadata::specimen_uid` accepts a governed Specimen UID and preserves it
+verbatim across exports. When it is absent, the exporter derives the Specimen
+UID from the export identity, specimen identifier, and structured identifier
+issuer. Fresh exports therefore receive fresh fallback Specimen UIDs,
+deterministic exports repeat them, and issuer namespaces keep otherwise equal
+local identifiers separate. FHIR `Specimen.identifier.system` is emitted as a
+universal issuer of type `URI`.
+
+## Scanner calibration
+
+Every export requires an explicit color-management choice. The CLI defaults to
+`--icc source-or-srgb` for research use; calibrated workflows should select
+`--icc require-source`, a governed calibration registry, or an explicit
+profile. Registry and explicit-profile modes are mutually exclusive:
+
+```sh
+wsi-dicom convert slide.ndpi --out dicom-out --metadata metadata.json \
+  --icc-calibration-registry calibration/registry.json \
+  --icc-conflict fail
+
+wsi-dicom convert slide.ndpi --out dicom-out --metadata metadata.json \
+  --icc-profile vendor-profile.icc --icc-profile-id lab-at2-2026q3 \
+  --icc-conflict prefer-configured
+```
+
+Portable registries use schema version 1:
+
+```json
+{
+  "schema_version": 1,
+  "calibrations": [
+    {
+      "id": "lab-at2-sn123-2026q3",
+      "scanner": {
+        "manufacturer": "Leica Biosystems",
+        "model_name": "Aperio AT2",
+        "device_serial_number": "SN123"
+      },
+      "icc_profile": "profiles/profile.icc",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ]
+}
+```
+
+Scanner matching uses the governed DICOM manufacturer, model name, and device
+serial number. All three values are required; outer whitespace is trimmed and
+the remaining text is compared exactly and case-sensitively. Filenames and raw
+vendor properties are not matching inputs. Registries reject unknown fields,
+duplicate IDs or scanner tuples, malformed hashes, unsafe paths, missing or
+checksum-mismatched files, and profiles that are not valid RGB input-device ICC
+profiles. Registry JSON is limited to 1 MiB and 256 entries; each ICC file is
+limited to 16 MiB. Relative profile paths resolve from the registry directory,
+and only verified bytes—not local paths—enter conversion state or DICOM output.
+
+When configured and source ICC digests differ, `--icc-conflict fail` stops the
+export before staging or output creation. `prefer-configured` embeds the
+configured bytes; `prefer-source` retains the source bytes. Equal digests are
+accepted as a match. Each instance report records the effective SHA-256 digest,
+profile or calibration ID, source, and conflict decision. MONOCHROME2 output
+does not write ICC data and reports calibration as not applicable.
+
+Inspect an existing profile or package it into a local portable bundle:
+
+```sh
+wsi-dicom calibration inspect --icc vendor-profile.icc
+wsi-dicom calibration create --icc vendor-profile.icc \
+  --id lab-at2-sn123-2026q3 \
+  --manufacturer "Leica Biosystems" --model "Aperio AT2" --serial SN123 \
+  --out calibration
+```
+
+`calibration create` validates and packages an existing vendor- or
+target-generated profile. It does not derive scanner calibration from an
+ordinary tissue slide. Calibration selection is CLI/API-only in 0.7.2; the GUI
+offers source-required, sRGB fallback, and Display P3 fallback choices.
 
 The default conversion preset is `lossless-review`, which emits HTJ2K Lossless
 RPCL. For explicit JPEG Baseline output:
 
 ```sh
-wsi-dicom convert slide.ndpi --out dicom-fast --research-placeholder --preset fast-jpeg
+wsi-dicom convert slide.ndpi --out dicom-fast --research-placeholder \
+  --icc source-or-srgb --preset fast-jpeg
 ```
 
 Useful operational commands:
@@ -133,28 +213,32 @@ wsi-dicom validate dicom-out \
   --htj2k-decoder "/opt/homebrew/bin/grk_decompress -i {input} -o {output}"
 ```
 
-Every validation run performs an intrinsic Pixel Data structure check before
-optional external validation. It verifies Number of Frames, native versus
-encapsulated representation, nonempty data, and bounded frame mapping through
-Basic or Extended Offset Tables; it still runs when `--max-pixel-frames 0`.
-This structural check does not decode pixel values. Missing external tools are
-reported as skipped unless `--strict` is set. Directory validation is bounded
-by file count, depth, timeout, and child output capture limits; symlink
-traversal is refused.
+Every validation run performs intrinsic checks before optional external
+validation. The Pixel Data structure check verifies Number of Frames, native
+versus encapsulated representation, nonempty data, and bounded frame mapping
+through Basic or Extended Offset Tables; it still runs when
+`--max-pixel-frames 0`. VL Whole Slide Microscopy Image objects additionally
+run stable `intrinsic-wsi-dicom-2026c-*` checks for ICC profiles, monochrome
+presentation attributes, lossy declarations, specimen identity, and dimension
+ordering, plus a set-level Specimen UID consistency check. These checks do not
+decode pixel values or infer unknowable compression history predating the
+object. Missing external tools are reported as skipped unless `--strict` is
+set. Directory validation is bounded by file count, depth, timeout, and child
+output capture limits; symlink traversal is refused.
 
 ## Rust API
 
 Use the builder API for normal exports:
 
 ```rust
-use wsi_dicom::{Export, IccProfilePolicy};
+use wsi_dicom::{ColorManagement, Export};
 
 let report = Export::from_slide("slide.ndpi")
     .to_directory("out")
     .with_research_placeholder_metadata()
     .tile_size(512)
     .jpeg_quality(90)
-    .icc_profile_policy(IccProfilePolicy::FallbackSrgb)
+    .color_management(ColorManagement::SourceOrSrgb)
     .run()?;
 ```
 
@@ -162,19 +246,18 @@ Use request types when an integration needs full control:
 
 ```rust
 use wsi_dicom::{
-    export_dicom, ExportOptions, ExportRequest, IccProfilePolicy,
+    export_dicom, ColorManagement, ExportOptions, ExportRequest,
     JpegDirectHtj2kProfile, MetadataSource, TransferSyntax,
 };
 
 let mut options = ExportOptions::lossless_review();
 options.transfer_syntax = TransferSyntax::Htj2k;
 options.jpeg_direct_htj2k_profile = JpegDirectHtj2kProfile::Lossy97Balanced;
-options.icc_profile_policy = IccProfilePolicy::FallbackSrgb;
-
 let request = ExportRequest::new(
     "slide.ndpi".into(),
     "out".into(),
     options,
+    ColorManagement::SourceOrSrgb,
     MetadataSource::ResearchPlaceholder,
 )?;
 
@@ -201,9 +284,16 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
 
 ## Behavior Notes
 
-- ICC handling is explicit. Missing source profiles default to synthesized sRGB;
-  use `--icc strict`, `--icc fallback-display-p3`, or `--icc omit-if-missing`
-  when a different policy is required.
+- Every color optical path carries a validated DICOM input-device ICC profile.
+  Source profiles are preserved by the source/fallback modes. A synthesized
+  sRGB or Display P3 input profile is an explicit color-space assumption, not
+  scanner calibration. Configured/source conflicts are resolved only through
+  the selected `IccConflictPolicy`.
+- ICC is not applicable to MONOCHROME2 output, which instead carries
+  Presentation LUT Shape `IDENTITY`, Rescale Intercept `0`, and Rescale Slope
+  `1`.
+- Lossy compression history is independent of the final transfer syntax. A
+  lossless transcode does not erase prior lossy JPEG/JPEG 2000/HTJ2K stages.
 - JPEG Baseline output preserves compatible native JPEG frames. HTJ2K lossless
   output rejects nonconformant color JPEG direct routes and falls back through
   decoded RGB/RCT.
@@ -216,6 +306,13 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
 - Output names encode scene, series, level, Z, channel, and time coordinates;
   consumers must use report paths rather than assuming the pre-0.7 name shape.
 - Passing validators is release evidence, not formal DICOM certification.
+
+> [!IMPORTANT]
+> Regenerate color, MONOCHROME2, previously lossy, or multi-institution
+> specimen output produced by versions before this remediation. Older objects
+> can contain a display-class fallback ICC profile, omit required monochrome
+> presentation attributes, erase lossy history after lossless transcoding, or
+> derive the same Specimen UID for identifiers governed by different issuers.
 
 ## Development
 
@@ -237,9 +334,9 @@ cargo xtask semver
 cargo publish --dry-run
 ```
 
-Before a `1.0 release candidate`, run these gates against published
+Before a `1.0` release candidate, run these gates against published
 dependencies and a representative real-slide corpus covering advertised routes,
-metadata modes, ICC policies, validator checks, and any GPU route being
+metadata modes, color-management policies, validator checks, and any GPU route being
 advertised.
 
 Use the GDC benchmark harness only when publishing speed evidence:
@@ -267,7 +364,9 @@ any performance claim.
 `wsi-dicom` is pre-1.0. The builder API is the preferred integration surface.
 Lower-level request, report, validation, and profiling types are public, but
 callers should prefer constructors and defaults over struct literals where
-provided.
+provided. Version 0.7.2 deliberately breaks the pre-1.0 color-management API:
+`IccProfilePolicy` is removed, `ExportRequest::new` requires a
+`ColorManagement`, and `Export` requires `.color_management(...)`.
 
 ## License
 

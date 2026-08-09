@@ -6,6 +6,7 @@ use dicom_core::{DataElement, PrimitiveValue, VR};
 use dicom_dictionary_std::tags;
 use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 #[test]
 fn shipped_binary_self_test_emits_json_and_preserves_validation_evidence() {
@@ -106,6 +107,125 @@ fn shipped_binary_rejects_malformed_compressed_pixel_data_without_external_tools
     assert!(checks.iter().any(|check| {
         check["name"] == "intrinsic-pixel-structure" && check["status"] == "failed"
     }));
+}
+
+#[test]
+fn calibration_bundle_cli_flow_embeds_verified_profile_without_leaking_local_paths() {
+    let temporary_directory = tempfile::tempdir().expect("create temporary directory");
+    let self_test_workspace = temporary_directory.path().join("synthetic-source");
+    let self_test = Command::new(env!("CARGO_BIN_EXE_wsi-dicom"))
+        .arg("self-test")
+        .arg("--json")
+        .arg("--out")
+        .arg(&self_test_workspace)
+        .arg("--keep-output")
+        .arg("--command-timeout-secs")
+        .arg("15")
+        .output()
+        .expect("create synthetic color source through shipped CLI");
+    assert!(
+        self_test.status.success(),
+        "self-test source creation failed: {}",
+        String::from_utf8_lossy(&self_test.stderr)
+    );
+    let self_test_report: Value = serde_json::from_slice(&self_test.stdout).unwrap();
+    let source = path_from_json(&self_test_report["source_path"]);
+
+    let mut generated = moxcms::ColorProfile::new_display_p3();
+    generated.profile_class = moxcms::ProfileClass::InputDevice;
+    let profile = generated.encode().unwrap();
+    let profile_path = temporary_directory
+        .path()
+        .join("local-vendor-target-profile.icc");
+    std::fs::write(&profile_path, &profile).unwrap();
+    let expected_digest = format!("{:x}", Sha256::digest(&profile));
+    let bundle = temporary_directory.path().join("calibration-bundle");
+
+    let created = Command::new(env!("CARGO_BIN_EXE_wsi-dicom"))
+        .arg("calibration")
+        .arg("create")
+        .arg("--icc")
+        .arg(&profile_path)
+        .arg("--id")
+        .arg("research-scanner")
+        .arg("--manufacturer")
+        .arg("wsi-dicom")
+        .arg("--model")
+        .arg("wsi-dicom")
+        .arg("--serial")
+        .arg("RESEARCH")
+        .arg("--out")
+        .arg(&bundle)
+        .output()
+        .expect("create calibration bundle");
+    assert!(
+        created.status.success(),
+        "calibration create failed: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+
+    let inspected = Command::new(env!("CARGO_BIN_EXE_wsi-dicom"))
+        .arg("calibration")
+        .arg("inspect")
+        .arg("--icc")
+        .arg(bundle.join("profiles/profile.icc"))
+        .output()
+        .expect("inspect calibration profile");
+    assert!(inspected.status.success());
+    assert!(String::from_utf8_lossy(&inspected.stdout).contains(&expected_digest));
+
+    let output_dir = temporary_directory.path().join("calibrated-output");
+    let converted = Command::new(env!("CARGO_BIN_EXE_wsi-dicom"))
+        .arg("convert")
+        .arg(source)
+        .arg("--out")
+        .arg(&output_dir)
+        .arg("--research-placeholder")
+        .arg("--icc-calibration-registry")
+        .arg(bundle.join("registry.json"))
+        .arg("--backend")
+        .arg("cpu")
+        .arg("--transfer-syntax")
+        .arg("jpeg2000-lossless")
+        .arg("--tile-size")
+        .arg("4")
+        .arg("--json")
+        .output()
+        .expect("convert synthetic source with calibration registry");
+    assert!(
+        converted.status.success(),
+        "calibrated conversion failed with {}\nstdout:\n{}\nstderr:\n{}",
+        converted.status,
+        String::from_utf8_lossy(&converted.stdout),
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    let report: Value = serde_json::from_slice(&converted.stdout).unwrap();
+    let instance = &report["instances"][0];
+    assert_eq!(instance["icc_profile_source"], "calibration_registry");
+    assert_eq!(instance["icc_profile_sha256"], expected_digest);
+    assert_eq!(instance["icc_calibration_id"], "research-scanner");
+    assert_eq!(instance["icc_conflict_decision"], "no_conflict");
+
+    let dicom_path = path_from_json(&instance["path"]);
+    let object = dicom_object::open_file(dicom_path).unwrap();
+    let optical_paths = object
+        .element(tags::OPTICAL_PATH_SEQUENCE)
+        .unwrap()
+        .items()
+        .unwrap();
+    let embedded = optical_paths[0]
+        .element(tags::ICC_PROFILE)
+        .unwrap()
+        .to_bytes()
+        .unwrap();
+    assert_eq!(embedded.as_ref(), profile);
+
+    let dicom_bytes = std::fs::read(dicom_path).unwrap();
+    let local_path = profile_path.to_string_lossy();
+    assert!(!dicom_bytes
+        .windows(local_path.len())
+        .any(|window| window == local_path.as_bytes()));
+    assert!(!String::from_utf8_lossy(&converted.stdout).contains(local_path.as_ref()));
 }
 
 fn write_compressed_transfer_syntax_with_primitive_pixel_data(path: &Path) {

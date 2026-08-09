@@ -59,6 +59,7 @@ pub fn run_dicom_self_test(options: SelfTestOptions) -> Result<SelfTestReport, E
         .to_directory(&output_dir)
         .with_metadata(MetadataSource::ResearchPlaceholder)
         .with_options(export_options)
+        .color_management(crate::ColorManagement::SourceOrSrgb)
         .run()?;
     let validation_report = validate_dicom_path(&output_dir, &options.validation)?;
     let kept_output = workspace.kept_output();

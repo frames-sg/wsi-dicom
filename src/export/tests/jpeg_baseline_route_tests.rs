@@ -19,6 +19,7 @@ fn export_jpeg_baseline_native_geometry_for_test(
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: Some(0),
     })
@@ -73,6 +74,7 @@ fn export_dicom_passthrough_writes_jpeg_baseline_vl_wsi_instance() {
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -171,6 +173,7 @@ fn export_htj2k_from_jpeg_strips_writes_regular_generated_frames() {
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
@@ -224,6 +227,32 @@ fn export_htj2k_from_jpeg_strips_writes_regular_generated_frames() {
     );
     assert_eq!(
         object
+            .element(tags::LOSSY_IMAGE_COMPRESSION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "01"
+    );
+    assert_eq!(
+        object
+            .element(tags::LOSSY_IMAGE_COMPRESSION_METHOD)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "ISO_10918_1"
+    );
+    assert!(
+        object
+            .element(tags::LOSSY_IMAGE_COMPRESSION_RATIO)
+            .unwrap()
+            .to_float64()
+            .unwrap()
+            > 0.0
+    );
+    assert_eq!(
+        object
             .element(tags::PIXEL_DATA)
             .unwrap()
             .value()
@@ -232,6 +261,50 @@ fn export_htj2k_from_jpeg_strips_writes_regular_generated_frames() {
             .len(),
         4
     );
+}
+
+#[test]
+fn export_lossy_htj2k_from_lossy_grayscale_jpeg_preserves_two_ordered_stages() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source.tiff");
+    let jpeg = encode_test_gray_jpeg(8, 8, 96);
+    write_tiled_grayscale_jpeg_tiff(&source, 8, 8, 8, 8, &[jpeg]);
+
+    let report = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 8,
+            transfer_syntax: TransferSyntax::Htj2k,
+            jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossy97,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: false,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: None,
+    })
+    .unwrap();
+
+    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+    assert_eq!(
+        object
+            .element(tags::LOSSY_IMAGE_COMPRESSION_METHOD)
+            .unwrap()
+            .to_multi_str()
+            .unwrap()
+            .as_ref(),
+        ["ISO_10918_1", "ISO_15444_15"]
+    );
+    let ratios = object
+        .element(tags::LOSSY_IMAGE_COMPRESSION_RATIO)
+        .unwrap()
+        .to_multi_float64()
+        .unwrap();
+    assert_eq!(ratios.len(), 2);
+    assert!(ratios.iter().all(|ratio| ratio.is_finite() && *ratio > 0.0));
 }
 
 #[test]
@@ -252,6 +325,7 @@ fn export_ndpi_jpeg_baseline_retiles_restart_strips_without_decode_encode() {
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: Some(0),
     })
@@ -313,6 +387,7 @@ fn export_ndpi_htj2k_rpcl_retiles_jpeg_then_direct_53() {
             source_device_decode: false,
             ..ExportOptions::default()
         },
+        color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: Some(0),
     })

@@ -1,6 +1,6 @@
 [package]
 name = "wsi-dicom"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Convert whole-slide imaging files to DICOM VL Whole Slide Microscopy"
@@ -17,6 +17,7 @@ exclude = [
     ".github/**",
     ".cargo/**",
     "fuzz/**",
+    "grant/**",
     "supply-chain/**",
 ]
 
@@ -82,6 +83,9 @@ required-features = ["bench-internals"]
 [workspace]
 members = [".", "xtask", "apps/wsi-dicom-gui"]
 resolver = "2"
+
+[profile.dev]
+debug = "line-tables-only"
 
 [profile.release]
 lto = "fat"

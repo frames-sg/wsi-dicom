@@ -1,4 +1,5 @@
-use super::DicomMetadata;
+use super::{DicomMetadata, SpecimenIdentifierIssuer};
+use crate::uid::is_valid_dicom_uid;
 use crate::Error;
 
 const DEFAULT_IMAGED_VOLUME_DEPTH_MM: f64 = 0.001;
@@ -102,6 +103,13 @@ pub(super) fn validate(metadata: &DicomMetadata) -> Result<ValidatedDicomMetadat
         metadata.specimen_identifier.as_deref(),
         64,
     )?;
+    if metadata.specimen_uid.as_deref() == Some("") {
+        return Err(Error::Metadata {
+            reason: "specimen_uid must not be empty when supplied".into(),
+        });
+    }
+    validate_optional_ui("specimen_uid", metadata.specimen_uid.as_deref())?;
+    validate_specimen_identifier_issuer(metadata.specimen_identifier_issuer.as_ref())?;
     validate_optional_vr(
         "specimen_description",
         "LO",
@@ -241,6 +249,15 @@ fn metadata_strings(metadata: &DicomMetadata) -> impl Iterator<Item = &str> {
         metadata.acquisition_date_time.as_deref(),
         metadata.container_identifier.as_deref(),
         metadata.specimen_identifier.as_deref(),
+        metadata.specimen_uid.as_deref(),
+        metadata
+            .specimen_identifier_issuer
+            .as_ref()
+            .and_then(|issuer| issuer.local_namespace_entity_id.as_deref()),
+        metadata
+            .specimen_identifier_issuer
+            .as_ref()
+            .and_then(|issuer| issuer.universal_entity_id.as_deref()),
         metadata.specimen_description.as_deref(),
         metadata.focus_method.as_deref(),
     ]
@@ -248,18 +265,54 @@ fn metadata_strings(metadata: &DicomMetadata) -> impl Iterator<Item = &str> {
     .flatten()
 }
 
+fn validate_specimen_identifier_issuer(
+    issuer: Option<&SpecimenIdentifierIssuer>,
+) -> Result<(), Error> {
+    let Some(issuer) = issuer else {
+        return Ok(());
+    };
+    let local = non_empty_issuer_value(
+        "specimen_identifier_issuer.local_namespace_entity_id",
+        issuer.local_namespace_entity_id.as_deref(),
+    )?;
+    let universal = non_empty_issuer_value(
+        "specimen_identifier_issuer.universal_entity_id",
+        issuer.universal_entity_id.as_deref(),
+    )?;
+    if local.is_none() && universal.is_none() {
+        return Err(Error::Metadata {
+            reason: "specimen_identifier_issuer requires a local or universal entity ID".into(),
+        });
+    }
+    if universal.is_some() != issuer.universal_entity_id_type.is_some() {
+        return Err(Error::Metadata {
+            reason: "specimen_identifier_issuer.universal_entity_id and universal_entity_id_type must be supplied together"
+                .into(),
+        });
+    }
+    Ok(())
+}
+
+fn non_empty_issuer_value<'a>(
+    field: &str,
+    value: Option<&'a str>,
+) -> Result<Option<&'a str>, Error> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_empty() || value.contains('\\') || value.chars().any(is_disallowed_text_control) {
+        return Err(Error::Metadata {
+            reason: format!("{field} must be a non-empty scalar DICOM UT value"),
+        });
+    }
+    Ok(Some(value))
+}
+
 fn validate_optional_ui(field: &str, value: Option<&str>) -> Result<(), Error> {
     let Some(value) = value.filter(|value| !value.is_empty()) else {
         return Ok(());
     };
-    if value.len() > 64
-        || value.starts_with('.')
-        || value.ends_with('.')
-        || value.contains("..")
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || byte == b'.')
-    {
+    if !is_valid_dicom_uid(value) {
         return Err(Error::Metadata {
             reason: format!("{field} must be a valid DICOM UI"),
         });

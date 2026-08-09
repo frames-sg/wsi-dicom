@@ -256,13 +256,13 @@ fn write_per_frame_functional_group_item(
 
     write_sequence_header(output, tags::FRAME_CONTENT_SEQUENCE)?;
     write_item_header(output, u32::MAX)?;
-    let [column_index, row_index] = location
+    let [row_index, column_index] = location
         .dimension_index_values()
         .map_err(io::Error::other)?;
     write_u32_values(
         output,
         tags::DIMENSION_INDEX_VALUES,
-        &[column_index, row_index],
+        &[row_index, column_index],
     )?;
     write_item_delimiter(output)?;
     write_sequence_delimiter(output)?;
@@ -355,8 +355,8 @@ fn write_ds_value(output: &mut impl Write, tag: Tag, value: f64) -> io::Result<(
 impl FrameLocation {
     fn dimension_index_values(self) -> Result<[u32; 2], Error> {
         Ok([
-            checked_dimension_index_value(self.column, "column")?,
             checked_dimension_index_value(self.row, "row")?,
+            checked_dimension_index_value(self.column, "column")?,
         ])
     }
 
@@ -396,7 +396,7 @@ pub(super) fn per_frame_items(
         })?;
     for frame_index in 0..frame_count {
         let location = frame_grid.location_for_frame(frame_index)?;
-        let [column_index_value, row_index_value] = location.dimension_index_values()?;
+        let [row_index_value, column_index_value] = location.dimension_index_values()?;
         let (column_position, row_position) = location.slide_matrix_positions(frame_grid)?;
         let (x_offset, y_offset) =
             location.slide_coordinate_offsets(frame_grid, row_spacing_mm, column_spacing_mm);
@@ -430,7 +430,7 @@ pub(super) fn per_frame_items(
         frame_content.put(DataElement::new(
             tags::DIMENSION_INDEX_VALUES,
             VR::UL,
-            PrimitiveValue::U32(vec![column_index_value, row_index_value].into()),
+            PrimitiveValue::U32(vec![row_index_value, column_index_value].into()),
         ));
         let mut item = InMemDicomObject::new_empty();
         item.put(DataElement::<InMemDicomObject>::new(

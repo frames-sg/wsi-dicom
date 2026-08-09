@@ -1,15 +1,25 @@
-use wsi_rs::{Compression, IccProfileKey, PlaneSelection, Slide, TileLayout, TileRequest};
+use wsi_rs::{
+    Compression, IccProfileKey, LevelIdx, PlaneSelection, RegionRequest, SceneId, SeriesId, Slide,
+    TileLayout, TileRequest,
+};
 
-use crate::options::IccProfilePolicy;
-use crate::report::IccProfileSource;
+use crate::calibration::{sha256_hex, ColorManagement, IccConflictPolicy, IccProfile};
+use crate::coordinate::InstanceCoordinate;
+use crate::icc::{
+    synthetic_display_p3_icc_profile, synthetic_srgb_icc_profile, validate_dicom_icc_profile,
+};
+use crate::metadata::DicomMetadata;
+use crate::report::{IccConflictDecision, IccProfileReport, IccProfileSource};
 use crate::request::ExportRequest;
-use crate::writer::{synthetic_display_p3_icc_profile, synthetic_srgb_icc_profile};
+use crate::tile::{prepare_tile_samples_with_limit, PixelProfile};
 use crate::Error;
+
+use super::DicomExportInstanceJob;
 
 #[derive(Debug, Clone)]
 pub(super) struct ResolvedIccProfile {
     pub(super) bytes: Option<Vec<u8>>,
-    pub(super) source: IccProfileSource,
+    pub(super) report: IccProfileReport,
 }
 
 const JPEG_ICC_SAMPLE_TILE_LIMIT: usize = 16;
@@ -17,48 +27,239 @@ const JPEG_ICC_SAMPLE_TILE_LIMIT: usize = 16;
 pub(super) fn resolve_icc_profile(
     slide: &Slide,
     request: &ExportRequest,
-    scene_idx: usize,
-    series_idx: usize,
-    level_idx: u32,
+    metadata: &DicomMetadata,
+    coordinate: InstanceCoordinate,
     level: &wsi_rs::Level,
+    pixel_profile: PixelProfile,
 ) -> Result<ResolvedIccProfile, Error> {
-    if let Some(profile) = slide
+    let scene_idx = coordinate.scene_idx;
+    let series_idx = coordinate.series_idx;
+    let level_idx = coordinate.level_idx;
+    if pixel_profile.photometric_interpretation == "MONOCHROME2" {
+        return Ok(ResolvedIccProfile {
+            bytes: None,
+            report: IccProfileReport {
+                source: IccProfileSource::NotApplicableMonochrome,
+                sha256: None,
+                calibration_id: None,
+                conflict_decision: IccConflictDecision::NotApplicableMonochrome,
+            },
+        });
+    }
+
+    let source = if let Some(profile) = slide
         .dataset()
         .icc_profiles
         .get(&IccProfileKey::new(scene_idx.into(), series_idx.into()))
         .filter(|profile| !profile.is_empty())
     {
-        return Ok(ResolvedIccProfile {
-            bytes: Some(profile.clone()),
+        validate_dicom_icc_profile(profile)?;
+        Some(SourceIccProfile {
+            bytes: profile.clone(),
             source: IccProfileSource::Source,
-        });
-    }
-
-    if let Some(profile) = sampled_jpeg_icc_profile(slide, scene_idx, series_idx, level_idx, level)?
+        })
+    } else if let Some(profile) =
+        sampled_jpeg_icc_profile(slide, scene_idx, series_idx, level_idx, level)?
     {
-        return Ok(ResolvedIccProfile {
-            bytes: Some(profile),
+        validate_dicom_icc_profile(&profile)?;
+        Some(SourceIccProfile {
+            bytes: profile,
             source: IccProfileSource::SourceJpeg,
-        });
-    }
+        })
+    } else {
+        None
+    };
 
-    match request.options.icc_profile_policy {
-        IccProfilePolicy::Strict => Err(Error::Metadata {
+    match &request.color_management {
+        ColorManagement::RequireSource => source
+            .map(resolve_source_profile)
+            .ok_or_else(|| Error::Metadata {
             reason: format!(
-                "ICC profile is missing for scene {scene_idx} series {series_idx}; use fallback-srgb, fallback-display-p3, or omit-if-missing if this source is intentionally unprofiled"
+                "ICC profile is missing for color scene {scene_idx} series {series_idx}; choose SourceOrSrgb, SourceOrDisplayP3, a calibration registry, or an explicit profile only when that assumption is governed"
             ),
         }),
-        IccProfilePolicy::FallbackSrgb => Ok(ResolvedIccProfile {
-            bytes: Some(synthetic_srgb_icc_profile()?),
-            source: IccProfileSource::SynthesizedSrgb,
+        ColorManagement::SourceOrSrgb => match source {
+            Some(source) => Ok(resolve_source_profile(source)),
+            None => resolve_unconfigured_profile(
+                synthetic_srgb_icc_profile()?,
+                IccProfileSource::SynthesizedSrgb,
+            ),
+        },
+        ColorManagement::SourceOrDisplayP3 => match source {
+            Some(source) => Ok(resolve_source_profile(source)),
+            None => resolve_unconfigured_profile(
+                synthetic_display_p3_icc_profile()?,
+                IccProfileSource::SynthesizedDisplayP3,
+            ),
+        },
+        ColorManagement::Calibration { registry, conflict } => {
+            let profile = registry.match_metadata(metadata)?;
+            resolve_configured_profile(
+                source,
+                profile,
+                IccProfileSource::CalibrationRegistry,
+                *conflict,
+                scene_idx,
+                series_idx,
+            )
+        }
+        ColorManagement::ExplicitProfile { profile, conflict } => resolve_configured_profile(
+            source,
+            profile,
+            IccProfileSource::ExplicitProfile,
+            *conflict,
+            scene_idx,
+            series_idx,
+        ),
+    }
+}
+
+pub(super) fn preflight_icc_profiles(
+    slide: &Slide,
+    request: &ExportRequest,
+    metadata: &DicomMetadata,
+    jobs: &[DicomExportInstanceJob<'_>],
+) -> Result<Vec<Option<String>>, Error> {
+    let mut digests = Vec::new();
+    digests
+        .try_reserve(jobs.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "ICC profile preflight exceeds available memory".into(),
+        })?;
+    for job in jobs {
+        let profile = preflight_pixel_profile(slide, job)?;
+        let resolved =
+            resolve_icc_profile(slide, request, metadata, job.coordinate, job.level, profile)?;
+        digests.push(resolved.report.sha256);
+    }
+    Ok(digests)
+}
+
+fn preflight_pixel_profile(
+    slide: &Slide,
+    job: &DicomExportInstanceJob<'_>,
+) -> Result<PixelProfile, Error> {
+    let coordinate = job.coordinate;
+    if let Ok(raw) = slide.read_raw_compressed_tile(&coordinate.tile_request(0, 0)) {
+        if raw.compression() == Compression::Jpeg {
+            return super::pixel_profile_from_raw_jpeg_tile(&raw);
+        }
+    }
+    let tile = slide
+        .read_region(
+            &RegionRequest::new(
+                SceneId::new(coordinate.scene_idx),
+                SeriesId::new(coordinate.series_idx),
+                LevelIdx::new(coordinate.level_idx),
+                (0, 0),
+                (1, 1),
+            )
+            .with_plane(PlaneSelection::new(
+                coordinate.z,
+                coordinate.c,
+                coordinate.t,
+            )),
+        )
+        .map_err(|source| Error::SlideRead {
+            message: format!("ICC preflight sample failed: {source}"),
+        })?;
+    Ok(prepare_tile_samples_with_limit(&tile, 1, 1, 16)?.profile)
+}
+
+#[derive(Debug)]
+struct SourceIccProfile {
+    bytes: Vec<u8>,
+    source: IccProfileSource,
+}
+
+fn resolve_source_profile(source: SourceIccProfile) -> ResolvedIccProfile {
+    let sha256 = sha256_hex(&source.bytes);
+    ResolvedIccProfile {
+        bytes: Some(source.bytes),
+        report: IccProfileReport {
+            source: source.source,
+            sha256: Some(sha256),
+            calibration_id: None,
+            conflict_decision: IccConflictDecision::NoConflict,
+        },
+    }
+}
+
+fn resolve_unconfigured_profile(
+    bytes: Vec<u8>,
+    source: IccProfileSource,
+) -> Result<ResolvedIccProfile, Error> {
+    validate_dicom_icc_profile(&bytes)?;
+    let sha256 = sha256_hex(&bytes);
+    Ok(ResolvedIccProfile {
+        bytes: Some(bytes),
+        report: IccProfileReport {
+            source,
+            sha256: Some(sha256),
+            calibration_id: None,
+            conflict_decision: IccConflictDecision::NoConflict,
+        },
+    })
+}
+
+fn resolve_configured_profile(
+    source: Option<SourceIccProfile>,
+    configured: &IccProfile,
+    configured_source: IccProfileSource,
+    conflict: IccConflictPolicy,
+    scene_idx: usize,
+    series_idx: usize,
+) -> Result<ResolvedIccProfile, Error> {
+    let calibration_id = Some(configured.id().to_string());
+    let Some(source) = source else {
+        return Ok(ResolvedIccProfile {
+            bytes: Some(configured.bytes().to_vec()),
+            report: IccProfileReport {
+                source: configured_source,
+                sha256: Some(configured.sha256().to_string()),
+                calibration_id,
+                conflict_decision: IccConflictDecision::NoConflict,
+            },
+        });
+    };
+    let source_sha256 = sha256_hex(&source.bytes);
+    if source_sha256 == configured.sha256() {
+        return Ok(ResolvedIccProfile {
+            bytes: Some(configured.bytes().to_vec()),
+            report: IccProfileReport {
+                source: configured_source,
+                sha256: Some(source_sha256),
+                calibration_id,
+                conflict_decision: IccConflictDecision::DigestsMatch,
+            },
+        });
+    }
+
+    match conflict {
+        IccConflictPolicy::Fail => Err(Error::Metadata {
+            reason: format!(
+                "ICC profile conflict for color scene {scene_idx} series {series_idx}: source digest {source_sha256} differs from configured profile '{}' digest {}",
+                configured.id(),
+                configured.sha256()
+            ),
         }),
-        IccProfilePolicy::FallbackDisplayP3 => Ok(ResolvedIccProfile {
-            bytes: Some(synthetic_display_p3_icc_profile()?),
-            source: IccProfileSource::SynthesizedDisplayP3,
+        IccConflictPolicy::PreferConfigured => Ok(ResolvedIccProfile {
+            bytes: Some(configured.bytes().to_vec()),
+            report: IccProfileReport {
+                source: configured_source,
+                sha256: Some(configured.sha256().to_string()),
+                calibration_id,
+                conflict_decision: IccConflictDecision::PreferredConfigured,
+            },
         }),
-        IccProfilePolicy::OmitIfMissing => Ok(ResolvedIccProfile {
-            bytes: None,
-            source: IccProfileSource::OmittedMissing,
+        IccConflictPolicy::PreferSource => Ok(ResolvedIccProfile {
+            bytes: Some(source.bytes),
+            report: IccProfileReport {
+                source: source.source,
+                sha256: Some(source_sha256),
+                calibration_id,
+                conflict_decision: IccConflictDecision::PreferredSource,
+            },
         }),
     }
 }

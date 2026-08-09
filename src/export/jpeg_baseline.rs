@@ -44,7 +44,10 @@ pub(super) enum JpegBaselinePlannedFrame {
         uncompressed_bytes: u64,
         encode_duration: Duration,
     },
-    Fallback(JpegBaselineFallbackFrame),
+    Fallback {
+        frame: JpegBaselineFallbackFrame,
+        source_lossy_compression: Option<crate::lossy::LossyCompressionByteCounts>,
+    },
 }
 
 pub(super) struct JpegBaselineMetalEncodedRun {
@@ -414,15 +417,12 @@ pub(crate) fn raw_rgb_passthrough_has_no_geometry_fallback(
 }
 
 pub(super) fn uncompressed_frame_bytes(raw: &RawCompressedTile) -> Result<u64, Error> {
-    checked_uncompressed_byte_count(
+    crate::lossy::uncompressed_pixel_bytes(
         u64::from(raw.width()),
         u64::from(raw.height()),
         u64::from(raw.samples_per_pixel()),
         raw.bits_allocated(),
     )
-    .ok_or_else(|| Error::Unsupported {
-        reason: "JPEG passthrough uncompressed frame byte count overflow".into(),
-    })
 }
 
 pub(super) fn jpeg_baseline_fallback_uncompressed_bytes(
@@ -430,27 +430,12 @@ pub(super) fn jpeg_baseline_fallback_uncompressed_bytes(
     frame_rows: u32,
     profile: PixelProfile,
 ) -> Result<u64, Error> {
-    checked_uncompressed_byte_count(
+    crate::lossy::uncompressed_pixel_bytes(
         u64::from(frame_columns),
         u64::from(frame_rows),
         u64::from(profile.components),
         profile.bits_allocated,
     )
-    .ok_or_else(|| Error::Unsupported {
-        reason: "JPEG Baseline uncompressed frame byte count overflow".into(),
-    })
-}
-
-fn checked_uncompressed_byte_count(
-    width: u64,
-    height: u64,
-    samples_per_pixel: u64,
-    bits_allocated: u16,
-) -> Option<u64> {
-    width
-        .checked_mul(height)
-        .and_then(|pixels| pixels.checked_mul(samples_per_pixel))
-        .and_then(|samples| samples.checked_mul(u64::from(bits_allocated / 8)))
 }
 
 pub(super) fn encode_jpeg_baseline_cpu_fragment(
