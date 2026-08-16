@@ -29,17 +29,19 @@ fn run() -> Result<(), Error> {
             metadata,
             research_placeholder,
             export,
+            annotations,
             level,
             json,
-        } => cli_export::handle_convert(
+        } => cli_export::handle_convert(cli_export::ConvertRequest {
             source,
             out,
             metadata,
             research_placeholder,
-            export,
+            export_args: export,
+            annotation_args: annotations,
             level,
             json,
-        ),
+        }),
         Command::Calibration { command } => cli_calibration::handle(command),
         Command::Profile {
             source,

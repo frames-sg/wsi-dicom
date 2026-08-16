@@ -86,6 +86,7 @@ pub(super) fn try_record_existing_lossless_j2k_frame(
     if let Some(passthrough) = planned_frame.passthrough.as_ref() {
         let profile = passthrough.profile;
         ensure_consistent_pixel_profile(pixel_profile, profile, mismatch_reason)?;
+        validate_dicom_j2k_frame(&passthrough.codestream, profile, options.transfer_syntax)?;
         codestream_sink(metrics, &passthrough.codestream)?;
         metrics.record_j2k_passthrough_frame();
         metrics.record_pixel_profile(profile);
@@ -94,6 +95,7 @@ pub(super) fn try_record_existing_lossless_j2k_frame(
 
     if let Some(Ok(direct)) = direct_routes.direct_j2k_results[idx].take() {
         j2k_direct_htj2k::record_success(metrics, pixel_profile, &direct, mismatch_reason)?;
+        validate_dicom_j2k_frame(&direct.codestream, direct.profile, options.transfer_syntax)?;
         codestream_sink(metrics, &direct.codestream)?;
         return Ok(true);
     }
@@ -109,6 +111,11 @@ pub(super) fn try_record_existing_lossless_j2k_frame(
                     planned_frame.source_jpeg_retiled,
                     planned_frame.source_jpeg_retile_duration,
                     mismatch_reason,
+                )?;
+                validate_dicom_j2k_frame(
+                    &direct.codestream,
+                    direct.profile,
+                    options.transfer_syntax,
                 )?;
                 codestream_sink(metrics, &direct.codestream)?;
                 return Ok(true);

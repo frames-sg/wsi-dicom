@@ -112,4 +112,10 @@ pub enum Error {
         /// Human-readable validation failure reason.
         reason: String,
     },
+    /// QuPath annotation conversion or sidecar publication failed.
+    #[error("DICOM annotation export failed: {reason}")]
+    Annotation {
+        /// Human-readable annotation conversion failure reason.
+        reason: String,
+    },
 }

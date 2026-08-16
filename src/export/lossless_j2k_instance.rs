@@ -206,11 +206,8 @@ pub(super) fn prepare_lossless_j2k_instance(
             },
         )?;
         for (idx, planned_frame) in planned.iter().enumerate() {
-            let encode_allowed = j2k_non_passthrough_encode_allowed(
-                planned_frame,
-                request.options.transfer_syntax,
-                tile_size,
-            );
+            let encode_allowed =
+                j2k_non_passthrough_encode_allowed(planned_frame, request.options.transfer_syntax);
             let compressed_bytes_before = pixel_data.total_raw_bytes();
             if try_write_existing_lossless_j2k_frame(
                 ExistingLosslessJ2kFrameContext {
@@ -272,6 +269,7 @@ pub(super) fn prepare_lossless_j2k_instance(
                 &mut metrics,
                 &mut pixel_profile,
                 resolved,
+                request.options.transfer_syntax,
                 "pixel profile changed across frames",
                 |err| match err {
                     Error::Encode { message } => Error::FrameEncode {

@@ -12,6 +12,7 @@
 //! `bench-internals` feature exposes unstable helpers for the repository's
 //! benchmark harness only.
 
+mod annotation_export;
 mod api;
 #[cfg(feature = "bench-internals")]
 #[doc(hidden)]
@@ -44,6 +45,10 @@ mod writer;
 #[cfg(test)]
 mod test_support;
 
+pub use annotation_export::{
+    export_qupath_annotations, AnnotationCoordinateSpace, AnnotationDiagnosticReport,
+    AnnotationExportReport, AnnotationInstanceReport, AnnotationTarget, QuPathAnnotationOptions,
+};
 pub use api::Export;
 pub use calibration::{
     create_icc_calibration_bundle, ColorManagement, IccCalibrationRegistry, IccConflictPolicy,

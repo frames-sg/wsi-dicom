@@ -110,6 +110,85 @@ fn shipped_binary_rejects_malformed_compressed_pixel_data_without_external_tools
 }
 
 #[test]
+fn shipped_binary_converts_qupath_geojson_with_the_wsi() {
+    let temporary_directory = tempfile::tempdir().expect("create temporary directory");
+    let self_test_workspace = temporary_directory.path().join("synthetic-source");
+    let self_test = Command::new(env!("CARGO_BIN_EXE_wsi-dicom"))
+        .arg("self-test")
+        .arg("--json")
+        .arg("--out")
+        .arg(&self_test_workspace)
+        .arg("--keep-output")
+        .arg("--command-timeout-secs")
+        .arg("15")
+        .output()
+        .expect("create synthetic source through shipped CLI");
+    assert!(
+        self_test.status.success(),
+        "self-test source creation failed: {}",
+        String::from_utf8_lossy(&self_test.stderr)
+    );
+    let self_test_report: Value = serde_json::from_slice(&self_test.stdout).unwrap();
+    let source = path_from_json(&self_test_report["source_path"]);
+
+    let geojson = temporary_directory.path().join("case.geojson");
+    std::fs::write(
+        &geojson,
+        r#"{
+          "type":"FeatureCollection",
+          "features":[{
+            "type":"Feature",
+            "geometry":{"type":"Polygon","coordinates":[[[0,0],[3,0],[3,3],[0,3],[0,0]]]},
+            "properties":{"classification":{"name":"Tumor"}}
+          }]
+        }"#,
+    )
+    .unwrap();
+    let mapping =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/qupath-neoplasm-mapping-v1.json");
+    let output_dir = temporary_directory.path().join("combined-output");
+
+    let converted = Command::new(env!("CARGO_BIN_EXE_wsi-dicom"))
+        .arg("convert")
+        .arg(source)
+        .arg("--out")
+        .arg(&output_dir)
+        .arg("--research-placeholder")
+        .arg("--preset")
+        .arg("fast-jpeg")
+        .arg("--backend")
+        .arg("cpu")
+        .arg("--tile-size")
+        .arg("4")
+        .arg("--qupath-annotations")
+        .arg(&geojson)
+        .arg("--annotation-mapping")
+        .arg(&mapping)
+        .arg("--annotation-target")
+        .arg("ann")
+        .arg("--json")
+        .output()
+        .expect("convert synthetic source and QuPath annotations");
+
+    assert!(
+        converted.status.success(),
+        "combined conversion failed with {}\nstdout:\n{}\nstderr:\n{}",
+        converted.status,
+        String::from_utf8_lossy(&converted.stdout),
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    let report: Value = serde_json::from_slice(&converted.stdout).unwrap();
+    assert!(!report["instances"].as_array().unwrap().is_empty());
+    assert_eq!(report["annotations"]["feature_count"], 1);
+    assert_eq!(
+        report["annotations"]["source_wsi"],
+        report["instances"][0]["path"]
+    );
+    assert!(path_from_json(&report["annotations"]["instances"][0]["path"]).is_file());
+    assert!(output_dir.join("annotations/manifest.json").is_file());
+}
+
+#[test]
 fn calibration_bundle_cli_flow_embeds_verified_profile_without_leaking_local_paths() {
     let temporary_directory = tempfile::tempdir().expect("create temporary directory");
     let self_test_workspace = temporary_directory.path().join("synthetic-source");

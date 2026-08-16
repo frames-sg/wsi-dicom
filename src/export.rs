@@ -345,6 +345,7 @@ pub fn export_dicom(request: ExportRequest) -> Result<ExportReport, Error> {
         output_dir: request.output_dir,
         instances,
         metrics,
+        annotations: None,
     })
 }
 
@@ -397,8 +398,8 @@ mod tests {
     use crate::test_support::{
         dicom_fragment_payload_without_padding, encode_test_gray_jpeg, encode_test_jpeg,
         find_command_for_test, read_binary_ppm_for_test, tiff_short_value, tiff_tag,
-        write_tiled_grayscale_jpeg_tiff, write_tiled_jp2k_rgb_tiff, write_tiled_jp2k_ycbcr_tiff,
-        write_tiled_jpeg_tiff,
+        write_tiled_aperio_jp2k_ycbcr_tiff, write_tiled_grayscale_jpeg_tiff,
+        write_tiled_jp2k_rgb_tiff, write_tiled_jp2k_ycbcr_tiff, write_tiled_jpeg_tiff,
     };
     use dicom_core::VR;
     use dicom_dictionary_std::{tags, uids};

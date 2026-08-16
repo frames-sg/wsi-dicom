@@ -383,20 +383,22 @@ fn lossless_j2k_cpu_fallback_indices_skip_ineligible_and_already_encoded_frames(
     planned[4].width = 3;
     planned[4].source_j2k_dimensions = Some((3, 4));
     planned[4].source_j2k_syntax = Some(CompressedTransferSyntax::Jpeg2000Lossless);
-    let already_encoded = [false, true, false, true, false];
+    planned[3].source_j2k_dimensions = Some((4, 4));
+    planned[3].source_j2k_syntax = Some(CompressedTransferSyntax::Jpeg2000Lossless);
+    let already_encoded = [false, true, false, false, false];
 
     assert_eq!(
-        lossless_j2k_cpu_fallback_indices(&planned, TransferSyntax::Htj2kLosslessRpcl, 4, |idx| {
+        lossless_j2k_cpu_fallback_indices(&planned, TransferSyntax::Htj2kLosslessRpcl, |idx| {
             already_encoded[idx]
         },),
-        vec![2, 4]
+        vec![2, 3, 4]
     );
     assert_eq!(
-        lossless_j2k_cpu_fallback_indices(&planned, TransferSyntax::Jpeg2000, 4, |_| false),
-        vec![4]
+        lossless_j2k_cpu_fallback_indices(&planned, TransferSyntax::Jpeg2000, |_| false),
+        vec![3, 4]
     );
     assert!(
-        lossless_j2k_cpu_fallback_indices(&planned, TransferSyntax::Htj2k, 4, |_| false).is_empty()
+        lossless_j2k_cpu_fallback_indices(&planned, TransferSyntax::Htj2k, |_| false).is_empty()
     );
 }
 

@@ -1,7 +1,9 @@
 use crate::cli_args::{Cli, Command};
 use crate::cli_calibration::CalibrationCommand;
 use clap::Parser;
-use wsi_dicom::{ColorManagement, JpegDirectHtj2kProfile, UidPolicy};
+use wsi_dicom::{
+    AnnotationCoordinateSpace, AnnotationTarget, ColorManagement, JpegDirectHtj2kProfile, UidPolicy,
+};
 
 #[test]
 fn cli_convert_defaults_icc_to_source_or_srgb() {
@@ -247,6 +249,68 @@ fn cli_convert_accepts_gpu_encode_tuning_flags() {
     assert_eq!(gpu_encode.gpu_pipeline_depth, Some(3));
     assert_eq!(gpu_encode.gpu_row_batch_rows, Some(6));
     assert_eq!(gpu_encode.gpu_row_batch_target_tiles, Some(96));
+}
+
+#[test]
+fn cli_convert_accepts_explicit_qupath_annotation_conversion() {
+    let cli = Cli::try_parse_from([
+        "wsi-dicom",
+        "convert",
+        "case.ndpi",
+        "--out",
+        "dicom-out",
+        "--qupath-annotations",
+        "case.geojson",
+        "--annotation-mapping",
+        "mapping.json",
+        "--annotation-target",
+        "ann",
+        "--annotation-target",
+        "sr",
+        "--annotation-coordinate-space",
+        "level0-pixels",
+    ]);
+
+    let cli = cli.unwrap_or_else(|error| panic!("combined conversion should parse: {error}"));
+    let Command::Convert { annotations, .. } = cli.command else {
+        panic!("expected convert command");
+    };
+    let options = annotations.options().unwrap().unwrap();
+    assert_eq!(options.geojson_path, std::path::Path::new("case.geojson"));
+    assert_eq!(options.mapping_path, std::path::Path::new("mapping.json"));
+    assert_eq!(
+        options.targets,
+        vec![AnnotationTarget::Ann, AnnotationTarget::Sr]
+    );
+    assert_eq!(
+        options.coordinate_space,
+        AnnotationCoordinateSpace::Level0Pixels
+    );
+}
+
+#[test]
+fn cli_convert_rejects_incomplete_qupath_annotation_selection() {
+    assert!(Cli::try_parse_from([
+        "wsi-dicom",
+        "convert",
+        "case.ndpi",
+        "--out",
+        "dicom-out",
+        "--qupath-annotations",
+        "case.geojson",
+    ])
+    .is_err());
+
+    assert!(Cli::try_parse_from([
+        "wsi-dicom",
+        "convert",
+        "case.ndpi",
+        "--out",
+        "dicom-out",
+        "--annotation-target",
+        "ann",
+    ])
+    .is_err());
 }
 
 #[test]

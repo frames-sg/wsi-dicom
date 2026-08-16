@@ -93,11 +93,8 @@ pub(super) fn profile_lossless_j2k_routes(
             },
         )?;
         for (idx, planned_frame) in planned.iter().enumerate() {
-            let encode_allowed = j2k_non_passthrough_encode_allowed(
-                planned_frame,
-                options.transfer_syntax,
-                tile_size,
-            );
+            let encode_allowed =
+                j2k_non_passthrough_encode_allowed(planned_frame, options.transfer_syntax);
             if try_profile_existing_lossless_j2k_frame(ExistingLosslessJ2kFrameContext {
                 idx,
                 planned_frame,
@@ -128,6 +125,7 @@ pub(super) fn profile_lossless_j2k_routes(
                 &mut metrics,
                 &mut pixel_profile,
                 resolved,
+                options.transfer_syntax,
                 "pixel profile changed across profiled frames",
                 |err| err,
             )?;

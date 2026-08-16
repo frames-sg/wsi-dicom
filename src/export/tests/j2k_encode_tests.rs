@@ -263,7 +263,7 @@ fn raw_j2k_lossless_tile_can_passthrough_when_geometry_matches() {
         PixelProfile {
             components: 3,
             bits_allocated: 8,
-            photometric_interpretation: "RGB",
+            photometric_interpretation: "YBR_RCT",
         }
     );
     assert_eq!(
@@ -473,7 +473,131 @@ fn export_general_j2k_edge_fallback_preserves_interior_passthrough() {
 }
 
 #[test]
-fn export_general_j2k_rgb_edge_fallback_matches_passthrough_profile() {
+fn export_aperio_33003_yuv422_edges_use_one_dicom_j2k_representation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let encode_yuv422 = |width: u32, height: u32, values: [u8; 3]| {
+        let luma = vec![values[0]; (width * height) as usize];
+        let chroma_len = (width.div_ceil(2) * height) as usize;
+        let chroma_blue = vec![values[1]; chroma_len];
+        let chroma_red = vec![values[2]; chroma_len];
+        let planes = [
+            j2k::J2kLosslessComponentPlane {
+                data: &luma,
+                x_rsiz: 1,
+                y_rsiz: 1,
+            },
+            j2k::J2kLosslessComponentPlane {
+                data: &chroma_blue,
+                x_rsiz: 2,
+                y_rsiz: 1,
+            },
+            j2k::J2kLosslessComponentPlane {
+                data: &chroma_red,
+                x_rsiz: 2,
+                y_rsiz: 1,
+            },
+        ];
+        let samples = j2k::J2kLosslessComponentSamples::new(&planes, width, height, 8, false)
+            .expect("valid YUV 4:2:2 component samples");
+        j2k::encode_j2k_lossless_components(
+            samples,
+            &j2k::J2kLosslessEncodeOptions::default()
+                .with_cpu_only_backend()
+                .with_reversible_transform(ReversibleTransform::None53)
+                .with_validation(j2k::J2kEncodeValidation::CpuRoundTrip),
+        )
+        .expect("encode YUV 4:2:2 fixture")
+        .codestream
+    };
+    let source_tiles = [
+        encode_yuv422(2, 2, [100, 80, 180]),
+        encode_yuv422(1, 2, [120, 90, 160]),
+        encode_yuv422(2, 1, [140, 110, 145]),
+        encode_yuv422(1, 1, [160, 130, 115]),
+    ];
+    for codestream in &source_tiles {
+        let view = J2kView::parse(codestream).expect("parse source YUV 4:2:2 codestream");
+        let sampling = view
+            .support_info()
+            .expect("source support metadata")
+            .components
+            .iter()
+            .map(|component| (component.x_rsiz, component.y_rsiz))
+            .collect::<Vec<_>>();
+        assert_eq!(sampling, [(1, 1), (2, 1), (2, 1)]);
+        assert_eq!(j2k_cod_mct(codestream), 0);
+    }
+
+    let source = tmp.path().join("source.svs");
+    write_tiled_aperio_jp2k_ycbcr_tiff(&source, 3, 3, 2, 2, &source_tiles);
+    let slide = Slide::open(&source).expect("open Aperio 33003 fixture");
+    let expected_frames = [(0, 0), (2, 0), (0, 2), (2, 2)].map(|origin| {
+        let region = slide
+            .read_region(&RegionRequest::new(0usize, 0usize, 0u32, origin, (2, 2)))
+            .expect("decode source frame region");
+        prepare_tile_samples(&region, 2, 2)
+            .expect("prepare source frame")
+            .bytes
+    });
+
+    let report = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 2,
+            transfer_syntax: TransferSyntax::Jpeg2000,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: false,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: None,
+    })
+    .expect("export Aperio 33003 fixture");
+
+    assert_eq!(report.metrics.routes.total_frames, 4);
+    assert_eq!(report.metrics.routes.j2k_passthrough_frames, 0);
+    assert_eq!(report.metrics.routes.cpu_fallback_frames, 4);
+
+    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+    assert_eq!(
+        object
+            .element(tags::PHOTOMETRIC_INTERPRETATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "YBR_RCT"
+    );
+    let fragments = object
+        .element(tags::PIXEL_DATA)
+        .unwrap()
+        .value()
+        .fragments()
+        .unwrap();
+    assert_eq!(fragments.len(), 4);
+    for (fragment, expected) in fragments.iter().zip(expected_frames) {
+        let codestream = dicom_fragment_payload_without_padding(fragment);
+        let view = J2kView::parse(codestream).expect("parse exported frame");
+        let support = view
+            .support_info()
+            .expect("exported frame support metadata");
+        assert_eq!(view.info().colorspace, j2k_core::Colorspace::Rct);
+        assert!(support.components.iter().all(|component| {
+            !component.signed
+                && component.bit_depth == 8
+                && component.x_rsiz == 1
+                && component.y_rsiz == 1
+        }));
+        assert_eq!(j2k_cod_mct(codestream), 1);
+        assert_eq!(decode_j2k_frame_for_test(codestream, 2, 2, 3, 8), expected);
+    }
+}
+
+#[test]
+fn export_general_j2k_rct_edge_fallback_matches_passthrough_profile() {
     let tmp = tempfile::tempdir().unwrap();
     let codestreams = j2k_edge_fallback_codestreams_for_test();
     let source = tmp.path().join("source.svs");
@@ -514,7 +638,7 @@ fn export_general_j2k_rgb_edge_fallback_matches_passthrough_profile() {
             .to_str()
             .unwrap()
             .as_ref(),
-        "RGB"
+        "YBR_RCT"
     );
     let fragments = object
         .element(tags::PIXEL_DATA)
@@ -527,7 +651,7 @@ fn export_general_j2k_rgb_edge_fallback_matches_passthrough_profile() {
         codestreams.interior
     );
     let edge_payload = dicom_fragment_payload_without_padding(&fragments[1]);
-    assert_eq!(j2k_cod_mct(edge_payload), 0);
+    assert_eq!(j2k_cod_mct(edge_payload), 1);
 }
 
 #[test]
@@ -587,7 +711,7 @@ fn dicom_roundtrip_lossless_pixel_identical() {
 }
 
 #[test]
-fn export_general_j2k_lossy_passthrough_writes_compression_ratio() {
+fn export_general_j2k_lossy_source_writes_compression_ratio() {
     let tmp = tempfile::tempdir().unwrap();
     let mut codestreams = j2k_edge_fallback_codestreams_for_test();
     patch_j2k_cod_wavelet_transform(&mut codestreams.interior, 0);
@@ -621,6 +745,9 @@ fn export_general_j2k_lossy_passthrough_writes_compression_ratio() {
         level_filter: None,
     })
     .unwrap();
+
+    assert_eq!(report.metrics.routes.j2k_passthrough_frames, 0);
+    assert_eq!(report.metrics.routes.cpu_fallback_frames, 2);
 
     let object = dicom_object::open_file(&report.instances[0].path).unwrap();
     assert_eq!(
@@ -822,7 +949,7 @@ fn raw_htj2k_rpcl_tile_can_passthrough_when_geometry_matches() {
         PixelProfile {
             components: 3,
             bits_allocated: 8,
-            photometric_interpretation: "RGB",
+            photometric_interpretation: "YBR_RCT",
         }
     );
 }

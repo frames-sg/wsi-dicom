@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use wsi_dicom::{
-    CodecValidation, EncodeBackendPreference, Error, ExportOptions, ExportPreset,
-    JpegDirectHtj2kProfile, TransferSyntax, UidPolicy,
+    AnnotationCoordinateSpace, AnnotationTarget, CodecValidation, EncodeBackendPreference, Error,
+    ExportOptions, ExportPreset, JpegDirectHtj2kProfile, QuPathAnnotationOptions, TransferSyntax,
+    UidPolicy,
 };
 
 use crate::cli_calibration::{CalibrationCommand, ColorManagementArgs};
@@ -27,6 +28,8 @@ pub(crate) enum Command {
         research_placeholder: bool,
         #[command(flatten)]
         export: ExportCliArgs,
+        #[command(flatten)]
+        annotations: AnnotationCliArgs,
         #[arg(long)]
         level: Option<u32>,
         #[arg(long)]
@@ -142,6 +145,95 @@ pub(crate) enum Command {
         json: bool,
     },
     SelfTest(SelfTestArgs),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum AnnotationTargetArg {
+    Ann,
+    Seg,
+    Sr,
+}
+
+impl From<AnnotationTargetArg> for AnnotationTarget {
+    fn from(value: AnnotationTargetArg) -> Self {
+        match value {
+            AnnotationTargetArg::Ann => Self::Ann,
+            AnnotationTargetArg::Seg => Self::Seg,
+            AnnotationTargetArg::Sr => Self::Sr,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum AnnotationCoordinateSpaceArg {
+    Level0Pixels,
+    SourcePixels,
+    SlideMm,
+}
+
+impl From<AnnotationCoordinateSpaceArg> for AnnotationCoordinateSpace {
+    fn from(value: AnnotationCoordinateSpaceArg) -> Self {
+        match value {
+            AnnotationCoordinateSpaceArg::Level0Pixels => Self::Level0Pixels,
+            AnnotationCoordinateSpaceArg::SourcePixels => Self::SourcePixels,
+            AnnotationCoordinateSpaceArg::SlideMm => Self::SlideMillimeters,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Args)]
+pub(crate) struct AnnotationCliArgs {
+    /// QuPath GeoJSON export to convert after the WSI export succeeds.
+    #[arg(
+        long,
+        value_name = "GEOJSON",
+        requires_all = ["annotation_mapping", "annotation_target"]
+    )]
+    pub(crate) qupath_annotations: Option<PathBuf>,
+    /// Explicit QuPath class/property to DICOM terminology mapping.
+    #[arg(long, value_name = "JSON", requires = "qupath_annotations")]
+    pub(crate) annotation_mapping: Option<PathBuf>,
+    /// DICOM sidecar type to create; repeat to request multiple targets.
+    #[arg(long, value_enum, requires = "qupath_annotations")]
+    pub(crate) annotation_target: Vec<AnnotationTargetArg>,
+    /// Coordinate convention used by the QuPath GeoJSON file.
+    #[arg(long, value_enum, requires = "qupath_annotations")]
+    pub(crate) annotation_coordinate_space: Option<AnnotationCoordinateSpaceArg>,
+    /// Permit converter-supported lossy annotation normalizations.
+    #[arg(long, requires = "qupath_annotations")]
+    pub(crate) allow_lossy_annotations: bool,
+}
+
+impl AnnotationCliArgs {
+    pub(crate) fn options(self) -> Result<Option<QuPathAnnotationOptions>, Error> {
+        let Some(geojson_path) = self.qupath_annotations else {
+            return Ok(None);
+        };
+        let mapping_path = self
+            .annotation_mapping
+            .ok_or_else(|| Error::InvalidOptions {
+                reason: "--qupath-annotations requires --annotation-mapping".into(),
+            })?;
+        if self.annotation_target.is_empty() {
+            return Err(Error::InvalidOptions {
+                reason: "--qupath-annotations requires at least one --annotation-target".into(),
+            });
+        }
+        let mut options = QuPathAnnotationOptions::new(
+            geojson_path,
+            mapping_path,
+            self.annotation_target
+                .into_iter()
+                .map(AnnotationTarget::from)
+                .collect(),
+        );
+        options.coordinate_space = self
+            .annotation_coordinate_space
+            .map(AnnotationCoordinateSpace::from)
+            .unwrap_or_default();
+        options.allow_lossy = self.allow_lossy_annotations;
+        Ok(Some(options))
+    }
 }
 
 #[derive(Debug, Args)]

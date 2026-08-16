@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use wsi_dicom::{Error, Export, ExportReport, MetadataSource};
 
-use crate::cli_args::ExportCliArgs;
+use crate::cli_args::{AnnotationCliArgs, ExportCliArgs};
 use crate::cli_output::{print_cli_output, print_json_line};
 use crate::cli_report::{
     format_report_summary, format_sustain_export_iteration_summary, process_memory_pressure,
@@ -11,15 +11,28 @@ use crate::cli_report::{
 use crate::sleep_between_iterations;
 use crate::time;
 
-pub(crate) fn handle_convert(
-    source: PathBuf,
-    out: PathBuf,
-    metadata: Option<PathBuf>,
-    research_placeholder: bool,
-    export_args: ExportCliArgs,
-    level: Option<u32>,
-    json: bool,
-) -> Result<(), Error> {
+pub(crate) struct ConvertRequest {
+    pub(crate) source: PathBuf,
+    pub(crate) out: PathBuf,
+    pub(crate) metadata: Option<PathBuf>,
+    pub(crate) research_placeholder: bool,
+    pub(crate) export_args: ExportCliArgs,
+    pub(crate) annotation_args: AnnotationCliArgs,
+    pub(crate) level: Option<u32>,
+    pub(crate) json: bool,
+}
+
+pub(crate) fn handle_convert(request: ConvertRequest) -> Result<(), Error> {
+    let ConvertRequest {
+        source,
+        out,
+        metadata,
+        research_placeholder,
+        export_args,
+        annotation_args,
+        level,
+        json,
+    } = request;
     let metadata = load_metadata_source(metadata, research_placeholder)?;
     let color_management = export_args.color_management.resolve()?;
     let mut export = Export::from_slide(source)
@@ -30,7 +43,10 @@ pub(crate) fn handle_convert(
     if let Some(level) = level {
         export = export.level(level);
     }
-    let report = export.run()?;
+    let report = match annotation_args.options()? {
+        Some(annotations) => export.run_with_qupath_annotations(annotations)?,
+        None => export.run()?,
+    };
     print_cli_output(json, &report, format_report_summary)
 }
 

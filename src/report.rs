@@ -23,6 +23,9 @@ pub struct ExportReport {
     pub instances: Vec<InstanceReport>,
     /// Aggregate metrics across all generated instances.
     pub metrics: ExportMetrics,
+    /// Optional verified DICOM annotation sidecars created for this WSI export.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<crate::AnnotationExportReport>,
 }
 
 /// Finished compressed frame bytes ready for DICOM encapsulated Pixel Data insertion.

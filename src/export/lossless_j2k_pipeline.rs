@@ -136,7 +136,7 @@ pub(super) fn encode_lossless_j2k_cpu_fallback_batch(
         .flatten()
     {
         let cpu_indices =
-            lossless_j2k_cpu_fallback_indices(planned, options.transfer_syntax, tile_size, |idx| {
+            lossless_j2k_cpu_fallback_indices(planned, options.transfer_syntax, |idx| {
                 skip_index(idx)
             });
         scatter_indexed_results(
@@ -235,6 +235,7 @@ pub(super) fn record_resolved_lossless_j2k_fallback_frame(
     metrics: &mut ExportMetrics,
     pixel_profile: &mut Option<PixelProfile>,
     resolved: ResolvedLosslessJ2kFallbackFrame,
+    transfer_syntax: TransferSyntax,
     mismatch_reason: &'static str,
     map_encode_error: impl FnOnce(Error) -> Error,
 ) -> Result<EncodedDicomJ2kFrame, Error> {
@@ -248,7 +249,17 @@ pub(super) fn record_resolved_lossless_j2k_fallback_frame(
     metrics.record_pixel_profile(resolved.profile);
     ensure_consistent_pixel_profile(pixel_profile, resolved.profile, mismatch_reason)?;
 
-    let encoded = resolved.encoded.map_err(map_encode_error)?;
+    let encoded = resolved
+        .encoded
+        .and_then(|encoded| {
+            validate_dicom_j2k_frame(
+                encoded.codestream_bytes()?.as_ref(),
+                resolved.profile,
+                transfer_syntax,
+            )?;
+            Ok(encoded)
+        })
+        .map_err(map_encode_error)?;
     metrics.record_encoded_frame(&encoded);
     metrics.record_transcode_route(resolved.used_gpu_input, encoded.used_device_encode);
     Ok(encoded)

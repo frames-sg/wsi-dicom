@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::{
     default_transfer_syntax_for_source, export_dicom, CodecValidation, ColorManagement,
     DefaultTransferSyntaxRequest, EncodeBackendPreference, Error, ExportOptions, ExportReport,
-    ExportRequest, JpegDirectHtj2kProfile, MetadataSource, TransferSyntax,
+    ExportRequest, JpegDirectHtj2kProfile, MetadataSource, QuPathAnnotationOptions, TransferSyntax,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,6 +249,30 @@ impl Export {
     pub fn run(self) -> Result<ExportReport, Error> {
         export_dicom(self.build_request()?)
     }
+
+    /// Run the WSI export and then create verified DICOM sidecars from QuPath GeoJSON.
+    ///
+    /// Annotation inputs are bounded and snapshotted before the potentially long WSI
+    /// conversion begins. The sidecars are published atomically under the output
+    /// directory's `annotations` child. If annotation conversion fails, the already
+    /// valid WSI export remains available and the returned error identifies the
+    /// incomplete annotation step.
+    pub fn run_with_qupath_annotations(
+        self,
+        annotations: QuPathAnnotationOptions,
+    ) -> Result<ExportReport, Error> {
+        if annotations.coordinate_space == crate::AnnotationCoordinateSpace::Level0Pixels
+            && self.level_filter.is_some_and(|level| level != 0)
+        {
+            return Err(Error::InvalidOptions {
+                reason: "level-zero QuPath coordinates require exporting level 0".into(),
+            });
+        }
+        let prepared = annotations.prepare()?;
+        let mut report = self.run()?;
+        report.annotations = Some(prepared.export_for(&report)?);
+        Ok(report)
+    }
 }
 
 #[cfg(test)]
@@ -356,5 +380,19 @@ mod tests {
 
         assert!(error.to_string().contains("imaged_volume_depth_mm"));
         assert!(!error.to_string().contains("missing-source.svs"));
+    }
+
+    #[test]
+    fn level_zero_annotations_reject_a_nonzero_only_export_before_reading_inputs() {
+        let error = Export::from_slide("source.ndpi")
+            .level(2)
+            .run_with_qupath_annotations(crate::QuPathAnnotationOptions::new(
+                "missing.geojson",
+                "missing-mapping.json",
+                vec![crate::AnnotationTarget::Ann],
+            ))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("require exporting level 0"));
     }
 }

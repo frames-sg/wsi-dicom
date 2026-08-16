@@ -7,8 +7,9 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use eframe::egui::{self, Color32, Margin, RichText, Stroke, TextStyle, Vec2};
 use wsi_dicom::{
-    validate_dicom_path, CodecValidation, ColorManagement, EncodeBackendPreference, Export,
-    ExportOptions, JpegDirectHtj2kProfile, MetadataSource, TransferSyntax, ValidationOptions,
+    validate_dicom_path, AnnotationCoordinateSpace, AnnotationTarget, CodecValidation,
+    ColorManagement, EncodeBackendPreference, Export, ExportOptions, JpegDirectHtj2kProfile,
+    MetadataSource, QuPathAnnotationOptions, TransferSyntax, ValidationOptions,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,13 @@ struct WsiDicomGui {
     output_dir: Option<PathBuf>,
     metadata_path: Option<PathBuf>,
     research_placeholder: bool,
+    convert_annotations: bool,
+    annotation_geojson_path: Option<PathBuf>,
+    annotation_mapping_path: Option<PathBuf>,
+    annotation_target_ann: bool,
+    annotation_target_seg: bool,
+    annotation_target_sr: bool,
+    annotation_coordinate_space: AnnotationCoordinateSpace,
     transfer_syntax: TransferSyntax,
     jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile,
     color_management: GuiColorManagement,
@@ -75,6 +83,13 @@ impl Default for WsiDicomGui {
             output_dir: None,
             metadata_path: None,
             research_placeholder: false,
+            convert_annotations: false,
+            annotation_geojson_path: None,
+            annotation_mapping_path: None,
+            annotation_target_ann: true,
+            annotation_target_seg: false,
+            annotation_target_sr: false,
+            annotation_coordinate_space: AnnotationCoordinateSpace::Level0Pixels,
             transfer_syntax: options.transfer_syntax,
             jpeg_direct_htj2k_profile: options.jpeg_direct_htj2k_profile,
             color_management: GuiColorManagement::SourceOrSrgb,
@@ -282,6 +297,79 @@ impl WsiDicomGui {
                         );
                     });
                 });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.add_enabled_ui(!running, |ui| {
+                    toggle_row(
+                        ui,
+                        &mut self.convert_annotations,
+                        "Convert QuPath annotations",
+                        "profiled GeoJSON → verified DICOM ANN / SEG / SR sidecars",
+                    );
+                });
+                if self.convert_annotations {
+                    path_row(
+                        ui,
+                        PathRow {
+                            label: "QuPath GeoJSON",
+                            value_text: path_label(self.annotation_geojson_path.as_deref()),
+                            placeholder: self.annotation_geojson_path.is_none(),
+                            enabled: !running,
+                            button_label: "Load JSON",
+                            pick: || {
+                                rfd::FileDialog::new()
+                                    .add_filter("GeoJSON", &["geojson", "json"])
+                                    .pick_file()
+                            },
+                        },
+                        &mut self.annotation_geojson_path,
+                    );
+                    ui.add_space(4.0);
+                    path_row(
+                        ui,
+                        PathRow {
+                            label: "DICOM mapping",
+                            value_text: path_label(self.annotation_mapping_path.as_deref()),
+                            placeholder: self.annotation_mapping_path.is_none(),
+                            enabled: !running,
+                            button_label: "Load JSON",
+                            pick: || {
+                                rfd::FileDialog::new()
+                                    .add_filter("JSON", &["json"])
+                                    .pick_file()
+                            },
+                        },
+                        &mut self.annotation_mapping_path,
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.set_min_width(160.0);
+                        theme::field_label(ui, "DICOM targets");
+                        ui.checkbox(&mut self.annotation_target_ann, "ANN");
+                        ui.checkbox(&mut self.annotation_target_seg, "SEG");
+                        ui.checkbox(&mut self.annotation_target_sr, "SR");
+                        ui.add_space(16.0);
+                        theme::field_label(ui, "Coordinates");
+                        egui::ComboBox::from_id_salt("annotation_coordinate_space")
+                            .selected_text(annotation_coordinate_space_label(
+                                self.annotation_coordinate_space,
+                            ))
+                            .show_ui(ui, |ui| {
+                                for candidate in [
+                                    AnnotationCoordinateSpace::Level0Pixels,
+                                    AnnotationCoordinateSpace::SourcePixels,
+                                    AnnotationCoordinateSpace::SlideMillimeters,
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.annotation_coordinate_space,
+                                        candidate,
+                                        annotation_coordinate_space_label(candidate),
+                                    );
+                                }
+                            });
+                    });
+                }
             },
         );
     }
@@ -550,11 +638,19 @@ impl WsiDicomGui {
             self.status = "Choose an output directory first.".to_string();
             return;
         };
+        let annotations = match self.selected_annotation_options() {
+            Ok(annotations) => annotations,
+            Err(message) => {
+                self.status = message;
+                return;
+            }
+        };
         let request = GuiRunRequest {
             source_path,
             output_dir,
             metadata_path: self.metadata_path.clone(),
             research_placeholder: self.research_placeholder,
+            annotations,
             transfer_syntax: self.transfer_syntax,
             jpeg_direct_htj2k_profile: self.jpeg_direct_htj2k_profile,
             color_management: self.color_management,
@@ -575,6 +671,36 @@ impl WsiDicomGui {
         self.running = true;
         self.status = "Export running...".to_string();
         self.report_json.clear();
+    }
+
+    fn selected_annotation_options(&self) -> Result<Option<QuPathAnnotationOptions>, String> {
+        if !self.convert_annotations {
+            return Ok(None);
+        }
+        let geojson = self
+            .annotation_geojson_path
+            .clone()
+            .ok_or_else(|| "Choose a QuPath GeoJSON annotation file.".to_string())?;
+        let mapping = self
+            .annotation_mapping_path
+            .clone()
+            .ok_or_else(|| "Choose a DICOM annotation mapping file.".to_string())?;
+        let mut targets = Vec::new();
+        if self.annotation_target_ann {
+            targets.push(AnnotationTarget::Ann);
+        }
+        if self.annotation_target_seg {
+            targets.push(AnnotationTarget::Seg);
+        }
+        if self.annotation_target_sr {
+            targets.push(AnnotationTarget::Sr);
+        }
+        if targets.is_empty() {
+            return Err("Select at least one annotation target: ANN, SEG, or SR.".to_string());
+        }
+        let mut options = QuPathAnnotationOptions::new(geojson, mapping, targets);
+        options.coordinate_space = self.annotation_coordinate_space;
+        Ok(Some(options))
     }
 
     fn poll_worker(&mut self) {
@@ -632,6 +758,7 @@ struct GuiRunRequest {
     output_dir: PathBuf,
     metadata_path: Option<PathBuf>,
     research_placeholder: bool,
+    annotations: Option<QuPathAnnotationOptions>,
     transfer_syntax: TransferSyntax,
     jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile,
     color_management: GuiColorManagement,
@@ -669,13 +796,16 @@ fn run_export(request: GuiRunRequest) -> GuiRunResult {
         options.jpeg_direct_htj2k_profile =
             JpegDirectHtj2kProfile::default_for_transfer_syntax(options.transfer_syntax);
     }
-    let export_report = Export::from_slide(&request.source_path)
+    let export = Export::from_slide(&request.source_path)
         .to_directory(&request.output_dir)
         .with_metadata(metadata)
         .with_options(options)
-        .color_management(request.color_management.into())
-        .run()
-        .map_err(|err| err.to_string())?;
+        .color_management(request.color_management.into());
+    let export_report = match request.annotations {
+        Some(annotations) => export.run_with_qupath_annotations(annotations),
+        None => export.run(),
+    }
+    .map_err(|err| err.to_string())?;
     let validation_report = if request.validate_after_export {
         let mut validation = ValidationOptions::default();
         validation.strict = request.validation_strict;
@@ -691,13 +821,24 @@ fn run_export(request: GuiRunRequest) -> GuiRunResult {
     .map_err(|err| err.to_string())?;
     let summary = match &validation_report {
         Some(report) => format!(
-            "Exported {} instance(s); validation passed={} failed={} skipped={}.",
+            "Exported {} WSI instance(s) and {} annotation sidecar(s); validation passed={} failed={} skipped={}.",
             export_report.instances.len(),
+            export_report
+                .annotations
+                .as_ref()
+                .map_or(0, |annotations| annotations.instances.len()),
             report.passed_checks(),
             report.failed_checks(),
             report.skipped_checks()
         ),
-        None => format!("Exported {} instance(s).", export_report.instances.len()),
+        None => format!(
+            "Exported {} WSI instance(s) and {} annotation sidecar(s).",
+            export_report.instances.len(),
+            export_report
+                .annotations
+                .as_ref()
+                .map_or(0, |annotations| annotations.instances.len())
+        ),
     };
     Ok(GuiRunReport { summary, json })
 }
@@ -854,6 +995,14 @@ fn codec_validation_label(value: CodecValidation) -> &'static str {
     }
 }
 
+fn annotation_coordinate_space_label(value: AnnotationCoordinateSpace) -> &'static str {
+    match value {
+        AnnotationCoordinateSpace::Level0Pixels => "Level-0 pixels",
+        AnnotationCoordinateSpace::SourcePixels => "DICOM source pixels",
+        AnnotationCoordinateSpace::SlideMillimeters => "Slide millimetres",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -875,5 +1024,23 @@ mod tests {
         assert!(gui.receiver.is_none());
         assert_eq!(gui.status, "Export failed.");
         assert!(gui.report_json.contains("worker stopped"));
+    }
+
+    #[test]
+    fn annotation_selection_requires_inputs_and_at_least_one_target() {
+        let mut gui = WsiDicomGui {
+            convert_annotations: true,
+            ..WsiDicomGui::default()
+        };
+        assert!(gui.selected_annotation_options().is_err());
+
+        gui.annotation_geojson_path = Some("case.geojson".into());
+        gui.annotation_mapping_path = Some("mapping.json".into());
+        gui.annotation_target_ann = false;
+        assert!(gui.selected_annotation_options().is_err());
+
+        gui.annotation_target_seg = true;
+        let options = gui.selected_annotation_options().unwrap().unwrap();
+        assert_eq!(options.targets, vec![AnnotationTarget::Seg]);
     }
 }
