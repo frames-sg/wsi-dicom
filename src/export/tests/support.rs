@@ -551,7 +551,7 @@ pub(super) fn decode_j2k_frame_for_test(
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) fn metal_test_tile(
-    device: &metal::Device,
+    device: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>,
     bytes: &[u8],
     width: u32,
     height: u32,

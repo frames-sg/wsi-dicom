@@ -109,7 +109,7 @@ mod lossless_j2k_pipeline;
 mod lossless_j2k_plan;
 mod lossy_provenance;
 #[cfg(all(feature = "metal", target_os = "macos"))]
-mod metal_compose;
+pub(crate) mod metal_compose;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_input;
 #[cfg(all(feature = "metal", target_os = "macos"))]

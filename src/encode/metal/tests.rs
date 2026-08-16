@@ -16,19 +16,32 @@ fn rgb8_pixels_for_test(width: u32, height: u32, multiplier: u32) -> Vec<u8> {
 }
 
 fn metal_rgb8_tile_for_test(pixels: &[u8], width: u32, height: u32) -> MetalDeviceTile {
+    metal_tile_for_test(
+        pixels,
+        width,
+        height,
+        width as usize * 3,
+        WsiPixelFormat::Rgb8,
+    )
+}
+
+fn metal_tile_for_test(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    pitch_bytes: usize,
+    format: WsiPixelFormat,
+) -> MetalDeviceTile {
     let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = session.device().new_buffer_with_data(
-        pixels.as_ptr().cast(),
-        pixels.len() as u64,
-        ::metal::MTLResourceOptions::StorageModeShared,
-    );
+    let buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), pixels)
+        .expect("test Metal upload");
     crate::metal_interop::test_tile_from_completed_buffer(
         buffer,
         0,
         width,
         height,
-        width as usize * 3,
-        WsiPixelFormat::Rgb8,
+        pitch_bytes,
+        format,
     )
 }
 
@@ -102,29 +115,22 @@ fn metal_tile_encode_returns_buffer_backed_codestream_for_padded_tiles() {
 }
 
 #[test]
-#[allow(deprecated)]
-fn metal_tile_encode_rejects_legacy_raw_buffer_storage() {
+fn metal_tile_encode_accepts_explicit_completed_buffer_adoption() {
     let pixels = rgb8_pixels_for_test(8, 8, 31);
-    let mut tile = metal_rgb8_tile_for_test(&pixels, 8, 8);
-    let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
-    tile.storage = wsi_rs::output::metal::MetalDeviceStorage::Buffer {
-        buffer: j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &pixels)
-            .expect("legacy test upload"),
-        byte_offset: 0,
-    };
+    let tile = metal_rgb8_tile_for_test(&pixels, 8, 8);
     let mut encoder = DicomJ2kEncoder::new(
         EncodeBackendPreference::RequireDevice,
         TransferSyntax::Jpeg2000Lossless,
         CodecValidation::RoundTrip,
     );
 
-    let error = match encoder.encode_metal_tiles(&[tile], 8, 8) {
-        Ok(_) => panic!("legacy raw storage must be rejected before submission"),
-        Err(error) => error,
-    };
+    let encoded = encoder
+        .encode_metal_tiles(&[tile], 8, 8)
+        .expect("adopted completed buffer must encode")
+        .frames;
+    let frame = first_metal_frame_for_test(encoded);
 
-    assert!(matches!(&error, crate::Error::Unsupported { .. }));
-    assert!(error.to_string().contains("legacy raw Metal buffer"));
+    assert_rgb8_j2k_frame_matches_pixels_for_test(frame, &pixels, 8);
 }
 
 #[test]
@@ -174,20 +180,7 @@ fn metal_tile_encode_returns_buffer_backed_codestream_for_edge_tiles() {
     let pixels: Vec<u8> = (0..7 * 5 * 3)
         .map(|idx| ((idx * 31) & 0xFF) as u8)
         .collect();
-    let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = session.device().new_buffer_with_data(
-        pixels.as_ptr().cast(),
-        pixels.len() as u64,
-        ::metal::MTLResourceOptions::StorageModeShared,
-    );
-    let tile = crate::metal_interop::test_tile_from_completed_buffer(
-        buffer,
-        0,
-        7,
-        5,
-        7 * 3,
-        WsiPixelFormat::Rgb8,
-    );
+    let tile = metal_tile_for_test(&pixels, 7, 5, 7 * 3, WsiPixelFormat::Rgb8);
     let mut encoder = DicomJ2kEncoder::new(
         EncodeBackendPreference::RequireDevice,
         TransferSyntax::Jpeg2000Lossless,
@@ -228,20 +221,7 @@ fn metal_tile_encode_returns_buffer_backed_codestream_for_edge_tiles() {
 #[test]
 fn metal_tile_encode_returns_buffer_backed_codestream_for_htj2k_tiles() {
     let pixels: Vec<u8> = (0..8 * 8).map(|idx| ((idx * 37) & 0xFF) as u8).collect();
-    let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = session.device().new_buffer_with_data(
-        pixels.as_ptr().cast(),
-        pixels.len() as u64,
-        ::metal::MTLResourceOptions::StorageModeShared,
-    );
-    let tile = crate::metal_interop::test_tile_from_completed_buffer(
-        buffer,
-        0,
-        8,
-        8,
-        8,
-        WsiPixelFormat::Gray8,
-    );
+    let tile = metal_tile_for_test(&pixels, 8, 8, 8, WsiPixelFormat::Gray8);
     let mut encoder = DicomJ2kEncoder::new(
         EncodeBackendPreference::RequireDevice,
         TransferSyntax::Htj2kLossless,
@@ -279,20 +259,7 @@ fn metal_tile_encode_returns_buffer_backed_codestream_for_wsi_sized_htj2k_rpcl_t
     let pixels: Vec<u8> = (0..256 * 256 * 3)
         .map(|idx| ((idx * 41) & 0xFF) as u8)
         .collect();
-    let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = session.device().new_buffer_with_data(
-        pixels.as_ptr().cast(),
-        pixels.len() as u64,
-        ::metal::MTLResourceOptions::StorageModeShared,
-    );
-    let tile = crate::metal_interop::test_tile_from_completed_buffer(
-        buffer,
-        0,
-        256,
-        256,
-        256 * 3,
-        WsiPixelFormat::Rgb8,
-    );
+    let tile = metal_rgb8_tile_for_test(&pixels, 256, 256);
     let mut encoder = DicomJ2kEncoder::new(
         EncodeBackendPreference::RequireDevice,
         TransferSyntax::Htj2kLosslessRpcl,
@@ -348,20 +315,7 @@ fn metal_tile_encode_preserves_default_htj2k_rpcl_decomposition_profile() {
     );
     assert_eq!(expected_levels, 3);
 
-    let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = session.device().new_buffer_with_data(
-        pixels.as_ptr().cast(),
-        pixels.len() as u64,
-        ::metal::MTLResourceOptions::StorageModeShared,
-    );
-    let tile = crate::metal_interop::test_tile_from_completed_buffer(
-        buffer,
-        0,
-        512,
-        512,
-        512 * 3,
-        WsiPixelFormat::Rgb8,
-    );
+    let tile = metal_rgb8_tile_for_test(&pixels, 512, 512);
     let mut encoder = DicomJ2kEncoder::new(
         EncodeBackendPreference::RequireDevice,
         TransferSyntax::Htj2kLosslessRpcl,
@@ -410,20 +364,7 @@ fn metal_edge_rgb8_htj2k_rpcl_codestream_decodes_with_reference_codec_when_avail
     let pixels: Vec<u8> = (0..7 * 5 * 3)
         .map(|idx| ((idx * 43 + 17) & 0xFF) as u8)
         .collect();
-    let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = session.device().new_buffer_with_data(
-        pixels.as_ptr().cast(),
-        pixels.len() as u64,
-        ::metal::MTLResourceOptions::StorageModeShared,
-    );
-    let tile = crate::metal_interop::test_tile_from_completed_buffer(
-        buffer,
-        0,
-        7,
-        5,
-        7 * 3,
-        WsiPixelFormat::Rgb8,
-    );
+    let tile = metal_tile_for_test(&pixels, 7, 5, 7 * 3, WsiPixelFormat::Rgb8);
     let mut encoder = DicomJ2kEncoder::new(
         EncodeBackendPreference::RequireDevice,
         TransferSyntax::Htj2kLosslessRpcl,
@@ -484,20 +425,7 @@ fn prefer_device_metal_tile_encode_returns_buffer_backed_codestream_for_wsi_size
     let pixels: Vec<u8> = (0..256 * 256 * 3)
         .map(|idx| ((idx * 41) & 0xFF) as u8)
         .collect();
-    let session = j2k_metal::MetalBackendSession::system_default().expect("Metal session");
-    let buffer = session.device().new_buffer_with_data(
-        pixels.as_ptr().cast(),
-        pixels.len() as u64,
-        ::metal::MTLResourceOptions::StorageModeShared,
-    );
-    let tile = crate::metal_interop::test_tile_from_completed_buffer(
-        buffer,
-        0,
-        256,
-        256,
-        256 * 3,
-        WsiPixelFormat::Rgb8,
-    );
+    let tile = metal_rgb8_tile_for_test(&pixels, 256, 256);
     let mut encoder = DicomJ2kEncoder::new(
         EncodeBackendPreference::PreferDevice,
         TransferSyntax::Htj2kLosslessRpcl,

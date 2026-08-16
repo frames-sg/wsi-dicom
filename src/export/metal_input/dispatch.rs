@@ -8,7 +8,7 @@ pub(in crate::export) fn try_encode_metal_input_tile_run(
 ) -> Result<MetalEncodedTileRun, Error> {
     // Long NDPI exports create thousands of autoreleased Metal/ObjC temporaries.
     // Drain them per run so later rows do not encode zero-filled composed buffers.
-    objc::rc::autoreleasepool(|| {
+    objc2::rc::autoreleasepool(|_| {
         let MetalInputTileRunRequest {
             level,
             location,

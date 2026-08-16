@@ -2,6 +2,8 @@ use super::addressing::{
     max_destination_byte, max_source_byte, select_address_width, ComposeAddressWidth,
 };
 use super::*;
+use objc2::runtime::ProtocolObject;
+use objc2_metal::{MTLCommandEncoder, MTLComputeCommandEncoder, MTLComputePipelineState};
 use std::time::{Duration, Instant};
 
 #[test]
@@ -104,58 +106,35 @@ fn compose_address_plan_selects_width_from_checked_spans() {
 
 #[test]
 fn metal_address_probe_returns_the_checked_64_bit_indices() {
-    let Some(device) = metal::Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         return;
     };
     let source = format!(
         "{WSI_COMPOSE_STRIPS_METAL}\n{}",
         include_str!("address_probe.metal")
     );
-    let library = device
-        .new_library_with_source(&source, &metal::CompileOptions::new())
+    let loader = j2k_metal_support::MetalPipelineLoader::new(&device, &source)
         .expect("compile compose address probe");
-    let function = library
-        .get_function("wsi_compose_address_probe", None)
-        .expect("load compose address probe");
-    let pipeline = device
-        .new_compute_pipeline_state_with_function(&function)
+    let pipeline = loader
+        .pipeline("wsi_compose_address_probe")
         .expect("create compose address probe pipeline");
     let output = j2k_metal_support::checked_shared_buffer_for_len::<u64>(&device, 2)
         .expect("allocate compose address output");
     let params = address_params(5_462);
     let coordinate = [511_u32, 511_u32];
-    let queue = device.new_command_queue();
+    let queue = j2k_metal_support::checked_command_queue(&device)
+        .expect("create compose address command queue");
     let command_buffer = j2k_metal_support::checked_command_buffer(&queue)
         .expect("create compose address command buffer");
-    let encoder = command_buffer.new_compute_command_encoder();
-    encoder.set_compute_pipeline_state(&pipeline);
-    encoder.set_buffer(0, Some(&output), 0);
-    encoder.set_bytes(
-        1,
-        core::mem::size_of_val(&params) as u64,
-        std::ptr::from_ref(&params).cast(),
-    );
-    encoder.set_bytes(
-        2,
-        core::mem::size_of_val(&coordinate) as u64,
-        coordinate.as_ptr().cast(),
-    );
-    encoder.dispatch_threads(
-        metal::MTLSize {
-            width: 1,
-            height: 1,
-            depth: 1,
-        },
-        metal::MTLSize {
-            width: 1,
-            height: 1,
-            depth: 1,
-        },
-    );
-    encoder.end_encoding();
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
-    j2k_metal_support::ensure_completed(&command_buffer).expect("compose address completion");
+    let encoder = j2k_metal_support::checked_compute_command_encoder(&command_buffer)
+        .expect("create compose address command encoder");
+    encoder.setComputePipelineState(&pipeline);
+    crate::metal_interop::bind_compute_buffer(&encoder, 0, &output);
+    crate::metal_interop::bind_compose_params(&encoder, 1, &params);
+    crate::metal_interop::bind_probe_coordinate(&encoder, 2, &coordinate);
+    j2k_metal_support::dispatch_single_thread(&encoder);
+    encoder.endEncoding();
+    j2k_metal_support::commit_and_wait(&command_buffer).expect("compose address completion");
 
     assert_eq!(
         crate::metal_interop::test_u64_buffer_values(&output, 2),
@@ -201,22 +180,18 @@ fn metal_compose_selected_u32_stays_within_five_percent_of_reference() {
     const DISPATCHES_PER_SAMPLE: usize = 12;
     const SAMPLE_COUNT: usize = 3;
 
-    let Some(device) = metal::Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         return;
     };
     let source = format!(
         "{WSI_COMPOSE_STRIPS_METAL}\n{}",
         include_str!("address_perf.metal")
     );
-    let library = device
-        .new_library_with_source(&source, &metal::CompileOptions::new())
+    let loader = j2k_metal_support::MetalPipelineLoader::new(&device, &source)
         .expect("compile compose address performance kernels");
     let pipeline = |name| {
-        let function = library
-            .get_function(name, None)
-            .expect("load compose address performance function");
-        device
-            .new_compute_pipeline_state_with_function(&function)
+        loader
+            .pipeline(name)
             .expect("create compose address performance pipeline")
     };
     let reference_pipeline = pipeline("wsi_compose_strips_u32_perf_reference");
@@ -248,44 +223,24 @@ fn metal_compose_selected_u32_stays_within_five_percent_of_reference() {
         src_tiles_across: 1,
         dst_stride: pitch,
     };
-    let queue = device.new_command_queue();
+    let queue = j2k_metal_support::checked_command_queue(&device)
+        .expect("create performance command queue");
 
-    let measure = |pipeline: &metal::ComputePipelineStateRef, dispatches: usize| {
+    let measure = |pipeline: &ProtocolObject<dyn MTLComputePipelineState>, dispatches: usize| {
         let command_buffer = j2k_metal_support::checked_command_buffer(&queue)
             .expect("create performance command buffer");
-        let thread_width = pipeline.thread_execution_width().max(1);
-        let max_threads = pipeline
-            .max_total_threads_per_threadgroup()
-            .max(thread_width);
-        let thread_height = (max_threads / thread_width).max(1);
         let started = Instant::now();
         for _ in 0..dispatches {
-            let encoder = command_buffer.new_compute_command_encoder();
-            encoder.set_compute_pipeline_state(pipeline);
-            encoder.set_buffer(0, Some(&src), 0);
-            encoder.set_buffer(1, Some(&dst), 0);
-            encoder.set_bytes(
-                2,
-                core::mem::size_of_val(&params) as u64,
-                std::ptr::from_ref(&params).cast(),
-            );
-            encoder.dispatch_threads(
-                metal::MTLSize {
-                    width: u64::from(DIMENSION),
-                    height: u64::from(DIMENSION),
-                    depth: 1,
-                },
-                metal::MTLSize {
-                    width: thread_width,
-                    height: thread_height,
-                    depth: 1,
-                },
-            );
-            encoder.end_encoding();
+            let encoder = j2k_metal_support::checked_compute_command_encoder(&command_buffer)
+                .expect("create performance command encoder");
+            encoder.setComputePipelineState(pipeline);
+            crate::metal_interop::bind_compute_buffer(&encoder, 0, &src);
+            crate::metal_interop::bind_compute_buffer(&encoder, 1, &dst);
+            crate::metal_interop::bind_compose_params(&encoder, 2, &params);
+            j2k_metal_support::dispatch_2d_pipeline(&encoder, pipeline, (DIMENSION, DIMENSION));
+            encoder.endEncoding();
         }
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
-        j2k_metal_support::ensure_completed(&command_buffer)
+        j2k_metal_support::commit_and_wait(&command_buffer)
             .expect("complete address performance sample");
         started.elapsed()
     };

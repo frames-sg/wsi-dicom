@@ -1,12 +1,14 @@
 use super::addressing::{ComposeAddressPlan, ComposeAddressWidth};
 use super::*;
 use j2k_core::DeviceSubmission as _;
+use objc2_foundation::NSString;
+use objc2_metal::{MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) struct MetalComposeTileDispatch {
     pub(super) request: MetalComposeTileRequest,
     pub(super) params: MetalComposeStripsParams,
-    pub(super) dst_buffer: metal::Buffer,
+    pub(super) dst_buffer: crate::metal_interop::MetalBuffer,
     pub(super) output_layout: j2k_metal_support::MetalImageLayout,
 }
 
@@ -95,42 +97,33 @@ impl MetalStripComposer {
                 crate::metal_interop::support_error("Metal compose command", source)
             })?;
         if metal_profile_stages_enabled() {
-            command_buffer.set_label("wsi-dicom compose tiles");
+            command_buffer.setLabel(Some(&NSString::from_str("wsi-dicom compose tiles")));
         }
-        let encoder = command_buffer.new_compute_command_encoder();
+        let encoder = j2k_metal_support::checked_compute_command_encoder(&command_buffer).map_err(
+            |source| crate::metal_interop::support_error("Metal compose command encoder", source),
+        )?;
         if metal_profile_stages_enabled() {
-            encoder.set_label("WSI compose tiles");
+            encoder.setLabel(Some(&NSString::from_str("WSI compose tiles")));
         }
         let pipeline = match address_width {
             ComposeAddressWidth::U32 => self.pipeline_u32.as_ref(),
             ComposeAddressWidth::U64 => self.pipeline_u64()?,
         };
-        encoder.set_compute_pipeline_state(pipeline);
-        crate::metal_interop::bind_resident_compute_input(encoder, 0, &packed.image);
-        let width = pipeline.thread_execution_width().max(1);
-        let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
-        let height = (max_threads / width).max(1);
+        encoder.setComputePipelineState(pipeline);
+        crate::metal_interop::bind_resident_compute_input(&encoder, 0, &packed.image);
         for dispatch in &dispatches {
-            encoder.set_buffer(1, Some(&dispatch.dst_buffer), 0);
-            encoder.set_bytes(
-                2,
-                core::mem::size_of::<MetalComposeStripsParams>() as u64,
-                (&raw const dispatch.params).cast(),
-            );
-            encoder.dispatch_threads(
-                metal::MTLSize {
-                    width: u64::from(dispatch.request.output_width),
-                    height: u64::from(dispatch.request.output_height),
-                    depth: 1,
-                },
-                metal::MTLSize {
-                    width,
-                    height,
-                    depth: 1,
-                },
+            crate::metal_interop::bind_compute_buffer(&encoder, 1, &dispatch.dst_buffer);
+            crate::metal_interop::bind_compose_params(&encoder, 2, &dispatch.params);
+            j2k_metal_support::dispatch_2d_pipeline(
+                &encoder,
+                pipeline,
+                (
+                    dispatch.request.output_width,
+                    dispatch.request.output_height,
+                ),
             );
         }
-        encoder.end_encoding();
+        encoder.endEncoding();
         let outputs = dispatches
             .into_iter()
             .map(|dispatch| (dispatch.dst_buffer, dispatch.output_layout))

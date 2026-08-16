@@ -1,20 +1,25 @@
 use super::*;
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_metal::{MTLCommandQueue, MTLComputePipelineState};
 
 mod addressing;
 mod compose;
 mod pack;
 mod types;
 
-use types::MetalComposeStripsParams;
+pub(crate) use types::MetalComposeStripsParams;
 pub(super) use types::{MetalComposeTileRequest, PackedMetalStrips};
+
+type MetalCommandQueue = Retained<ProtocolObject<dyn MTLCommandQueue>>;
+type MetalComputePipeline = Retained<ProtocolObject<dyn MTLComputePipelineState>>;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) struct MetalStripComposer {
-    pub(super) device: metal::Device,
-    pub(super) queue: metal::CommandQueue,
-    pub(super) library: metal::Library,
-    pub(super) pipeline_u32: metal::ComputePipelineState,
-    pub(super) pipeline_u64: OnceLock<Result<metal::ComputePipelineState, String>>,
+    pub(super) device: crate::metal_interop::MetalDevice,
+    pub(super) queue: MetalCommandQueue,
+    pub(super) loader: j2k_metal_support::MetalPipelineLoader,
+    pub(super) pipeline_u32: MetalComputePipeline,
+    pub(super) pipeline_u64: OnceLock<Result<MetalComputePipeline, String>>,
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -30,46 +35,37 @@ pub(super) fn metal_profile_stages_enabled() -> bool {
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 impl MetalStripComposer {
-    pub(super) fn new(device: metal::Device) -> Result<Self, Error> {
-        let options = metal::CompileOptions::new();
-        let library = device
-            .new_library_with_source(WSI_COMPOSE_STRIPS_METAL, &options)
-            .map_err(|message| Error::Encode {
-                message: format!("Metal strip compose shader failed to compile: {message}"),
+    pub(super) fn new(device: crate::metal_interop::MetalDevice) -> Result<Self, Error> {
+        let loader = j2k_metal_support::MetalPipelineLoader::new(&device, WSI_COMPOSE_STRIPS_METAL)
+            .map_err(|source| {
+                crate::metal_interop::support_error("Metal strip compose shader", source)
             })?;
-        let function = library
-            .get_function("wsi_compose_strips_u32", None)
-            .map_err(|message| Error::Encode {
-                message: format!("Metal u32 strip compose function unavailable: {message}"),
+        let pipeline_u32 = loader
+            .pipeline("wsi_compose_strips_u32")
+            .map_err(|source| {
+                crate::metal_interop::support_error("Metal u32 strip compose pipeline", source)
             })?;
-        let pipeline_u32 = device
-            .new_compute_pipeline_state_with_function(&function)
-            .map_err(|message| Error::Encode {
-                message: format!("Metal u32 strip compose pipeline unavailable: {message}"),
-            })?;
-        let queue = device.new_command_queue();
+        let queue = j2k_metal_support::checked_command_queue(&device).map_err(|source| {
+            crate::metal_interop::support_error("Metal strip compose command queue", source)
+        })?;
         Ok(Self {
             device,
             queue,
-            library,
+            loader,
             pipeline_u32,
             pipeline_u64: OnceLock::new(),
         })
     }
 
-    pub(super) fn pipeline_u64(&self) -> Result<&metal::ComputePipelineStateRef, Error> {
+    pub(super) fn pipeline_u64(
+        &self,
+    ) -> Result<&ProtocolObject<dyn MTLComputePipelineState>, Error> {
         self.pipeline_u64
             .get_or_init(|| {
-                let function = self
-                    .library
-                    .get_function("wsi_compose_strips", None)
-                    .map_err(|message| {
-                        format!("Metal u64 strip compose function unavailable: {message}")
-                    })?;
-                self.device
-                    .new_compute_pipeline_state_with_function(&function)
-                    .map_err(|message| {
-                        format!("Metal u64 strip compose pipeline unavailable: {message}")
+                self.loader
+                    .pipeline("wsi_compose_strips")
+                    .map_err(|source| {
+                        format!("Metal u64 strip compose pipeline unavailable: {source}")
                     })
             })
             .as_deref()

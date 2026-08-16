@@ -78,7 +78,7 @@ fn export_dicom_requires_device_encode_for_synthetic_level_with_cpu_source_input
     let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
         return;
     };
-    if metal::Device::system_default().is_none() {
+    if j2k_metal_support::system_default_device().is_err() {
         eprintln!("skipping synthetic level device export test; Metal is unavailable");
         return;
     }
@@ -780,7 +780,7 @@ fn ndpi_whole_level_metal_composes_multi_tile_run_in_one_batch() {
 #[test]
 #[cfg(all(feature = "metal", target_os = "macos"))]
 fn metal_strip_composer_returns_ordered_tiles_from_batched_compose() {
-    let Some(device) = metal::Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         return;
     };
     let composer = MetalStripComposer::new(device.clone()).unwrap();
@@ -848,42 +848,34 @@ fn metal_strip_composer_returns_ordered_tiles_from_batched_compose() {
 
 #[test]
 #[cfg(all(feature = "metal", target_os = "macos"))]
-#[allow(deprecated)]
-fn metal_strip_composer_rejects_legacy_raw_buffer_tiles() {
-    let Some(device) = metal::Device::system_default() else {
+fn metal_strip_composer_accepts_explicit_completed_buffer_tiles() {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         return;
     };
     let composer = MetalStripComposer::new(device.clone()).unwrap();
     let source = [7u8; 16];
-    let mut tile = metal_test_tile(&device, &source, 4, 4, J2kPixelFormat::Gray8);
-    tile.storage = wsi_rs::output::metal::MetalDeviceStorage::Buffer {
-        buffer: j2k_metal_support::checked_shared_buffer_with_slice(&device, &source)
-            .expect("legacy test upload"),
-        byte_offset: 0,
-    };
+    let tile = metal_test_tile(&device, &source, 4, 4, J2kPixelFormat::Gray8);
 
-    let error = match composer.pack_tiles(
-        &[tile],
-        WholeLevelStripLayout {
-            width: 4,
-            height: 4,
-        },
-        0,
-        0,
-        1,
-    ) {
-        Ok(_) => panic!("legacy raw buffer storage must be rejected"),
-        Err(error) => error,
-    };
+    let packed = composer
+        .pack_tiles(
+            &[tile],
+            WholeLevelStripLayout {
+                width: 4,
+                height: 4,
+            },
+            0,
+            0,
+            1,
+        )
+        .expect("adopted completed buffer must pack");
 
-    assert!(matches!(error, Error::Unsupported { .. }));
-    assert!(error.to_string().contains("legacy raw Metal buffer"));
+    assert_eq!(packed.image.dimensions(), (4, 4));
 }
 
 #[test]
 #[cfg(all(feature = "metal", target_os = "macos"))]
 fn metal_strip_composer_rejects_metadata_mismatch_and_out_of_grid_reads() {
-    let Some(device) = metal::Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         return;
     };
     let composer = MetalStripComposer::new(device.clone()).unwrap();
@@ -944,7 +936,7 @@ fn metal_strip_composer_rejects_metadata_mismatch_and_out_of_grid_reads() {
 #[test]
 #[cfg(all(feature = "metal", target_os = "macos"))]
 fn jpeg_baseline_metal_tile_entries_keep_full_tiles_when_edge_geometry_falls_back() {
-    let Some(device) = metal::Device::system_default() else {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
         return;
     };
     let full_a = metal_test_tile(&device, &[1u8; 16], 4, 4, J2kPixelFormat::Gray8);
