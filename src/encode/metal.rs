@@ -170,13 +170,9 @@ impl SubmittedDicomJ2kMetalTileBatch {
                         }
                     }
                     Err(_) => {
-                        let requests = metal_encode_requests_from_device_tiles(
-                            &tiles[start..end],
-                            output_width,
-                            output_height,
-                        )?;
                         encoded.extend(encode_metal_tiles_to_host_with_settings(
-                            &requests,
+                            &tiles[start..end],
+                            (output_width, output_height),
                             &options,
                             &session,
                             preference,
@@ -186,13 +182,9 @@ impl SubmittedDicomJ2kMetalTileBatch {
                     }
                 },
                 SubmittedDicomJ2kMetalTileGroup::HostFallback { start, end } => {
-                    let requests = metal_encode_requests_from_device_tiles(
-                        &tiles[start..end],
-                        output_width,
-                        output_height,
-                    )?;
                     encoded.extend(encode_metal_tiles_to_host_with_settings(
-                        &requests,
+                        &tiles[start..end],
+                        (output_width, output_height),
                         &options,
                         &session,
                         preference,
@@ -363,7 +355,8 @@ pub(super) fn metal_encode_requests_from_device_tiles(
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 fn encode_metal_tiles_to_host_with_settings(
-    requests: &[j2k_metal::MetalLosslessEncodeTile<'_>],
+    tiles: &[wsi_rs::output::metal::MetalDeviceTile],
+    output_dimensions: (u32, u32),
     options: &J2kLosslessEncodeOptions,
     session: &j2k_metal::MetalBackendSession,
     preference: EncodeBackendPreference,
@@ -371,16 +364,21 @@ fn encode_metal_tiles_to_host_with_settings(
     configured_inflight_tiles: Option<usize>,
 ) -> Result<Vec<Option<EncodedDicomJ2kFrame>>, Error> {
     let chunk_size = metal_host_fallback_parallel_chunk_size(
-        requests.len(),
+        tiles.len(),
         configured_inflight_tiles,
         rayon::current_num_threads(),
     );
 
-    let chunks = requests
+    let chunks = tiles
         .par_chunks(chunk_size)
-        .map(|chunk| {
-            encode_metal_tile_chunk_to_host(
+        .map(|chunk| -> Result<_, Error> {
+            let requests = metal_encode_requests_from_device_tiles(
                 chunk,
+                output_dimensions.0,
+                output_dimensions.1,
+            )?;
+            encode_metal_tile_chunk_to_host(
+                &requests,
                 options,
                 session,
                 preference,

@@ -28,7 +28,7 @@ pub(in crate::export) struct MetalComposeTileRequest {
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub(super) struct MetalComposeStripsParams {
+pub(crate) struct MetalComposeStripsParams {
     pub(super) src_origin_x: u32,
     pub(super) src_origin_y: u32,
     pub(super) valid_width: u32,

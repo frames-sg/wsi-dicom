@@ -139,7 +139,7 @@ pub(super) struct MetalInputTileReader {
     pub(super) auto_device_decode_allowed: bool,
     pub(super) auto_decision: AutoLosslessJ2kRouteDecision,
     pub(super) auto_cache_key: Option<AutoMetalInputRouteCacheKey>,
-    pub(super) device: Option<metal::Device>,
+    pub(super) device: Option<crate::metal_interop::MetalDevice>,
     pub(super) sessions: Option<wsi_rs::output::metal::MetalBackendSessions>,
     pub(super) jpeg_encode_session: Option<j2k_jpeg_metal::MetalBackendSession>,
     pub(super) strip_composer: Option<MetalStripComposer>,
@@ -291,8 +291,8 @@ impl MetalInputTileReader {
 
     fn sessions(&mut self) -> Result<wsi_rs::output::metal::MetalBackendSessions, Error> {
         if self.sessions.is_none() {
-            let device = metal::Device::system_default().ok_or_else(|| Error::Unsupported {
-                reason: "Metal is unavailable for WSI input tile decode".into(),
+            let device = j2k_metal_support::system_default_device().map_err(|source| {
+                crate::metal_interop::support_error("Metal WSI input device", source)
             })?;
             self.device = Some(device.clone());
             self.sessions = Some(wsi_rs::output::metal::MetalBackendSessions::new(device));

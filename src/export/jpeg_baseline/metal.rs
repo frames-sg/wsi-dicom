@@ -59,9 +59,11 @@ pub(in crate::export) fn encode_jpeg_baseline_metal_device_tile_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use objc2::runtime::ProtocolObject;
+    use objc2_metal::MTLDevice;
 
     fn test_tile(
-        device: &metal::DeviceRef,
+        device: &ProtocolObject<dyn MTLDevice>,
         pixels: &[u8],
     ) -> wsi_rs::output::metal::MetalDeviceTile {
         crate::metal_interop::test_tile_from_shared_bytes(
@@ -74,30 +76,23 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn encode_rejects_legacy_raw_buffer_storage() {
-        let Some(device) = metal::Device::system_default() else {
+    fn encode_accepts_explicit_completed_buffer_adoption() {
+        let Ok(device) = j2k_metal_support::system_default_device() else {
             return;
         };
         let pixels = vec![41_u8; 8 * 8 * 3];
-        let mut tile = test_tile(&device, &pixels);
-        tile.storage = wsi_rs::output::metal::MetalDeviceStorage::Buffer {
-            buffer: j2k_metal_support::checked_shared_buffer_with_slice(&device, &pixels)
-                .expect("legacy test upload"),
-            byte_offset: 0,
-        };
+        let tile = test_tile(&device, &pixels);
         let session = j2k_jpeg_metal::MetalBackendSession::new(device);
 
-        let error = encode_jpeg_baseline_metal_device_tile_batch(&[tile], 8, 8, 85, &session)
-            .expect_err("legacy raw storage must be rejected before JPEG submission");
+        let encoded = encode_jpeg_baseline_metal_device_tile_batch(&[tile], 8, 8, 85, &session)
+            .expect("adopted completed buffer must encode");
 
-        assert!(matches!(&error, Error::Unsupported { .. }));
-        assert!(error.to_string().contains("legacy raw Metal buffer"));
+        assert_eq!(encoded.len(), 1);
     }
 
     #[test]
     fn encode_rejects_mutated_resident_metadata() {
-        let Some(device) = metal::Device::system_default() else {
+        let Ok(device) = j2k_metal_support::system_default_device() else {
             return;
         };
         let pixels = vec![43_u8; 8 * 8 * 3];

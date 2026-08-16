@@ -1,5 +1,7 @@
 use super::*;
 use j2k_core::DeviceSubmission as _;
+use objc2_foundation::NSString;
+use objc2_metal::{MTLCommandBuffer, MTLCommandEncoder};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 struct MetalPackTileDispatch<'a> {
@@ -161,16 +163,19 @@ impl MetalStripComposer {
                 crate::metal_interop::support_error("Metal strip pack command", source)
             })?;
         if metal_profile_stages_enabled() {
-            command_buffer.set_label("wsi-dicom input tile pack");
+            command_buffer.setLabel(Some(&NSString::from_str("wsi-dicom input tile pack")));
         }
-        let blit = command_buffer.new_blit_command_encoder();
+        let blit =
+            j2k_metal_support::checked_blit_command_encoder(&command_buffer).map_err(|source| {
+                crate::metal_interop::support_error("Metal strip pack command encoder", source)
+            })?;
         if metal_profile_stages_enabled() {
-            blit.set_label("WSI input tile pack");
+            blit.setLabel(Some(&NSString::from_str("WSI input tile pack")));
         }
 
         for tile in &validated_tiles {
             crate::metal_interop::copy_resident_rows(
-                blit,
+                &blit,
                 tile.image,
                 tile.source_offset,
                 tile.source_pitch,
@@ -182,7 +187,7 @@ impl MetalStripComposer {
             );
         }
 
-        blit.end_encoding();
+        blit.endEncoding();
         let input_keepalives = validated_tiles
             .into_iter()
             .map(|tile| tile.image.clone())

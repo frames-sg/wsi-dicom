@@ -1,6 +1,18 @@
 use crate::Error;
 use j2k_metal_support::{MetalImageLayout, ResidentMetalImage, SubmittedMetalImages};
-use metal::{BlitCommandEncoderRef, Buffer, CommandBuffer, ComputeCommandEncoderRef, DeviceRef};
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_metal::{
+    MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLComputeCommandEncoder, MTLDevice,
+};
+
+pub(crate) type MetalBuffer = wsi_rs::output::metal::MetalBuffer;
+pub(crate) type MetalDevice = wsi_rs::output::metal::MetalDevice;
+type CommandBuffer = Retained<ProtocolObject<dyn MTLCommandBuffer>>;
+
+// SAFETY: a Metal-backed encoded frame is constructed only after its writer
+// has completed. Its public operations read immutable codestream bytes or
+// consume the retained buffer; all other frame fields are ordinary Send data.
+unsafe impl Send for crate::encode::EncodedDicomJ2kFrame {}
 
 pub(crate) fn support_error(
     context: &'static str,
@@ -21,50 +33,104 @@ pub(crate) fn device_tile_image(
 }
 
 pub(crate) fn bind_resident_compute_input(
-    encoder: &ComputeCommandEncoderRef,
-    index: u64,
+    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    index: usize,
     image: &ResidentMetalImage,
 ) {
-    // SAFETY: this audited operation binds the logically immutable resident
-    // allocation for a GPU read. The submission owner separately retains the
-    // image through completion.
-    encoder.set_buffer(
-        index,
-        Some(unsafe { image.raw_buffer() }),
-        image.byte_offset() as u64,
-    );
+    assert!(index < 31, "Metal buffer index exceeds the binding table");
+    // SAFETY: the binding index is part of the fixed shader ABI, the offset
+    // was validated by `ResidentMetalImage`, and support-created command
+    // buffers retain the immutable input through completion.
+    unsafe {
+        encoder.setBuffer_offset_atIndex(Some(image.raw_buffer()), image.byte_offset(), index)
+    };
+}
+
+pub(crate) fn bind_compute_buffer(
+    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    index: usize,
+    buffer: &ProtocolObject<dyn MTLBuffer>,
+) {
+    assert!(index < 31, "Metal buffer index exceeds the binding table");
+    // SAFETY: every call site uses this fresh or immutable allocation according
+    // to its fixed shader ABI. The support-created retaining command buffer
+    // keeps the resource alive through completion.
+    unsafe { encoder.setBuffer_offset_atIndex(Some(buffer), 0, index) };
+}
+
+pub(crate) fn bind_compose_params(
+    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    index: usize,
+    params: &crate::export::metal_compose::MetalComposeStripsParams,
+) {
+    assert!(index < 31, "Metal byte index exceeds the binding table");
+    let pointer = std::ptr::NonNull::from(params).cast();
+    // SAFETY: `MetalComposeStripsParams` is `repr(C)` and contains fifteen
+    // initialized `u32` fields with no padding. Metal copies the bytes during
+    // this call, and the fixed shader ABI uses the same layout and index.
+    unsafe {
+        encoder.setBytes_length_atIndex(
+            pointer,
+            core::mem::size_of::<crate::export::metal_compose::MetalComposeStripsParams>(),
+            index,
+        )
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn bind_probe_coordinate(
+    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    index: usize,
+    coordinate: &[u32; 2],
+) {
+    assert!(index < 31, "Metal byte index exceeds the binding table");
+    let pointer = std::ptr::NonNull::from(coordinate).cast();
+    // SAFETY: the two initialized `u32` values exactly match the probe
+    // shader's `uint2` binding, and Metal copies them synchronously.
+    unsafe { encoder.setBytes_length_atIndex(pointer, core::mem::size_of_val(coordinate), index) };
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn copy_resident_rows(
-    encoder: &BlitCommandEncoderRef,
+    encoder: &ProtocolObject<dyn MTLBlitCommandEncoder>,
     image: &ResidentMetalImage,
     source_offset: u64,
     source_pitch: u64,
-    destination: &Buffer,
+    destination: &ProtocolObject<dyn MTLBuffer>,
     destination_offset: u64,
     destination_pitch: u64,
     row_bytes: u64,
     height: u64,
 ) {
-    // SAFETY: the immutable input is read only, and the submission retains it
-    // through completion. The destination is a fresh owned output allocation.
+    let source_offset = usize::try_from(source_offset).expect("Metal source offset fits usize");
+    let source_pitch = usize::try_from(source_pitch).expect("Metal source pitch fits usize");
+    let destination_offset =
+        usize::try_from(destination_offset).expect("Metal destination offset fits usize");
+    let destination_pitch =
+        usize::try_from(destination_pitch).expect("Metal destination pitch fits usize");
+    let row_bytes = usize::try_from(row_bytes).expect("Metal row byte count fits usize");
+    let height = usize::try_from(height).expect("Metal row count fits usize");
+    // SAFETY: `image` validated the source allocation and both row ranges were
+    // preflighted by the pack plan. The input is read only, the destination is
+    // fresh, and the submission retains both resources through completion.
     let source = unsafe { image.raw_buffer() };
     for row in 0..height {
-        encoder.copy_from_buffer(
-            source,
-            source_offset + row * source_pitch,
-            destination,
-            destination_offset + row * destination_pitch,
-            row_bytes,
-        );
+        unsafe {
+            encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+                source,
+                source_offset + row * source_pitch,
+                destination,
+                destination_offset + row * destination_pitch,
+                row_bytes,
+            )
+        };
     }
 }
 
 pub(crate) fn submit_images(
-    device: &DeviceRef,
+    device: &ProtocolObject<dyn MTLDevice>,
     command_buffer: CommandBuffer,
-    outputs: Vec<(Buffer, MetalImageLayout)>,
+    outputs: Vec<(MetalBuffer, MetalImageLayout)>,
     inputs: Vec<ResidentMetalImage>,
 ) -> Result<SubmittedMetalImages, Error> {
     // SAFETY: pack/compose callers pass fresh output allocations whose only
@@ -76,7 +142,7 @@ pub(crate) fn submit_images(
 
 #[cfg(test)]
 pub(crate) fn test_tile_from_shared_bytes(
-    device: &DeviceRef,
+    device: &ProtocolObject<dyn MTLDevice>,
     bytes: &[u8],
     width: u32,
     height: u32,
@@ -97,7 +163,7 @@ pub(crate) fn test_tile_from_shared_bytes(
 
 #[cfg(test)]
 pub(crate) fn test_tile_from_completed_buffer(
-    buffer: Buffer,
+    buffer: MetalBuffer,
     byte_offset: usize,
     width: u32,
     height: u32,
@@ -135,7 +201,10 @@ pub(crate) fn test_tile_bytes(tile: &wsi_rs::output::metal::MetalDeviceTile) -> 
 }
 
 #[cfg(test)]
-pub(crate) fn test_u64_buffer_values(buffer: &Buffer, len: usize) -> Vec<u64> {
+pub(crate) fn test_u64_buffer_values(
+    buffer: &ProtocolObject<dyn MTLBuffer>,
+    len: usize,
+) -> Vec<u64> {
     // SAFETY: the test command has completed and the shared output is read
     // only while the snapshot is created.
     unsafe { j2k_metal_support::checked_buffer_read_vec::<u64>(buffer, 0, len) }

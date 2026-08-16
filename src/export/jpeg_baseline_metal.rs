@@ -39,7 +39,7 @@ pub(super) fn try_encode_jpeg_baseline_metal_input_tile_run(
         jpeg_quality,
         max_prepared_frame_bytes,
     } = settings;
-    objc::rc::autoreleasepool(|| {
+    objc2::rc::autoreleasepool(|_| {
         if !jpeg_baseline_auto_allows_metal_batch(
             metal_input.preference,
             frame_columns,
