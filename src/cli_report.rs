@@ -19,9 +19,14 @@ pub(crate) fn format_report_summary_with_memory(
     rss_bytes: Option<u64>,
 ) -> String {
     let metrics = report.metrics;
+    let annotation_instances = report
+        .annotations
+        .as_ref()
+        .map_or(0, |annotations| annotations.instances.len());
     format!(
-        "wrote {} DICOM instance(s) to {}; frames total={} {} {} write_ms={:.3} rss_mb={}",
+        "wrote {} WSI DICOM instance(s) and {} annotation sidecar(s) to {}; frames total={} {} {} write_ms={:.3} rss_mb={}",
         report.instances.len(),
+        annotation_instances,
         report.output_dir.display(),
         metrics.routes.total_frames,
         format_route_metric_fields(metrics),

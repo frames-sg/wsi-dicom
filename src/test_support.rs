@@ -194,6 +194,27 @@ pub(crate) fn write_tiled_jp2k_ycbcr_tiff(
     );
 }
 
+pub(crate) fn write_tiled_aperio_jp2k_ycbcr_tiff(
+    path: &Path,
+    width: u32,
+    height: u32,
+    tile_width: u32,
+    tile_height: u32,
+    tiles: &[Vec<u8>],
+) {
+    write_tiled_compressed_tiff(
+        path,
+        width,
+        height,
+        tile_width,
+        tile_height,
+        33003,
+        6,
+        3,
+        tiles,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_tiled_compressed_tiff(
     path: &Path,

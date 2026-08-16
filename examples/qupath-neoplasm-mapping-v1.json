@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "labels": {
+    "Tumor": {
+      "category": {
+        "code_value": "49755003",
+        "coding_scheme_designator": "SCT",
+        "code_meaning": "Morphologically Abnormal Structure"
+      },
+      "property_type": {
+        "code_value": "108369006",
+        "coding_scheme_designator": "SCT",
+        "code_meaning": "Neoplasm"
+      },
+      "generation_type": "MANUAL",
+      "recommended_display_cielab": [35977, 44542, 49402],
+      "segment_label": "Neoplasm"
+    }
+  },
+  "measurements": {},
+  "qualitative_evaluations": {}
+}

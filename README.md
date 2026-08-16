@@ -10,6 +10,9 @@ optional native GUI.
 supplies JPEG, JPEG 2000, and HTJ2K codec primitives. `wsi-rs`
 opens vendor WSI formats such as SVS and NDPI. `wsi-dicom` owns DICOM export,
 metadata validation, transfer-syntax routing, reports, and writer errors.
+`wsi-dicom-annotations` owns the UI-independent QuPath/GeoJSON terminology and
+DICOM ANN, SEG, and SR conversion; this package orchestrates it alongside WSI
+conversion.
 
 ## Install
 
@@ -64,6 +67,32 @@ placeholder metadata.
 wsi-dicom convert slide.ndpi --out dicom-out --research-placeholder \
   --icc source-or-srgb
 ```
+
+To convert a QuPath-annotated slide in the same operation, export the QuPath
+objects as GeoJSON and provide an explicit mapping from every QuPath class name
+to DICOM coded concepts:
+
+```sh
+wsi-dicom convert slide.ndpi --out dicom-out --research-placeholder \
+  --qupath-annotations slide.geojson \
+  --annotation-mapping examples/qupath-neoplasm-mapping-v1.json \
+  --annotation-target ann --annotation-target seg
+```
+
+The mapping is required: `wsi-dicom` never guesses terminology or adds QuPath
+classes to a global profile. Copy the example and add entries keyed by the
+exact QuPath classification names used in the GeoJSON. The default
+`level0-pixels` coordinate space matches QuPath's full-resolution image
+coordinates. `source-pixels` is for coordinates already expressed on the
+generated DICOM image grid, and `slide-mm` is for physical slide coordinates.
+
+Annotation output is written under `dicom-out/annotations/` with a manifest and
+one verified sidecar per requested target. Use ANN for directly representable
+points and simple polygons, SEG for rasterized regions, and SR for mapped
+measurements. Lossy omission or conversion is rejected unless
+`--allow-lossy-annotations` is supplied explicitly. The WSI instances are
+published first; if annotation conversion then fails, the error identifies the
+failure and the already completed WSI export remains valid.
 
 Use `--metadata metadata.json` for real metadata. `--metadata` and
 `--research-placeholder` are mutually exclusive. Existing generated `.dcm`

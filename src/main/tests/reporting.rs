@@ -176,7 +176,7 @@ fn cli_summary_reports_passthrough_and_fallback_counts() {
     assert_eq!(
         summary,
         concat!(
-            "wrote 0 DICOM instance(s) to out; frames total=27 route_passthrough=11 route_passthrough_pct=40.7 ",
+            "wrote 0 WSI DICOM instance(s) and 0 annotation sidecar(s) to out; frames total=27 route_passthrough=11 route_passthrough_pct=40.7 ",
             "route_gpu_transcode=7 route_gpu_transcode_pct=25.9 route_resident_gpu_transcode=4 route_partial_gpu_transcode=3 ",
             "route_cpu_fallback=9 route_cpu_fallback_pct=33.3 route_unclassified=0 cpu_input=1 gpu_input_decode=2 ",
             "gpu_encode=3 gpu_validation=4 gray_frames=0 rgb_like_frames=0 other_component_frames=0 unknown_pixel_profile_frames=0 ",

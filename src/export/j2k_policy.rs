@@ -19,41 +19,37 @@ use crate::routing::{
 };
 use crate::tile::PixelProfile;
 
-fn j2k_edge_fallback_allowed(
+fn j2k_source_fallback_allowed(
     planned: &LosslessJ2kPlannedFrame,
     transfer_syntax: TransferSyntax,
-    tile_size: u32,
 ) -> bool {
     transfer_syntax == TransferSyntax::Jpeg2000
         && planned.source_j2k_syntax.is_some()
         && planned.source_j2k_dimensions == Some((planned.width, planned.height))
-        && (planned.width < tile_size || planned.height < tile_size)
 }
 
 pub(super) fn j2k_non_passthrough_encode_allowed(
     planned: &LosslessJ2kPlannedFrame,
     transfer_syntax: TransferSyntax,
-    tile_size: u32,
 ) -> bool {
     if transfer_syntax == TransferSyntax::Htj2k {
         return false;
     }
     planned.passthrough.is_none()
         && (!transfer_syntax.is_jpeg2000_passthrough_only()
-            || j2k_edge_fallback_allowed(planned, transfer_syntax, tile_size))
+            || j2k_source_fallback_allowed(planned, transfer_syntax))
 }
 
 pub(super) fn lossless_j2k_cpu_fallback_indices(
     planned: &[LosslessJ2kPlannedFrame],
     transfer_syntax: TransferSyntax,
-    tile_size: u32,
     mut frame_already_encoded: impl FnMut(usize) -> bool,
 ) -> Vec<usize> {
     planned
         .iter()
         .enumerate()
         .filter_map(|(idx, planned_frame)| {
-            (j2k_non_passthrough_encode_allowed(planned_frame, transfer_syntax, tile_size)
+            (j2k_non_passthrough_encode_allowed(planned_frame, transfer_syntax)
                 && !frame_already_encoded(idx))
             .then_some(idx)
         })
@@ -139,7 +135,7 @@ pub(super) fn j2k_passthrough_frame(
     if raw.bits_allocated() > u8::MAX as u16 || raw.samples_per_pixel() > u8::MAX as u16 {
         return Ok(None);
     }
-    let (_passthrough_syntax, photometric_interpretation) = {
+    let (_passthrough_syntax, profile) = {
         let view = match J2kView::parse(raw.data()) {
             Ok(view) => view,
             Err(_) => return Ok(None),
@@ -157,9 +153,11 @@ pub(super) fn j2k_passthrough_frame(
         else {
             return Ok(None);
         };
-        let Some(photometric_interpretation) = j2k_passthrough_photometric_interpretation(
+        let Some(profile) = j2k_passthrough_pixel_profile(
             raw.photometric_interpretation(),
-            view.info(),
+            raw.samples_per_pixel() as u8,
+            raw.bits_allocated(),
+            &view,
         ) else {
             return Ok(None);
         };
@@ -171,18 +169,12 @@ pub(super) fn j2k_passthrough_frame(
         if candidate.copy_bytes_if_eligible(&requirements).is_err() {
             return Ok(None);
         }
-        (candidate_syntax, photometric_interpretation)
+        (candidate_syntax, profile)
     };
 
-    let components = raw.samples_per_pixel() as u8;
-    let bits_allocated = raw.bits_allocated();
     Ok(Some(J2kPassthroughFrame {
         codestream: raw.into_data(),
-        profile: PixelProfile {
-            components,
-            bits_allocated,
-            photometric_interpretation,
-        },
+        profile,
         #[cfg(test)]
         transfer_syntax: _passthrough_syntax,
     }))
@@ -210,37 +202,137 @@ pub(super) fn j2k_raw_frame_syntax_and_profile(
     if raw.bits_allocated() > u8::MAX as u16 || raw.samples_per_pixel() > u8::MAX as u16 {
         return (Some(syntax), None);
     }
-    let Some(photometric_interpretation) =
-        j2k_passthrough_photometric_interpretation(raw.photometric_interpretation(), view.info())
-    else {
+    let Some(profile) = j2k_passthrough_pixel_profile(
+        raw.photometric_interpretation(),
+        raw.samples_per_pixel() as u8,
+        raw.bits_allocated(),
+        &view,
+    ) else {
         return (Some(syntax), None);
     };
-    (
-        Some(syntax),
-        Some(PixelProfile {
-            components: raw.samples_per_pixel() as u8,
-            bits_allocated: raw.bits_allocated(),
-            photometric_interpretation,
-        }),
-    )
+    (Some(syntax), Some(profile))
+}
+
+fn j2k_passthrough_pixel_profile(
+    raw_photometric: EncodedTilePhotometricInterpretation,
+    components: u8,
+    bits_allocated: u16,
+    view: &J2kView<'_>,
+) -> Option<PixelProfile> {
+    let profile = PixelProfile {
+        components,
+        bits_allocated,
+        photometric_interpretation: j2k_passthrough_photometric_interpretation(
+            raw_photometric,
+            view.info(),
+        )?,
+    };
+    j2k_view_matches_dicom_profile(view, profile).then_some(profile)
 }
 
 fn j2k_passthrough_photometric_interpretation(
     raw_photometric: EncodedTilePhotometricInterpretation,
     info: &j2k_core::Info,
 ) -> Option<&'static str> {
+    // Passthrough is limited to component semantics that the decoded fallback can
+    // reproduce. MCT=0 YCbCr cannot be declared RGB, while the fallback encoder
+    // emits reversible RCT, so ICT also requires a whole-instance transcode.
     match (info.components, raw_photometric) {
-        (1, EncodedTilePhotometricInterpretation::Monochrome2) => Some("MONOCHROME2"),
-        (3, EncodedTilePhotometricInterpretation::Rgb) => Some("RGB"),
+        (1, EncodedTilePhotometricInterpretation::Monochrome2)
+            if matches!(info.colorspace, Colorspace::Grayscale | Colorspace::SGray) =>
+        {
+            Some("MONOCHROME2")
+        }
+        (3, EncodedTilePhotometricInterpretation::Rgb) => match info.colorspace {
+            Colorspace::Rgb | Colorspace::SRgb => Some("RGB"),
+            Colorspace::Rct => Some("YBR_RCT"),
+            _ => None,
+        },
         (3, EncodedTilePhotometricInterpretation::YbrFull422) => match info.colorspace {
             Colorspace::Rct => Some("YBR_RCT"),
-            Colorspace::Ict => Some("YBR_ICT"),
-            Colorspace::YCbCr => Some("YBR_FULL_422"),
-            Colorspace::Rgb | Colorspace::SRgb => Some("RGB"),
             _ => None,
         },
         _ => None,
     }
+}
+
+fn j2k_view_matches_dicom_profile(view: &J2kView<'_>, profile: PixelProfile) -> bool {
+    let Some(support) = view.support_info() else {
+        return false;
+    };
+    let Ok(bits_allocated) = u8::try_from(profile.bits_allocated) else {
+        return false;
+    };
+    if support.payload_kind != CompressedPayloadKind::Jpeg2000Codestream
+        || support.components.len() != usize::from(profile.components)
+        || support.components.iter().any(|component| {
+            component.signed
+                || component.bit_depth != bits_allocated
+                || component.x_rsiz != 1
+                || component.y_rsiz != 1
+        })
+    {
+        return false;
+    }
+    matches!(
+        (profile.photometric_interpretation, view.info().colorspace),
+        ("MONOCHROME2", Colorspace::Grayscale | Colorspace::SGray)
+            | ("RGB", Colorspace::Rgb | Colorspace::SRgb)
+            | ("YBR_RCT", Colorspace::Rct)
+            | ("YBR_ICT", Colorspace::Ict)
+    )
+}
+
+pub(super) fn validate_dicom_j2k_frame(
+    codestream: &[u8],
+    profile: PixelProfile,
+    transfer_syntax: TransferSyntax,
+) -> Result<(), Error> {
+    let view = J2kView::parse(codestream).map_err(|err| Error::Encode {
+        message: format!("published JPEG 2000 frame is invalid: {err}"),
+    })?;
+    let candidate = view.passthrough_candidate().ok_or_else(|| Error::Encode {
+        message: "published JPEG 2000 frame has no validated codestream profile".into(),
+    })?;
+    let required_syntax = required_passthrough_syntax(transfer_syntax, candidate.transfer_syntax())
+        .ok_or_else(|| Error::Encode {
+            message: format!(
+                "published JPEG 2000 frame syntax {:?} is incompatible with DICOM transfer syntax {}",
+                candidate.transfer_syntax(),
+                transfer_syntax.uid()
+            ),
+        })?;
+    if candidate.transfer_syntax() != required_syntax
+        || (transfer_syntax == TransferSyntax::Htj2kLosslessRpcl
+            && !j2k_codestream_is_rpcl(codestream))
+        || !j2k_view_matches_dicom_profile(&view, profile)
+    {
+        let components = view
+            .support_info()
+            .map(|support| {
+                support
+                    .components
+                    .iter()
+                    .map(|component| {
+                        (
+                            component.bit_depth,
+                            component.signed,
+                            component.x_rsiz,
+                            component.y_rsiz,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        return Err(Error::Encode {
+            message: format!(
+                "published JPEG 2000 frame is incompatible with DICOM profile {profile:?}: syntax={:?}, colorspace={:?}, components={components:?}",
+                candidate.transfer_syntax(),
+                view.info().colorspace
+            ),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
