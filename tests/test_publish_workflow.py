@@ -9,6 +9,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "publish-crate.sh"
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "publish.yml"
+GITATTRIBUTES_PATH = REPO_ROOT / ".gitattributes"
 
 
 class PublishScriptTests(unittest.TestCase):
@@ -182,6 +183,10 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         self.assertIn(".zip", build)
         for required_file in ("README.md", "LICENSE-MIT", "LICENSE-APACHE", "VERSION.json"):
             self.assertIn(required_file, build)
+
+    def test_dependency_lock_digest_is_portable_across_release_runners(self):
+        attributes = GITATTRIBUTES_PATH.read_text(encoding="utf-8")
+        self.assertRegex(attributes, r"(?m)^Cargo\.lock\s+text\s+eol=lf$")
 
     def test_candidate_contains_crate_checksums_spdx_sboms_and_evidence(self):
         crate = self.job("crate_candidate")
