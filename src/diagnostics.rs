@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// Options for generating and validating a deterministic tiny DICOM export.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 #[non_exhaustive]
 pub struct SelfTestOptions {
@@ -22,6 +22,19 @@ pub struct SelfTestOptions {
     pub export: ExportOptions,
     /// Validation options used against the generated output.
     pub validation: ValidationOptions,
+}
+
+impl Default for SelfTestOptions {
+    fn default() -> Self {
+        let mut export = ExportOptions::default();
+        export.transfer_syntax = crate::TransferSyntax::Jpeg2000Lossless;
+        Self {
+            output_dir: None,
+            keep_output: false,
+            export,
+            validation: ValidationOptions::default(),
+        }
+    }
 }
 
 /// Report returned by the deterministic DICOM self-test.
@@ -227,6 +240,9 @@ mod tests {
         assert_eq!(report.workspace, workspace);
         assert!(report.output_dir.is_dir());
         assert!(!report.export_report.instances.is_empty());
+        assert!(report.export_report.instances.iter().all(|instance| {
+            instance.transfer_syntax_uid == crate::TransferSyntax::Jpeg2000Lossless.uid()
+        }));
         assert_eq!(report.validation_report.failed_checks(), 0);
     }
 }
