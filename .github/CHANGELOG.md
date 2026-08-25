@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validators; the separate strict release validation continues to run them.
 - Used a Basic Offset Table for single-frame instances so older validators can
   read them; multi-frame instances retain Extended Offset Tables.
+- Made the diagnostic self-test default to broadly supported JPEG 2000
+  Lossless so older DICOM validators can inspect its transfer syntax.
 - Included failed strict self-test records in publish workflow logs.
 
 ## [0.7.2] - 2026-08-25
