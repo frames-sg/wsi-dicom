@@ -26,8 +26,10 @@ pub struct SelfTestOptions {
 
 impl Default for SelfTestOptions {
     fn default() -> Self {
-        let mut export = ExportOptions::default();
-        export.transfer_syntax = crate::TransferSyntax::Jpeg2000Lossless;
+        let export = ExportOptions {
+            transfer_syntax: crate::TransferSyntax::Jpeg2000Lossless,
+            ..ExportOptions::default()
+        };
         Self {
             output_dir: None,
             keep_output: false,
