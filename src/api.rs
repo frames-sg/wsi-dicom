@@ -2,6 +2,10 @@
 
 use std::path::PathBuf;
 
+use crate::export::{
+    default_transfer_syntax_for_open_slide, export_dicom_prepared, validate_export_request,
+};
+use crate::routing::open_slide;
 use crate::{
     default_transfer_syntax_for_source, export_dicom, CodecValidation, ColorManagement,
     DefaultTransferSyntaxRequest, EncodeBackendPreference, Error, ExportOptions, ExportReport,
@@ -206,7 +210,27 @@ impl Export {
     }
 
     /// Convert the builder into an export request, resolving source-aware defaults.
-    pub fn build_request(mut self) -> Result<ExportRequest, Error> {
+    pub fn build_request(self) -> Result<ExportRequest, Error> {
+        let (mut request, transfer_syntax) = self.into_request()?;
+        request.metadata.resolve()?;
+        if transfer_syntax == TransferSyntaxSelection::SourceAware {
+            request.options.transfer_syntax =
+                default_transfer_syntax_for_source(DefaultTransferSyntaxRequest {
+                    source_path: request.source_path.clone(),
+                    tile_size: request.options.tile_size,
+                    level_filter: request.level_filter,
+                    max_levels: None,
+                })?;
+            request.options.jpeg_direct_htj2k_profile =
+                JpegDirectHtj2kProfile::default_for_transfer_syntax(
+                    request.options.transfer_syntax,
+                );
+        }
+        request.validate()?;
+        Ok(request)
+    }
+
+    fn into_request(mut self) -> Result<(ExportRequest, TransferSyntaxSelection), Error> {
         let output_dir = self
             .output_dir
             .take()
@@ -222,32 +246,41 @@ impl Export {
                 .ok_or_else(|| Error::InvalidOptions {
                     reason: "color management must be configured with color_management".into(),
                 })?;
-        metadata.resolve()?;
-        if self.transfer_syntax == TransferSyntaxSelection::SourceAware {
-            self.options.transfer_syntax =
-                default_transfer_syntax_for_source(DefaultTransferSyntaxRequest {
-                    source_path: self.source_path.clone(),
-                    tile_size: self.options.tile_size,
-                    level_filter: self.level_filter,
-                    max_levels: None,
-                })?;
-            self.options.jpeg_direct_htj2k_profile =
-                JpegDirectHtj2kProfile::default_for_transfer_syntax(self.options.transfer_syntax);
-        }
-        self.options.validate()?;
-        Ok(ExportRequest {
-            source_path: self.source_path,
-            output_dir,
-            options: self.options,
-            color_management,
-            metadata,
-            level_filter: self.level_filter,
-        })
+        Ok((
+            ExportRequest {
+                source_path: self.source_path,
+                output_dir,
+                options: self.options,
+                color_management,
+                metadata,
+                level_filter: self.level_filter,
+            },
+            self.transfer_syntax,
+        ))
     }
 
     /// Run the export and return a report.
     pub fn run(self) -> Result<ExportReport, Error> {
-        export_dicom(self.build_request()?)
+        let (mut request, transfer_syntax) = self.into_request()?;
+        if transfer_syntax == TransferSyntaxSelection::Explicit {
+            return export_dicom(request);
+        }
+
+        let metadata = request.metadata.resolve()?;
+        let slide = open_slide(&request.source_path)?;
+        request.options.transfer_syntax = default_transfer_syntax_for_open_slide(
+            &slide,
+            &DefaultTransferSyntaxRequest {
+                source_path: request.source_path.clone(),
+                tile_size: request.options.tile_size,
+                level_filter: request.level_filter,
+                max_levels: None,
+            },
+        )?;
+        request.options.jpeg_direct_htj2k_profile =
+            JpegDirectHtj2kProfile::default_for_transfer_syntax(request.options.transfer_syntax);
+        let options = validate_export_request(&request)?;
+        export_dicom_prepared(request, slide, metadata, options)
     }
 
     /// Run the WSI export and then create verified DICOM sidecars from QuPath GeoJSON.

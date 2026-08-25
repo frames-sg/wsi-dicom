@@ -1,4 +1,33 @@
-use super::*;
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+use wsi_rs::Slide;
+
+use super::corpus_discovery::collect_wsi_candidate_paths;
+use super::defaults::default_transfer_syntax_for_open_slide;
+use super::jobs::{dicom_route_profile_jobs, DicomRouteProfileJob};
+use super::jpeg_baseline::{jpeg_baseline_route_frame_geometry, JpegBaselineFrameLocation};
+use crate::error::Error;
+use crate::options::{
+    ExportOptions, JpegDirectHtj2kProfile, NormalizedExportOptions, TransferSyntax,
+};
+use crate::report::{
+    ExportMetrics, RouteCorpusCoverageFailure, RouteCorpusCoverageReport, RouteCoverageReport,
+    RouteProfileReport,
+};
+use crate::request::{
+    CorpusRouteCoverageRequest, DefaultTransferSyntaxRequest, RouteCoverageRequest,
+    RouteCoverageTarget, RouteProfileRequest, RouteProgressSink, SlideRouteCoverageRequest,
+};
+use crate::routing::{j2k_route_tile_size, open_slide};
+use crate::time::duration_as_reported_micros;
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::route_cache::{
+    flush_persistent_auto_metal_input_route_cache_if_requested,
+    load_persistent_auto_metal_input_route_cache_if_requested,
+};
 
 mod route_sampling;
 
@@ -55,13 +84,17 @@ pub(super) fn check_route_level_deadline(
 
 fn route_profile_available_frames(
     slide: &Slide,
-    options: &ExportOptions,
+    options: &NormalizedExportOptions,
     level: &wsi_rs::Level,
     location: JpegBaselineFrameLocation,
 ) -> Result<u64, Error> {
-    if options.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
-        let geometry =
-            jpeg_baseline_route_frame_geometry(slide, level, location, options.tile_size)?;
+    if options.semantics.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
+        let geometry = jpeg_baseline_route_frame_geometry(
+            slide,
+            level,
+            location,
+            options.semantics.tile_size,
+        )?;
         return geometry
             .tiles_across
             .checked_mul(geometry.tiles_down)
@@ -70,7 +103,11 @@ fn route_profile_available_frames(
             });
     }
     let (matrix_columns, matrix_rows) = level.dimensions;
-    let tile_size = j2k_route_tile_size(options, level)?;
+    let tile_size = j2k_route_tile_size(
+        options.semantics.tile_size,
+        options.semantics.transfer_syntax,
+        level,
+    )?;
     matrix_columns
         .div_ceil(u64::from(tile_size))
         .checked_mul(matrix_rows.div_ceil(u64::from(tile_size)))
@@ -80,12 +117,13 @@ fn route_profile_available_frames(
 }
 
 fn resolve_source_aware_profile_options(
+    slide: &Slide,
     source_path: &Path,
     mut options: ExportOptions,
     level_filter: Option<u32>,
     max_levels: Option<u32>,
     source_aware_transfer_syntax: bool,
-) -> Result<ExportOptions, Error> {
+) -> Result<NormalizedExportOptions, Error> {
     if source_aware_transfer_syntax {
         let current_default =
             JpegDirectHtj2kProfile::default_for_transfer_syntax(options.transfer_syntax);
@@ -94,14 +132,13 @@ fn resolve_source_aware_profile_options(
             DefaultTransferSyntaxRequest::new(source_path.to_path_buf(), options.tile_size);
         request.level_filter = level_filter;
         request.max_levels = max_levels;
-        options.transfer_syntax = default_transfer_syntax_for_source(request)?;
+        options.transfer_syntax = default_transfer_syntax_for_open_slide(slide, &request)?;
         if profile_is_default {
             options.jpeg_direct_htj2k_profile =
                 JpegDirectHtj2kProfile::default_for_transfer_syntax(options.transfer_syntax);
         }
     }
-    options.validate()?;
-    Ok(options)
+    NormalizedExportOptions::new(&options)
 }
 
 /// Profile the route selection and encode path for a bounded number of frames.
@@ -113,15 +150,17 @@ pub fn profile_dicom_routes(request: RouteProfileRequest) -> Result<RouteProfile
             reason: "route profiling requires max_frames > 0".into(),
         });
     }
+    let slide = open_slide(&request.source_path)?;
     let options = resolve_source_aware_profile_options(
+        &slide,
         &request.source_path,
         request.options,
         Some(request.level),
         None,
         request.source_aware_transfer_syntax,
     )?;
-    if options.transfer_syntax != TransferSyntax::JpegBaseline8Bit
-        && !options.transfer_syntax.is_j2k_family()
+    if options.semantics.transfer_syntax != TransferSyntax::JpegBaseline8Bit
+        && !options.semantics.transfer_syntax.is_j2k_family()
     {
         return Err(Error::Unsupported {
             reason: "bounded route profiling currently supports JPEG Baseline, JPEG 2000, and HTJ2K transfer syntaxes"
@@ -129,10 +168,6 @@ pub fn profile_dicom_routes(request: RouteProfileRequest) -> Result<RouteProfile
         });
     }
 
-    let slide = Slide::open(&request.source_path).map_err(|source| Error::SourceOpen {
-        path: request.source_path.clone(),
-        message: source.to_string(),
-    })?;
     let jobs = dicom_route_profile_jobs(&slide, Some(request.level), None)?;
     if jobs.is_empty() {
         return Err(Error::Unsupported {
@@ -140,7 +175,7 @@ pub fn profile_dicom_routes(request: RouteProfileRequest) -> Result<RouteProfile
         });
     }
     let started = Instant::now();
-    let transfer_syntax_uid = options.transfer_syntax.uid();
+    let transfer_syntax_uid = options.semantics.transfer_syntax.uid();
     let mut metrics = ExportMetrics::default();
     let mut available_frames = 0u64;
     let mut remaining = request.max_frames;
@@ -154,13 +189,13 @@ pub fn profile_dicom_routes(request: RouteProfileRequest) -> Result<RouteProfile
             continue;
         }
         let job_frames = remaining.min(job_available_frames);
-        let job_metrics = if options.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
-            profile_jpeg_baseline_routes(&slide, options.clone(), job.level, location, job_frames)?
+        let job_metrics = if options.semantics.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
+            profile_jpeg_baseline_routes(&slide, options, job.level, location, job_frames)?
         } else {
             profile_lossless_j2k_routes(
                 &slide,
                 &request.source_path,
-                options.clone(),
+                options,
                 job.level,
                 location,
                 job_frames,
@@ -211,7 +246,9 @@ pub fn profile_dicom_route_coverage(
         }
     };
 
+    let slide = open_slide(&source_path)?;
     let options = resolve_source_aware_profile_options(
+        &slide,
         &source_path,
         request.options,
         None,
@@ -219,8 +256,8 @@ pub fn profile_dicom_route_coverage(
         request.source_aware_transfer_syntax,
     )?;
 
-    if options.transfer_syntax != TransferSyntax::JpegBaseline8Bit
-        && !options.transfer_syntax.is_j2k_family()
+    if options.semantics.transfer_syntax != TransferSyntax::JpegBaseline8Bit
+        && !options.semantics.transfer_syntax.is_j2k_family()
     {
         return Err(Error::Unsupported {
             reason: "route coverage profiling currently supports JPEG Baseline, JPEG 2000, and HTJ2K transfer syntaxes"
@@ -228,10 +265,6 @@ pub fn profile_dicom_route_coverage(
         });
     }
 
-    let slide = Slide::open(&source_path).map_err(|source| Error::SourceOpen {
-        path: source_path.clone(),
-        message: source.to_string(),
-    })?;
     let jobs = dicom_route_profile_jobs(&slide, None, request.max_levels)?;
     if jobs.is_empty() {
         return Err(Error::Unsupported {
@@ -240,7 +273,7 @@ pub fn profile_dicom_route_coverage(
     }
 
     let started = Instant::now();
-    let transfer_syntax_uid = options.transfer_syntax.uid();
+    let transfer_syntax_uid = options.semantics.transfer_syntax.uid();
     let mut jobs_by_level: BTreeMap<u32, Vec<DicomRouteProfileJob<'_>>> = BTreeMap::new();
     for job in jobs {
         let level_jobs = jobs_by_level.entry(job.coordinate.level_idx).or_default();
@@ -292,26 +325,27 @@ pub fn profile_dicom_route_coverage(
                 continue;
             }
             let job_frames = remaining.min(job_available_frames);
-            let job_metrics = if options.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
-                coverage_jpeg_baseline_routes(
-                    &slide,
-                    options.clone(),
-                    job.level,
-                    location,
-                    job_frames,
-                    level_deadline,
-                )?
-            } else {
-                profile_lossless_j2k_routes(
-                    &slide,
-                    &source_path,
-                    options.clone(),
-                    job.level,
-                    location,
-                    job_frames,
-                    level_deadline,
-                )?
-            };
+            let job_metrics =
+                if options.semantics.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
+                    coverage_jpeg_baseline_routes(
+                        &slide,
+                        options,
+                        job.level,
+                        location,
+                        job_frames,
+                        level_deadline,
+                    )?
+                } else {
+                    profile_lossless_j2k_routes(
+                        &slide,
+                        &source_path,
+                        options,
+                        job.level,
+                        location,
+                        job_frames,
+                        level_deadline,
+                    )?
+                };
             remaining = remaining.saturating_sub(job_metrics.routes.total_frames);
             level_metrics.add_assign(job_metrics);
         }
@@ -355,6 +389,13 @@ pub fn profile_dicom_route_coverage(
         metrics,
         elapsed_micros: duration_as_reported_micros(started.elapsed()),
     })
+}
+
+/// Profile route coverage for one source using a target-safe request type.
+pub fn profile_slide_route_coverage(
+    request: SlideRouteCoverageRequest,
+) -> Result<RouteCoverageReport, Error> {
+    profile_dicom_route_coverage(request.into())
 }
 
 /// Profile route coverage for every WSI-like file under a source root.
@@ -483,6 +524,13 @@ pub fn profile_dicom_route_corpus_coverage(
         metrics,
         elapsed_micros: duration_as_reported_micros(started.elapsed()),
     })
+}
+
+/// Profile route coverage for a corpus using a target-safe request type.
+pub fn profile_corpus_route_coverage(
+    request: CorpusRouteCoverageRequest,
+) -> Result<RouteCorpusCoverageReport, Error> {
+    profile_dicom_route_corpus_coverage(request.into())
 }
 
 fn corpus_transfer_syntax_uids(

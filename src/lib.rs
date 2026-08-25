@@ -14,6 +14,7 @@
 
 mod annotation_export;
 mod api;
+mod application;
 #[cfg(feature = "bench-internals")]
 #[doc(hidden)]
 pub mod bench_support;
@@ -37,7 +38,8 @@ mod request;
 mod routing;
 mod synthetic_source;
 mod tile;
-mod time;
+#[doc(hidden)]
+pub mod time;
 mod uid;
 mod validation;
 mod writer;
@@ -50,6 +52,10 @@ pub use annotation_export::{
     AnnotationExportReport, AnnotationInstanceReport, AnnotationTarget, QuPathAnnotationOptions,
 };
 pub use api::Export;
+pub use application::{
+    run_export_workflow, ExportWorkflowError, ExportWorkflowProgress, ExportWorkflowProgressEvent,
+    ExportWorkflowReport, ExportWorkflowRequest, ExportWorkflowStage, MetadataInput,
+};
 pub use calibration::{
     create_icc_calibration_bundle, ColorManagement, IccCalibrationRegistry, IccConflictPolicy,
     IccProfile, ScannerIdentity, ICC_CALIBRATION_REGISTRY_MAX_BYTES, ICC_PROFILE_MAX_BYTES,
@@ -58,8 +64,9 @@ pub use diagnostics::{run_dicom_self_test, SelfTestOptions, SelfTestReport};
 pub use error::Error;
 pub use export::default_transfer_syntax_for_source;
 pub use export::{
-    encode_dicom_j2k_frame, export_dicom, profile_dicom_route_corpus_coverage,
-    profile_dicom_route_coverage, profile_dicom_routes,
+    encode_dicom_j2k_frame, export_dicom, profile_corpus_route_coverage,
+    profile_dicom_route_corpus_coverage, profile_dicom_route_coverage, profile_dicom_routes,
+    profile_slide_route_coverage,
 };
 pub use metadata::{
     DicomMetadata, MetadataSource, SpecimenIdentifierIssuer, UniversalEntityIdType,
@@ -76,8 +83,9 @@ pub use report::{
     WriteTimings,
 };
 pub use request::{
-    DefaultTransferSyntaxRequest, ExportRequest, FrameSamples, J2kFrameEncodeRequest,
-    RouteCoverageRequest, RouteCoverageTarget, RouteProfileRequest, RouteProgressSink,
+    CorpusRouteCoverageRequest, DefaultTransferSyntaxRequest, ExportRequest, FrameSamples,
+    J2kFrameEncodeRequest, RouteCoverageRequest, RouteCoverageTarget, RouteProfileRequest,
+    RouteProgressSink, SlideRouteCoverageRequest,
 };
 pub use validation::{
     doctor_dicom_environment, validate_dicom_path, DoctorOptions, DoctorReport, DoctorStatus,

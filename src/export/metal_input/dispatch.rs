@@ -1,4 +1,18 @@
-use super::*;
+use std::time::Duration;
+
+use wsi_rs::Slide;
+
+use super::super::metal_route::{
+    output_tile_maps_to_wsi_rs_tile, regular_tiled_source_layout, whole_level_strip_layout,
+};
+use super::super::metal_row_batch::{
+    self, try_encode_metal_aligned_tile_run, try_encode_metal_whole_level_strip_run,
+};
+use super::{MetalEncodedTileRun, MetalInputTileReader, MetalInputTileRunRequest};
+use crate::encode::{self, DicomJ2kEncoder};
+use crate::error::Error;
+use crate::options::EncodeBackendPreference;
+use crate::routing::level_is_synthetic_downsample;
 
 pub(in crate::export) fn try_encode_metal_input_tile_run(
     slide: &Slide,

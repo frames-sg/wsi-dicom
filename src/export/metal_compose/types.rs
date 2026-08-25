@@ -1,4 +1,4 @@
-use super::*;
+use j2k_core::PixelFormat as J2kPixelFormat;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(in crate::export) struct PackedMetalStrips {

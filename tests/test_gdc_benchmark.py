@@ -37,6 +37,16 @@ def write_benchmark_slide(bench, root):
 
 
 class GdcBenchmarkTests(unittest.TestCase):
+    def test_compatibility_entry_point_delegates_to_cohesive_modules(self):
+        bench = load_benchmark_module()
+        from bench.gdc import commands, discovery, reporting, trial
+
+        self.assertIs(bench.command_for_tool, commands.command_for_tool)
+        self.assertIs(bench.discover_gdc_slides, discovery.discover_gdc_slides)
+        self.assertIs(bench.benchmark_trial, trial.benchmark_trial)
+        self.assertIs(bench.render_markdown_summary, reporting.render_markdown_summary)
+        self.assertLess(len(BENCHMARK_PATH.read_text(encoding="utf-8").splitlines()), 150)
+
     def test_discovers_gdc_slides_and_maps_manifest_by_file_id(self):
         bench = load_benchmark_module()
         with tempfile.TemporaryDirectory() as tmp:

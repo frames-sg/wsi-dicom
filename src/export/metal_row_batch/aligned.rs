@@ -1,4 +1,21 @@
-use super::*;
+use std::time::{Duration, Instant};
+
+use wsi_rs::{DeviceTile, Slide, TilePixels, TileRequest};
+
+use super::super::jpeg_baseline::JpegBaselineFrameLocation;
+use super::super::metal_input::{
+    empty_metal_tile_run, metal_j2k_encode_batch_count, MetalEncodedTileRun, MetalInputTileReader,
+    MetalInputTileRunRequest, PendingMetalEncodedTileRun,
+};
+use super::super::metal_route::output_tile_maps_to_wsi_rs_tile;
+use super::{
+    empty_pending_metal_tile_run, encode_metal_tile_entries, split_metal_tile_entries,
+    MetalTileEntry, MetalTileGridBatchRequest,
+};
+use crate::encode::DicomJ2kEncoder;
+use crate::error::Error;
+use crate::options::EncodeBackendPreference;
+use crate::tile::pixel_profile_from_wsi_device_format;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 struct MetalAlignedGridRead {

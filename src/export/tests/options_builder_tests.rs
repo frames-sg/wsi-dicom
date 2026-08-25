@@ -1,4 +1,7 @@
 use super::*;
+use crate::routing::{
+    reset_slide_open_count_for_current_thread, slide_open_count_for_current_thread,
+};
 use crate::UidPolicy;
 
 #[test]
@@ -36,6 +39,7 @@ fn default_export_instance_workers_parallelizes_cpu_safe_jobs_only() {
         encode_backend: EncodeBackendPreference::CpuOnly,
         ..ExportOptions::default()
     };
+    let cpu = NormalizedExportOptions::new(&cpu).unwrap();
     assert_eq!(default_export_instance_worker_count(&cpu, 1, 8), 1);
     assert_eq!(default_export_instance_worker_count(&cpu, 4, 8), 4);
     assert_eq!(default_export_instance_worker_count(&cpu, 8, 8), 7);
@@ -45,12 +49,13 @@ fn default_export_instance_workers_parallelizes_cpu_safe_jobs_only() {
         encode_backend: EncodeBackendPreference::RequireDevice,
         ..ExportOptions::default()
     };
+    let require_device = NormalizedExportOptions::new(&require_device).unwrap();
     assert_eq!(
         default_export_instance_worker_count(&require_device, 8, 8),
         1
     );
 
-    let auto = ExportOptions::default();
+    let auto = NormalizedExportOptions::new(&ExportOptions::default()).unwrap();
     let expected_auto_workers = if cfg!(any(feature = "metal", feature = "cuda")) {
         1
     } else {
@@ -245,6 +250,7 @@ fn source_aware_builder_writes_requested_tile_geometry_for_oversized_jpeg2000_so
     let source = tmp.path().join("source.svs");
     write_tiled_jp2k_ycbcr_tiff(&source, 4, 4, 4, 4, std::slice::from_ref(&codestream));
 
+    reset_slide_open_count_for_current_thread();
     let report = Export::from_slide(&source)
         .to_directory(tmp.path().join("out"))
         .tile_size(2)
@@ -254,6 +260,7 @@ fn source_aware_builder_writes_requested_tile_geometry_for_oversized_jpeg2000_so
         .color_management(ColorManagement::SourceOrSrgb)
         .run()
         .unwrap();
+    assert_eq!(slide_open_count_for_current_thread(), 1);
 
     assert_eq!(report.instances[0].frame_count, 4);
     assert_eq!(
@@ -434,6 +441,35 @@ fn export_request_rejects_zero_tile_size() {
     assert!(err
         .to_string()
         .contains("tile_size must be greater than zero"));
+}
+
+#[test]
+fn export_validation_returns_the_normalized_execution_boundary() {
+    let request = ExportRequest {
+        source_path: PathBuf::from("source.svs"),
+        output_dir: PathBuf::from("out"),
+        options: ExportOptions {
+            tile_size: 256,
+            max_prepared_frame_bytes: 32 * 1024 * 1024,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: None,
+    };
+
+    let normalized = validate_export_request(&request).expect("valid export request");
+
+    assert_eq!(normalized.semantics.tile_size, 256);
+    assert_eq!(
+        normalized.resources.max_prepared_frame_bytes,
+        32 * 1024 * 1024
+    );
+    assert_eq!(
+        normalized.execution.encode_backend,
+        EncodeBackendPreference::CpuOnly
+    );
 }
 
 #[test]

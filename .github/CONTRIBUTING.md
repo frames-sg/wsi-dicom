@@ -9,9 +9,10 @@ Use the Rust toolchain declared in `Cargo.toml`.
 
 ```sh
 cargo fmt --all -- --check
-cargo test --no-default-features
-cargo clippy --no-default-features --all-targets -- -D warnings
-cargo doc --no-default-features --no-deps
+cargo clippy --workspace --no-default-features --all-targets --locked -- -D warnings
+cargo test --workspace --no-default-features --all-targets --locked
+cargo doc --no-default-features --no-deps --locked
+cargo check -p wsi-dicom-gui --locked
 ```
 
 GPU routes are optional and should be tested on hardware that supports the

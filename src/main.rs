@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 
 use clap::Parser;
-use wsi_dicom::Error;
 
 mod cli_args;
 mod cli_calibration;
@@ -9,8 +8,8 @@ mod cli_export;
 mod cli_output;
 mod cli_profile;
 mod cli_report;
+mod cli_sustain;
 mod cli_validation;
-mod time;
 
 use cli_args::{Cli, Command};
 
@@ -21,7 +20,7 @@ fn main() {
     }
 }
 
-fn run() -> Result<(), Error> {
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     match Cli::parse().command {
         Command::Convert {
             source,
@@ -42,14 +41,16 @@ fn run() -> Result<(), Error> {
             level,
             json,
         }),
-        Command::Calibration { command } => cli_calibration::handle(command),
+        Command::Calibration { command } => Ok(cli_calibration::handle(command)?),
         Command::Profile {
             source,
             encode,
             level,
             max_frames,
             json,
-        } => cli_profile::handle_profile(source, encode, level, max_frames, json),
+        } => Ok(cli_profile::handle_profile(
+            source, encode, level, max_frames, json,
+        )?),
         Command::Coverage {
             source,
             encode,
@@ -58,7 +59,7 @@ fn run() -> Result<(), Error> {
             max_levels,
             max_level_ms,
             json,
-        } => cli_profile::handle_coverage(
+        } => Ok(cli_profile::handle_coverage(
             source,
             encode,
             max_frames_per_level,
@@ -66,7 +67,7 @@ fn run() -> Result<(), Error> {
             max_levels,
             max_level_ms,
             json,
-        ),
+        )?),
         Command::CoverageCorpus {
             root,
             encode,
@@ -75,7 +76,7 @@ fn run() -> Result<(), Error> {
             max_levels,
             max_level_ms,
             json,
-        } => cli_profile::handle_coverage_corpus(
+        } => Ok(cli_profile::handle_coverage_corpus(
             root,
             encode,
             max_frames_per_level,
@@ -83,7 +84,7 @@ fn run() -> Result<(), Error> {
             max_levels,
             max_level_ms,
             json,
-        ),
+        )?),
         Command::SustainConvert {
             source,
             out,
@@ -115,7 +116,7 @@ fn run() -> Result<(), Error> {
             iterations,
             interval_ms,
             json,
-        } => cli_profile::handle_sustain(
+        } => Ok(cli_profile::handle_sustain(
             source,
             encode,
             max_frames_per_level,
@@ -125,7 +126,7 @@ fn run() -> Result<(), Error> {
             iterations,
             interval_ms,
             json,
-        ),
+        )?),
         Command::Validate {
             path,
             strict,
@@ -134,7 +135,7 @@ fn run() -> Result<(), Error> {
             max_pixel_frames,
             command_timeout_secs,
             json,
-        } => cli_validation::handle_validate(
+        } => Ok(cli_validation::handle_validate(
             path,
             strict,
             dcmvalidate_iod,
@@ -142,20 +143,19 @@ fn run() -> Result<(), Error> {
             max_pixel_frames,
             command_timeout_secs,
             json,
-        ),
+        )?),
         Command::Doctor {
             strict,
             dcmvalidate_iod,
             htj2k_decoder,
             json,
-        } => cli_validation::handle_doctor(strict, dcmvalidate_iod, htj2k_decoder, json),
-        Command::SelfTest(arguments) => cli_validation::handle_self_test(arguments),
-    }
-}
-
-fn sleep_between_iterations(interval_ms: u64, iteration: u32, iterations: u32) {
-    if interval_ms > 0 && iteration < iterations {
-        std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+        } => Ok(cli_validation::handle_doctor(
+            strict,
+            dcmvalidate_iod,
+            htj2k_decoder,
+            json,
+        )?),
+        Command::SelfTest(arguments) => Ok(cli_validation::handle_self_test(arguments)?),
     }
 }
 

@@ -500,7 +500,8 @@ fn export_metadata_budget_preflight_accepts_exact_and_rejects_one_byte_less() {
         level_filter: None,
     };
     let jobs = dicom_export_instance_jobs(&slide, &request).unwrap();
-    let (frame_count, frame_grid) = metadata_frame_plan(&slide, &request, &jobs[0]).unwrap();
+    let options = NormalizedExportOptions::new(&request.options).unwrap();
+    let (frame_count, frame_grid) = metadata_frame_plan(&slide, &options, &jobs[0]).unwrap();
     let spacing = require_pixel_spacing_mm(level_pixel_spacing_mm(&slide, jobs[0].level)).unwrap();
     let estimate = PerFrameFunctionalGroupsPlan::new(frame_count, frame_grid, spacing.0, spacing.1)
         .unwrap()

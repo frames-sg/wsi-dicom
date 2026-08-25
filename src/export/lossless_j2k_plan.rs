@@ -4,8 +4,11 @@ use j2k_core::CompressedTransferSyntax;
 use wsi_rs::{Compression, Slide};
 
 use super::frame_region::{FrameRectGrid, FrameRectOverflowReasons, OutputFrameRect};
-use super::j2k_policy::{j2k_passthrough_frame, j2k_raw_frame_syntax_and_profile};
+use super::j2k_policy::RawJ2kInspection;
 use super::jpeg_retile::{read_raw_jpeg_retile_display_tile, RawJpegRetileProbe};
+use super::route_plan::{
+    FrameRouteDecision, FrameRouteSource, RouteExecutionContext, RoutePlanner,
+};
 use super::{j2k_direct_htj2k, jpeg_direct_htj2k};
 use crate::coordinate::InstanceCoordinate;
 use crate::error::Error;
@@ -47,6 +50,16 @@ impl LosslessJ2kPlannedFrame {
 
     pub(crate) fn has_j2k_source(&self) -> bool {
         self.source_j2k_syntax.is_some()
+    }
+
+    pub(super) fn route_decision(&self, context: RouteExecutionContext) -> FrameRouteDecision {
+        RoutePlanner::new(context).decide(FrameRouteSource::J2k {
+            passthrough: self.passthrough.is_some(),
+            direct_j2k: self.source_j2k.is_some(),
+            direct_jpeg: self.source_jpeg.is_some(),
+            j2k_reencode: self.source_j2k_syntax.is_some()
+                && self.source_j2k_dimensions == Some((self.width, self.height)),
+        })
     }
 }
 
@@ -155,8 +168,10 @@ fn plan_lossless_j2k_row_at(
             match slide.read_raw_compressed_tile(&tile_request) {
                 Ok(raw) => {
                     let source_j2k_dimensions = Some((raw.width(), raw.height()));
-                    let (source_j2k_syntax, source_j2k_profile) =
-                        j2k_raw_frame_syntax_and_profile(&raw);
+                    let inspection = RawJ2kInspection::new(&raw);
+                    let source_j2k_syntax = inspection.as_ref().map(RawJ2kInspection::syntax);
+                    let source_j2k_profile =
+                        inspection.as_ref().and_then(RawJ2kInspection::profile);
                     let source_lossy_compression =
                         lossy_compression_from_raw(&raw, source_j2k_syntax)?;
                     let source_j2k = j2k_direct_htj2k::frame(
@@ -176,16 +191,29 @@ fn plan_lossless_j2k_row_at(
                         jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax)
                             && raw.compression() == Compression::Jpeg
                             && source_jpeg.is_none();
-                    let passthrough = if request.allow_passthrough_probe {
-                        j2k_passthrough_frame(
-                            raw,
-                            request.grid.frame_columns,
-                            request.grid.frame_rows,
-                            request.transfer_syntax,
-                        )?
-                    } else {
-                        None
-                    };
+                    let passthrough_profile = request
+                        .allow_passthrough_probe
+                        .then(|| {
+                            inspection.as_ref().and_then(|inspection| {
+                                inspection.passthrough_profile(
+                                    &raw,
+                                    request.grid.frame_columns,
+                                    request.grid.frame_rows,
+                                    request.transfer_syntax,
+                                )
+                            })
+                        })
+                        .flatten();
+                    #[cfg(test)]
+                    let passthrough_syntax = inspection.as_ref().map(RawJ2kInspection::syntax);
+                    drop(inspection);
+                    let passthrough = passthrough_profile.map(|profile| J2kPassthroughFrame {
+                        codestream: raw.into_data(),
+                        profile,
+                        #[cfg(test)]
+                        transfer_syntax: passthrough_syntax
+                            .expect("passthrough profile requires a parsed syntax"),
+                    });
                     (
                         source_j2k_dimensions,
                         source_j2k_syntax,

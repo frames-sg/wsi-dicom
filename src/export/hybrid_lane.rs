@@ -1,4 +1,32 @@
-use super::*;
+use crate::options::NormalizedExportOptions;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use crate::options::{EncodeBackendPreference, TransferSyntax};
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::j2k_policy::{
+    effective_gpu_row_batch_target_tiles, effective_lossless_j2k_encode_backend,
+};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::jobs::{
+    dicom_instance_job_frame_count, export_dicom_instance_job, export_dicom_instance_jobs_serial,
+    DicomExportInstanceJob,
+};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::lossless_j2k_instance::{prepare_lossless_j2k_instance, PendingLosslessJ2kInstance};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::InstanceExportContext;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use crate::error::Error;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use crate::metadata::DicomMetadata;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use crate::report::InstanceReport;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use crate::request::ExportRequest;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use crate::uid::DicomExportIdentity;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use wsi_rs::Slide;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 const PREFER_DEVICE_HTJ2K_RPCL_GPU_ROW_BATCH_TARGET_TILES: usize = 416;
@@ -16,11 +44,11 @@ pub(crate) enum HybridExportLane {
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(crate) fn prefer_device_htj2k_rpcl_hybrid_lane(
-    options: &ExportOptions,
+    options: &NormalizedExportOptions,
     frame_count: u64,
 ) -> Option<HybridExportLane> {
-    if options.encode_backend != EncodeBackendPreference::PreferDevice
-        || options.transfer_syntax != TransferSyntax::Htj2kLosslessRpcl
+    if options.execution.encode_backend != EncodeBackendPreference::PreferDevice
+        || options.semantics.transfer_syntax != TransferSyntax::Htj2kLosslessRpcl
     {
         return None;
     }
@@ -32,10 +60,10 @@ pub(crate) fn prefer_device_htj2k_rpcl_hybrid_lane(
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(crate) fn effective_lossless_gpu_row_batch_target_tiles(
-    options: &ExportOptions,
+    options: &NormalizedExportOptions,
     frame_count: u64,
 ) -> Option<usize> {
-    if let Some(configured) = options.gpu_row_batch_target_tiles {
+    if let Some(configured) = options.execution.gpu.row_batch_target_tiles {
         return Some(configured);
     }
     if prefer_device_htj2k_rpcl_hybrid_lane(options, frame_count) == Some(HybridExportLane::Gpu) {
@@ -46,10 +74,10 @@ pub(crate) fn effective_lossless_gpu_row_batch_target_tiles(
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(crate) fn effective_lossless_gpu_encode_memory_mib(
-    options: &ExportOptions,
+    options: &NormalizedExportOptions,
     frame_count: u64,
 ) -> Option<u64> {
-    if let Some(configured) = options.gpu_encode_memory_mib {
+    if let Some(configured) = options.execution.gpu.encode_memory_mib {
         return Some(configured);
     }
     if prefer_device_htj2k_rpcl_hybrid_lane(options, frame_count) == Some(HybridExportLane::Gpu) {
@@ -60,19 +88,19 @@ pub(crate) fn effective_lossless_gpu_encode_memory_mib(
 
 #[cfg(not(all(feature = "metal", target_os = "macos")))]
 pub(crate) fn effective_lossless_gpu_encode_memory_mib(
-    options: &ExportOptions,
+    options: &NormalizedExportOptions,
     _frame_count: u64,
 ) -> Option<u64> {
-    options.gpu_encode_memory_mib
+    options.execution.gpu.encode_memory_mib
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(crate) fn prefer_device_htj2k_rpcl_hybrid_export_lanes_enabled(
-    request: &ExportRequest,
+    options: &NormalizedExportOptions,
     jobs: &[DicomExportInstanceJob<'_>],
 ) -> Result<bool, Error> {
-    if request.options.encode_backend != EncodeBackendPreference::PreferDevice
-        || request.options.transfer_syntax != TransferSyntax::Htj2kLosslessRpcl
+    if options.execution.encode_backend != EncodeBackendPreference::PreferDevice
+        || options.semantics.transfer_syntax != TransferSyntax::Htj2kLosslessRpcl
     {
         return Ok(false);
     }
@@ -80,8 +108,8 @@ pub(crate) fn prefer_device_htj2k_rpcl_hybrid_export_lanes_enabled(
     let mut has_gpu_lane = false;
     let mut has_cpu_lane = false;
     for job in jobs {
-        let frame_count = dicom_instance_job_frame_count(&request.options, job)?;
-        match prefer_device_htj2k_rpcl_hybrid_lane(&request.options, frame_count) {
+        let frame_count = dicom_instance_job_frame_count(options, job)?;
+        match prefer_device_htj2k_rpcl_hybrid_lane(options, frame_count) {
             Some(HybridExportLane::Gpu) => has_gpu_lane = true,
             Some(HybridExportLane::Cpu) => has_cpu_lane = true,
             None => return Ok(false),
@@ -94,6 +122,7 @@ pub(crate) fn prefer_device_htj2k_rpcl_hybrid_export_lanes_enabled(
 pub(crate) fn export_dicom_instance_jobs_prefer_device_htj2k_hybrid_lanes(
     slide: &Slide,
     request: &ExportRequest,
+    options: &NormalizedExportOptions,
     metadata: &DicomMetadata,
     identity: &DicomExportIdentity,
     jobs: &[DicomExportInstanceJob<'_>],
@@ -101,17 +130,21 @@ pub(crate) fn export_dicom_instance_jobs_prefer_device_htj2k_hybrid_lanes(
     let mut gpu_jobs = Vec::new();
     let mut cpu_jobs = Vec::new();
     for job in jobs {
-        let frame_count = dicom_instance_job_frame_count(&request.options, job)?;
-        match prefer_device_htj2k_rpcl_hybrid_lane(&request.options, frame_count) {
+        let frame_count = dicom_instance_job_frame_count(options, job)?;
+        match prefer_device_htj2k_rpcl_hybrid_lane(options, frame_count) {
             Some(HybridExportLane::Gpu) => gpu_jobs.push(job),
             Some(HybridExportLane::Cpu) => cpu_jobs.push(job),
             None => {
-                return export_dicom_instance_jobs_serial(slide, request, metadata, identity, jobs)
+                return export_dicom_instance_jobs_serial(
+                    slide, request, options, metadata, identity, jobs,
+                )
             }
         }
     }
     if gpu_jobs.is_empty() || cpu_jobs.is_empty() {
-        return export_dicom_instance_jobs_serial(slide, request, metadata, identity, jobs);
+        return export_dicom_instance_jobs_serial(
+            slide, request, options, metadata, identity, jobs,
+        );
     }
 
     let mut reports = std::thread::scope(|scope| -> Result<Vec<_>, Error> {
@@ -137,7 +170,7 @@ pub(crate) fn export_dicom_instance_jobs_prefer_device_htj2k_hybrid_lanes(
                 cpu_jobs
                     .iter()
                     .map(|job| {
-                        export_dicom_instance_job(slide, request, metadata, identity, job)
+                        export_dicom_instance_job(slide, request, options, metadata, identity, job)
                             .map(|report| (job.ordinal, report))
                     })
                     .collect::<Result<Vec<_>, _>>()
@@ -148,11 +181,14 @@ pub(crate) fn export_dicom_instance_jobs_prefer_device_htj2k_hybrid_lanes(
             let pending = prepare_lossless_j2k_instance(
                 slide,
                 request,
-                metadata,
-                identity,
-                job.instance_number,
-                job.coordinate,
-                job.level,
+                InstanceExportContext {
+                    options,
+                    metadata,
+                    identity,
+                    instance_number: job.instance_number,
+                    coordinate: job.coordinate,
+                    level: job.level,
+                },
             )?;
             writer_tx
                 .send((job.ordinal, pending))

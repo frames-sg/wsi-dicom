@@ -10,10 +10,9 @@ use crate::cli_args::EncodeArgs;
 use crate::cli_output::{print_cli_output, print_json_line};
 use crate::cli_report::{
     format_corpus_coverage_summary, format_coverage_summary, format_profile_summary,
-    format_sustain_iteration_summary, process_memory_pressure, process_resident_memory_bytes,
-    process_thermal_state,
+    format_sustain_iteration_summary,
 };
-use crate::sleep_between_iterations;
+use crate::cli_sustain::{run_sustained, SustainConfig};
 
 pub(crate) fn handle_profile(
     source: PathBuf,
@@ -105,53 +104,52 @@ pub(crate) fn handle_sustain(
     iterations: u32,
     interval_ms: u64,
     json: bool,
-) -> Result<(), Error> {
-    if iterations == 0 {
-        return Err(Error::Unsupported {
-            reason: "sustain requires iterations > 0".into(),
-        });
-    }
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config = SustainConfig::new(iterations, interval_ms)?;
     let source_aware_transfer_syntax = encode.source_aware_transfer_syntax();
     let options = encode.lossless_review_options();
     let max_frames_per_level =
         effective_max_frames_per_level(max_frames_per_level, full_frame_coverage);
     let max_level_elapsed = max_level_elapsed_from_ms(max_level_ms)?;
-    for iteration in 1..=iterations {
-        let mut request = RouteCoverageRequest::new(source.clone(), options.clone());
-        request.source_aware_transfer_syntax = source_aware_transfer_syntax;
-        request.max_frames_per_level = max_frames_per_level;
-        request.max_levels = max_levels;
-        request.max_level_elapsed = max_level_elapsed;
-        let report = profile_dicom_route_coverage(request)?;
-        let thermal_state = process_thermal_state();
-        let memory_pressure = process_memory_pressure();
-        let rss_bytes = process_resident_memory_bytes();
-        if json {
-            print_json_line(&SustainCoverageIterationJson {
-                mode: "coverage",
-                iteration,
-                iterations,
-                rss_bytes,
-                thermal_state: thermal_state.as_deref(),
-                memory_pressure: memory_pressure.as_deref(),
-                report: &report,
-            })?;
-        } else {
-            println!(
-                "{}",
-                format_sustain_iteration_summary(
-                    iteration,
-                    iterations,
-                    &report,
-                    rss_bytes,
-                    thermal_state.as_deref(),
-                    memory_pressure.as_deref(),
-                )
-            );
-        }
-        sleep_between_iterations(interval_ms, iteration, iterations);
-    }
-    Ok(())
+    run_sustained(
+        config,
+        |_| {
+            let mut request = RouteCoverageRequest::new(source.clone(), options.clone());
+            request.source_aware_transfer_syntax = source_aware_transfer_syntax;
+            request.max_frames_per_level = max_frames_per_level;
+            request.max_levels = max_levels;
+            request.max_level_elapsed = max_level_elapsed;
+            profile_dicom_route_coverage(request)
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+        },
+        |iteration, report| {
+            if json {
+                print_json_line(&SustainCoverageIterationJson {
+                    mode: "coverage",
+                    iteration: iteration.iteration,
+                    iterations: iteration.iterations,
+                    rss_bytes: iteration.rss_bytes,
+                    thermal_state: iteration.thermal_state.as_deref(),
+                    memory_pressure: iteration.memory_pressure.as_deref(),
+                    report,
+                })
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
+            } else {
+                println!(
+                    "{}",
+                    format_sustain_iteration_summary(
+                        iteration.iteration,
+                        iteration.iterations,
+                        report,
+                        iteration.rss_bytes,
+                        iteration.thermal_state.as_deref(),
+                        iteration.memory_pressure.as_deref(),
+                    )
+                );
+            }
+            Ok(())
+        },
+    )
 }
 
 #[derive(serde::Serialize)]

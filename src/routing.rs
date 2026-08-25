@@ -6,19 +6,44 @@ use j2k_core::CompressedTransferSyntax;
 use wsi_rs::{LevelSourceKind, Slide, TileLayout};
 
 use crate::error::Error;
-use crate::options::{EncodeBackendPreference, ExportOptions, TransferSyntax};
+use crate::options::{EncodeBackendPreference, TransferSyntax};
 use crate::tile::PixelProfile;
 
+#[cfg(test)]
+std::thread_local! {
+    static SLIDE_OPEN_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+pub(crate) fn open_slide(path: &Path) -> Result<Slide, Error> {
+    #[cfg(test)]
+    SLIDE_OPEN_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+    Slide::open(path).map_err(|source| Error::SourceOpen {
+        path: path.to_path_buf(),
+        message: source.to_string(),
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn reset_slide_open_count_for_current_thread() {
+    SLIDE_OPEN_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn slide_open_count_for_current_thread() -> u32 {
+    SLIDE_OPEN_COUNT.with(std::cell::Cell::get)
+}
+
 pub(crate) fn j2k_route_tile_size(
-    options: &ExportOptions,
+    tile_size: u32,
+    transfer_syntax: TransferSyntax,
     level: &wsi_rs::Level,
 ) -> Result<u32, Error> {
-    if options.tile_size == 0 {
+    if tile_size == 0 {
         return Err(Error::InvalidOptions {
             reason: "tile_size must be greater than zero".into(),
         });
     }
-    if options.transfer_syntax.is_jpeg2000_passthrough_only() {
+    if transfer_syntax.is_jpeg2000_passthrough_only() {
         let native_square = match level.tile_layout {
             TileLayout::Regular {
                 tile_width,
@@ -35,11 +60,11 @@ pub(crate) fn j2k_route_tile_size(
             | TileLayout::Irregular { .. }
             | _ => None,
         };
-        if let Some(tile_size) = native_square {
-            return Ok(tile_size.min(options.tile_size));
+        if let Some(native_tile_size) = native_square {
+            return Ok(native_tile_size.min(tile_size));
         }
     }
-    Ok(options.tile_size)
+    Ok(tile_size)
 }
 
 pub(crate) fn j2k_encode_transfer_syntax(transfer_syntax: TransferSyntax) -> TransferSyntax {
@@ -167,6 +192,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::options::ExportOptions;
 
     fn level_with_layout(tile_layout: TileLayout) -> wsi_rs::Level {
         wsi_rs::Level::new((2048, 2048), 1.0, tile_layout)
@@ -186,7 +212,10 @@ mod tests {
             tiles_down: 1,
         });
 
-        assert_eq!(j2k_route_tile_size(&options, &level).unwrap(), 512);
+        assert_eq!(
+            j2k_route_tile_size(options.tile_size, options.transfer_syntax, &level).unwrap(),
+            512
+        );
     }
 
     #[test]
@@ -203,7 +232,10 @@ mod tests {
             virtual_tile_height: 256,
         });
 
-        assert_eq!(j2k_route_tile_size(&options, &level).unwrap(), 256);
+        assert_eq!(
+            j2k_route_tile_size(options.tile_size, options.transfer_syntax, &level).unwrap(),
+            256
+        );
     }
 
     #[test]
@@ -220,7 +252,8 @@ mod tests {
             tiles_down: 1,
         });
 
-        let err = j2k_route_tile_size(&options, &level).unwrap_err();
+        let err =
+            j2k_route_tile_size(options.tile_size, options.transfer_syntax, &level).unwrap_err();
         assert!(err.to_string().contains("tile_size"));
     }
 

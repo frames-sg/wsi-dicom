@@ -4,7 +4,58 @@
 [cargo-vet]
 version = "0.10"
 
+[policy.j2k]
+audit-as-crates-io = true
+
+[policy.j2k-codec-math]
+audit-as-crates-io = true
+
+[policy.j2k-core]
+audit-as-crates-io = true
+
+[policy.j2k-cuda]
+audit-as-crates-io = true
+
+[policy.j2k-cuda-runtime]
+audit-as-crates-io = true
+
+[policy.j2k-jpeg]
+audit-as-crates-io = true
+
+[policy.j2k-jpeg-cuda]
+audit-as-crates-io = true
+
+[policy.j2k-jpeg-metal]
+audit-as-crates-io = true
+
+[policy.j2k-metal]
+audit-as-crates-io = true
+
+[policy.j2k-metal-support]
+audit-as-crates-io = true
+
+[policy.j2k-native]
+audit-as-crates-io = true
+
+[policy.j2k-profile]
+audit-as-crates-io = true
+
+[policy.j2k-tilecodec]
+audit-as-crates-io = true
+
+[policy.j2k-transcode]
+audit-as-crates-io = true
+
+[policy.j2k-transcode-metal]
+audit-as-crates-io = true
+
+[policy.j2k-types]
+audit-as-crates-io = true
+
 [policy.wsi-dicom]
+audit-as-crates-io = true
+
+[policy.wsi-rs]
 audit-as-crates-io = true
 
 [[exemptions.accesskit]]
@@ -191,10 +242,6 @@ criteria = "safe-to-deploy"
 version = "2.13.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.block]]
-version = "0.1.6"
-criteria = "safe-to-deploy"
-
 [[exemptions.block-buffer]]
 version = "0.10.4"
 criteria = "safe-to-deploy"
@@ -339,10 +386,6 @@ criteria = "safe-to-deploy"
 version = "0.9.4"
 criteria = "safe-to-deploy"
 
-[[exemptions.core-foundation]]
-version = "0.10.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.core-foundation-sys]]
 version = "0.8.7"
 criteria = "safe-to-deploy"
@@ -353,10 +396,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.core-graphics-types]]
 version = "0.1.3"
-criteria = "safe-to-deploy"
-
-[[exemptions.core-graphics-types]]
-version = "0.2.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.cpufeatures]]
@@ -580,7 +619,7 @@ version = "0.3.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.fearless_simd]]
-version = "0.4.1"
+version = "0.7.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.find-msvc-tools]]
@@ -784,63 +823,67 @@ version = "1.0.18"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k]]
-version = "0.8.0"
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-codec-math]]
-version = "0.8.0"
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-core]]
-version = "0.8.0"
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-cuda]]
-version = "0.8.0"
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-cuda-runtime]]
-version = "0.8.0"
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-jpeg]]
-version = "0.8.0"
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+criteria = "safe-to-deploy"
+
+[[exemptions.j2k-jpeg-cuda]]
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-jpeg-metal]]
-version = "0.8.0"
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-metal]]
-version = "0.8.0"
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-metal-support]]
-version = "0.8.0"
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-native]]
-version = "0.8.0"
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-profile]]
-version = "0.8.0"
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-tilecodec]]
-version = "0.8.0"
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-transcode]]
-version = "0.8.0"
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-transcode-metal]]
-version = "0.8.0"
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-types]]
-version = "0.8.0"
+version = "0.10.0@git:57b6af89c61f25e1a476415ef3a752f6d1b3f057"
 criteria = "safe-to-deploy"
 
 [[exemptions.jni]]
@@ -936,11 +979,7 @@ version = "0.4.33"
 criteria = "safe-to-deploy"
 
 [[exemptions.lru]]
-version = "0.18.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.malloc_buf]]
-version = "0.0.6"
+version = "0.18.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.memchr]]
@@ -953,10 +992,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.memoffset]]
 version = "0.9.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.metal]]
-version = "0.33.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.miniz_oxide]]
@@ -997,10 +1032,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.num_enum_derive]]
 version = "0.7.6"
-criteria = "safe-to-deploy"
-
-[[exemptions.objc]]
-version = "0.2.7"
 criteria = "safe-to-deploy"
 
 [[exemptions.objc-sys]]
@@ -1075,6 +1106,10 @@ criteria = "safe-to-deploy"
 version = "0.2.2"
 criteria = "safe-to-deploy"
 
+[[exemptions.objc2-metal]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+
 [[exemptions.objc2-quartz-core]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
@@ -1133,10 +1168,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.parking_lot_core]]
 version = "0.9.12"
-criteria = "safe-to-deploy"
-
-[[exemptions.paste]]
-version = "1.0.15"
 criteria = "safe-to-deploy"
 
 [[exemptions.peniko]]
@@ -1233,10 +1264,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.quick-error]]
 version = "2.0.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.quick-xml]]
-version = "0.39.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.quick-xml]]
@@ -1656,7 +1683,7 @@ version = "1.1.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.webbrowser]]
-version = "1.2.1"
+version = "1.2.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.weezl]]
@@ -1855,8 +1882,12 @@ criteria = "safe-to-deploy"
 version = "0.7.2"
 criteria = "safe-to-deploy"
 
+[[exemptions.wsi-dicom-annotations]]
+version = "0.1.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.wsi-rs]]
-version = "0.5.2"
+version = "0.6.0@git:b940ea94f3290e54ca2c5f87823109538709c59d"
 criteria = "safe-to-deploy"
 
 [[exemptions.x11-dl]]

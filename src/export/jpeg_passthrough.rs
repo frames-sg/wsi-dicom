@@ -2,12 +2,16 @@ use std::io::{self, Write};
 
 use rayon::prelude::*;
 
+use super::jpeg_baseline::uncompressed_frame_bytes;
 use super::{
     ensure_consistent_pixel_profile, pixel_profile_from_raw_jpeg_tile,
     raw_jpeg_matches_frame_geometry, raw_jpeg_profile_can_passthrough,
-    raw_rgb_passthrough_has_no_geometry_fallback, uncompressed_frame_bytes, Error,
-    JpegBaselineFrameGeometry, JpegBaselineFrameLocation, PixelProfile, RawCompressedTile, Slide,
+    raw_rgb_passthrough_has_no_geometry_fallback, JpegBaselineFrameGeometry,
+    JpegBaselineFrameLocation,
 };
+use crate::error::Error;
+use crate::tile::PixelProfile;
+use wsi_rs::{RawCompressedTile, Slide};
 
 const DIRECT_JPEG_PASSTHROUGH_PLAN_CHUNK_FRAMES: usize = 2_048;
 

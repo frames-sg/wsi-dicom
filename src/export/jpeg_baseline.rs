@@ -8,6 +8,9 @@ use crate::error::Error;
 use crate::tile::PixelProfile;
 
 use super::frame_region::{FrameLocation, OutputFrameRect};
+use super::route_plan::{
+    FrameRouteDecision, FrameRouteSource, RouteExecutionContext, RoutePlanner,
+};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal;
@@ -39,15 +42,41 @@ pub(super) enum JpegBaselinePlannedFrame {
         retile_duration: Duration,
     },
     Blank {
-        data: Vec<u8>,
         profile: PixelProfile,
         uncompressed_bytes: u64,
-        encode_duration: Duration,
     },
     Fallback {
         frame: JpegBaselineFallbackFrame,
         source_lossy_compression: Option<crate::lossy::LossyCompressionByteCounts>,
     },
+}
+
+impl JpegBaselinePlannedFrame {
+    pub(super) fn route_decision(&self, context: RouteExecutionContext) -> FrameRouteDecision {
+        let source = match self {
+            Self::Passthrough { .. } => FrameRouteSource::Jpeg {
+                passthrough: true,
+                retile: false,
+                blank: false,
+            },
+            Self::Retile { .. } => FrameRouteSource::Jpeg {
+                passthrough: false,
+                retile: true,
+                blank: false,
+            },
+            Self::Blank { .. } => FrameRouteSource::Jpeg {
+                passthrough: false,
+                retile: false,
+                blank: true,
+            },
+            Self::Fallback { .. } => FrameRouteSource::Jpeg {
+                passthrough: false,
+                retile: false,
+                blank: false,
+            },
+        };
+        RoutePlanner::new(context).decide(source)
+    }
 }
 
 pub(super) struct JpegBaselineMetalEncodedRun {
@@ -340,8 +369,6 @@ pub(super) fn raw_compressed_error_is_empty_tile(err: &wsi_rs::WsiError) -> bool
 pub(super) fn blank_jpeg_baseline_frame(
     frame_columns: u32,
     frame_rows: u32,
-    jpeg_quality: u8,
-    cache: &mut Option<(Vec<u8>, Duration)>,
 ) -> Result<JpegBaselinePlannedFrame, Error> {
     let profile = PixelProfile {
         components: 3,
@@ -350,36 +377,41 @@ pub(super) fn blank_jpeg_baseline_frame(
     };
     let uncompressed_bytes =
         jpeg_baseline_fallback_uncompressed_bytes(frame_columns, frame_rows, profile)?;
-    let (data, encode_duration) = if let Some((data, _)) = cache {
-        (data.clone(), Duration::ZERO)
-    } else {
-        let pixels_len = usize::try_from(uncompressed_bytes).map_err(|_| Error::Unsupported {
-            reason: "blank JPEG Baseline frame byte count exceeds addressable memory".into(),
-        })?;
-        let pixels = vec![255u8; pixels_len];
-        let encode_started = Instant::now();
-        let encoded = encode_jpeg_baseline_cpu_fragment(
-            JpegSamples::Rgb8 {
-                data: &pixels,
-                width: frame_columns,
-                height: frame_rows,
-            },
-            jpeg_quality,
-            JpegSubsampling::Ybr422,
-            jpeg_baseline_cpu_restart_interval(frame_columns, frame_rows, JpegSubsampling::Ybr422),
-        )?;
-        let duration = encode_started.elapsed();
-        let data = encoded.data;
-        *cache = Some((data.clone(), duration));
-        (data, duration)
-    };
-
     Ok(JpegBaselinePlannedFrame::Blank {
-        data,
         profile,
         uncompressed_bytes,
-        encode_duration,
     })
+}
+
+pub(super) fn encode_blank_jpeg_baseline_frame(
+    frame_columns: u32,
+    frame_rows: u32,
+    jpeg_quality: u8,
+    uncompressed_bytes: u64,
+    cache: &mut Option<(Vec<u8>, Duration)>,
+) -> Result<(Vec<u8>, Duration), Error> {
+    if let Some((data, _)) = cache {
+        return Ok((data.clone(), Duration::ZERO));
+    }
+    let pixels_len = usize::try_from(uncompressed_bytes).map_err(|_| Error::Unsupported {
+        reason: "blank JPEG Baseline frame byte count exceeds addressable memory".into(),
+    })?;
+    let pixels = vec![255u8; pixels_len];
+    let encode_started = Instant::now();
+    let encoded = encode_jpeg_baseline_cpu_fragment(
+        JpegSamples::Rgb8 {
+            data: &pixels,
+            width: frame_columns,
+            height: frame_rows,
+        },
+        jpeg_quality,
+        JpegSubsampling::Ybr422,
+        jpeg_baseline_cpu_restart_interval(frame_columns, frame_rows, JpegSubsampling::Ybr422),
+    )?;
+    let duration = encode_started.elapsed();
+    let data = encoded.data;
+    *cache = Some((data.clone(), duration));
+    Ok((data, duration))
 }
 
 pub(crate) fn raw_rgb_passthrough_has_no_geometry_fallback(

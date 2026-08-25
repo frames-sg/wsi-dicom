@@ -23,8 +23,8 @@ Use `--dry-run` first to publish or inspect the exact command matrix without
 running conversions. Run the same command on macOS for Metal and on the CUDA
 Linux host for CUDA, changing the built `wsi-dicom` binary, `--run-label`, and
 `--system-label`. Results are written under `bench/results/<run-label>/` as `slides.json`,
-`environment.json`, `planned_commands.jsonl`, `results.jsonl`, `results.csv`,
-and `summary.md`.
+`environment.json`, `benchmark-run.json`, `planned_commands.jsonl`,
+`results.jsonl`, `results.csv`, and `summary.md`.
 
 Keep `--device-preflight` enabled for Metal/CUDA smoke and publication runs.
 It records bounded CPU and strict-device route profiles before each

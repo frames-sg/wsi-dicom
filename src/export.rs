@@ -1,11 +1,6 @@
-use std::collections::BTreeMap;
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::path::Path;
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
 
 #[cfg(test)]
 use j2k::J2kLosslessSamples;
@@ -13,78 +8,60 @@ use j2k::J2kLosslessSamples;
 use j2k::{J2kView, ReversibleTransform};
 #[cfg(test)]
 use j2k_core::CompressedTransferSyntax;
-#[cfg(all(feature = "metal", target_os = "macos"))]
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
 use j2k_core::PixelFormat as J2kPixelFormat;
-use j2k_jpeg::{EncodedJpeg, JpegBackend, JpegSamples, JpegSubsampling};
-use rayon::prelude::*;
-#[cfg(all(feature = "metal", target_os = "macos"))]
+#[cfg(test)]
+use j2k_jpeg::JpegBackend;
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
 use wsi_rs::DeviceTile;
 #[cfg(test)]
 use wsi_rs::EncodedTilePhotometricInterpretation;
 #[cfg(test)]
 use wsi_rs::LevelSourceKind;
-#[cfg(any(test, all(feature = "metal", target_os = "macos")))]
+use wsi_rs::Slide;
+#[cfg(test)]
 use wsi_rs::TileLayout;
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use wsi_rs::TileRequest;
-use wsi_rs::{
-    Compression, LevelIdx, PlaneSelection, RawCompressedTile, RegionRequest, SceneId, SeriesId,
-    Slide,
-};
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use wsi_rs::{TileOutputPreference, TilePixels};
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+use wsi_rs::TilePixels;
+#[cfg(test)]
+use wsi_rs::{Compression, RawCompressedTile, RegionRequest};
 
 #[cfg(test)]
 use crate::api::Export;
 #[cfg(test)]
 use crate::calibration::ColorManagement;
 use crate::coordinate::InstanceCoordinate;
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use crate::encode;
-use crate::encode::{DicomJ2kEncoder, EncodedDicomJ2kFrame};
+use crate::encode::DicomJ2kEncoder;
 use crate::error::Error;
-use crate::instance_context::{DicomInstanceContext, InstanceDicomObjectParams};
 use crate::metadata::DicomMetadata;
 #[cfg(test)]
 use crate::metadata::MetadataSource;
+#[cfg(test)]
 use crate::options::{
-    CodecValidation, EncodeBackendPreference, ExportOptions, JpegDirectHtj2kProfile, TransferSyntax,
+    CodecValidation, EncodeBackendPreference, ExportOptions, JpegDirectHtj2kProfile,
 };
+use crate::options::{NormalizedExportOptions, TransferSyntax};
 #[cfg(test)]
 use crate::report::IccProfileSource;
-use crate::report::{
-    EncodedFrame, ExportMetrics, ExportReport, IccProfileReport, InstanceReport,
-    JpegRetileRejectionReason, RouteCorpusCoverageFailure, RouteCorpusCoverageReport,
-    RouteCoverageReport, RouteProfileReport,
-};
+use crate::report::{EncodedFrame, ExportMetrics, ExportReport};
 #[cfg(test)]
 use crate::report::{GpuEncodeMetrics, RouteCounters, WriteTimings};
-use crate::request::DefaultTransferSyntaxRequest;
 #[cfg(test)]
-use crate::request::FrameSamples;
-use crate::request::{
-    ExportRequest, J2kFrameEncodeRequest, RouteCoverageRequest, RouteCoverageTarget,
-    RouteProfileRequest, RouteProgressSink,
-};
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use crate::routing::level_is_synthetic_downsample;
-use crate::routing::{
-    j2k_encode_transfer_syntax, j2k_family_passthrough_probe_allowed, j2k_route_tile_size,
-    unsupported_j2k_route_error,
-};
+use crate::report::{RouteCoverageReport, RouteProfileReport};
+#[cfg(test)]
+use crate::request::{DefaultTransferSyntaxRequest, FrameSamples};
+use crate::request::{ExportRequest, J2kFrameEncodeRequest};
+#[cfg(test)]
+use crate::request::{RouteCoverageRequest, RouteCoverageTarget, RouteProfileRequest};
+use crate::routing::open_slide;
+#[cfg(test)]
+use crate::routing::unsupported_j2k_route_error;
 #[cfg(test)]
 use crate::tile::prepare_tile_samples;
-use crate::tile::{optical_path_groups, prepare_tile_samples_with_limit, PixelProfile};
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use crate::tile::{pixel_profile_from_device_format, pixel_profile_from_wsi_device_format};
-use crate::time::duration_as_reported_micros;
+use crate::tile::PixelProfile;
 use crate::uid::DicomExportIdentity;
-use crate::writer::{
-    extended_offset_table_metadata_bytes, unique_spool_path,
-    write_dicom_object_with_streamed_pixel_data, BufferedPixelDataSink, FrameGrid,
-    LossyCompressionHistory, PerFrameFunctionalGroupsPlan, PixelDataSink, PixelDataSpool,
-    StreamedDicomWritePlan,
-};
+#[cfg(test)]
+use crate::writer::{extended_offset_table_metadata_bytes, PerFrameFunctionalGroupsPlan};
 
 mod corpus_discovery;
 mod defaults;
@@ -119,17 +96,21 @@ mod metal_row_batch;
 mod profiling;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod route_cache;
+mod route_plan;
 mod tile_grid;
 mod transaction;
 
+pub(crate) use self::defaults::default_transfer_syntax_for_open_slide;
 pub use self::defaults::default_transfer_syntax_for_source;
 pub use self::profiling::{
-    profile_dicom_route_corpus_coverage, profile_dicom_route_coverage, profile_dicom_routes,
+    profile_corpus_route_coverage, profile_dicom_route_corpus_coverage,
+    profile_dicom_route_coverage, profile_dicom_routes, profile_slide_route_coverage,
 };
 
+#[cfg(test)]
 use self::corpus_discovery::collect_wsi_candidate_paths;
 
-#[cfg(all(feature = "metal", target_os = "macos"))]
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
 use self::metal_compose::{MetalComposeTileRequest, MetalStripComposer};
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 use self::metal_input::{
@@ -137,87 +118,75 @@ use self::metal_input::{
     select_auto_lossless_j2k_probe_route, wsi_rs_device_decode_opted_in,
     AutoLosslessJ2kRouteCandidate, CpuEncodedTileRun,
 };
-#[cfg(all(feature = "metal", target_os = "macos"))]
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
 use self::metal_input::{
-    empty_metal_tile_run, metal_j2k_encode_batch_count, probe_auto_metal_input_tile_run,
-    try_encode_metal_input_tile_run, AutoMetalInputProbeRequest, MetalEncodedRowRunKey,
-    MetalEncodedTileRun, MetalInputTileReader, MetalInputTileRunRequest, MetalSourceTileKey,
-    PendingMetalEncodedGridRun, PendingMetalEncodedTileRun, RoutedLosslessJ2kTile,
-};
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use metal_route::{
-    output_frame_maps_to_wsi_rs_tile, output_tile_maps_to_wsi_rs_tile, regular_tiled_source_layout,
-    whole_level_strip_layout,
-};
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use metal_row_batch::{
-    try_encode_metal_aligned_tile_run, try_encode_metal_whole_level_strip_run,
-    WholeLevelStripLayout,
-};
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use route_cache::{
-    cached_auto_metal_input_decision, flush_persistent_auto_metal_input_route_cache_if_requested,
-    load_persistent_auto_metal_input_route_cache_if_requested,
-    store_cached_auto_metal_input_decision, AutoLosslessJ2kRouteDecision,
-    AutoMetalInputRouteCacheKey,
+    try_encode_metal_input_tile_run, MetalInputTileReader, MetalInputTileRunRequest,
 };
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
+use metal_route::whole_level_strip_layout;
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+use metal_row_batch::{try_encode_metal_whole_level_strip_run, WholeLevelStripLayout};
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
 use route_cache::{
-    clear_auto_metal_input_route_cache_for_tests,
+    cached_auto_metal_input_decision, clear_auto_metal_input_route_cache_for_tests,
     clear_auto_metal_input_route_cache_state_for_tests,
     flush_persistent_auto_metal_input_route_cache_to_path,
-    load_persistent_auto_metal_input_route_cache_from_path,
+    load_persistent_auto_metal_input_route_cache_from_path, store_cached_auto_metal_input_decision,
+    AutoLosslessJ2kRouteDecision, AutoMetalInputRouteCacheKey,
+};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use route_cache::{
+    flush_persistent_auto_metal_input_route_cache_if_requested,
+    load_persistent_auto_metal_input_route_cache_if_requested,
 };
 
 pub(crate) use self::frame_region::FrameRectGrid;
+#[cfg(test)]
+use self::frame_region::OutputFrameRect;
+#[cfg(test)]
 use self::frame_region::PreparedCpuRegion;
-use self::frame_region::{FrameRectOverflowReasons, OutputFrameRect};
-use self::icc_profile::{preflight_icc_profiles, resolve_icc_profile};
+use self::icc_profile::preflight_icc_profiles;
+#[cfg(test)]
 use self::j2k_policy::*;
-use self::jobs::*;
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use self::jpeg_baseline::encode_jpeg_baseline_metal_device_tile_batch;
+#[cfg(test)]
+use self::jobs::{
+    default_export_instance_worker_count, metadata_frame_plan, DicomExportInstanceJob,
+};
+use self::jobs::{
+    dicom_export_instance_jobs, export_dicom_instance_jobs, preflight_metadata_budgets,
+    preflight_output_paths,
+};
 #[cfg(test)]
 use self::jpeg_baseline::jpeg_baseline_frame_geometry;
-use self::jpeg_baseline::{
-    blank_jpeg_baseline_frame, encode_jpeg_baseline_cpu_fragment,
-    jpeg_baseline_cpu_restart_interval, jpeg_baseline_fallback_uncompressed_bytes,
-    raw_compressed_error_is_empty_tile, uncompressed_frame_bytes, JpegBaselineFallbackFrame,
-    JpegBaselineMetalEncodedRun, JpegBaselinePlannedFrame,
-};
 pub(crate) use self::jpeg_baseline::{
     jpeg_baseline_route_frame_geometry, pixel_profile_from_raw_jpeg_tile,
     raw_jpeg_matches_frame_geometry, raw_jpeg_profile_can_passthrough,
     raw_rgb_passthrough_has_no_geometry_fallback, JpegBaselineFrameGeometry,
     JpegBaselineFrameLocation,
 };
+#[cfg(test)]
+use self::jpeg_baseline::{JpegBaselineFallbackFrame, JpegBaselinePlannedFrame};
+#[cfg(test)]
 use self::jpeg_baseline_instance::export_jpeg_passthrough_instance;
-#[cfg(all(feature = "metal", target_os = "macos"))]
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
 use self::jpeg_baseline_metal::*;
+#[cfg(test)]
 use self::jpeg_baseline_pipeline::*;
 pub(crate) use self::jpeg_passthrough::read_raw_jpeg_passthrough_tile;
-use self::jpeg_passthrough::{
-    try_plan_direct_jpeg_passthrough_frames, DirectJpegPassthroughFrameWriter,
-};
-use self::jpeg_retile::{read_raw_jpeg_retile_display_tile, RawJpegRetileProbe};
+#[cfg(test)]
 use self::lossless_j2k_cpu::{
-    encode_cpu_input_lossless_j2k_planned_batch, lossless_j2k_samples_from_prepared_region,
-    prepare_cpu_input_lossless_j2k_tile, LosslessJ2kCpuBatchOutcome, LosslessJ2kCpuBatchSettings,
+    encode_cpu_input_lossless_j2k_tile_batch, prepare_cpu_input_lossless_j2k_tile,
+    LosslessJ2kCpuBatchFrame, LosslessJ2kCpuBatchSettings,
 };
 #[cfg(test)]
-use self::lossless_j2k_cpu::{encode_cpu_input_lossless_j2k_tile_batch, LosslessJ2kCpuBatchFrame};
 use self::lossless_j2k_direct_routes::*;
-use self::lossless_j2k_instance::export_instance;
-#[cfg(all(feature = "metal", target_os = "macos"))]
-use self::lossless_j2k_instance::{prepare_lossless_j2k_instance, PendingLosslessJ2kInstance};
-use self::lossless_j2k_pipeline::*;
+#[cfg(test)]
 use self::lossless_j2k_plan::J2kPassthroughFrame;
 pub(crate) use self::lossless_j2k_plan::{
     plan_lossless_j2k_frames, LosslessJ2kPlanRequest, LosslessJ2kPlannedFrame,
 };
 #[cfg(test)]
 use self::profiling::{check_route_level_deadline, RouteLevelDeadline};
-use self::tile_grid::{checked_frame_count_u32, TileGrid};
 use self::transaction::{ExportTransaction, OutputDirectoryLock};
 
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
@@ -227,6 +196,16 @@ const WSI_RS_JPEG_DEVICE_DECODE_ENV: &str = "WSI_RS_JPEG_DEVICE_DECODE";
 const WSI_RS_JP2K_DEVICE_DECODE_ENV: &str = "WSI_RS_JP2K_DEVICE_DECODE";
 
 const DIRECT_JPEG_PASSTHROUGH_WRITE_CHUNK_FRAMES: usize = 2048;
+
+#[derive(Clone, Copy)]
+pub(super) struct InstanceExportContext<'a> {
+    pub(super) options: &'a NormalizedExportOptions,
+    pub(super) metadata: &'a DicomMetadata,
+    pub(super) identity: &'a DicomExportIdentity,
+    pub(super) instance_number: u32,
+    pub(super) coordinate: InstanceCoordinate,
+    pub(super) level: &'a wsi_rs::Level,
+}
 
 fn level_pixel_spacing_mm(slide: &Slide, level: &wsi_rs::Level) -> Option<(f64, f64)> {
     let (mpp_x, mpp_y) = slide.dataset().properties.mpp()?;
@@ -275,29 +254,43 @@ pub fn encode_dicom_j2k_frame(request: J2kFrameEncodeRequest<'_>) -> Result<Enco
 
 /// Export a wsi-rs-readable WSI into DICOM VL Whole Slide Microscopy files.
 pub fn export_dicom(request: ExportRequest) -> Result<ExportReport, Error> {
+    let options = validate_export_request(&request)?;
+    let metadata = request.metadata.resolve()?;
+    let slide = open_slide(&request.source_path)?;
+    export_dicom_prepared(request, slide, metadata, options)
+}
+
+pub(crate) fn validate_export_request(
+    request: &ExportRequest,
+) -> Result<NormalizedExportOptions, Error> {
     request.validate()?;
-    #[cfg(all(feature = "metal", target_os = "macos"))]
-    load_persistent_auto_metal_input_route_cache_if_requested()?;
-    if request.options.transfer_syntax != TransferSyntax::JpegBaseline8Bit
-        && !request.options.transfer_syntax.is_j2k_family()
+    let options = NormalizedExportOptions::from_validated(&request.options);
+    if options.semantics.transfer_syntax != TransferSyntax::JpegBaseline8Bit
+        && !options.semantics.transfer_syntax.is_j2k_family()
     {
         return Err(Error::Unsupported {
             reason: "only JPEG Baseline passthrough, JPEG 2000, JPEG 2000 Lossless, and HTJ2K transfer syntaxes are implemented"
                 .into(),
         });
     }
-    let metadata = request.metadata.resolve()?;
-    let slide = Slide::open(&request.source_path).map_err(|source| Error::SourceOpen {
-        path: request.source_path.clone(),
-        message: source.to_string(),
-    })?;
+    Ok(options)
+}
+
+pub(crate) fn export_dicom_prepared(
+    request: ExportRequest,
+    slide: Slide,
+    metadata: DicomMetadata,
+    options: NormalizedExportOptions,
+) -> Result<ExportReport, Error> {
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    load_persistent_auto_metal_input_route_cache_if_requested()?;
     let jobs = dicom_export_instance_jobs(&slide, &request)?;
-    preflight_output_paths(&request, &jobs)?;
-    preflight_metadata_budgets(&slide, &request, &jobs)?;
+    preflight_output_paths(&request, &options, &jobs)?;
+    preflight_metadata_budgets(&slide, &options, &jobs)?;
     let effective_icc_digests = preflight_icc_profiles(&slide, &request, &metadata, &jobs)?;
     let identity = DicomExportIdentity::for_export(
         &request.source_path,
-        &request.options,
+        &options,
         &metadata,
         request.level_filter,
         &effective_icc_digests,
@@ -312,8 +305,16 @@ pub fn export_dicom(request: ExportRequest) -> Result<ExportReport, Error> {
     let mut staged_request = request.clone();
     staged_request.output_dir = transaction.staging_dir().to_path_buf();
     staged_request.options.overwrite = false;
-    let mut instances =
-        export_dicom_instance_jobs(&slide, &staged_request, &metadata, &identity, &jobs)?;
+    let mut staged_options = options;
+    staged_options.semantics.overwrite = false;
+    let mut instances = export_dicom_instance_jobs(
+        &slide,
+        &staged_request,
+        &staged_options,
+        &metadata,
+        &identity,
+        &jobs,
+    )?;
 
     if instances.is_empty() {
         return Err(Error::Unsupported {
@@ -325,7 +326,7 @@ pub fn export_dicom(request: ExportRequest) -> Result<ExportReport, Error> {
             },
         });
     }
-    transaction.commit(&mut instances, request.options.overwrite)?;
+    transaction.commit(&mut instances, options.semantics.overwrite)?;
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
     if let Err(err) = flush_persistent_auto_metal_input_route_cache_if_requested() {
@@ -382,6 +383,11 @@ fn scatter_indexed_results<T>(
         let slot = slots.get_mut(idx).ok_or_else(|| Error::Unsupported {
             reason: format!("indexed batch result {idx} is outside result slots"),
         })?;
+        if slot.is_some() {
+            return Err(Error::Unsupported {
+                reason: format!("indexed batch result contains duplicate index {idx}"),
+            });
+        }
         *slot = Some(result);
     }
     Ok(())

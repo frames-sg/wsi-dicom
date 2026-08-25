@@ -39,6 +39,26 @@ fn require_device_uses_metal_j2k_encode_for_wsi_sized_tile() {
     assert_j2k_facade_roundtrip(samples, &codestream);
 }
 
+#[cfg(feature = "cuda")]
+#[test]
+fn require_device_uses_cuda_j2k_encode_for_wsi_sized_tile() {
+    let mut bytes = Vec::with_capacity(128 * 128 * 3);
+    for y in 0..128u32 {
+        for x in 0..128u32 {
+            bytes.push(((x * 3 + y * 5) & 0xFF) as u8);
+            bytes.push(((x * 7 + y * 11) & 0xFF) as u8);
+            bytes.push(((x * 13 + y * 17) & 0xFF) as u8);
+        }
+    }
+    let samples =
+        J2kLosslessSamples::new(&bytes, 128, 128, 3, 8, false).expect("valid RGB samples");
+
+    let codestream = encode_dicom_j2k_lossless(samples, EncodeBackendPreference::RequireDevice)
+        .expect("CUDA backend should encode WSI-sized DICOM tile");
+
+    assert_j2k_facade_roundtrip(samples, &codestream);
+}
+
 #[test]
 fn encode_dicom_j2k_frame_returns_finished_dicom_frame_bytes() {
     let bytes: Vec<u8> = (0..64).map(|value| ((value * 13) & 0xFF) as u8).collect();

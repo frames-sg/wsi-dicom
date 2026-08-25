@@ -4,7 +4,7 @@ use j2k_jpeg_metal::{encode_jpeg_baseline_batch_from_metal_buffers, JpegBaseline
 use crate::tile::{pixel_profile_from_wsi_device_format, PixelProfile};
 use crate::Error;
 
-use crate::export::jpeg_baseline_output_profile;
+use super::super::jpeg_baseline_pipeline::jpeg_baseline_output_profile;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(in crate::export) fn encode_jpeg_baseline_metal_device_tile_batch(

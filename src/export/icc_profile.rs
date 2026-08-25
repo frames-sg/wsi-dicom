@@ -14,7 +14,7 @@ use crate::request::ExportRequest;
 use crate::tile::{prepare_tile_samples_with_limit, PixelProfile};
 use crate::Error;
 
-use super::DicomExportInstanceJob;
+use super::jobs::DicomExportInstanceJob;
 
 #[derive(Debug, Clone)]
 pub(super) struct ResolvedIccProfile {

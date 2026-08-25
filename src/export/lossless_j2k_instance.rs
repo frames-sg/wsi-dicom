@@ -1,25 +1,49 @@
-use super::*;
+use std::time::Instant;
+
+use wsi_rs::Slide;
+
+use super::frame_region::FrameRectGrid;
+use super::icc_profile::resolve_icc_profile;
+#[cfg(not(all(feature = "metal", target_os = "macos")))]
+use super::j2k_policy::lossless_j2k_cpu_row_batch_count;
+use super::j2k_policy::{lossless_j2k_use_direct_pixel_data, reject_lossy_j2k_lossless_fallback};
+use super::lossless_j2k_direct_routes::{
+    encode_direct_lossless_j2k_routes, try_write_existing_lossless_j2k_frame,
+    ExistingLosslessJ2kFrameContext,
+};
+use super::lossless_j2k_pipeline::{
+    encode_lossless_j2k_cpu_fallback_after_routes, record_resolved_lossless_j2k_fallback_frame,
+    resolve_lossless_j2k_fallback_frame, LosslessJ2kBatchContext, LosslessJ2kRoutePipeline,
+};
+use super::lossless_j2k_plan::{plan_lossless_j2k_frames, LosslessJ2kPlanRequest};
+use super::route_plan::RouteExecutionContext;
+use super::tile_grid::TileGrid;
+use super::{level_pixel_spacing_mm, require_pixel_spacing_mm, InstanceExportContext};
+use crate::error::Error;
+use crate::instance_context::{DicomInstanceContext, InstanceDicomObjectParams};
 use crate::lossy::{uncompressed_pixel_bytes, LossyCompressionAccumulator, HTJ2K_METHOD};
+use crate::metadata::DicomMetadata;
+use crate::options::TransferSyntax;
+use crate::report::{ExportMetrics, IccProfileReport, InstanceReport};
+use crate::request::ExportRequest;
+use crate::routing::{
+    j2k_family_passthrough_probe_allowed, j2k_route_tile_size, unsupported_j2k_route_error,
+};
+use crate::tile::PixelProfile;
+use crate::writer::{
+    unique_spool_path, write_dicom_object_with_streamed_pixel_data, BufferedPixelDataSink,
+    FrameGrid, LossyCompressionHistory, PixelDataSink, StreamedDicomWritePlan,
+};
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::lossless_j2k_pipeline::route_lossless_j2k_metal_input_runs;
 
 pub(super) fn export_instance(
     slide: &Slide,
     request: &ExportRequest,
-    metadata: &DicomMetadata,
-    identity: &DicomExportIdentity,
-    instance_number: u32,
-    coordinate: InstanceCoordinate,
-    level: &wsi_rs::Level,
+    export: InstanceExportContext<'_>,
 ) -> Result<InstanceReport, Error> {
-    prepare_lossless_j2k_instance(
-        slide,
-        request,
-        metadata,
-        identity,
-        instance_number,
-        coordinate,
-        level,
-    )?
-    .finish()
+    prepare_lossless_j2k_instance(slide, request, export)?.finish()
 }
 
 pub(super) struct PendingLosslessJ2kInstance {
@@ -94,13 +118,21 @@ impl PendingLosslessJ2kInstance {
 pub(super) fn prepare_lossless_j2k_instance(
     slide: &Slide,
     request: &ExportRequest,
-    metadata: &DicomMetadata,
-    identity: &DicomExportIdentity,
-    instance_number: u32,
-    coordinate: InstanceCoordinate,
-    level: &wsi_rs::Level,
+    export: InstanceExportContext<'_>,
 ) -> Result<PendingLosslessJ2kInstance, Error> {
-    let tile_size = j2k_route_tile_size(&request.options, level)?;
+    let InstanceExportContext {
+        options,
+        metadata,
+        identity,
+        instance_number,
+        coordinate,
+        level,
+    } = export;
+    let tile_size = j2k_route_tile_size(
+        options.semantics.tile_size,
+        options.semantics.transfer_syntax,
+        level,
+    )?;
     let (matrix_columns, matrix_rows) = level.dimensions;
     let grid = TileGrid::square(matrix_columns, matrix_rows, tile_size)?;
     let tiles_across = grid.tiles_across;
@@ -130,14 +162,20 @@ pub(super) fn prepare_lossless_j2k_instance(
         mut jpeg_direct_encoder,
     } = LosslessJ2kRoutePipeline::new(
         &request.source_path,
-        &request.options,
+        options,
         location,
         u64::from(frame_count),
     )?;
     let mut source_lossy_compression = LossyCompressionAccumulator::default();
     let mut target_lossy_compression = LossyCompressionAccumulator::default();
-    let allow_passthrough_probe =
-        j2k_family_passthrough_probe_allowed(&request.source_path, request.options.transfer_syntax);
+    let allow_passthrough_probe = j2k_family_passthrough_probe_allowed(
+        &request.source_path,
+        options.semantics.transfer_syntax,
+    );
+    let route_context = RouteExecutionContext::new(
+        options.semantics.transfer_syntax,
+        options.execution.encode_backend,
+    );
 
     let mut row = 0;
     while row < tiles_down {
@@ -159,7 +197,7 @@ pub(super) fn prepare_lossless_j2k_instance(
                     frame_columns: tile_size,
                     frame_rows: tile_size,
                 },
-                transfer_syntax: request.options.transfer_syntax,
+                transfer_syntax: options.semantics.transfer_syntax,
                 allow_passthrough_probe,
             },
         )?;
@@ -173,7 +211,7 @@ pub(super) fn prepare_lossless_j2k_instance(
             slide,
             level,
             planned: &planned,
-            options: &request.options,
+            options,
             location,
             tile_size,
         };
@@ -206,21 +244,20 @@ pub(super) fn prepare_lossless_j2k_instance(
             },
         )?;
         for (idx, planned_frame) in planned.iter().enumerate() {
-            let encode_allowed =
-                j2k_non_passthrough_encode_allowed(planned_frame, request.options.transfer_syntax);
+            let decision = planned_frame.route_decision(route_context);
             let compressed_bytes_before = pixel_data.total_raw_bytes();
             if try_write_existing_lossless_j2k_frame(
                 ExistingLosslessJ2kFrameContext {
                     idx,
                     planned_frame,
                     direct_routes: &mut direct_routes,
-                    options: &request.options,
+                    options,
                     metrics: &mut metrics,
                     pixel_profile: &mut pixel_profile,
                 },
                 &mut pixel_data,
             )? {
-                if request.options.transfer_syntax == TransferSyntax::Htj2k
+                if options.semantics.transfer_syntax == TransferSyntax::Htj2k
                     && planned_frame.passthrough.is_none()
                 {
                     let compressed_bytes = pixel_data
@@ -245,16 +282,16 @@ pub(super) fn prepare_lossless_j2k_instance(
                 }
                 continue;
             }
-            if !encode_allowed {
+            if !decision.allows_j2k_encode_fallback() {
                 return Err(unsupported_j2k_route_error(
-                    request.options.transfer_syntax,
+                    options.semantics.transfer_syntax,
                     planned_frame.row,
                     planned_frame.col,
                 ));
             }
             reject_lossy_j2k_lossless_fallback(
                 planned_frame,
-                request.options.transfer_syntax,
+                options.semantics.transfer_syntax,
                 planned_frame.row,
             )?;
             let resolved = resolve_lossless_j2k_fallback_frame(
@@ -269,7 +306,7 @@ pub(super) fn prepare_lossless_j2k_instance(
                 &mut metrics,
                 &mut pixel_profile,
                 resolved,
-                request.options.transfer_syntax,
+                options.semantics.transfer_syntax,
                 "pixel profile changed across frames",
                 |err| match err {
                     Error::Encode { message } => Error::FrameEncode {
@@ -282,7 +319,7 @@ pub(super) fn prepare_lossless_j2k_instance(
                 },
             )?;
             let codestream = encoded.into_codestream()?;
-            if request.options.transfer_syntax == TransferSyntax::Htj2k {
+            if options.semantics.transfer_syntax == TransferSyntax::Htj2k {
                 let profile = pixel_profile.ok_or_else(|| Error::Metadata {
                     reason: "encoded HTJ2K frame did not establish a pixel profile".into(),
                 })?;
@@ -336,8 +373,8 @@ pub(super) fn prepare_lossless_j2k_instance(
         icc_profile_report: icc_profile.report,
         lossy_compression,
         metrics,
-        transfer_syntax: request.options.transfer_syntax,
-        overwrite: request.options.overwrite,
-        max_instance_metadata_bytes: request.options.max_instance_metadata_bytes,
+        transfer_syntax: options.semantics.transfer_syntax,
+        overwrite: options.semantics.overwrite,
+        max_instance_metadata_bytes: options.resources.max_instance_metadata_bytes,
     })
 }

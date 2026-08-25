@@ -251,9 +251,10 @@ fn ndpi_fixture_exports_full_jpeg_baseline_passthrough_instance() {
         level_filter: None,
     };
     let metadata = request.metadata.resolve().unwrap();
+    let normalized_options = NormalizedExportOptions::from_validated(&request.options);
     let identity = DicomExportIdentity::for_export(
         &source,
-        &request.options,
+        &normalized_options,
         &metadata,
         request.level_filter,
         &[],
@@ -267,11 +268,14 @@ fn ndpi_fixture_exports_full_jpeg_baseline_passthrough_instance() {
     let report = export_jpeg_passthrough_instance(
         &slide,
         &request,
-        &metadata,
-        &identity,
-        1,
-        InstanceCoordinate::new(0, 0, level_idx as u32, 0, 0, 0),
-        level,
+        InstanceExportContext {
+            options: &normalized_options,
+            metadata: &metadata,
+            identity: &identity,
+            instance_number: 1,
+            coordinate: InstanceCoordinate::new(0, 0, level_idx as u32, 0, 0, 0),
+            level,
+        },
     )
     .unwrap();
 
@@ -369,9 +373,10 @@ fn ndpi_fixture_exports_jpeg_baseline_passthrough_pyramid_subset_for_qupath() {
         level_filter: None,
     };
     let metadata = request.metadata.resolve().unwrap();
+    let normalized_options = NormalizedExportOptions::from_validated(&request.options);
     let identity = DicomExportIdentity::for_export(
         &source,
-        &request.options,
+        &normalized_options,
         &metadata,
         request.level_filter,
         &[],
@@ -391,11 +396,14 @@ fn ndpi_fixture_exports_jpeg_baseline_passthrough_pyramid_subset_for_qupath() {
         let report = export_jpeg_passthrough_instance(
             &slide,
             &request,
-            &metadata,
-            &identity,
-            (instance_idx + 1) as u32,
-            InstanceCoordinate::new(0, 0, level_idx as u32, 0, 0, 0),
-            level,
+            InstanceExportContext {
+                options: &normalized_options,
+                metadata: &metadata,
+                identity: &identity,
+                instance_number: (instance_idx + 1) as u32,
+                coordinate: InstanceCoordinate::new(0, 0, level_idx as u32, 0, 0, 0),
+                level,
+            },
         )
         .unwrap();
 

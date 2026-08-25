@@ -10,9 +10,11 @@ use super::jpeg_baseline::JpegBaselineFrameLocation;
 use super::jpeg_direct_htj2k;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use super::route_cache::AutoMetalInputRouteCacheKey;
-use super::{J2kPassthroughFrame, LosslessJ2kPlannedFrame};
+#[cfg(test)]
+use super::J2kPassthroughFrame;
+use super::LosslessJ2kPlannedFrame;
 use crate::error::Error;
-use crate::options::{EncodeBackendPreference, ExportOptions, TransferSyntax};
+use crate::options::{EncodeBackendPreference, NormalizedExportOptions, TransferSyntax};
 use crate::passthrough::j2k_codestream_is_rpcl;
 use crate::routing::{
     j2k_encode_backend, j2k_encoded_lossless_profile, required_passthrough_syntax,
@@ -117,100 +119,103 @@ pub(super) fn reject_lossy_j2k_lossless_fallback(
     Ok(())
 }
 
+pub(super) struct RawJ2kInspection<'a> {
+    view: J2kView<'a>,
+    syntax: j2k_core::CompressedTransferSyntax,
+    profile: Option<PixelProfile>,
+    rpcl: bool,
+}
+
+impl<'a> RawJ2kInspection<'a> {
+    pub(super) fn new(raw: &'a RawCompressedTile) -> Option<Self> {
+        if !matches!(
+            raw.compression(),
+            Compression::Jp2kRgb | Compression::Jp2kYcbcr
+        ) {
+            return None;
+        }
+        let view = J2kView::parse(raw.data()).ok()?;
+        let syntax = view.passthrough_candidate()?.transfer_syntax();
+        let profile =
+            if raw.bits_allocated() > u8::MAX as u16 || raw.samples_per_pixel() > u8::MAX as u16 {
+                None
+            } else {
+                j2k_passthrough_pixel_profile(
+                    raw.photometric_interpretation(),
+                    raw.samples_per_pixel() as u8,
+                    raw.bits_allocated(),
+                    &view,
+                )
+            };
+        let rpcl = j2k_codestream_is_rpcl(raw.data());
+        Some(Self {
+            view,
+            syntax,
+            profile,
+            rpcl,
+        })
+    }
+
+    pub(super) const fn syntax(&self) -> j2k_core::CompressedTransferSyntax {
+        self.syntax
+    }
+
+    pub(super) const fn profile(&self) -> Option<PixelProfile> {
+        self.profile
+    }
+
+    pub(super) fn passthrough_profile(
+        &self,
+        raw: &RawCompressedTile,
+        frame_columns: u32,
+        frame_rows: u32,
+        transfer_syntax: TransferSyntax,
+    ) -> Option<PixelProfile> {
+        if raw.width() != frame_columns
+            || raw.height() != frame_rows
+            || (transfer_syntax == TransferSyntax::Htj2kLosslessRpcl && !self.rpcl)
+        {
+            return None;
+        }
+        let source_syntax = required_passthrough_syntax(transfer_syntax, self.syntax)?;
+        let profile = self.profile?;
+        let requirements =
+            PassthroughRequirements::new(source_syntax, CompressedPayloadKind::Jpeg2000Codestream)
+                .with_dimensions((frame_columns, frame_rows))
+                .with_components(raw.samples_per_pixel() as u8)
+                .with_bit_depth(raw.bits_allocated() as u8);
+        self.view
+            .passthrough_candidate()?
+            .copy_bytes_if_eligible(&requirements)
+            .ok()?;
+        Some(profile)
+    }
+}
+
+#[cfg(test)]
 pub(super) fn j2k_passthrough_frame(
     raw: RawCompressedTile,
     frame_columns: u32,
     frame_rows: u32,
     transfer_syntax: TransferSyntax,
 ) -> Result<Option<J2kPassthroughFrame>, Error> {
-    if raw.width() != frame_columns || raw.height() != frame_rows {
+    let Some(inspection) = RawJ2kInspection::new(&raw) else {
         return Ok(None);
-    }
-    if !matches!(
-        raw.compression(),
-        Compression::Jp2kRgb | Compression::Jp2kYcbcr
-    ) {
-        return Ok(None);
-    }
-    if raw.bits_allocated() > u8::MAX as u16 || raw.samples_per_pixel() > u8::MAX as u16 {
-        return Ok(None);
-    }
-    let (_passthrough_syntax, profile) = {
-        let view = match J2kView::parse(raw.data()) {
-            Ok(view) => view,
-            Err(_) => return Ok(None),
-        };
-        if transfer_syntax == TransferSyntax::Htj2kLosslessRpcl
-            && !j2k_codestream_is_rpcl(raw.data())
-        {
-            return Ok(None);
-        }
-        let Some(candidate) = view.passthrough_candidate() else {
-            return Ok(None);
-        };
-        let candidate_syntax = candidate.transfer_syntax();
-        let Some(source_syntax) = required_passthrough_syntax(transfer_syntax, candidate_syntax)
-        else {
-            return Ok(None);
-        };
-        let Some(profile) = j2k_passthrough_pixel_profile(
-            raw.photometric_interpretation(),
-            raw.samples_per_pixel() as u8,
-            raw.bits_allocated(),
-            &view,
-        ) else {
-            return Ok(None);
-        };
-        let requirements =
-            PassthroughRequirements::new(source_syntax, CompressedPayloadKind::Jpeg2000Codestream)
-                .with_dimensions((frame_columns, frame_rows))
-                .with_components(raw.samples_per_pixel() as u8)
-                .with_bit_depth(raw.bits_allocated() as u8);
-        if candidate.copy_bytes_if_eligible(&requirements).is_err() {
-            return Ok(None);
-        }
-        (candidate_syntax, profile)
     };
+    let Some(profile) =
+        inspection.passthrough_profile(&raw, frame_columns, frame_rows, transfer_syntax)
+    else {
+        return Ok(None);
+    };
+    let passthrough_syntax = inspection.syntax();
+    drop(inspection);
 
     Ok(Some(J2kPassthroughFrame {
         codestream: raw.into_data(),
         profile,
         #[cfg(test)]
-        transfer_syntax: _passthrough_syntax,
+        transfer_syntax: passthrough_syntax,
     }))
-}
-
-pub(super) fn j2k_raw_frame_syntax_and_profile(
-    raw: &RawCompressedTile,
-) -> (
-    Option<j2k_core::CompressedTransferSyntax>,
-    Option<PixelProfile>,
-) {
-    if !matches!(
-        raw.compression(),
-        Compression::Jp2kRgb | Compression::Jp2kYcbcr
-    ) {
-        return (None, None);
-    }
-    let Ok(view) = J2kView::parse(raw.data()) else {
-        return (None, None);
-    };
-    let Some(candidate) = view.passthrough_candidate() else {
-        return (None, None);
-    };
-    let syntax = candidate.transfer_syntax();
-    if raw.bits_allocated() > u8::MAX as u16 || raw.samples_per_pixel() > u8::MAX as u16 {
-        return (Some(syntax), None);
-    }
-    let Some(profile) = j2k_passthrough_pixel_profile(
-        raw.photometric_interpretation(),
-        raw.samples_per_pixel() as u8,
-        raw.bits_allocated(),
-        &view,
-    ) else {
-        return (Some(syntax), None);
-    };
-    (Some(syntax), Some(profile))
 }
 
 fn j2k_passthrough_pixel_profile(
@@ -346,37 +351,46 @@ pub(super) const PREFER_DEVICE_TINY_HTJ2K_RPCL_CPU_MAX_FRAMES: u64 = 128;
 pub(super) const DEFAULT_GPU_PIPELINE_DEPTH: usize = 2;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub(super) fn effective_gpu_pipeline_depth(options: &ExportOptions) -> usize {
+pub(super) fn effective_gpu_pipeline_depth(options: &NormalizedExportOptions) -> usize {
     options
-        .gpu_pipeline_depth
+        .execution
+        .gpu
+        .pipeline_depth
         .unwrap_or(DEFAULT_GPU_PIPELINE_DEPTH)
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub(super) fn effective_gpu_row_batch_target_tiles(options: &ExportOptions) -> Option<usize> {
+pub(super) fn effective_gpu_row_batch_target_tiles(
+    options: &NormalizedExportOptions,
+) -> Option<usize> {
     Some(
         options
-            .gpu_row_batch_target_tiles
+            .execution
+            .gpu
+            .row_batch_target_tiles
             .unwrap_or(DEFAULT_METAL_ROW_BATCH_TARGET_TILES),
     )
 }
 
 pub(super) fn effective_lossless_j2k_encode_backend(
-    options: &ExportOptions,
+    options: &NormalizedExportOptions,
     frame_count: u64,
 ) -> EncodeBackendPreference {
-    if options.encode_backend == EncodeBackendPreference::PreferDevice {
-        if options.transfer_syntax == TransferSyntax::Jpeg2000Lossless {
+    if options.execution.encode_backend == EncodeBackendPreference::PreferDevice {
+        if options.semantics.transfer_syntax == TransferSyntax::Jpeg2000Lossless {
             // Keep classic J2K lossless on CPU until Metal beats CPU in route-level benchmarks.
             return EncodeBackendPreference::CpuOnly;
         }
-        if options.transfer_syntax == TransferSyntax::Htj2kLosslessRpcl
+        if options.semantics.transfer_syntax == TransferSyntax::Htj2kLosslessRpcl
             && frame_count <= PREFER_DEVICE_TINY_HTJ2K_RPCL_CPU_MAX_FRAMES
         {
             return EncodeBackendPreference::CpuOnly;
         }
     }
-    j2k_encode_backend(options.transfer_syntax, options.encode_backend)
+    j2k_encode_backend(
+        options.semantics.transfer_syntax,
+        options.execution.encode_backend,
+    )
 }
 
 pub(super) fn jpeg_direct_htj2k_supported_for_backend(
@@ -502,13 +516,13 @@ pub(super) fn lossless_j2k_auto_should_start_cpu_only(
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) fn auto_metal_input_route_cache_key(
     source_path: &Path,
-    options: ExportOptions,
+    options: NormalizedExportOptions,
     location: JpegBaselineFrameLocation,
     route_scope_frames: u64,
 ) -> Option<AutoMetalInputRouteCacheKey> {
-    (options.encode_backend == EncodeBackendPreference::Auto
+    (options.execution.encode_backend == EncodeBackendPreference::Auto
         && matches!(
-            options.transfer_syntax,
+            options.semantics.transfer_syntax,
             TransferSyntax::Htj2kLossless | TransferSyntax::Htj2kLosslessRpcl
         ))
     .then(|| AutoMetalInputRouteCacheKey {
@@ -519,8 +533,8 @@ pub(super) fn auto_metal_input_route_cache_key(
         z: location.z,
         c: location.c,
         t: location.t,
-        tile_size: options.tile_size,
-        transfer_syntax: options.transfer_syntax,
+        tile_size: options.semantics.tile_size,
+        transfer_syntax: options.semantics.transfer_syntax,
         route_scope_frames,
     })
 }

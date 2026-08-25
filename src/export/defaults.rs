@@ -9,9 +9,9 @@ use super::{
     LosslessJ2kPlanRequest,
 };
 use crate::error::Error;
-use crate::options::{ExportOptions, TransferSyntax};
+use crate::options::TransferSyntax;
 use crate::request::DefaultTransferSyntaxRequest;
-use crate::routing::{j2k_route_tile_size, level_is_synthetic_downsample};
+use crate::routing::{j2k_route_tile_size, level_is_synthetic_downsample, open_slide};
 use crate::tile::optical_path_groups;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,16 +29,16 @@ enum J2kDefaultPassthroughStatus {
 pub fn default_transfer_syntax_for_source(
     request: DefaultTransferSyntaxRequest,
 ) -> Result<TransferSyntax, Error> {
-    if request.tile_size == 0 {
-        return Err(Error::InvalidOptions {
-            reason: "tile_size must be greater than zero".into(),
-        });
-    }
-    if request.max_levels == Some(0) {
-        return Err(Error::InvalidOptions {
-            reason: "max_levels must be greater than zero when provided".into(),
-        });
-    }
+    validate_default_request(&request)?;
+    let slide = open_slide(&request.source_path)?;
+    default_transfer_syntax_for_open_slide(&slide, &request)
+}
+
+pub(crate) fn default_transfer_syntax_for_open_slide(
+    slide: &Slide,
+    request: &DefaultTransferSyntaxRequest,
+) -> Result<TransferSyntax, Error> {
+    validate_default_request(request)?;
     let max_levels = request
         .max_levels
         .map(usize::try_from)
@@ -46,10 +46,6 @@ pub fn default_transfer_syntax_for_source(
         .map_err(|_| Error::Unsupported {
             reason: "max_levels exceeds platform addressable memory".into(),
         })?;
-    let slide = Slide::open(&request.source_path).map_err(|source| Error::SourceOpen {
-        path: request.source_path.clone(),
-        message: source.to_string(),
-    })?;
     let mut j2k_passthrough_eligible = false;
     let mut j2k_passthrough_blocked = false;
 
@@ -68,7 +64,7 @@ pub fn default_transfer_syntax_for_source(
                 {
                     continue;
                 }
-                if level_is_synthetic_downsample(&slide, scene_idx, series_idx, level_idx)? {
+                if level_is_synthetic_downsample(slide, scene_idx, series_idx, level_idx)? {
                     continue;
                 }
                 for z in 0..series.axes.z {
@@ -83,7 +79,7 @@ pub fn default_transfer_syntax_for_source(
                                 t,
                             };
                             if jpeg_baseline_passthrough_available_for_default(
-                                &slide,
+                                slide,
                                 level,
                                 location,
                                 request.tile_size,
@@ -91,7 +87,7 @@ pub fn default_transfer_syntax_for_source(
                                 return Ok(TransferSyntax::JpegBaseline8Bit);
                             }
                             match j2k_passthrough_status_for_default(
-                                &slide,
+                                slide,
                                 level,
                                 location,
                                 request.tile_size,
@@ -116,6 +112,20 @@ pub fn default_transfer_syntax_for_source(
     } else {
         Ok(TransferSyntax::Htj2kLosslessRpcl)
     }
+}
+
+fn validate_default_request(request: &DefaultTransferSyntaxRequest) -> Result<(), Error> {
+    if request.tile_size == 0 {
+        return Err(Error::InvalidOptions {
+            reason: "tile_size must be greater than zero".into(),
+        });
+    }
+    if request.max_levels == Some(0) {
+        return Err(Error::InvalidOptions {
+            reason: "max_levels must be greater than zero when provided".into(),
+        });
+    }
+    Ok(())
 }
 
 fn jpeg_baseline_passthrough_available_for_default(
@@ -148,12 +158,7 @@ fn j2k_passthrough_status_for_default(
     location: JpegBaselineFrameLocation,
     fallback_tile_size: u32,
 ) -> Result<J2kDefaultPassthroughStatus, Error> {
-    let options = ExportOptions {
-        tile_size: fallback_tile_size,
-        transfer_syntax: TransferSyntax::Jpeg2000,
-        ..ExportOptions::default()
-    };
-    let tile_size = j2k_route_tile_size(&options, level)?;
+    let tile_size = j2k_route_tile_size(fallback_tile_size, TransferSyntax::Jpeg2000, level)?;
     let (matrix_columns, matrix_rows) = level.dimensions;
     if matrix_columns == 0 || matrix_rows == 0 {
         return Ok(J2kDefaultPassthroughStatus::NoJ2kSource);

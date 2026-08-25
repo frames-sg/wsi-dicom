@@ -4,10 +4,13 @@ use j2k::{J2kProgressionOrder, J2kToHtj2kOptions};
 use j2k_core::CompressedPayloadKind;
 use rayon::prelude::*;
 
-use super::{
-    ensure_consistent_pixel_profile, CodecValidation, Compression, Error, ExportMetrics,
-    PixelProfile, RawCompressedTile, TransferSyntax,
-};
+use wsi_rs::{Compression, RawCompressedTile};
+
+use super::ensure_consistent_pixel_profile;
+use crate::error::Error;
+use crate::options::{CodecValidation, TransferSyntax};
+use crate::report::ExportMetrics;
+use crate::tile::PixelProfile;
 
 pub(super) struct BatchOutcome {
     pub(super) codestream: Vec<u8>,
@@ -55,6 +58,7 @@ pub(super) fn encode_planned_batch(
     planned: &[super::LosslessJ2kPlannedFrame],
     transfer_syntax: TransferSyntax,
     codec_validation: CodecValidation,
+    route_context: super::route_plan::RouteExecutionContext,
 ) -> Result<Vec<Option<Result<BatchOutcome, Error>>>, Error> {
     let mut indices = Vec::new();
     indices
@@ -62,12 +66,11 @@ pub(super) fn encode_planned_batch(
         .map_err(|_| Error::Unsupported {
             reason: "direct J2K batch index exceeds available memory".into(),
         })?;
-    indices.extend(
-        planned
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, frame)| frame.source_j2k.is_some().then_some(idx)),
-    );
+    indices.extend(planned.iter().enumerate().filter_map(|(idx, frame)| {
+        (frame.route_decision(route_context).route
+            == super::route_plan::PlannedFrameRoute::DirectJ2kToHtj2k)
+            .then_some(idx)
+    }));
     let mut outcomes = Vec::new();
     outcomes
         .try_reserve_exact(planned.len())

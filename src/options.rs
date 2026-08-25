@@ -272,6 +272,91 @@ pub struct ExportOptions {
     pub gpu_row_batch_target_tiles: Option<usize>,
 }
 
+/// Validated export semantics used by internal planning and writing code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NormalizedExportSemantics {
+    pub(crate) tile_size: u32,
+    pub(crate) overwrite: bool,
+    pub(crate) transfer_syntax: TransferSyntax,
+    pub(crate) jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile,
+    pub(crate) jpeg_quality: u8,
+    pub(crate) uid_policy: UidPolicy,
+}
+
+/// Validated memory and metadata bounds used by internal execution code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResourceLimits {
+    pub(crate) max_prepared_frame_bytes: u64,
+    pub(crate) max_instance_metadata_bytes: u64,
+    pub(crate) max_total_metadata_bytes: u64,
+}
+
+/// Validated GPU tuning values kept separate from durable export semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GpuTuning {
+    pub(crate) encode_inflight_tiles: Option<usize>,
+    pub(crate) encode_memory_mib: Option<u64>,
+    pub(crate) pipeline_depth: Option<usize>,
+    pub(crate) row_batch_rows: Option<usize>,
+    pub(crate) row_batch_target_tiles: Option<usize>,
+}
+
+/// Validated execution policy used by route and backend selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExecutionOptions {
+    pub(crate) encode_backend: EncodeBackendPreference,
+    pub(crate) codec_validation: CodecValidation,
+    pub(crate) source_device_decode: bool,
+    pub(crate) j2k_decomposition_levels: Option<u8>,
+    pub(crate) gpu: GpuTuning,
+}
+
+/// Patch-compatible internal representation of the public flat option surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NormalizedExportOptions {
+    pub(crate) semantics: NormalizedExportSemantics,
+    pub(crate) resources: ResourceLimits,
+    pub(crate) execution: ExecutionOptions,
+}
+
+impl NormalizedExportOptions {
+    pub(crate) fn new(options: &ExportOptions) -> Result<Self, Error> {
+        options.validate()?;
+        Ok(Self::from_validated(options))
+    }
+
+    pub(crate) fn from_validated(options: &ExportOptions) -> Self {
+        Self {
+            semantics: NormalizedExportSemantics {
+                tile_size: options.tile_size,
+                overwrite: options.overwrite,
+                transfer_syntax: options.transfer_syntax,
+                jpeg_direct_htj2k_profile: options.jpeg_direct_htj2k_profile,
+                jpeg_quality: options.jpeg_quality,
+                uid_policy: options.uid_policy,
+            },
+            resources: ResourceLimits {
+                max_prepared_frame_bytes: options.max_prepared_frame_bytes,
+                max_instance_metadata_bytes: options.max_instance_metadata_bytes,
+                max_total_metadata_bytes: options.max_total_metadata_bytes,
+            },
+            execution: ExecutionOptions {
+                encode_backend: options.encode_backend,
+                codec_validation: options.codec_validation,
+                source_device_decode: options.source_device_decode,
+                j2k_decomposition_levels: options.j2k_decomposition_levels,
+                gpu: GpuTuning {
+                    encode_inflight_tiles: options.gpu_encode_inflight_tiles,
+                    encode_memory_mib: options.gpu_encode_memory_mib,
+                    pipeline_depth: options.gpu_pipeline_depth,
+                    row_batch_rows: options.gpu_row_batch_rows,
+                    row_batch_target_tiles: options.gpu_row_batch_target_tiles,
+                },
+            },
+        }
+    }
+}
+
 impl Default for ExportOptions {
     fn default() -> Self {
         Self {
@@ -504,6 +589,66 @@ mod tests {
             decoded.jpeg_direct_htj2k_profile,
             JpegDirectHtj2kProfile::Lossy97Balanced
         );
+    }
+
+    #[test]
+    fn internal_options_normalize_into_semantic_and_execution_groups() {
+        let public = ExportOptions {
+            tile_size: 256,
+            max_prepared_frame_bytes: 64 * 1024 * 1024,
+            max_instance_metadata_bytes: 32 * 1024 * 1024,
+            max_total_metadata_bytes: 128 * 1024 * 1024,
+            encode_backend: EncodeBackendPreference::PreferDevice,
+            codec_validation: CodecValidation::RoundTrip,
+            source_device_decode: true,
+            gpu_encode_inflight_tiles: Some(8),
+            gpu_encode_memory_mib: Some(2048),
+            gpu_pipeline_depth: Some(3),
+            gpu_row_batch_rows: Some(4),
+            gpu_row_batch_target_tiles: Some(64),
+            ..ExportOptions::default()
+        };
+
+        let normalized = NormalizedExportOptions::new(&public).expect("valid options");
+
+        assert_eq!(normalized.semantics.tile_size, 256);
+        assert_eq!(
+            normalized.resources.max_prepared_frame_bytes,
+            64 * 1024 * 1024
+        );
+        assert_eq!(
+            normalized.resources.max_instance_metadata_bytes,
+            32 * 1024 * 1024
+        );
+        assert_eq!(
+            normalized.resources.max_total_metadata_bytes,
+            128 * 1024 * 1024
+        );
+        assert_eq!(
+            normalized.execution.encode_backend,
+            EncodeBackendPreference::PreferDevice
+        );
+        assert_eq!(
+            normalized.execution.codec_validation,
+            CodecValidation::RoundTrip
+        );
+        assert!(normalized.execution.source_device_decode);
+        assert_eq!(normalized.execution.gpu.encode_inflight_tiles, Some(8));
+        assert_eq!(normalized.execution.gpu.encode_memory_mib, Some(2048));
+        assert_eq!(normalized.execution.gpu.pipeline_depth, Some(3));
+        assert_eq!(normalized.execution.gpu.row_batch_rows, Some(4));
+        assert_eq!(normalized.execution.gpu.row_batch_target_tiles, Some(64));
+    }
+
+    #[test]
+    fn internal_option_normalization_is_the_validation_boundary() {
+        let invalid = ExportOptions {
+            gpu_pipeline_depth: Some(0),
+            ..ExportOptions::default()
+        };
+
+        let error = NormalizedExportOptions::new(&invalid).expect_err("invalid GPU tuning");
+        assert!(error.to_string().contains("gpu_pipeline_depth"));
     }
 
     #[test]

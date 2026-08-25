@@ -1,4 +1,45 @@
-use super::*;
+use std::path::Path;
+use std::time::Duration;
+
+use wsi_rs::Slide;
+
+use super::j2k_policy::{
+    effective_lossless_j2k_encode_backend, j2k_fallback_profile, j2k_fallback_reversible_transform,
+    jpeg_direct_htj2k_supported_for_backend, lossless_j2k_cpu_fallback_indices,
+    validate_dicom_j2k_frame,
+};
+use super::lossless_j2k_cpu::{
+    encode_cpu_input_lossless_j2k_planned_batch, LosslessJ2kCpuBatchOutcome,
+    LosslessJ2kCpuBatchSettings,
+};
+use super::lossless_j2k_direct_routes::{
+    encode_cpu_input_tile, lossless_j2k_direct_route_succeeded, LosslessJ2kDirectRouteBatch,
+};
+use super::lossless_j2k_plan::LosslessJ2kPlannedFrame;
+use super::{ensure_consistent_pixel_profile, hybrid_lane, jpeg_direct_htj2k};
+use crate::coordinate::InstanceCoordinate;
+use crate::encode::{DicomJ2kEncoder, EncodedDicomJ2kFrame};
+use crate::error::Error;
+use crate::options::{NormalizedExportOptions, TransferSyntax};
+use crate::report::ExportMetrics;
+use crate::routing::j2k_encode_transfer_syntax;
+use crate::tile::PixelProfile;
+
+use super::scatter_indexed_results;
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::j2k_policy::{
+    auto_metal_input_route_cache_key, effective_gpu_pipeline_depth,
+    lossless_j2k_auto_allows_metal_input, lossless_j2k_auto_should_start_cpu_only,
+    lossless_j2k_metal_input_preference, LOSSLESS_J2K_AUTO_ROUTE_PROBE_MAX_FRAMES,
+};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::metal_input::{
+    probe_auto_metal_input_tile_run, try_encode_metal_input_tile_run, AutoMetalInputProbeRequest,
+    MetalInputTileReader, MetalInputTileRunRequest, RoutedLosslessJ2kTile,
+};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::route_cache::AutoLosslessJ2kRouteDecision;
 
 pub(super) struct ResolvedLosslessJ2kFallbackFrame {
     encoded: Result<EncodedDicomJ2kFrame, Error>,
@@ -13,7 +54,7 @@ pub(super) struct LosslessJ2kBatchContext<'a> {
     pub(super) slide: &'a Slide,
     pub(super) level: &'a wsi_rs::Level,
     pub(super) planned: &'a [LosslessJ2kPlannedFrame],
-    pub(super) options: &'a ExportOptions,
+    pub(super) options: &'a NormalizedExportOptions,
     pub(super) location: InstanceCoordinate,
     pub(super) tile_size: u32,
 }
@@ -30,54 +71,51 @@ pub(super) struct LosslessJ2kRoutePipeline {
 impl LosslessJ2kRoutePipeline {
     pub(super) fn new(
         _source_path: &Path,
-        options: &ExportOptions,
+        options: &NormalizedExportOptions,
         _location: InstanceCoordinate,
         route_scope_frames: u64,
     ) -> Result<Self, Error> {
         let effective_backend = effective_lossless_j2k_encode_backend(options, route_scope_frames);
         let encoder = DicomJ2kEncoder::new(
             effective_backend,
-            j2k_encode_transfer_syntax(options.transfer_syntax),
-            options.codec_validation,
+            j2k_encode_transfer_syntax(options.semantics.transfer_syntax),
+            options.execution.codec_validation,
         )
-        .with_j2k_decomposition_levels(options.j2k_decomposition_levels)
+        .with_j2k_decomposition_levels(options.execution.j2k_decomposition_levels)
         .with_gpu_encode_tuning(
-            options.gpu_encode_inflight_tiles,
+            options.execution.gpu.encode_inflight_tiles,
             hybrid_lane::effective_lossless_gpu_encode_memory_mib(options, route_scope_frames),
         );
         #[cfg(all(feature = "metal", target_os = "macos"))]
         let mut encoder = encoder;
         #[cfg(all(feature = "metal", target_os = "macos"))]
-        let metal_input_backend =
-            lossless_j2k_metal_input_preference(effective_backend, options.source_device_decode);
+        let metal_input_backend = lossless_j2k_metal_input_preference(
+            effective_backend,
+            options.execution.source_device_decode,
+        );
         #[cfg(all(feature = "metal", target_os = "macos"))]
         let metal_input = MetalInputTileReader::new_for_lossless_j2k(
             metal_input_backend,
             lossless_j2k_auto_allows_metal_input(
                 metal_input_backend,
-                options.transfer_syntax,
+                options.semantics.transfer_syntax,
                 route_scope_frames,
-                options.source_device_decode,
+                options.execution.source_device_decode,
             ),
-            auto_metal_input_route_cache_key(
-                _source_path,
-                options.clone(),
-                _location,
-                route_scope_frames,
-            ),
-            options.source_device_decode,
+            auto_metal_input_route_cache_key(_source_path, *options, _location, route_scope_frames),
+            options.execution.source_device_decode,
         )
         .with_row_batch_tuning(
-            options.gpu_row_batch_rows,
+            options.execution.gpu.row_batch_rows,
             hybrid_lane::effective_lossless_gpu_row_batch_target_tiles(options, route_scope_frames),
         )
         .with_pipeline_depth(effective_gpu_pipeline_depth(options));
         #[cfg(all(feature = "metal", target_os = "macos"))]
         if lossless_j2k_auto_should_start_cpu_only(
             effective_backend,
-            options.transfer_syntax,
+            options.semantics.transfer_syntax,
             route_scope_frames,
-            options.source_device_decode,
+            options.execution.source_device_decode,
         ) || metal_input.auto_route_decision() == AutoLosslessJ2kRouteDecision::CpuOnly
         {
             encoder.force_cpu_only_for_auto();
@@ -89,16 +127,18 @@ impl LosslessJ2kRoutePipeline {
         if metal_input.enabled() {
             metrics.record_gpu_pipeline_depth(effective_gpu_pipeline_depth(options));
         }
-        let jpeg_direct_encoder =
-            jpeg_direct_htj2k_supported_for_backend(options.transfer_syntax, effective_backend)
-                .then(|| {
-                    jpeg_direct_htj2k::BatchEncoder::new(
-                        options.transfer_syntax,
-                        options.jpeg_direct_htj2k_profile,
-                        effective_backend,
-                    )
-                })
-                .transpose()?;
+        let jpeg_direct_encoder = jpeg_direct_htj2k_supported_for_backend(
+            options.semantics.transfer_syntax,
+            effective_backend,
+        )
+        .then(|| {
+            jpeg_direct_htj2k::BatchEncoder::new(
+                options.semantics.transfer_syntax,
+                options.semantics.jpeg_direct_htj2k_profile,
+                effective_backend,
+            )
+        })
+        .transpose()?;
 
         Ok(Self {
             encoder,
@@ -131,12 +171,12 @@ pub(super) fn encode_lossless_j2k_cpu_fallback_batch(
         codec_validation,
         j2k_decomposition_levels,
         reversible_transform,
-    )) = (options.transfer_syntax != TransferSyntax::Jpeg2000)
+    )) = (options.semantics.transfer_syntax != TransferSyntax::Jpeg2000)
         .then(|| j2k_encoder.cpu_batch_settings())
         .flatten()
     {
         let cpu_indices =
-            lossless_j2k_cpu_fallback_indices(planned, options.transfer_syntax, |idx| {
+            lossless_j2k_cpu_fallback_indices(planned, options.semantics.transfer_syntax, |idx| {
                 skip_index(idx)
             });
         scatter_indexed_results(
@@ -149,7 +189,7 @@ pub(super) fn encode_lossless_j2k_cpu_fallback_batch(
                     codec_validation,
                     j2k_decomposition_levels,
                     reversible_transform,
-                    max_prepared_frame_bytes: options.max_prepared_frame_bytes,
+                    max_prepared_frame_bytes: options.resources.max_prepared_frame_bytes,
                 },
                 location,
                 planned,
@@ -188,7 +228,7 @@ pub(super) fn resolve_lossless_j2k_fallback_frame(
         tile_size,
         ..
     } = context;
-    let transfer_syntax = options.transfer_syntax;
+    let transfer_syntax = options.semantics.transfer_syntax;
     #[cfg(all(feature = "metal", target_os = "macos"))]
     if let Some(routed) = routed_encoded {
         return Ok(ResolvedLosslessJ2kFallbackFrame {
@@ -283,7 +323,7 @@ pub(super) fn route_lossless_j2k_metal_input_runs(
         location,
         tile_size,
     } = context;
-    let transfer_syntax = options.transfer_syntax;
+    let transfer_syntax = options.semantics.transfer_syntax;
     let (matrix_columns, matrix_rows) = level.dimensions;
     let mut routed_tiles: Vec<Option<RoutedLosslessJ2kTile>> =
         (0..planned.len()).map(|_| None).collect();

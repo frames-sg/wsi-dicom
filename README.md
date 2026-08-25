@@ -16,7 +16,7 @@ conversion.
 
 ## Install
 
-Install the CLI:
+The latest published release is `0.7.0`:
 
 ```sh
 cargo install wsi-dicom
@@ -26,25 +26,50 @@ Use the Rust API:
 
 ```toml
 [dependencies]
-wsi-dicom = "0.7.2"
+wsi-dicom = "0.7.0"
 ```
 
 GPU support is opt-in:
 
 ```toml
 [dependencies]
-wsi-dicom = { version = "0.7.2", features = ["metal"] } # macOS
+wsi-dicom = { version = "0.7.0", features = ["metal"] } # macOS
 # or
-wsi-dicom = { version = "0.7.2", features = ["cuda"] } # CUDA-capable Linux/Windows
+wsi-dicom = { version = "0.7.0", features = ["cuda"] } # CUDA-capable Linux/Windows
 ```
+
+This source tree is the unreleased `0.7.2` candidate. Build it directly when
+evaluating candidate behavior:
+
+```sh
+cargo build --release --locked
+```
+
+The commands and APIs below describe that 0.7.2 candidate. Refer to the
+[v0.7.0 README](https://github.com/frames-sg/wsi-dicom/blob/v0.7.0/README.md)
+for the exact published interface.
 
 Feature flags:
 
 | Feature | Effect |
 | --- | --- |
 | `default` | CPU-only DICOM export. |
-| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. wsi-rs CUDA tile decode and direct JPEG-to-HTJ2K CUDA transcode are not exposed by wsi-dicom 0.7.2. |
+| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. wsi-rs CUDA tile decode and direct JPEG-to-HTJ2K CUDA transcode are not exposed by the 0.7.2 candidate. |
 | `metal` | Enables Metal JPEG 2000 encode acceleration on macOS, Metal codestream validation decode, and wsi-rs Metal tile decode plumbing. |
+
+CUDA release and hardware-evidence builds should require cuda-oxide PTX
+generation instead of accepting the dependency's compile-time fallback. Install
+`libclang`, select the GPU architecture, and make a missing PTX build fatal; for
+example, an RTX 4070-class device uses `sm_89`:
+
+```sh
+J2K_CUDA_OXIDE_ARCH=sm_89 J2K_REQUIRE_CUDA_OXIDE_BUILD=1 \
+  cargo test --features cuda --lib --locked
+```
+
+Set `LIBCLANG_PATH` when `libclang` is not discoverable through the platform's
+normal library paths. `--backend require-device` remains the runtime fail-closed
+check: it does not silently substitute CPU encoding when CUDA is unavailable.
 
 For local maximum CPU throughput:
 
@@ -271,6 +296,13 @@ let report = Export::from_slide("slide.ndpi")
     .run()?;
 ```
 
+CLI and GUI-style integrations that also need metadata selection, annotation
+preparation, optional validation, report persistence, and progress events can
+use `run_export_workflow` with `ExportWorkflowRequest`. Route-analysis callers
+can use the target-specific `SlideRouteCoverageRequest` and
+`CorpusRouteCoverageRequest` APIs; the older `RouteCoverageRequest` remains a
+compatibility wrapper.
+
 Use request types when an integration needs full control:
 
 ```rust
@@ -338,12 +370,17 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
 
 > [!IMPORTANT]
 > Regenerate color, MONOCHROME2, previously lossy, or multi-institution
-> specimen output produced by versions before this remediation. Older objects
+> specimen output produced by version 0.7.1 or earlier. Older objects
 > can contain a display-class fallback ICC profile, omit required monochrome
 > presentation attributes, erase lossy history after lossless transcoding, or
 > derive the same Specimen UID for identifiers governed by different issuers.
 
 ## Development
+
+Durable repository contracts and the bounded architecture backlog are indexed in
+[the architecture decision records](docs/architecture/README.md). Release history
+remains in the changelog; manifests, lockfiles, tests, and CI are the current build
+source of truth.
 
 Core checks:
 
@@ -363,10 +400,11 @@ cargo xtask semver
 cargo publish --dry-run
 ```
 
-Before a `1.0` release candidate, run these gates against published
-dependencies and a representative real-slide corpus covering advertised routes,
-metadata modes, color-management policies, validator checks, and any GPU route being
-advertised.
+Before any release candidate that changes or advertises export routes,
+performance, conformance, or accelerator behavior, run these gates against
+published dependencies and a representative real-slide corpus covering the
+affected routes, metadata modes, color-management policies, validator checks,
+and GPU backends.
 
 Use the GDC benchmark harness only when publishing speed evidence:
 
@@ -393,8 +431,8 @@ any performance claim.
 `wsi-dicom` is pre-1.0. The builder API is the preferred integration surface.
 Lower-level request, report, validation, and profiling types are public, but
 callers should prefer constructors and defaults over struct literals where
-provided. Version 0.7.2 deliberately breaks the pre-1.0 color-management API:
-`IccProfilePolicy` is removed, `ExportRequest::new` requires a
+provided. The unreleased 0.7.2 candidate deliberately breaks the pre-1.0
+color-management API: `IccProfilePolicy` is removed, `ExportRequest::new` requires a
 `ColorManagement`, and `Export` requires `.color_management(...)`.
 
 ## License

@@ -273,6 +273,116 @@ impl RouteCoverageRequest {
     }
 }
 
+/// Request to sample route coverage for exactly one source slide.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct SlideRouteCoverageRequest {
+    /// Source slide to profile.
+    pub source_path: PathBuf,
+    /// Export options used for route planning.
+    pub options: ExportOptions,
+    /// Whether to resolve transfer syntax from source compression.
+    pub source_aware_transfer_syntax: bool,
+    /// Maximum frames sampled per level; `u64::MAX` requests full coverage.
+    pub max_frames_per_level: u64,
+    /// Optional cap on source levels inspected.
+    pub max_levels: Option<u32>,
+    /// Optional per-level elapsed time budget.
+    pub max_level_elapsed: Option<Duration>,
+    /// Optional progress sink.
+    pub progress: Option<RouteProgressSink>,
+}
+
+impl SlideRouteCoverageRequest {
+    /// Build a slide request that samples one frame per level.
+    #[must_use]
+    pub fn new(source_path: impl Into<PathBuf>, options: ExportOptions) -> Self {
+        Self {
+            source_path: source_path.into(),
+            options,
+            source_aware_transfer_syntax: true,
+            max_frames_per_level: 1,
+            max_levels: None,
+            max_level_elapsed: None,
+            progress: None,
+        }
+    }
+}
+
+impl From<SlideRouteCoverageRequest> for RouteCoverageRequest {
+    fn from(request: SlideRouteCoverageRequest) -> Self {
+        Self {
+            target: RouteCoverageTarget::Source(request.source_path),
+            options: request.options,
+            source_aware_transfer_syntax: request.source_aware_transfer_syntax,
+            max_frames_per_level: request.max_frames_per_level,
+            max_levels: request.max_levels,
+            max_level_elapsed: request.max_level_elapsed,
+            progress: request.progress,
+            max_sources: 100_000,
+            max_depth: 64,
+        }
+    }
+}
+
+/// Request to sample route coverage across a bounded source corpus.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct CorpusRouteCoverageRequest {
+    /// Root directory containing supported source slides.
+    pub source_root: PathBuf,
+    /// Export options used for route planning.
+    pub options: ExportOptions,
+    /// Whether to resolve transfer syntax independently for each source.
+    pub source_aware_transfer_syntax: bool,
+    /// Maximum frames sampled per level; `u64::MAX` requests full coverage.
+    pub max_frames_per_level: u64,
+    /// Optional cap on source levels inspected.
+    pub max_levels: Option<u32>,
+    /// Optional per-level elapsed time budget.
+    pub max_level_elapsed: Option<Duration>,
+    /// Optional progress sink.
+    pub progress: Option<RouteProgressSink>,
+    /// Maximum source files considered.
+    pub max_sources: usize,
+    /// Maximum directory depth walked.
+    pub max_depth: usize,
+}
+
+impl CorpusRouteCoverageRequest {
+    /// Build a corpus request that samples one frame per level.
+    #[must_use]
+    pub fn new(source_root: impl Into<PathBuf>, options: ExportOptions) -> Self {
+        Self {
+            source_root: source_root.into(),
+            options,
+            source_aware_transfer_syntax: true,
+            max_frames_per_level: 1,
+            max_levels: None,
+            max_level_elapsed: None,
+            progress: None,
+            max_sources: 100_000,
+            max_depth: 64,
+        }
+    }
+}
+
+impl From<CorpusRouteCoverageRequest> for RouteCoverageRequest {
+    fn from(request: CorpusRouteCoverageRequest) -> Self {
+        Self {
+            target: RouteCoverageTarget::Corpus(request.source_root),
+            options: request.options,
+            source_aware_transfer_syntax: request.source_aware_transfer_syntax,
+            max_frames_per_level: request.max_frames_per_level,
+            max_levels: request.max_levels,
+            max_level_elapsed: request.max_level_elapsed,
+            progress: request.progress,
+            max_sources: request.max_sources,
+            max_depth: request.max_depth,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
