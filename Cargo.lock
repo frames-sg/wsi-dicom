@@ -234,7 +234,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -245,7 +245,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1389,7 +1389,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1964,7 +1964,8 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "j2k"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df2b8f47cb9098f35d9a2bde2c6b1a907f33df6ee750e1f7dfe4749f067ee654"
 dependencies = [
  "j2k-core",
  "j2k-native",
@@ -1976,7 +1977,8 @@ dependencies = [
 [[package]]
 name = "j2k-codec-math"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99c1842cb5bd9ee9b99fb545d21065be3d35d7f35a2a649f6812ff41f798c18b"
 dependencies = [
  "j2k-types",
 ]
@@ -1984,7 +1986,8 @@ dependencies = [
 [[package]]
 name = "j2k-core"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "085fb673160afc821347344a5739dc300ac7f0148bd2ba1c347ac8843a35d8c5"
 dependencies = [
  "thiserror 2.0.18",
 ]
@@ -1992,7 +1995,8 @@ dependencies = [
 [[package]]
 name = "j2k-cuda"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b734e7e3b3a964fd3002b134143811b2b0aefec9b86dd6d6d958c95a4a348cf"
 dependencies = [
  "j2k",
  "j2k-core",
@@ -2006,12 +2010,14 @@ dependencies = [
 [[package]]
 name = "j2k-cuda-build-support"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "090f0f554617881c51511b9c986c82b8945d79b162f517d23d0d83196746d2b6"
 
 [[package]]
 name = "j2k-cuda-j2k-engine"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fc7ed5b738476f4f465f49910db9af0079c5e7d115c89b8e33c10635a2ad6f4"
 dependencies = [
  "j2k-codec-math",
  "j2k-core",
@@ -2023,7 +2029,8 @@ dependencies = [
 [[package]]
 name = "j2k-cuda-jpeg-engine"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec7ef351df3354a532dd6967b9d4dcfddfa931c6dd74487dceeeaca63f9e4f82"
 dependencies = [
  "j2k-codec-math",
  "j2k-core",
@@ -2034,7 +2041,8 @@ dependencies = [
 [[package]]
 name = "j2k-cuda-runtime"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d795ce140bc1d7f15b830b6173491ab35f8ee7f32f1fa5b38fae700db0d50ac"
 dependencies = [
  "j2k-codec-math",
  "j2k-core",
@@ -2046,7 +2054,8 @@ dependencies = [
 [[package]]
 name = "j2k-jpeg"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63cff0404f67844a09baf0d1d11941c1c652cfe5885f67f20c355b19631575f5"
 dependencies = [
  "fearless_simd 0.7.0",
  "j2k-codec-math",
@@ -2060,7 +2069,8 @@ dependencies = [
 [[package]]
 name = "j2k-jpeg-cuda"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ada57391f8490e445218ff4640a228c03259697343c8b04614b712ab0686df1f"
 dependencies = [
  "j2k-core",
  "j2k-cuda-jpeg-engine",
@@ -2073,7 +2083,8 @@ dependencies = [
 [[package]]
 name = "j2k-jpeg-metal"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2cb81efb8b259855fa4d8342672f635d88a72f1bb5ae34ae63756c6bd4e3e2b"
 dependencies = [
  "j2k-core",
  "j2k-jpeg",
@@ -2087,7 +2098,8 @@ dependencies = [
 [[package]]
 name = "j2k-metal"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31d8e9a971d5dad73848b8738c979c66dc2a147f74f661d54f9acb39a047f4a3"
 dependencies = [
  "cc",
  "j2k",
@@ -2108,7 +2120,8 @@ dependencies = [
 [[package]]
 name = "j2k-metal-support"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fc8c2599b615e83ba14168c41963cfd5e190b96de087491917987de20ccf916"
 dependencies = [
  "j2k-core",
  "log",
@@ -2120,7 +2133,8 @@ dependencies = [
 [[package]]
 name = "j2k-native"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ace22559a16f427f33b521de26f03eef5cc295be98ebf154c653bb549ffb454"
 dependencies = [
  "fearless_simd 0.7.0",
  "j2k-codec-math",
@@ -2133,12 +2147,14 @@ dependencies = [
 [[package]]
 name = "j2k-profile"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "398024e7c8470f50cf95d6b27c38c348f3a3cf54283d55bd89555575f6eb415c"
 
 [[package]]
 name = "j2k-tilecodec"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46a19ed33c3cf2c3a6d22a4d412e18b3f968bc404fbadaacc3034de8b0a3514c"
 dependencies = [
  "flate2",
  "j2k-core",
@@ -2150,7 +2166,8 @@ dependencies = [
 [[package]]
 name = "j2k-transcode"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4e0f1cd656f429d0619d7a715b3a17600db6d62e4be5e89c96b340429914594"
 dependencies = [
  "j2k",
  "j2k-codec-math",
@@ -2164,7 +2181,8 @@ dependencies = [
 [[package]]
 name = "j2k-transcode-metal"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f0b39fe56ff89a54272f31db37944cf1398d12b8ba2855fb2893535d5664f70"
 dependencies = [
  "j2k-codec-math",
  "j2k-core",
@@ -2179,7 +2197,8 @@ dependencies = [
 [[package]]
 name = "j2k-types"
 version = "0.10.0"
-source = "git+https://github.com/frames-sg/j2k.git?rev=57b6af89c61f25e1a476415ef3a752f6d1b3f057#57b6af89c61f25e1a476415ef3a752f6d1b3f057"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45c0bfd46538ea72f663b6f93af8d9cb309cf85033322de29a8db5c201e885da"
 
 [[package]]
 name = "jni"
@@ -3322,7 +3341,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3650,10 +3669,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3815,7 +3834,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4296,7 +4315,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4690,9 +4709,9 @@ dependencies = [
 
 [[package]]
 name = "wsi-dicom-annotations"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a042600d8ab70e04c067bf5cd82f478a4ad6bae7d8ad1188baab3bc206436e2"
+checksum = "d52d5a206b252d8d1ad85cd0449c9a69934e8be7b5d347bdab78511515ef929b"
 dependencies = [
  "chrono",
  "dicom-core",
@@ -4722,7 +4741,8 @@ dependencies = [
 [[package]]
 name = "wsi-rs"
 version = "0.6.0"
-source = "git+https://github.com/frames-sg/wsi-rs.git?rev=b940ea94f3290e54ca2c5f87823109538709c59d#b940ea94f3290e54ca2c5f87823109538709c59d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c43019e3c0786c1b9380c604d66155570d78bb9af539de62978ad2c22fe42e75"
 dependencies = [
  "base64",
  "byteorder",
