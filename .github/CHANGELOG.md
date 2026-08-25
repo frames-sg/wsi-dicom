@@ -99,10 +99,10 @@ carried forward below.
   cargo-vet exemption baseline into audited dependency provenance.
 - The standalone manifest now uses immutable HTTPS Git revisions for the
   unpublished compatible `wsi-rs` 0.6.0 and coherent J2K 0.10 family, while
-  `wsi-dicom-annotations` remains an exact registry release. CI verifies locked
-  metadata and package contents without sibling checkouts; its packaging and
-  extracted-crate steps remain release-blocking until registry sources replace
-  the Git pins after upstream publication.
+  `wsi-dicom-annotations` remains an exact registry release. Main CI verifies
+  locked metadata, standalone topology, and package contents without sibling
+  checkouts. The protected publish workflow keeps packaging and extracted-crate
+  tests release-blocking until registry sources replace the Git pins.
 - Split the GDC benchmark harness into typed discovery, command, execution,
   preflight, validation, aggregation, reporting, and CLI modules while keeping
   the original script as a compatibility entry point.

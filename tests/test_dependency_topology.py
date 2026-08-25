@@ -55,13 +55,18 @@ def cargo_package(manifest_path, package_name):
 
 
 class DependencyTopologyTests(unittest.TestCase):
-    def test_ci_has_an_early_standalone_package_gate(self):
+    def test_ci_separates_source_topology_from_registry_package_gate(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
         )
+        publish_workflow = (
+            REPO_ROOT / ".github" / "workflows" / "publish.yml"
+        ).read_text(encoding="utf-8")
         self.assertIn("dependency-topology:", workflow)
         self.assertIn("cargo metadata --locked --format-version 1", workflow)
-        self.assertIn("cargo package --locked", workflow)
+        self.assertIn("cargo package --list", workflow)
+        self.assertNotIn("cargo package --locked", workflow)
+        self.assertIn("cargo package --locked", publish_workflow)
         self.assertIn(
             "python -m unittest discover -s tests -p 'test_dependency_topology.py'",
             workflow,
