@@ -1,6 +1,7 @@
 use crate::cli_args::{resolve_export_transfer_syntax, Cli, Command, SelfTestArgs};
 use crate::cli_output::cli_output_line;
 use crate::cli_profile::effective_max_frames_per_level;
+use clap::error::ErrorKind;
 use clap::Parser;
 use std::path::PathBuf;
 use wsi_dicom::{ExportPreset, JpegDirectHtj2kProfile, MetadataInput, TransferSyntax};
@@ -8,6 +9,17 @@ use wsi_dicom::{ExportPreset, JpegDirectHtj2kProfile, MetadataInput, TransferSyn
 #[derive(serde::Serialize)]
 struct SampleCliOutput {
     value: u8,
+}
+
+#[test]
+fn cli_version_flag_matches_the_package_version() {
+    let error = Cli::try_parse_from(["wsi-dicom", "--version"]).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::DisplayVersion);
+    assert_eq!(
+        error.to_string(),
+        format!("wsi-dicom {}\n", env!("CARGO_PKG_VERSION"))
+    );
 }
 
 #[test]

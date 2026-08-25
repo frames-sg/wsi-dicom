@@ -31,7 +31,8 @@ use pixel_structure::assemble_encapsulated_frames;
 #[cfg(any(test, feature = "bench-internals"))]
 pub(crate) use pixel_structure::fragment_payload_without_padding;
 use pixel_structure::run_intrinsic_pixel_structure_check;
-use process::{CommandOutcome, SystemCommandRunner, ValidationCommandRunner};
+use process::SystemCommandRunner;
+pub(crate) use process::{CommandOutcome, ValidationCommandRunner};
 use wsi_conformance::{run_intrinsic_wsi_conformance_checks, run_specimen_uid_set_check};
 
 /// Options for validating generated DICOM files with external tools.

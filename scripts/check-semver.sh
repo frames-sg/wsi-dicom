@@ -3,10 +3,10 @@ set -euo pipefail
 
 readonly BASELINE_VERSION="0.7.1"
 readonly BASELINE_COMMIT="88c0dc357740cb6d344389449e01b008bb3f2649"
-readonly CANDIDATE_VERSION="0.7.2"
+readonly CANDIDATE_VERSION="0.7.3"
 readonly SEMVER_CHECKS_VERSION="cargo-semver-checks 0.48.0"
-readonly ALLOWLIST=".github/semver-0.7.1-to-0.7.2-allowed-breaks.txt"
-readonly ARCHIVED_REPORT=".github/semver-0.7.1-to-0.7.2-report.md"
+readonly ALLOWLIST=".github/semver-0.7.1-to-0.7.3-allowed-breaks.txt"
+readonly ARCHIVED_REPORT=".github/semver-0.7.1-to-0.7.3-report.md"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work_dir="$(mktemp -d)"
@@ -79,7 +79,7 @@ patch_status=$?
 set -e
 printf '%s\n' "$patch_report"
 if [[ "$patch_status" -eq 0 ]]; then
-  echo "expected the reviewed 0.7.2 API transition, but no patch-level breaks were reported" >&2
+  echo "expected the reviewed 0.7.3 API transition, but no patch-level breaks were reported" >&2
   exit 1
 fi
 
@@ -97,7 +97,7 @@ if [[ ! -s "$actual_breaks" ]]; then
   exit 1
 fi
 if ! diff -u "$ALLOWLIST" "$actual_breaks"; then
-  echo "semver break set differs from the reviewed 0.7.1-to-0.7.2 allowlist" >&2
+  echo "semver break set differs from the reviewed 0.7.1-to-0.7.3 transition" >&2
   exit 1
 fi
 
@@ -116,7 +116,7 @@ breaks = Path(os.environ["ACTUAL_BREAKS"]).read_text(encoding="utf-8").splitline
 report = [
     "<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->",
     "",
-    "# wsi-dicom 0.7.1 to 0.7.2 semver report",
+    "# wsi-dicom 0.7.1 to 0.7.3 semver report",
     "",
     f"- Baseline: `{os.environ['REPORT_BASELINE_VERSION']}` at immutable commit `{os.environ['REPORT_BASELINE_COMMIT']}`.",
     "- Baseline publication state: merged, but not tagged or published to crates.io.",

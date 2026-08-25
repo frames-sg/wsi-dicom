@@ -265,11 +265,15 @@ jobs:
         run: |
           cargo build --release --locked --no-default-features --bin wsi-dicom
           target/release/wsi-dicom doctor --strict --json > dist/validation/doctor.json
-          target/release/wsi-dicom self-test \
-            --strict \
-            --json \
-            --out self-test-evidence \
-            --keep-output > dist/validation/self-test.json
+          if ! target/release/wsi-dicom self-test \
+              --strict \
+              --json \
+              --out self-test-evidence \
+              --keep-output > dist/validation/self-test.json
+          then
+            cat dist/validation/self-test.json
+            exit 1
+          fi
           python3 - <<'PY'
           import json
           import shutil

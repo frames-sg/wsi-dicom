@@ -1,10 +1,10 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 
-# wsi-dicom 0.7.1 to 0.7.2 semver report
+# wsi-dicom 0.7.1 to 0.7.3 semver report
 
 - Baseline: `0.7.1` at immutable commit `88c0dc357740cb6d344389449e01b008bb3f2649`.
 - Baseline publication state: merged, but not tagged or published to crates.io.
-- Candidate: `0.7.2`.
+- Candidate: `0.7.3`.
 - Tool: `cargo-semver-checks 0.48.0` with Rust `1.96` rustdoc JSON.
 - Policy: the patch-level API breaks below are intentional for this pre-1.0 transition; any different break set fails CI.
 
