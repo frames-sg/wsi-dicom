@@ -49,8 +49,8 @@ API comparison; its changes are carried forward below.
 - Configured/source profile conflicts default to failure before staging or
   output creation. Callers may explicitly prefer the configured or source
   bytes; identical SHA-256 digests are recorded as a match.
-- Upgraded the complete `j2k` codec family to 0.10 and `wsi-rs` to 0.6.0 at
-  immutable Git revisions so export, passthrough, transcode, and optional
+- Upgraded the complete `j2k` codec family to 0.10 and `wsi-rs` to 0.6.0 from
+  their crates.io releases so export, passthrough, transcode, and optional
   accelerator routes resolve one codec generation. Metal ownership now uses
   the shared `objc2-metal` API across the reader and exporter.
 - Color output now requires a valid DICOM input-device ICC profile. Generated

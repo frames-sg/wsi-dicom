@@ -38,13 +38,25 @@ skip = [
     # wsi-rs compatibility and dev-tool dependencies.
     { name = "thiserror", version = "1.0.69" },
     { name = "thiserror-impl", version = "1.0.69" },
+    # tempfile remains on getrandom 0.3 while the application and current
+    # build dependencies use getrandom 0.4.
+    { name = "getrandom", version = "0.3.4" },
+    { name = "r-efi", version = "5.3.0" },
+    # rustix/tempfile use windows-sys 0.52 while clap uses 0.60 and the
+    # corresponding windows-targets 0.53 family.
+    { name = "windows-sys", version = "0.52.0" },
+    { name = "windows-targets", version = "0.52.6" },
+    { name = "windows_aarch64_gnullvm", version = "0.52.6" },
+    { name = "windows_aarch64_msvc", version = "0.52.6" },
+    { name = "windows_i686_gnu", version = "0.52.6" },
+    { name = "windows_i686_gnullvm", version = "0.52.6" },
+    { name = "windows_i686_msvc", version = "0.52.6" },
+    { name = "windows_x86_64_gnu", version = "0.52.6" },
+    { name = "windows_x86_64_gnullvm", version = "0.52.6" },
+    { name = "windows_x86_64_msvc", version = "0.52.6" },
 ]
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = [
-    "https://github.com/frames-sg/j2k.git",
-    "https://github.com/frames-sg/wsi-rs.git",
-]
