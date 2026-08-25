@@ -369,7 +369,7 @@ pub(crate) fn validate_dicom_path_with_runner(
                 command_name: DCIODVFY_TOOL.name,
                 args: vec![OsString::from("-new"), file.as_os_str().to_os_string()],
                 path: Some(file),
-                required: options.strict,
+                required: options.strict && DCIODVFY_TOOL.required,
                 error_line_is_failure: true,
                 timeout: options.command_timeout(),
                 max_output_bytes: options.max_child_output_bytes,
@@ -383,7 +383,7 @@ pub(crate) fn validate_dicom_path_with_runner(
         SetLevelCommandCheckRequest {
             check_name: DCENTVFY_TOOL.name,
             command_name: DCENTVFY_TOOL.name,
-            required: options.strict,
+            required: options.strict && DCENTVFY_TOOL.required,
             error_line_is_failure: true,
             timeout: options.command_timeout(),
             max_output_bytes: options.max_child_output_bytes,
@@ -397,7 +397,7 @@ pub(crate) fn validate_dicom_path_with_runner(
         SetLevelCommandCheckRequest {
             check_name: VALIDATE_IODS_TOOL.name,
             command_name: VALIDATE_IODS_TOOL.name,
-            required: options.strict,
+            required: options.strict && VALIDATE_IODS_TOOL.required,
             error_line_is_failure: false,
             timeout: options.command_timeout(),
             max_output_bytes: options.max_child_output_bytes,
