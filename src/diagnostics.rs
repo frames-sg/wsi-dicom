@@ -44,6 +44,15 @@ pub struct SelfTestReport {
 
 /// Generate a tiny deterministic source DICOM, export it, and validate the output.
 pub fn run_dicom_self_test(options: SelfTestOptions) -> Result<SelfTestReport, Error> {
+    run_dicom_self_test_with_validation(options, |path, validation| {
+        validate_dicom_path(path, validation)
+    })
+}
+
+fn run_dicom_self_test_with_validation(
+    options: SelfTestOptions,
+    validate: impl FnOnce(&Path, &ValidationOptions) -> Result<ValidationReport, Error>,
+) -> Result<SelfTestReport, Error> {
     let workspace = SelfTestWorkspace::create(options.output_dir.as_deref(), options.keep_output)?;
     let source_path = workspace.path().join("source.dcm");
     let output_dir = workspace.path().join("dicom");
@@ -61,7 +70,7 @@ pub fn run_dicom_self_test(options: SelfTestOptions) -> Result<SelfTestReport, E
         .with_options(export_options)
         .color_management(crate::ColorManagement::SourceOrSrgb)
         .run()?;
-    let validation_report = validate_dicom_path(&output_dir, &options.validation)?;
+    let validation_report = validate(&output_dir, &options.validation)?;
     let kept_output = workspace.kept_output();
     let workspace_path = workspace.path().to_path_buf();
     if kept_output {
@@ -167,23 +176,51 @@ fn write_self_test_source_dicom(path: &Path) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{run_dicom_self_test, SelfTestOptions};
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
+
+    use super::{run_dicom_self_test_with_validation, SelfTestOptions};
+    use crate::validation::{
+        validate_dicom_path_with_runner, CommandOutcome, ValidationCommandRunner,
+    };
     use crate::ValidationOptions;
+
+    struct NoExternalTools;
+
+    impl ValidationCommandRunner for NoExternalTools {
+        fn find_command(&self, _name: &str) -> Option<PathBuf> {
+            None
+        }
+
+        fn run(
+            &self,
+            _program: &Path,
+            _args: &[OsString],
+            _timeout: Duration,
+            _max_output_bytes: usize,
+        ) -> Result<CommandOutcome, std::io::Error> {
+            unreachable!("the no-tool runner cannot execute a command")
+        }
+    }
 
     #[test]
     fn self_test_writes_output_and_validation_report_when_output_is_kept() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let workspace = tmp.path().join("evidence");
 
-        let report = run_dicom_self_test(SelfTestOptions {
-            output_dir: Some(workspace.clone()),
-            keep_output: true,
-            validation: ValidationOptions {
-                max_pixel_frames: 0,
-                ..ValidationOptions::default()
+        let report = run_dicom_self_test_with_validation(
+            SelfTestOptions {
+                output_dir: Some(workspace.clone()),
+                keep_output: true,
+                validation: ValidationOptions {
+                    max_pixel_frames: 0,
+                    ..ValidationOptions::default()
+                },
+                ..SelfTestOptions::default()
             },
-            ..SelfTestOptions::default()
-        })
+            |path, validation| validate_dicom_path_with_runner(path, validation, &NoExternalTools),
+        )
         .expect("self-test report");
 
         assert!(report.kept_output);

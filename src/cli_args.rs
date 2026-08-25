@@ -9,7 +9,7 @@ use wsi_dicom::{
 
 use crate::cli_calibration::{CalibrationCommand, ColorManagementArgs};
 #[derive(Debug, Parser)]
-#[command(name = "wsi-dicom")]
+#[command(name = "wsi-dicom", version)]
 #[command(about = "Convert wsi-rs-readable whole-slide images to DICOM VL WSI")]
 pub(crate) struct Cli {
     #[command(subcommand)]
