@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enabled the root `--version` flag required by release archive verification.
 - Made the packaged self-test unit test independent of host-installed external
   validators; the separate strict release validation continues to run them.
+- Used a Basic Offset Table for single-frame instances so older validators can
+  read them; multi-frame instances retain Extended Offset Tables.
 - Included failed strict self-test records in publish workflow logs.
 
 ## [0.7.2] - 2026-08-25

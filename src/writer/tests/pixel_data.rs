@@ -343,6 +343,40 @@ fn streamed_pixel_data_writer_copies_reader_frame_in_chunks() {
 }
 
 #[test]
+fn single_frame_streamed_writer_uses_the_compatible_basic_offset_table() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("single-frame.dcm");
+    let frame = vec![1, 2, 3];
+
+    super::write_dicom_object_with_streamed_pixel_data(
+        &path,
+        super::StreamedDicomWritePlan {
+            object: sample_object_with_offset_tables(vec![0], vec![0]),
+            meta: sample_file_meta(),
+            overwrite: false,
+            per_frame_plan: sample_per_frame_plan(1),
+            max_instance_metadata_bytes: u64::MAX,
+            frame_count: 1,
+        },
+        |writer| writer.push_frame(&frame),
+    )
+    .unwrap();
+
+    let object = dicom_object::open_file(path).unwrap();
+    assert!(object.element(tags::EXTENDED_OFFSET_TABLE).is_err());
+    assert!(object.element(tags::EXTENDED_OFFSET_TABLE_LENGTHS).is_err());
+    assert_eq!(
+        object
+            .element(tags::PIXEL_DATA)
+            .unwrap()
+            .value()
+            .offset_table()
+            .unwrap(),
+        &[0]
+    );
+}
+
+#[test]
 fn streamed_pixel_data_writer_rejects_wrong_frame_count() {
     let tmp = tempfile::tempdir().unwrap();
     let err = super::write_dicom_object_with_streamed_pixel_data(

@@ -564,6 +564,7 @@ pub(crate) fn write_dicom_object_with_streamed_pixel_data(
             message: "per-frame metadata plan does not match PixelData frame count".into(),
         });
     }
+    let use_basic_offset_table = frame_count == 1;
     let offset_table_bytes = extended_offset_table_encoded_bytes(frame_count)?;
     let per_frame_budget = max_instance_metadata_bytes
         .checked_sub(offset_table_bytes)
@@ -612,17 +613,25 @@ pub(crate) fn write_dicom_object_with_streamed_pixel_data(
             message: err.to_string(),
         })?;
     let per_frame_bytes = per_frame_plan.write_to(&mut file, per_frame_budget)?;
-    let extended_offset_table_locations =
-        write_empty_extended_offset_tables(&mut file, frame_count).map_err(|source| Error::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let extended_offset_table_locations = if use_basic_offset_table {
+        None
+    } else {
+        Some(
+            write_empty_extended_offset_tables(&mut file, frame_count).map_err(|source| {
+                Error::Io {
+                    path: path.to_path_buf(),
+                    source,
+                }
+            })?,
+        )
+    };
     let metadata_bytes = per_frame_bytes
         .checked_add(offset_table_bytes)
         .ok_or_else(|| Error::InvalidOptions {
             reason: "DICOM metadata byte count overflow".into(),
         })?;
-    write_encapsulated_pixel_data_header(&mut file).map_err(|source| Error::Io {
+    let basic_offsets: &[u32] = if use_basic_offset_table { &[0] } else { &[] };
+    write_encapsulated_pixel_data_header(&mut file, basic_offsets).map_err(|source| Error::Io {
         path: path.to_path_buf(),
         source,
     })?;
@@ -653,11 +662,9 @@ pub(crate) fn write_dicom_object_with_streamed_pixel_data(
     drop(file);
 
     let patch_started = Instant::now();
-    patch_extended_offset_tables_from_spool(
-        output.path(),
-        extended_offset_table_locations,
-        &mut frame_index,
-    )?;
+    if let Some(locations) = extended_offset_table_locations {
+        patch_extended_offset_tables_from_spool(output.path(), locations, &mut frame_index)?;
+    }
     report.pixel_data_patch_duration = patch_started.elapsed();
     output.persist()?;
     Ok(report)
@@ -730,7 +737,7 @@ pub(crate) fn write_encapsulated_pixel_data_from_frames(
     lengths: &[u64],
     mut write_frame: impl FnMut(usize, &mut dyn Write) -> io::Result<()>,
 ) -> io::Result<()> {
-    write_encapsulated_pixel_data_header(output)?;
+    write_encapsulated_pixel_data_header(output, &[])?;
     for (idx, &raw_len) in lengths.iter().enumerate() {
         let padded_len = padded_fragment_len_io(raw_len)?;
         write_item_header(output, padded_len)?;
@@ -760,7 +767,7 @@ pub(crate) fn write_encapsulated_pixel_data_from_spool(
     spool: &mut (impl Read + Seek),
     fragments: &[SpooledPixelDataFragment],
 ) -> std::io::Result<()> {
-    write_encapsulated_pixel_data_header(output)?;
+    write_encapsulated_pixel_data_header(output, &[])?;
     let mut current_offset = 0u64;
     for fragment in fragments {
         if fragment.spool_offset < current_offset {
@@ -798,12 +805,36 @@ pub(crate) fn write_encapsulated_pixel_data_from_spool(
     write_encapsulated_pixel_data_trailer(output)
 }
 
-fn write_encapsulated_pixel_data_header(output: &mut impl Write) -> std::io::Result<()> {
+fn write_encapsulated_pixel_data_header(
+    output: &mut impl Write,
+    basic_offsets: &[u32],
+) -> std::io::Result<()> {
     write_tag(output, 0x7FE0, 0x0010)?;
     output.write_all(b"OB")?;
     output.write_all(&[0, 0])?;
     output.write_all(&u32::MAX.to_le_bytes())?;
-    write_item_header(output, 0)
+    let value_bytes = u32::try_from(
+        basic_offsets
+            .len()
+            .checked_mul(std::mem::size_of::<u32>())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "basic offset table length overflow",
+                )
+            })?,
+    )
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "basic offset table exceeds the DICOM item length limit",
+        )
+    })?;
+    write_item_header(output, value_bytes)?;
+    for offset in basic_offsets {
+        output.write_all(&offset.to_le_bytes())?;
+    }
+    Ok(())
 }
 
 fn write_encapsulated_pixel_data_trailer(output: &mut impl Write) -> std::io::Result<()> {
@@ -867,6 +898,9 @@ fn padded_fragment_len_io(raw_len: u64) -> io::Result<u32> {
 }
 
 fn extended_offset_table_encoded_bytes(frame_count: usize) -> Result<u64, Error> {
+    if frame_count == 1 {
+        return Ok(0);
+    }
     let value_bytes = u64::try_from(frame_count)
         .ok()
         .and_then(|count| count.checked_mul(std::mem::size_of::<u64>() as u64))
