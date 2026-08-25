@@ -135,6 +135,10 @@ fn strict_mode_fails_missing_required_tools() {
         .checks
         .iter()
         .any(|check| check.name == "dciodvfy" && check.status == ValidationStatus::Failed));
+    assert!(report
+        .checks
+        .iter()
+        .any(|check| check.name == "validate_iods" && check.status == ValidationStatus::Skipped));
     assert!(report.has_failures());
 }
 
