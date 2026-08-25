@@ -1,10 +1,9 @@
 use crate::cli_args::{resolve_export_transfer_syntax, Cli, Command, SelfTestArgs};
-use crate::cli_export::load_metadata_source;
 use crate::cli_output::cli_output_line;
 use crate::cli_profile::effective_max_frames_per_level;
 use clap::Parser;
 use std::path::PathBuf;
-use wsi_dicom::{ExportPreset, JpegDirectHtj2kProfile, MetadataSource, TransferSyntax};
+use wsi_dicom::{ExportPreset, JpegDirectHtj2kProfile, MetadataInput, TransferSyntax};
 
 #[derive(serde::Serialize)]
 struct SampleCliOutput {
@@ -24,12 +23,12 @@ fn cli_output_line_formats_summary_or_json() {
 
 #[test]
 fn cli_requires_metadata_or_explicit_research_placeholder() {
-    let err = load_metadata_source(None, false).unwrap_err();
-    assert!(err.to_string().contains("--metadata"));
+    let err = MetadataInput::from_parts(None, false).unwrap_err();
+    assert!(err.to_string().contains("metadata"));
 
-    let metadata = load_metadata_source(None, true).unwrap();
+    let metadata = MetadataInput::from_parts(None, true).unwrap();
 
-    assert!(matches!(metadata, MetadataSource::ResearchPlaceholder));
+    assert!(matches!(metadata, MetadataInput::ResearchPlaceholder));
 }
 
 #[test]

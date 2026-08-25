@@ -1,4 +1,24 @@
-use super::*;
+use std::time::{Duration, Instant};
+
+use wsi_rs::Slide;
+
+use super::j2k_policy::validate_dicom_j2k_frame;
+use super::jpeg_direct_htj2k;
+use super::lossless_j2k_cpu::{
+    lossless_j2k_samples_from_prepared_region, prepare_cpu_input_lossless_j2k_tile,
+};
+use super::lossless_j2k_pipeline::LosslessJ2kBatchContext;
+use super::route_plan::RouteExecutionContext;
+use super::{ensure_consistent_pixel_profile, j2k_direct_htj2k, LosslessJ2kPlannedFrame};
+use crate::encode::{DicomJ2kEncoder, EncodedDicomJ2kFrame};
+use crate::error::Error;
+use crate::options::NormalizedExportOptions;
+use crate::report::ExportMetrics;
+use crate::tile::PixelProfile;
+use crate::writer::PixelDataSink;
+
+use super::frame_region::OutputFrameRect;
+use super::jpeg_baseline::JpegBaselineFrameLocation;
 
 pub(super) struct LosslessJ2kDirectRouteBatch {
     direct_jpeg_results: Vec<Option<Result<jpeg_direct_htj2k::BatchOutcome, Error>>>,
@@ -12,15 +32,24 @@ pub(super) fn encode_direct_lossless_j2k_routes(
     let LosslessJ2kBatchContext {
         planned, options, ..
     } = context;
+    let route_context = RouteExecutionContext::new(
+        options.semantics.transfer_syntax,
+        options.execution.encode_backend,
+    );
     let direct_jpeg_results = if let Some(jpeg_direct_encoder) = jpeg_direct_encoder.as_mut() {
-        jpeg_direct_htj2k::encode_planned_batch_with_encoder(planned, jpeg_direct_encoder)?
+        jpeg_direct_htj2k::encode_planned_batch_with_encoder(
+            planned,
+            jpeg_direct_encoder,
+            route_context,
+        )?
     } else {
         (0..planned.len()).map(|_| None).collect()
     };
     let direct_j2k_results = j2k_direct_htj2k::encode_planned_batch(
         planned,
-        options.transfer_syntax,
-        options.codec_validation,
+        options.semantics.transfer_syntax,
+        options.execution.codec_validation,
+        route_context,
     )?;
     Ok(LosslessJ2kDirectRouteBatch {
         direct_jpeg_results,
@@ -42,7 +71,7 @@ pub(super) struct ExistingLosslessJ2kFrameContext<'a> {
     pub(super) idx: usize,
     pub(super) planned_frame: &'a LosslessJ2kPlannedFrame,
     pub(super) direct_routes: &'a mut LosslessJ2kDirectRouteBatch,
-    pub(super) options: &'a ExportOptions,
+    pub(super) options: &'a NormalizedExportOptions,
     pub(super) metrics: &'a mut ExportMetrics,
     pub(super) pixel_profile: &'a mut Option<PixelProfile>,
 }
@@ -86,7 +115,11 @@ pub(super) fn try_record_existing_lossless_j2k_frame(
     if let Some(passthrough) = planned_frame.passthrough.as_ref() {
         let profile = passthrough.profile;
         ensure_consistent_pixel_profile(pixel_profile, profile, mismatch_reason)?;
-        validate_dicom_j2k_frame(&passthrough.codestream, profile, options.transfer_syntax)?;
+        validate_dicom_j2k_frame(
+            &passthrough.codestream,
+            profile,
+            options.semantics.transfer_syntax,
+        )?;
         codestream_sink(metrics, &passthrough.codestream)?;
         metrics.record_j2k_passthrough_frame();
         metrics.record_pixel_profile(profile);
@@ -95,7 +128,11 @@ pub(super) fn try_record_existing_lossless_j2k_frame(
 
     if let Some(Ok(direct)) = direct_routes.direct_j2k_results[idx].take() {
         j2k_direct_htj2k::record_success(metrics, pixel_profile, &direct, mismatch_reason)?;
-        validate_dicom_j2k_frame(&direct.codestream, direct.profile, options.transfer_syntax)?;
+        validate_dicom_j2k_frame(
+            &direct.codestream,
+            direct.profile,
+            options.semantics.transfer_syntax,
+        )?;
         codestream_sink(metrics, &direct.codestream)?;
         return Ok(true);
     }
@@ -107,7 +144,7 @@ pub(super) fn try_record_existing_lossless_j2k_frame(
                     metrics,
                     pixel_profile,
                     &direct,
-                    options.jpeg_direct_htj2k_profile,
+                    options.semantics.jpeg_direct_htj2k_profile,
                     planned_frame.source_jpeg_retiled,
                     planned_frame.source_jpeg_retile_duration,
                     mismatch_reason,
@@ -115,7 +152,7 @@ pub(super) fn try_record_existing_lossless_j2k_frame(
                 validate_dicom_j2k_frame(
                     &direct.codestream,
                     direct.profile,
-                    options.transfer_syntax,
+                    options.semantics.transfer_syntax,
                 )?;
                 codestream_sink(metrics, &direct.codestream)?;
                 return Ok(true);

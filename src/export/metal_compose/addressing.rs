@@ -1,4 +1,5 @@
-use super::*;
+use super::types::{MetalComposeStripsParams, MetalComposeTileRequest, PackedMetalStrips};
+use crate::error::Error;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

@@ -1,4 +1,22 @@
-use super::*;
+use std::time::Duration;
+
+use wsi_rs::Slide;
+
+use super::super::j2k_policy::{
+    LOSSLESS_J2K_AUTO_PARTIAL_GPU_MIN_FRAMES, LOSSLESS_J2K_AUTO_ROUTE_SPEEDUP_DENOMINATOR,
+    LOSSLESS_J2K_AUTO_ROUTE_SPEEDUP_NUMERATOR,
+};
+use super::super::jpeg_baseline::JpegBaselineFrameLocation;
+use super::super::lossless_j2k_direct_routes::encode_cpu_input_tile;
+use super::super::lossless_j2k_plan::LosslessJ2kPlannedFrame;
+use super::super::route_cache::AutoLosslessJ2kRouteDecision;
+use super::{
+    try_encode_metal_input_tile_run, MetalEncodedTileRun, MetalInputTileReader,
+    MetalInputTileRunRequest,
+};
+use crate::encode::{self, DicomJ2kEncoder, EncodedDicomJ2kFrame};
+use crate::error::Error;
+use crate::tile::PixelProfile;
 
 pub(in crate::export) struct RoutedLosslessJ2kTile {
     pub(in crate::export) encoded: Result<EncodedDicomJ2kFrame, Error>,

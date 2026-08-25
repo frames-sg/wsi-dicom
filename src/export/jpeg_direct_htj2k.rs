@@ -11,12 +11,16 @@ use j2k_transcode::{
 };
 use rayon::prelude::*;
 
+use wsi_rs::RawCompressedTile;
+
 use super::{
     ensure_consistent_pixel_profile, pixel_profile_from_raw_jpeg_tile,
-    raw_jpeg_matches_frame_geometry, Error, ExportMetrics, PixelProfile, RawCompressedTile,
-    TransferSyntax,
+    raw_jpeg_matches_frame_geometry,
 };
-use crate::{EncodeBackendPreference, JpegDirectHtj2kProfile};
+use crate::error::Error;
+use crate::options::{EncodeBackendPreference, JpegDirectHtj2kProfile, TransferSyntax};
+use crate::report::ExportMetrics;
+use crate::tile::PixelProfile;
 
 pub(super) struct BatchOutcome {
     pub(super) codestream: Vec<u8>,
@@ -146,6 +150,7 @@ pub(super) fn record_route_success(
 pub(super) fn encode_planned_batch_with_encoder(
     planned: &[super::LosslessJ2kPlannedFrame],
     encoder: &mut BatchEncoder,
+    route_context: super::route_plan::RouteExecutionContext,
 ) -> Result<Vec<Option<Result<BatchOutcome, Error>>>, Error> {
     let mut indices = Vec::new();
     indices
@@ -153,12 +158,11 @@ pub(super) fn encode_planned_batch_with_encoder(
         .map_err(|_| Error::Unsupported {
             reason: "direct JPEG batch index exceeds available memory".into(),
         })?;
-    indices.extend(
-        planned
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, frame)| frame.source_jpeg.is_some().then_some(idx)),
-    );
+    indices.extend(planned.iter().enumerate().filter_map(|(idx, frame)| {
+        (frame.route_decision(route_context).route
+            == super::route_plan::PlannedFrameRoute::DirectJpegToHtj2k)
+            .then_some(idx)
+    }));
     let mut outcomes = Vec::new();
     outcomes
         .try_reserve_exact(planned.len())

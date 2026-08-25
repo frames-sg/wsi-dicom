@@ -1,16 +1,57 @@
-use super::*;
+use std::time::Instant;
+
+use j2k_jpeg::JpegBackend;
+use wsi_rs::Slide;
+
+use super::frame_region::FrameRectGrid;
+use super::icc_profile::resolve_icc_profile;
+use super::jpeg_baseline::{
+    encode_blank_jpeg_baseline_frame, jpeg_baseline_fallback_uncompressed_bytes,
+    jpeg_baseline_route_frame_geometry, raw_rgb_passthrough_has_no_geometry_fallback,
+    JpegBaselinePlannedFrame,
+};
+use super::jpeg_baseline_pipeline::{
+    jpeg_backend_uses_device, jpeg_baseline_fallback_run, plan_jpeg_baseline_row,
+    prepare_jpeg_baseline_fallback_batch, record_jpeg_retile_rejections,
+    take_consistent_jpeg_baseline_fallback_frame, EncodedJpegBaselineFrame,
+    JpegBaselineCpuEncodeSettings, JpegBaselineFallbackBatchRequest, JpegBaselineRowPlanRequest,
+};
+use super::jpeg_passthrough::{
+    try_plan_direct_jpeg_passthrough_frames, DirectJpegPassthroughFrameWriter,
+};
+use super::route_plan::{incompatible_frame_route, PlannedFrameRoute, RouteExecutionContext};
+use super::tile_grid::checked_frame_count_u32;
+use super::{
+    ensure_consistent_pixel_profile, level_pixel_spacing_mm, require_pixel_spacing_mm,
+    InstanceExportContext, DIRECT_JPEG_PASSTHROUGH_WRITE_CHUNK_FRAMES,
+};
+use crate::error::Error;
+use crate::instance_context::{DicomInstanceContext, InstanceDicomObjectParams};
+use crate::report::{ExportMetrics, InstanceReport};
+use crate::request::ExportRequest;
+use crate::writer::{
+    unique_spool_path, write_dicom_object_with_streamed_pixel_data, FrameGrid,
+    LossyCompressionHistory, PixelDataSpool, StreamedDicomWritePlan,
+};
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::metal_input::MetalInputTileReader;
 use crate::lossy::{LossyCompressionAccumulator, JPEG_BASELINE_METHOD};
 
 pub(super) fn export_jpeg_passthrough_instance(
     slide: &Slide,
     request: &ExportRequest,
-    metadata: &DicomMetadata,
-    identity: &DicomExportIdentity,
-    instance_number: u32,
-    coordinate: InstanceCoordinate,
-    level: &wsi_rs::Level,
+    export: InstanceExportContext<'_>,
 ) -> Result<InstanceReport, Error> {
-    let tile_size = request.options.tile_size;
+    let InstanceExportContext {
+        options,
+        metadata,
+        identity,
+        instance_number,
+        coordinate,
+        level,
+    } = export;
+    let tile_size = options.semantics.tile_size;
     let (matrix_columns, matrix_rows) = level.dimensions;
     let location = coordinate;
     let geometry = jpeg_baseline_route_frame_geometry(slide, level, location, tile_size)?;
@@ -81,10 +122,10 @@ pub(super) fn export_jpeg_passthrough_instance(
             &context.path,
             StreamedDicomWritePlan {
                 object,
-                meta: context.file_meta(request.options.transfer_syntax.uid()),
-                overwrite: request.options.overwrite,
+                meta: context.file_meta(options.semantics.transfer_syntax.uid()),
+                overwrite: options.semantics.overwrite,
                 per_frame_plan,
-                max_instance_metadata_bytes: request.options.max_instance_metadata_bytes,
+                max_instance_metadata_bytes: options.resources.max_instance_metadata_bytes,
                 frame_count: direct_plan.frame_count,
             },
             |writer| {
@@ -104,7 +145,7 @@ pub(super) fn export_jpeg_passthrough_instance(
         metrics.record_write_duration(write_started.elapsed());
 
         return Ok(context.report(
-            request.options.transfer_syntax.uid(),
+            options.semantics.transfer_syntax.uid(),
             frame_count,
             icc_profile.report,
             metrics,
@@ -116,14 +157,18 @@ pub(super) fn export_jpeg_passthrough_instance(
     let mut pixel_profile = None;
     #[cfg(all(feature = "metal", target_os = "macos"))]
     let mut metal_input = MetalInputTileReader::new(
-        request.options.encode_backend,
-        request.options.source_device_decode,
+        options.execution.encode_backend,
+        options.execution.source_device_decode,
     );
     let mut metrics = ExportMetrics::default();
     let mut source_lossy_compression = LossyCompressionAccumulator::default();
     let mut target_lossy_compression = LossyCompressionAccumulator::default();
     let allow_raw_rgb_passthrough = raw_rgb_passthrough_has_no_geometry_fallback(level, geometry);
     let mut blank_jpeg_cache = None;
+    let route_context = RouteExecutionContext::new(
+        options.semantics.transfer_syntax,
+        options.execution.encode_backend,
+    );
 
     for row in 0..tiles_down {
         let row_plan = plan_jpeg_baseline_row(
@@ -139,21 +184,26 @@ pub(super) fn export_jpeg_passthrough_instance(
                     frame_rows,
                 },
                 allow_raw_rgb_passthrough,
-                jpeg_quality: request.options.jpeg_quality,
             },
-            &mut blank_jpeg_cache,
         )?;
         record_jpeg_retile_rejections(&mut metrics, &row_plan.retile_rejections);
         let planned = row_plan.frames;
 
         let mut index = 0usize;
         while index < planned.len() {
-            match &planned[index] {
-                JpegBaselinePlannedFrame::Passthrough {
-                    data,
-                    profile,
-                    uncompressed_bytes: frame_uncompressed_bytes,
-                } => {
+            match planned[index].route_decision(route_context).route {
+                PlannedFrameRoute::JpegPassthrough => {
+                    let JpegBaselinePlannedFrame::Passthrough {
+                        data,
+                        profile,
+                        uncompressed_bytes: frame_uncompressed_bytes,
+                    } = &planned[index]
+                    else {
+                        return Err(incompatible_frame_route(
+                            "JPEG",
+                            PlannedFrameRoute::JpegPassthrough,
+                        ));
+                    };
                     ensure_consistent_pixel_profile(
                         &mut pixel_profile,
                         *profile,
@@ -171,12 +221,19 @@ pub(super) fn export_jpeg_passthrough_instance(
                     metrics.record_pixel_profile(*profile);
                     index += 1;
                 }
-                JpegBaselinePlannedFrame::Retile {
-                    data,
-                    profile,
-                    uncompressed_bytes: frame_uncompressed_bytes,
-                    retile_duration,
-                } => {
+                PlannedFrameRoute::JpegRetile => {
+                    let JpegBaselinePlannedFrame::Retile {
+                        data,
+                        profile,
+                        uncompressed_bytes: frame_uncompressed_bytes,
+                        retile_duration,
+                    } = &planned[index]
+                    else {
+                        return Err(incompatible_frame_route(
+                            "JPEG",
+                            PlannedFrameRoute::JpegRetile,
+                        ));
+                    };
                     ensure_consistent_pixel_profile(
                         &mut pixel_profile,
                         *profile,
@@ -194,12 +251,21 @@ pub(super) fn export_jpeg_passthrough_instance(
                     metrics.record_pixel_profile(*profile);
                     index += 1;
                 }
-                JpegBaselinePlannedFrame::Blank {
-                    data,
-                    profile,
-                    uncompressed_bytes: frame_uncompressed_bytes,
-                    encode_duration,
-                } => {
+                PlannedFrameRoute::Blank => {
+                    let JpegBaselinePlannedFrame::Blank {
+                        profile,
+                        uncompressed_bytes: frame_uncompressed_bytes,
+                    } = &planned[index]
+                    else {
+                        return Err(incompatible_frame_route("JPEG", PlannedFrameRoute::Blank));
+                    };
+                    let (data, encode_duration) = encode_blank_jpeg_baseline_frame(
+                        frame_columns,
+                        frame_rows,
+                        options.semantics.jpeg_quality,
+                        *frame_uncompressed_bytes,
+                        &mut blank_jpeg_cache,
+                    )?;
                     ensure_consistent_pixel_profile(
                         &mut pixel_profile,
                         *profile,
@@ -208,19 +274,25 @@ pub(super) fn export_jpeg_passthrough_instance(
                     target_lossy_compression.observe_encoded_frame(
                         JPEG_BASELINE_METHOD,
                         *frame_uncompressed_bytes,
-                        data,
+                        &data,
                     )?;
                     let byte_started = Instant::now();
-                    pixel_spool.push_frame(data)?;
+                    pixel_spool.push_frame(&data)?;
                     metrics.record_write_duration(byte_started.elapsed());
                     metrics.record_cpu_input();
                     metrics.record_pixel_profile(*profile);
                     metrics.record_transcode_route(false, false);
                     metrics.record_jpeg_decode_fallback();
-                    metrics.record_jpeg_cpu_encode(*encode_duration);
+                    metrics.record_jpeg_cpu_encode(encode_duration);
                     index += 1;
                 }
-                JpegBaselinePlannedFrame::Fallback { .. } => {
+                PlannedFrameRoute::JpegCpuEncode | PlannedFrameRoute::JpegDeviceEncodeCandidate => {
+                    if !matches!(planned[index], JpegBaselinePlannedFrame::Fallback { .. }) {
+                        return Err(incompatible_frame_route(
+                            "JPEG",
+                            planned[index].route_decision(route_context).route,
+                        ));
+                    }
                     let start_index = index;
                     let (next_index, fallback_frames) = jpeg_baseline_fallback_run(&planned, index);
                     index = next_index;
@@ -246,12 +318,14 @@ pub(super) fn export_jpeg_passthrough_instance(
                             #[cfg(all(feature = "metal", target_os = "macos"))]
                             row,
                             frames: &fallback_frames,
-                            encode_backend: request.options.encode_backend,
+                            encode_backend: options.execution.encode_backend,
                             settings: JpegBaselineCpuEncodeSettings {
                                 frame_columns,
                                 frame_rows,
-                                jpeg_quality: request.options.jpeg_quality,
-                                max_prepared_frame_bytes: request.options.max_prepared_frame_bytes,
+                                jpeg_quality: options.semantics.jpeg_quality,
+                                max_prepared_frame_bytes: options
+                                    .resources
+                                    .max_prepared_frame_bytes,
                             },
                         },
                         #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -271,7 +345,7 @@ pub(super) fn export_jpeg_passthrough_instance(
                         } = take_consistent_jpeg_baseline_fallback_frame(
                             metal_encoded,
                             &mut fallback_batch.cpu_batch_results[idx],
-                            request.options.encode_backend,
+                            options.execution.encode_backend,
                             &mut pixel_profile,
                             "JPEG Baseline pixel profile changed across frames",
                         )?;
@@ -306,6 +380,7 @@ pub(super) fn export_jpeg_passthrough_instance(
                         }
                     }
                 }
+                route => return Err(incompatible_frame_route("JPEG", route)),
             }
         }
     }
@@ -344,10 +419,10 @@ pub(super) fn export_jpeg_passthrough_instance(
         &context.path,
         StreamedDicomWritePlan {
             object,
-            meta: context.file_meta(request.options.transfer_syntax.uid()),
-            overwrite: request.options.overwrite,
+            meta: context.file_meta(options.semantics.transfer_syntax.uid()),
+            overwrite: options.semantics.overwrite,
             per_frame_plan,
-            max_instance_metadata_bytes: request.options.max_instance_metadata_bytes,
+            max_instance_metadata_bytes: options.resources.max_instance_metadata_bytes,
             frame_count: frame_count as usize,
         },
         |writer| pixel_spool.stream_frames_to(writer),
@@ -355,7 +430,7 @@ pub(super) fn export_jpeg_passthrough_instance(
     metrics.record_write_duration(write_started.elapsed());
 
     Ok(context.report(
-        request.options.transfer_syntax.uid(),
+        options.semantics.transfer_syntax.uid(),
         frame_count,
         icc_profile.report,
         metrics,

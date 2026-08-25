@@ -1,5 +1,8 @@
 import json
+import re
+import shutil
 import subprocess
+import tempfile
 import tomllib
 import unittest
 from collections import Counter
@@ -8,6 +11,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
+GIT_REVISION = re.compile(r"[?&]rev=([0-9a-f]{40})(?:$|[&#])")
 
 
 def load_toml(relative_path):
@@ -17,6 +21,7 @@ def load_toml(relative_path):
 def dependency_version(manifest, name):
     dependency = manifest["dependencies"][name]
     requirement = dependency if isinstance(dependency, str) else dependency["version"]
+    requirement = requirement.lstrip("=~^<>")
     return tuple(map(int, requirement.split(".")))
 
 
@@ -50,6 +55,18 @@ def cargo_package(manifest_path, package_name):
 
 
 class DependencyTopologyTests(unittest.TestCase):
+    def test_ci_has_an_early_standalone_package_gate(self):
+        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("dependency-topology:", workflow)
+        self.assertIn("cargo metadata --locked --format-version 1", workflow)
+        self.assertIn("cargo package --locked", workflow)
+        self.assertIn(
+            "python -m unittest discover -s tests -p 'test_dependency_topology.py'",
+            workflow,
+        )
+
     def test_ci_runs_a_workspace_wide_rustsec_scan(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
@@ -64,25 +81,61 @@ class DependencyTopologyTests(unittest.TestCase):
             workflow,
         )
 
-    def test_cargo_metadata_uses_registry_codec_dependencies(self):
+    def test_direct_project_dependencies_use_reproducible_sources(self):
         package = cargo_package("Cargo.toml", "wsi-dicom")
-        codecs = [
+        project_dependencies = [
             dependency
             for dependency in package["dependencies"]
-            if dependency["name"].startswith("j2k") or dependency["name"] == "wsi-rs"
+            if dependency["name"].startswith("j2k")
+            or dependency["name"] in {"wsi-rs", "wsi-dicom-annotations"}
         ]
-        self.assertGreater(len(codecs), 0)
-        for dependency in codecs:
+        self.assertGreater(len(project_dependencies), 0)
+        for dependency in project_dependencies:
             self.assertTrue(dependency["req"], dependency["name"])
-            self.assertEqual(dependency["source"], REGISTRY_SOURCE, dependency["name"])
+            source = dependency["source"]
+            if source == REGISTRY_SOURCE:
+                continue
+            self.assertIsNotNone(source, dependency["name"])
+            self.assertTrue(source.startswith("git+https://"), dependency["name"])
+            self.assertIsNotNone(GIT_REVISION.search(source), dependency["name"])
 
-    def test_fuzz_cargo_metadata_keeps_only_the_local_fuzz_target_path(self):
-        package = cargo_package("fuzz/Cargo.toml", "wsi-dicom-fuzz")
-        dependencies = {dependency["name"]: dependency for dependency in package["dependencies"]}
-        self.assertEqual(dependencies["wsi-rs"]["source"], REGISTRY_SOURCE)
-        self.assertIsNone(dependencies["wsi-dicom"]["source"])
+    def test_workspace_metadata_is_reproducible_without_siblings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            clean_root = Path(directory) / "wsi-dicom"
+            shutil.copytree(
+                REPO_ROOT,
+                clean_root,
+                ignore=shutil.ignore_patterns(".git", ".codex", "target", ".venv*"),
+            )
+            result = subprocess.run(
+                ["cargo", "metadata", "--locked", "--format-version", "1"],
+                cwd=clean_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_fuzz_cargo_metadata_matches_root_first_party_sources(self):
+        root_package = cargo_package("Cargo.toml", "wsi-dicom")
+        root_dependencies = {
+            dependency["name"]: dependency for dependency in root_package["dependencies"]
+        }
+        fuzz_package = cargo_package("fuzz/Cargo.toml", "wsi-dicom-fuzz")
+        fuzz_dependencies = {
+            dependency["name"]: dependency for dependency in fuzz_package["dependencies"]
+        }
         self.assertEqual(
-            Path(dependencies["wsi-dicom"]["path"]).resolve(),
+            fuzz_dependencies["wsi-rs"]["source"],
+            root_dependencies["wsi-rs"]["source"],
+        )
+        self.assertEqual(
+            fuzz_dependencies["wsi-rs"]["req"],
+            root_dependencies["wsi-rs"]["req"],
+        )
+        self.assertIsNone(fuzz_dependencies["wsi-dicom"]["source"])
+        self.assertEqual(
+            Path(fuzz_dependencies["wsi-dicom"]["path"]).resolve(),
             REPO_ROOT.resolve(),
         )
 
@@ -112,9 +165,21 @@ class DependencyTopologyTests(unittest.TestCase):
                 major, minor, patch = map(int, next(iter(versions)).split("."))
                 self.assertEqual((major, minor), minimum_version[:2])
                 self.assertGreaterEqual((major, minor, patch), minimum_version)
-                for package in j2k_packages:
-                    self.assertEqual(package.get("source"), REGISTRY_SOURCE, package["name"])
-                    self.assertRegex(package.get("checksum", ""), r"^[0-9a-f]{64}$")
+                sources = {package.get("source") for package in j2k_packages}
+                self.assertEqual(
+                    len(sources),
+                    1,
+                    f"mixed j2k source identities in {relative_path}: {sources}",
+                )
+                source = next(iter(sources))
+                if source == REGISTRY_SOURCE:
+                    for package in j2k_packages:
+                        self.assertRegex(package.get("checksum", ""), r"^[0-9a-f]{64}$")
+                else:
+                    self.assertIsNotNone(source)
+                    match = GIT_REVISION.search(source)
+                    self.assertIsNotNone(match, source)
+                    self.assertTrue(source.endswith(f"#{match.group(1)}"), source)
                 self.assertFalse(
                     any(package["name"].startswith("signinum") for package in packages)
                 )

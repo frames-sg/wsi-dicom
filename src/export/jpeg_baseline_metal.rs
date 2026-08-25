@@ -1,4 +1,18 @@
-use super::*;
+use std::time::{Duration, Instant};
+
+use wsi_rs::{DeviceTile, PlaneSelection, TilePixels, TileRequest};
+
+use super::jpeg_baseline::{
+    encode_jpeg_baseline_metal_device_tile_batch, JpegBaselineFallbackFrame,
+    JpegBaselineMetalEncodedRun,
+};
+use super::jpeg_baseline_pipeline::{
+    JpegBaselineCpuEncodeSettings, JpegBaselineFallbackBatchRequest,
+};
+use super::metal_input::MetalInputTileReader;
+use super::metal_route::output_frame_maps_to_wsi_rs_tile;
+use crate::error::Error;
+use crate::options::EncodeBackendPreference;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) fn jpeg_baseline_auto_allows_metal_batch(

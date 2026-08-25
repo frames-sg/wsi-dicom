@@ -29,3 +29,21 @@ fn public_api_compiles_through_owned_types_and_prelude() {
     );
     let _ = std::any::type_name::<PreludeError>();
 }
+
+#[test]
+fn shared_application_metadata_input_enforces_one_source() {
+    use wsi_dicom::{ExportWorkflowStage, MetadataInput};
+
+    let conflict = MetadataInput::from_parts(Some("metadata.json".into()), true)
+        .expect_err("metadata path and placeholder must conflict");
+    assert_eq!(conflict.stage(), ExportWorkflowStage::Metadata);
+
+    let missing =
+        MetadataInput::from_parts(None, false).expect_err("one metadata source is required");
+    assert_eq!(missing.stage(), ExportWorkflowStage::Metadata);
+
+    assert!(matches!(
+        MetadataInput::from_parts(None, true).unwrap(),
+        MetadataInput::ResearchPlaceholder
+    ));
+}

@@ -122,7 +122,7 @@ fn print_help() {
            test         run tests and compile examples\n\
            deny         run cargo-deny advisories, bans, licenses, and sources checks\n\
            docs-strict  build public API docs with missing docs denied\n\
-           coverage     run core library coverage with the 1.0 threshold\n\
+           coverage     run core library coverage with the 80% line threshold\n\
            semver       verify the exact reviewed 0.7.1-to-0.7.2 API break set\n\
            package      package from a clean worktree with cargo verification\n\
            release-test run release-mode tests\n\

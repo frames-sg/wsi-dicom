@@ -1,4 +1,7 @@
 use super::*;
+use crate::routing::{
+    reset_slide_open_count_for_current_thread, slide_open_count_for_current_thread,
+};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -514,7 +517,9 @@ fn profile_dicom_route_coverage_resolves_source_aware_transfer_syntax_by_default
     );
     request.max_levels = Some(1);
 
+    reset_slide_open_count_for_current_thread();
     let report = profile_dicom_route_coverage(request).unwrap();
+    assert_eq!(slide_open_count_for_current_thread(), 1);
 
     assert_eq!(
         report.transfer_syntax_uid,

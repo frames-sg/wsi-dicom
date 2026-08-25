@@ -1,5 +1,7 @@
 use super::addressing::{ComposeAddressPlan, ComposeAddressWidth};
-use super::*;
+use super::types::{MetalComposeStripsParams, MetalComposeTileRequest, PackedMetalStrips};
+use super::{metal_profile_stages_enabled, MetalStripComposer};
+use crate::error::Error;
 use j2k_core::DeviceSubmission as _;
 use objc2_foundation::NSString;
 use objc2_metal::{MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder};

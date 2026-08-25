@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 /// Convert a duration into report microseconds, rounding positive sub-microsecond work up to one.
-pub(crate) fn duration_as_reported_micros(duration: Duration) -> u128 {
+pub fn duration_as_reported_micros(duration: Duration) -> u128 {
     match duration.as_micros() {
         0 if duration > Duration::ZERO => 1,
         micros => micros,

@@ -1,6 +1,9 @@
-use super::*;
+use std::sync::OnceLock;
+
 use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_metal::{MTLCommandQueue, MTLComputePipelineState};
+
+use crate::error::Error;
 
 mod addressing;
 mod compose;
@@ -8,7 +11,7 @@ mod pack;
 mod types;
 
 pub(crate) use types::MetalComposeStripsParams;
-pub(super) use types::{MetalComposeTileRequest, PackedMetalStrips};
+pub(super) use types::MetalComposeTileRequest;
 
 type MetalCommandQueue = Retained<ProtocolObject<dyn MTLCommandQueue>>;
 type MetalComputePipeline = Retained<ProtocolObject<dyn MTLComputePipelineState>>;

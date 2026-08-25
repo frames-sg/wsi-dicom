@@ -64,11 +64,11 @@ fn auto_metal_input_routing_ignores_device_decode_env_until_explicitly_preferred
     ));
     assert!(auto_metal_input_route_cache_key(
         &PathBuf::from("slide.svs"),
-        ExportOptions {
+        NormalizedExportOptions::from_validated(&ExportOptions {
             transfer_syntax: TransferSyntax::Htj2kLossless,
             encode_backend: EncodeBackendPreference::Auto,
             ..ExportOptions::default()
-        },
+        }),
         JpegBaselineFrameLocation::first_series_level(0),
         16
     )

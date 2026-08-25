@@ -6,7 +6,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::metadata::DicomMetadata;
-use crate::options::{ExportOptions, UidPolicy};
+use crate::options::{NormalizedExportOptions, UidPolicy};
 use crate::Error;
 
 pub(crate) struct DicomExportIdentity {
@@ -18,12 +18,12 @@ pub(crate) struct DicomExportIdentity {
 impl DicomExportIdentity {
     pub(crate) fn for_export(
         source_path: &Path,
-        options: &ExportOptions,
+        options: &NormalizedExportOptions,
         metadata: &DicomMetadata,
         level_filter: Option<u32>,
         effective_icc_sha256: &[Option<String>],
     ) -> Result<Self, Error> {
-        let generation_seed = match options.uid_policy {
+        let generation_seed = match options.semantics.uid_policy {
             UidPolicy::Fresh => fresh_generation_seed()?,
             UidPolicy::Deterministic => deterministic_generation_seed(
                 source_path,
@@ -99,7 +99,7 @@ fn fresh_generation_seed() -> Result<String, Error> {
 
 fn deterministic_generation_seed(
     source_path: &Path,
-    options: &ExportOptions,
+    options: &NormalizedExportOptions,
     metadata: &DicomMetadata,
     level_filter: Option<u32>,
     effective_icc_sha256: &[Option<String>],
@@ -127,14 +127,14 @@ fn deterministic_generation_seed(
     let configuration = serde_json::to_vec(&DeterministicUidInputs {
         metadata,
         level_filter,
-        tile_size: options.tile_size,
-        transfer_syntax: options.transfer_syntax,
-        jpeg_direct_htj2k_profile: options.jpeg_direct_htj2k_profile,
-        jpeg_quality: options.jpeg_quality,
+        tile_size: options.semantics.tile_size,
+        transfer_syntax: options.semantics.transfer_syntax,
+        jpeg_direct_htj2k_profile: options.semantics.jpeg_direct_htj2k_profile,
+        jpeg_quality: options.semantics.jpeg_quality,
         effective_icc_sha256,
-        encode_backend: options.encode_backend,
-        source_device_decode: options.source_device_decode,
-        j2k_decomposition_levels: options.j2k_decomposition_levels,
+        encode_backend: options.execution.encode_backend,
+        source_device_decode: options.execution.source_device_decode,
+        j2k_decomposition_levels: options.execution.j2k_decomposition_levels,
     })
     .map_err(|err| Error::Identity {
         reason: format!("cannot serialize deterministic identity inputs: {err}"),
@@ -186,6 +186,11 @@ pub(crate) fn is_valid_dicom_uid(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::options::ExportOptions;
+
+    fn normalized(options: &ExportOptions) -> NormalizedExportOptions {
+        NormalizedExportOptions::from_validated(options)
+    }
 
     #[test]
     fn fresh_identity_changes_between_exports_and_preserves_supplied_study_uid() {
@@ -194,10 +199,22 @@ mod tests {
         let mut metadata = DicomMetadata::research_placeholder();
         metadata.study_instance_uid = Some("1.2.826.0.1.3680043.10.999.7".into());
 
-        let first =
-            DicomExportIdentity::for_export(source.path(), &options, &metadata, None, &[]).unwrap();
-        let second =
-            DicomExportIdentity::for_export(source.path(), &options, &metadata, None, &[]).unwrap();
+        let first = DicomExportIdentity::for_export(
+            source.path(),
+            &normalized(&options),
+            &metadata,
+            None,
+            &[],
+        )
+        .unwrap();
+        let second = DicomExportIdentity::for_export(
+            source.path(),
+            &normalized(&options),
+            &metadata,
+            None,
+            &[],
+        )
+        .unwrap();
 
         assert_eq!(first.study_uid(), "1.2.826.0.1.3680043.10.999.7");
         assert_eq!(second.study_uid(), first.study_uid());
@@ -216,23 +233,37 @@ mod tests {
         let metadata = DicomMetadata::research_placeholder();
 
         let first =
-            DicomExportIdentity::for_export(&source, &options, &metadata, None, &[]).unwrap();
+            DicomExportIdentity::for_export(&source, &normalized(&options), &metadata, None, &[])
+                .unwrap();
         let repeated =
-            DicomExportIdentity::for_export(&source, &options, &metadata, None, &[]).unwrap();
+            DicomExportIdentity::for_export(&source, &normalized(&options), &metadata, None, &[])
+                .unwrap();
         let mut overwrite_options = options.clone();
         overwrite_options.overwrite = true;
         overwrite_options.codec_validation = crate::options::CodecValidation::RoundTrip;
-        let operational_change =
-            DicomExportIdentity::for_export(&source, &overwrite_options, &metadata, None, &[])
-                .unwrap();
-        let level_change =
-            DicomExportIdentity::for_export(&source, &options, &metadata, Some(1), &[]).unwrap();
+        let operational_change = DicomExportIdentity::for_export(
+            &source,
+            &normalized(&overwrite_options),
+            &metadata,
+            None,
+            &[],
+        )
+        .unwrap();
+        let level_change = DicomExportIdentity::for_export(
+            &source,
+            &normalized(&options),
+            &metadata,
+            Some(1),
+            &[],
+        )
+        .unwrap();
         std::fs::write(&source, b"pixels-b").unwrap();
         let changed =
-            DicomExportIdentity::for_export(&source, &options, &metadata, None, &[]).unwrap();
+            DicomExportIdentity::for_export(&source, &normalized(&options), &metadata, None, &[])
+                .unwrap();
         let profile_change = DicomExportIdentity::for_export(
             &source,
-            &options,
+            &normalized(&options),
             &metadata,
             None,
             &[Some(
@@ -258,15 +289,33 @@ mod tests {
         metadata.specimen_identifier = Some("A123".into());
         let options = ExportOptions::default();
 
-        let first =
-            DicomExportIdentity::for_export(source.path(), &options, &metadata, None, &[]).unwrap();
-        let second =
-            DicomExportIdentity::for_export(source.path(), &options, &metadata, None, &[]).unwrap();
+        let first = DicomExportIdentity::for_export(
+            source.path(),
+            &normalized(&options),
+            &metadata,
+            None,
+            &[],
+        )
+        .unwrap();
+        let second = DicomExportIdentity::for_export(
+            source.path(),
+            &normalized(&options),
+            &metadata,
+            None,
+            &[],
+        )
+        .unwrap();
         assert_ne!(first.specimen_uid(), second.specimen_uid());
 
         metadata.specimen_uid = Some("1.2.826.0.1.3680043.10.999.701".into());
-        let governed =
-            DicomExportIdentity::for_export(source.path(), &options, &metadata, None, &[]).unwrap();
+        let governed = DicomExportIdentity::for_export(
+            source.path(),
+            &normalized(&options),
+            &metadata,
+            None,
+            &[],
+        )
+        .unwrap();
         assert_eq!(governed.specimen_uid(), "1.2.826.0.1.3680043.10.999.701");
     }
 
@@ -293,15 +342,30 @@ mod tests {
             universal_entity_id_type: Some(UniversalEntityIdType::Uri),
         });
 
-        let first =
-            DicomExportIdentity::for_export(source.path(), &options, &first_metadata, None, &[])
-                .unwrap();
-        let repeated =
-            DicomExportIdentity::for_export(source.path(), &options, &first_metadata, None, &[])
-                .unwrap();
-        let second =
-            DicomExportIdentity::for_export(source.path(), &options, &second_metadata, None, &[])
-                .unwrap();
+        let first = DicomExportIdentity::for_export(
+            source.path(),
+            &normalized(&options),
+            &first_metadata,
+            None,
+            &[],
+        )
+        .unwrap();
+        let repeated = DicomExportIdentity::for_export(
+            source.path(),
+            &normalized(&options),
+            &first_metadata,
+            None,
+            &[],
+        )
+        .unwrap();
+        let second = DicomExportIdentity::for_export(
+            source.path(),
+            &normalized(&options),
+            &second_metadata,
+            None,
+            &[],
+        )
+        .unwrap();
 
         assert_eq!(first.specimen_uid(), repeated.specimen_uid());
         assert_ne!(first.specimen_uid(), second.specimen_uid());

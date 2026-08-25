@@ -12,9 +12,6 @@ ignore = [
     # 0.9.1. No safe upstream upgrade exists yet; revisit when dicom-rs
     # replaces it.
     "RUSTSEC-2021-0153",
-    # RUSTSEC-2024-0436: transitive via metal-rs. This is an unmaintained
-    # advisory for paste, not a known memory-safety or code-execution issue.
-    "RUSTSEC-2024-0436",
 ]
 
 [licenses]
@@ -47,3 +44,7 @@ skip = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = [
+    "https://github.com/frames-sg/j2k.git",
+    "https://github.com/frames-sg/wsi-rs.git",
+]

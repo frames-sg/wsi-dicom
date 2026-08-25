@@ -1,4 +1,22 @@
-use super::*;
+use std::time::{Duration, Instant};
+
+use wsi_rs::output::metal::MetalDeviceTile;
+use wsi_rs::{DeviceTile, PlaneSelection, Slide, TilePixels, TileRequest};
+
+use super::super::jpeg_baseline::JpegBaselineFrameLocation;
+use super::super::metal_compose::MetalComposeTileRequest;
+use super::super::metal_input::{
+    empty_metal_tile_run, metal_j2k_encode_batch_count, MetalEncodedTileRun, MetalInputTileReader,
+    MetalInputTileRunRequest, MetalSourceTileKey, PendingMetalEncodedTileRun,
+};
+use super::{
+    cache_and_store_whole_level_source_tile, empty_pending_metal_tile_run,
+    MetalTileGridBatchRequest,
+};
+use crate::encode::DicomJ2kEncoder;
+use crate::error::Error;
+use crate::options::EncodeBackendPreference;
+use crate::tile::{pixel_profile_from_device_format, PixelProfile};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[derive(Debug, Clone, Copy)]

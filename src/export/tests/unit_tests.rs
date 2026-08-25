@@ -80,11 +80,13 @@ fn multi_scene_multi_series_jobs_export_unique_instances() {
     )
     .unwrap();
     let metadata = request.metadata.resolve().unwrap();
+    let options = NormalizedExportOptions::from_validated(&request.options);
     let identity = DicomExportIdentity::from_seed("1.2.3".into(), "multi-scene".into());
     let jobs = dicom_export_instance_jobs(&slide, &request).unwrap();
 
     let reports =
-        export_dicom_instance_jobs(&slide, &request, &metadata, &identity, &jobs).unwrap();
+        export_dicom_instance_jobs(&slide, &request, &options, &metadata, &identity, &jobs)
+            .unwrap();
 
     assert_eq!(reports.len(), 4);
     assert_eq!(
@@ -139,7 +141,8 @@ fn preflight_accepts_same_axes_from_different_scenes_and_series() {
         },
     ];
 
-    preflight_output_paths(&request, &jobs).unwrap();
+    let options = NormalizedExportOptions::from_validated(&request.options);
+    preflight_output_paths(&request, &options, &jobs).unwrap();
     assert_ne!(
         jobs[0].coordinate.output_path(&request.output_dir),
         jobs[1].coordinate.output_path(&request.output_dir)
@@ -235,14 +238,19 @@ fn lossless_j2k_cpu_tile_preparation_returns_named_prepared_region() {
 #[test]
 fn metal_row_batch_target_default_is_tuned_and_not_scaled_by_pipeline_depth() {
     let options = ExportOptions::default();
-    assert_eq!(effective_gpu_row_batch_target_tiles(&options), Some(384));
+    assert_eq!(
+        effective_gpu_row_batch_target_tiles(&NormalizedExportOptions::from_validated(&options)),
+        Some(384)
+    );
 
     let depth_override = ExportOptions {
         gpu_pipeline_depth: Some(3),
         ..ExportOptions::default()
     };
     assert_eq!(
-        effective_gpu_row_batch_target_tiles(&depth_override),
+        effective_gpu_row_batch_target_tiles(&NormalizedExportOptions::from_validated(
+            &depth_override,
+        )),
         Some(384)
     );
 
@@ -252,7 +260,9 @@ fn metal_row_batch_target_default_is_tuned_and_not_scaled_by_pipeline_depth() {
         ..ExportOptions::default()
     };
     assert_eq!(
-        effective_gpu_row_batch_target_tiles(&explicit_target),
+        effective_gpu_row_batch_target_tiles(&NormalizedExportOptions::from_validated(
+            &explicit_target,
+        )),
         Some(96)
     );
 }
@@ -265,37 +275,38 @@ fn prefer_device_htj2k_rpcl_jobs_are_split_into_gpu_and_cpu_lanes() {
         transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
         ..ExportOptions::default()
     };
+    let normalized = |options: &ExportOptions| NormalizedExportOptions::from_validated(options);
 
     assert_eq!(
-        hybrid_lane::prefer_device_htj2k_rpcl_hybrid_lane(&options, 19_008),
+        hybrid_lane::prefer_device_htj2k_rpcl_hybrid_lane(&normalized(&options), 19_008),
         Some(hybrid_lane::HybridExportLane::Gpu)
     );
     assert_eq!(
-        hybrid_lane::effective_lossless_gpu_row_batch_target_tiles(&options, 19_008),
+        hybrid_lane::effective_lossless_gpu_row_batch_target_tiles(&normalized(&options), 19_008),
         Some(416)
     );
     assert_eq!(
-        hybrid_lane::effective_lossless_gpu_encode_memory_mib(&options, 19_008),
+        hybrid_lane::effective_lossless_gpu_encode_memory_mib(&normalized(&options), 19_008),
         Some(16_384)
     );
     assert_eq!(
-        hybrid_lane::prefer_device_htj2k_rpcl_hybrid_lane(&options, 391),
+        hybrid_lane::prefer_device_htj2k_rpcl_hybrid_lane(&normalized(&options), 391),
         Some(hybrid_lane::HybridExportLane::Gpu)
     );
     assert_eq!(
-        hybrid_lane::prefer_device_htj2k_rpcl_hybrid_lane(&options, 1_188),
+        hybrid_lane::prefer_device_htj2k_rpcl_hybrid_lane(&normalized(&options), 1_188),
         Some(hybrid_lane::HybridExportLane::Gpu)
     );
     assert_eq!(
-        hybrid_lane::prefer_device_htj2k_rpcl_hybrid_lane(&options, 128),
+        hybrid_lane::prefer_device_htj2k_rpcl_hybrid_lane(&normalized(&options), 128),
         Some(hybrid_lane::HybridExportLane::Cpu)
     );
     assert_eq!(
-        hybrid_lane::effective_lossless_gpu_row_batch_target_tiles(&options, 128),
+        hybrid_lane::effective_lossless_gpu_row_batch_target_tiles(&normalized(&options), 128),
         Some(384)
     );
     assert_eq!(
-        hybrid_lane::effective_lossless_gpu_encode_memory_mib(&options, 128),
+        hybrid_lane::effective_lossless_gpu_encode_memory_mib(&normalized(&options), 128),
         None
     );
 
@@ -304,7 +315,7 @@ fn prefer_device_htj2k_rpcl_jobs_are_split_into_gpu_and_cpu_lanes() {
         ..ExportOptions::default()
     };
     assert_eq!(
-        hybrid_lane::prefer_device_htj2k_rpcl_hybrid_lane(&require_device, 1_188),
+        hybrid_lane::prefer_device_htj2k_rpcl_hybrid_lane(&normalized(&require_device), 1_188,),
         None
     );
 
@@ -313,7 +324,10 @@ fn prefer_device_htj2k_rpcl_jobs_are_split_into_gpu_and_cpu_lanes() {
         ..options
     };
     assert_eq!(
-        hybrid_lane::effective_lossless_gpu_row_batch_target_tiles(&explicit_target, 19_008),
+        hybrid_lane::effective_lossless_gpu_row_batch_target_tiles(
+            &normalized(&explicit_target),
+            19_008,
+        ),
         Some(320)
     );
 
@@ -322,7 +336,10 @@ fn prefer_device_htj2k_rpcl_jobs_are_split_into_gpu_and_cpu_lanes() {
         ..options
     };
     assert_eq!(
-        hybrid_lane::effective_lossless_gpu_encode_memory_mib(&explicit_memory, 19_008),
+        hybrid_lane::effective_lossless_gpu_encode_memory_mib(
+            &normalized(&explicit_memory),
+            19_008,
+        ),
         Some(8_192)
     );
 }
@@ -333,12 +350,13 @@ fn lossless_j2k_prefer_device_backend_routing_uses_measured_cpu_cutoffs() {
     use TransferSyntax::{Htj2kLosslessRpcl, Jpeg2000, Jpeg2000Lossless};
 
     let backend = |encode_backend, transfer_syntax, frame_count| {
+        let options = ExportOptions {
+            encode_backend,
+            transfer_syntax,
+            ..ExportOptions::default()
+        };
         effective_lossless_j2k_encode_backend(
-            &ExportOptions {
-                encode_backend,
-                transfer_syntax,
-                ..ExportOptions::default()
-            },
+            &NormalizedExportOptions::from_validated(&options),
             frame_count,
         )
     };
@@ -436,10 +454,8 @@ fn jpeg_baseline_fallback_run_collects_contiguous_fallback_frames() {
             source_lossy_compression: None,
         },
         JpegBaselinePlannedFrame::Blank {
-            data: vec![255],
             profile: test_rgb8_pixel_profile(),
             uncompressed_bytes: 1,
-            encode_duration: Duration::ZERO,
         },
         JpegBaselinePlannedFrame::Fallback {
             frame: test_jpeg_baseline_fallback_frame(2),
@@ -466,6 +482,115 @@ fn jpeg_baseline_fallback_run_collects_contiguous_fallback_frames() {
             .collect::<Vec<_>>(),
         vec![8]
     );
+}
+
+#[test]
+fn shared_route_planner_uses_codec_specific_precedence() {
+    use crate::export::route_plan::{
+        FrameRouteSource, PlannedFrameRoute, RouteExecutionContext, RoutePlanner,
+    };
+
+    let jpeg = RoutePlanner::new(RouteExecutionContext::new(
+        TransferSyntax::JpegBaseline8Bit,
+        EncodeBackendPreference::CpuOnly,
+    ));
+    assert_eq!(
+        jpeg.decide(FrameRouteSource::Jpeg {
+            passthrough: true,
+            retile: true,
+            blank: false,
+        })
+        .route,
+        PlannedFrameRoute::JpegPassthrough
+    );
+    assert_eq!(
+        jpeg.decide(FrameRouteSource::Jpeg {
+            passthrough: false,
+            retile: true,
+            blank: false,
+        })
+        .route,
+        PlannedFrameRoute::JpegRetile
+    );
+
+    let j2k = RoutePlanner::new(RouteExecutionContext::new(
+        TransferSyntax::Htj2kLossless,
+        EncodeBackendPreference::PreferDevice,
+    ));
+    assert_eq!(
+        j2k.decide(FrameRouteSource::J2k {
+            passthrough: false,
+            direct_j2k: true,
+            direct_jpeg: true,
+            j2k_reencode: true,
+        })
+        .route,
+        PlannedFrameRoute::DirectJ2kToHtj2k
+    );
+}
+
+#[test]
+fn shared_route_planner_rejects_non_passthrough_jpeg2000_frames() {
+    use crate::export::route_plan::{
+        FrameRouteSource, PlannedFrameRoute, RouteExecutionContext, RoutePlanner, RouteRejection,
+    };
+
+    let planner = RoutePlanner::new(RouteExecutionContext::new(
+        TransferSyntax::Jpeg2000,
+        EncodeBackendPreference::PreferDevice,
+    ));
+    let decision = planner.decide(FrameRouteSource::J2k {
+        passthrough: false,
+        direct_j2k: false,
+        direct_jpeg: false,
+        j2k_reencode: false,
+    });
+
+    assert_eq!(
+        decision.route,
+        PlannedFrameRoute::Unsupported(RouteRejection::PassthroughRequired)
+    );
+    assert_eq!(
+        decision.rejections.passthrough,
+        Some(RouteRejection::SourceRouteUnavailable)
+    );
+}
+
+#[test]
+fn shared_route_planner_marks_device_fallback_as_candidate_only() {
+    use crate::export::route_plan::{
+        FrameRouteSource, PlannedFrameRoute, RouteExecutionContext, RoutePlanner,
+    };
+
+    for backend in [
+        EncodeBackendPreference::Auto,
+        EncodeBackendPreference::PreferDevice,
+        EncodeBackendPreference::RequireDevice,
+    ] {
+        let decision = RoutePlanner::new(RouteExecutionContext::new(
+            TransferSyntax::Htj2kLosslessRpcl,
+            backend,
+        ))
+        .decide(FrameRouteSource::J2k {
+            passthrough: false,
+            direct_j2k: false,
+            direct_jpeg: false,
+            j2k_reencode: false,
+        });
+        assert_eq!(decision.route, PlannedFrameRoute::J2kDeviceEncodeCandidate);
+    }
+
+    let cpu = RoutePlanner::new(RouteExecutionContext::new(
+        TransferSyntax::Htj2kLosslessRpcl,
+        EncodeBackendPreference::CpuOnly,
+    ))
+    .decide(FrameRouteSource::J2k {
+        passthrough: false,
+        direct_j2k: false,
+        direct_jpeg: false,
+        j2k_reencode: false,
+    });
+    assert_eq!(cpu.route, PlannedFrameRoute::J2kCpuEncode);
 }
 
 #[test]
@@ -513,6 +638,11 @@ fn scatter_indexed_results_places_values_by_original_index() {
 
     assert_eq!(slots, vec![Some("zero"), None, Some("two"), None]);
     assert!(scatter_indexed_results(&mut slots, [(4, "bad")]).is_err());
+
+    let mut duplicate_slots = vec![None; 2];
+    let duplicate =
+        scatter_indexed_results(&mut duplicate_slots, [(1, "first"), (1, "second")]).unwrap_err();
+    assert!(duplicate.to_string().contains("duplicate"));
 }
 
 #[test]

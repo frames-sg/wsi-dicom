@@ -11,8 +11,9 @@ use crate::tile::{prepare_tile_samples_with_limit, PixelProfile};
 
 use super::{
     frame_region::{OutputFrameRect, PreparedCpuRegion},
-    read_and_prepare_region, CpuRegionReadRequest, JpegBaselineFrameLocation,
-    LosslessJ2kPlannedFrame,
+    jpeg_baseline::JpegBaselineFrameLocation,
+    jpeg_baseline_pipeline::{read_and_prepare_region, CpuRegionReadRequest},
+    lossless_j2k_plan::LosslessJ2kPlannedFrame,
 };
 
 const CPU_INPUT_BATCH_PARALLEL_MEMORY_BYTES: u64 = 128 * 1024 * 1024;

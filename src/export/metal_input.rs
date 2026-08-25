@@ -1,4 +1,21 @@
-use super::*;
+use std::collections::HashMap;
+use std::time::Duration;
+
+use wsi_rs::TileOutputPreference;
+
+use super::j2k_policy::DEFAULT_GPU_PIPELINE_DEPTH;
+use super::jpeg_baseline::JpegBaselineFrameLocation;
+use super::metal_compose::MetalStripComposer;
+use super::route_cache::{
+    cached_auto_metal_input_decision, store_cached_auto_metal_input_decision,
+    AutoLosslessJ2kRouteDecision, AutoMetalInputRouteCacheKey,
+};
+#[cfg(test)]
+use super::{WSI_RS_JP2K_DEVICE_DECODE_ENV, WSI_RS_JPEG_DEVICE_DECODE_ENV};
+use crate::encode::{self, EncodedDicomJ2kFrame};
+use crate::error::Error;
+use crate::options::EncodeBackendPreference;
+use crate::tile::PixelProfile;
 
 mod auto_route;
 mod cache;

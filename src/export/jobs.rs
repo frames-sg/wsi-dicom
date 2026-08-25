@@ -1,6 +1,28 @@
 use std::collections::HashSet;
 
-use super::*;
+use rayon::prelude::*;
+use wsi_rs::Slide;
+
+use super::jpeg_baseline::jpeg_baseline_route_frame_geometry;
+use super::jpeg_baseline_instance::export_jpeg_passthrough_instance;
+use super::lossless_j2k_instance::export_instance;
+use super::tile_grid::{checked_frame_count_u32, TileGrid};
+use super::{level_pixel_spacing_mm, require_pixel_spacing_mm, InstanceExportContext};
+use crate::coordinate::InstanceCoordinate;
+use crate::error::Error;
+use crate::metadata::DicomMetadata;
+use crate::options::{NormalizedExportOptions, TransferSyntax};
+use crate::report::InstanceReport;
+use crate::request::ExportRequest;
+use crate::routing::j2k_route_tile_size;
+use crate::tile::optical_path_groups;
+use crate::uid::DicomExportIdentity;
+use crate::writer::{
+    extended_offset_table_metadata_bytes, FrameGrid, PerFrameFunctionalGroupsPlan,
+};
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::hybrid_lane;
 
 const WSI_DICOM_EXPORT_INSTANCE_WORKERS_ENV: &str = "WSI_DICOM_EXPORT_INSTANCE_WORKERS";
 
@@ -113,6 +135,7 @@ pub(super) fn dicom_route_profile_jobs(
 
 pub(super) fn preflight_output_paths(
     request: &ExportRequest,
+    options: &NormalizedExportOptions,
     jobs: &[DicomExportInstanceJob<'_>],
 ) -> Result<(), Error> {
     let mut paths = HashSet::new();
@@ -128,7 +151,7 @@ pub(super) fn preflight_output_paths(
                 reason: format!("multiple export instances would write {}", path.display()),
             });
         }
-        if !request.options.overwrite && path.exists() {
+        if !options.semantics.overwrite && path.exists() {
             return Err(Error::Io {
                 path,
                 source: std::io::Error::new(
@@ -143,12 +166,12 @@ pub(super) fn preflight_output_paths(
 
 pub(super) fn preflight_metadata_budgets(
     slide: &Slide,
-    request: &ExportRequest,
+    options: &NormalizedExportOptions,
     jobs: &[DicomExportInstanceJob<'_>],
 ) -> Result<(), Error> {
     let mut total = 0u64;
     for job in jobs {
-        let (frame_count, frame_grid) = metadata_frame_plan(slide, request, job)?;
+        let (frame_count, frame_grid) = metadata_frame_plan(slide, options, job)?;
         let (row_spacing_mm, column_spacing_mm) =
             require_pixel_spacing_mm(level_pixel_spacing_mm(slide, job.level))?;
         let plan = PerFrameFunctionalGroupsPlan::new(
@@ -158,25 +181,25 @@ pub(super) fn preflight_metadata_budgets(
             column_spacing_mm,
         )?;
         let offset_table_bytes = extended_offset_table_metadata_bytes(frame_count)?;
-        let instance_per_frame_budget = request
-            .options
+        let instance_per_frame_budget = options
+            .resources
             .max_instance_metadata_bytes
             .checked_sub(offset_table_bytes)
             .ok_or_else(|| Error::InvalidOptions {
                 reason: format!(
                     "instance {} extended offset tables exceed max_instance_metadata_bytes={}",
-                    job.instance_number, request.options.max_instance_metadata_bytes
+                    job.instance_number, options.resources.max_instance_metadata_bytes
                 ),
             })?;
-        let total_per_frame_budget = request
-            .options
+        let total_per_frame_budget = options
+            .resources
             .max_total_metadata_bytes
             .checked_sub(total)
             .and_then(|remaining| remaining.checked_sub(offset_table_bytes))
             .ok_or_else(|| Error::InvalidOptions {
                 reason: format!(
                     "instance {} extended offset tables exceed the remaining max_total_metadata_bytes={}",
-                    job.instance_number, request.options.max_total_metadata_bytes
+                    job.instance_number, options.resources.max_total_metadata_bytes
                 ),
             })?;
         let (per_frame_budget, budget_name, budget_value) =
@@ -184,13 +207,13 @@ pub(super) fn preflight_metadata_budgets(
                 (
                     instance_per_frame_budget,
                     "max_instance_metadata_bytes",
-                    request.options.max_instance_metadata_bytes,
+                    options.resources.max_instance_metadata_bytes,
                 )
             } else {
                 (
                     total_per_frame_budget,
                     "max_total_metadata_bytes",
-                    request.options.max_total_metadata_bytes,
+                    options.resources.max_total_metadata_bytes,
                 )
             };
         let per_frame_bytes = match plan.encoded_len_with_limit(per_frame_budget) {
@@ -215,11 +238,11 @@ pub(super) fn preflight_metadata_budgets(
             .ok_or_else(|| Error::InvalidOptions {
                 reason: "total DICOM metadata estimate overflow".into(),
             })?;
-        if total > request.options.max_total_metadata_bytes {
+        if total > options.resources.max_total_metadata_bytes {
             return Err(Error::InvalidOptions {
                 reason: format!(
                     "total metadata estimate of at least {total} bytes exceeds max_total_metadata_bytes={}",
-                    request.options.max_total_metadata_bytes
+                    options.resources.max_total_metadata_bytes
                 ),
             });
         }
@@ -229,16 +252,16 @@ pub(super) fn preflight_metadata_budgets(
 
 pub(super) fn metadata_frame_plan(
     slide: &Slide,
-    request: &ExportRequest,
+    options: &NormalizedExportOptions,
     job: &DicomExportInstanceJob<'_>,
 ) -> Result<(u32, FrameGrid), Error> {
     let (matrix_columns, matrix_rows) = job.level.dimensions;
-    if request.options.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
+    if options.semantics.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
         let geometry = jpeg_baseline_route_frame_geometry(
             slide,
             job.level,
             job.coordinate,
-            request.options.tile_size,
+            options.semantics.tile_size,
         )?;
         let frame_count = checked_frame_count_u32(geometry.tiles_across, geometry.tiles_down)?;
         Ok((
@@ -251,7 +274,11 @@ pub(super) fn metadata_frame_plan(
             },
         ))
     } else {
-        let tile_size = j2k_route_tile_size(&request.options, job.level)?;
+        let tile_size = j2k_route_tile_size(
+            options.semantics.tile_size,
+            options.semantics.transfer_syntax,
+            job.level,
+        )?;
         let frame_count =
             TileGrid::square(matrix_columns, matrix_rows, tile_size)?.frame_count_u32()?;
         Ok((
@@ -269,40 +296,43 @@ pub(super) fn metadata_frame_plan(
 pub(super) fn export_dicom_instance_jobs(
     slide: &Slide,
     request: &ExportRequest,
+    options: &NormalizedExportOptions,
     metadata: &DicomMetadata,
     identity: &DicomExportIdentity,
     jobs: &[DicomExportInstanceJob<'_>],
 ) -> Result<Vec<InstanceReport>, Error> {
     if jobs.len() <= 1 {
-        return export_dicom_instance_jobs_serial(slide, request, metadata, identity, jobs);
+        return export_dicom_instance_jobs_serial(
+            slide, request, options, metadata, identity, jobs,
+        );
     }
 
     if let Some(configured) = configured_export_instance_worker_count()? {
         let workers = configured.max(1).min(jobs.len());
         if workers <= 1 {
-            return export_dicom_instance_jobs_serial(slide, request, metadata, identity, jobs);
+            return export_dicom_instance_jobs_serial(
+                slide, request, options, metadata, identity, jobs,
+            );
         }
         return export_dicom_instance_jobs_parallel(
-            slide, request, metadata, identity, jobs, workers,
+            slide, request, options, metadata, identity, jobs, workers,
         );
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    if hybrid_lane::prefer_device_htj2k_rpcl_hybrid_export_lanes_enabled(request, jobs)? {
+    if hybrid_lane::prefer_device_htj2k_rpcl_hybrid_export_lanes_enabled(options, jobs)? {
         return hybrid_lane::export_dicom_instance_jobs_prefer_device_htj2k_hybrid_lanes(
-            slide, request, metadata, identity, jobs,
+            slide, request, options, metadata, identity, jobs,
         );
     }
 
-    let default_workers = default_export_instance_worker_count(
-        &request.options,
-        jobs.len(),
-        rayon::current_num_threads(),
-    );
+    let default_workers =
+        default_export_instance_worker_count(options, jobs.len(), rayon::current_num_threads());
     if default_workers > 1 {
         return export_dicom_instance_jobs_parallel(
             slide,
             request,
+            options,
             metadata,
             identity,
             jobs,
@@ -310,24 +340,26 @@ pub(super) fn export_dicom_instance_jobs(
         );
     }
 
-    export_dicom_instance_jobs_serial(slide, request, metadata, identity, jobs)
+    export_dicom_instance_jobs_serial(slide, request, options, metadata, identity, jobs)
 }
 
 pub(super) fn export_dicom_instance_jobs_serial(
     slide: &Slide,
     request: &ExportRequest,
+    options: &NormalizedExportOptions,
     metadata: &DicomMetadata,
     identity: &DicomExportIdentity,
     jobs: &[DicomExportInstanceJob<'_>],
 ) -> Result<Vec<InstanceReport>, Error> {
     jobs.iter()
-        .map(|job| export_dicom_instance_job(slide, request, metadata, identity, job))
+        .map(|job| export_dicom_instance_job(slide, request, options, metadata, identity, job))
         .collect()
 }
 
 fn export_dicom_instance_jobs_parallel(
     slide: &Slide,
     request: &ExportRequest,
+    options: &NormalizedExportOptions,
     metadata: &DicomMetadata,
     identity: &DicomExportIdentity,
     jobs: &[DicomExportInstanceJob<'_>],
@@ -343,7 +375,7 @@ fn export_dicom_instance_jobs_parallel(
     let mut reports = pool.install(|| {
         jobs.par_iter()
             .map(|job| {
-                export_dicom_instance_job(slide, request, metadata, identity, job)
+                export_dicom_instance_job(slide, request, options, metadata, identity, job)
                     .map(|report| (job.ordinal, report))
             })
             .collect::<Result<Vec<_>, _>>()
@@ -354,10 +386,14 @@ fn export_dicom_instance_jobs_parallel(
 
 #[cfg_attr(not(all(feature = "metal", target_os = "macos")), allow(dead_code))]
 pub(super) fn dicom_instance_job_frame_count(
-    options: &ExportOptions,
+    options: &NormalizedExportOptions,
     job: &DicomExportInstanceJob<'_>,
 ) -> Result<u64, Error> {
-    let tile_size = j2k_route_tile_size(options, job.level)?;
+    let tile_size = j2k_route_tile_size(
+        options.semantics.tile_size,
+        options.semantics.transfer_syntax,
+        job.level,
+    )?;
     let (matrix_columns, matrix_rows) = job.level.dimensions;
     TileGrid::square(matrix_columns, matrix_rows, tile_size)?.frame_count_u64()
 }
@@ -365,30 +401,23 @@ pub(super) fn dicom_instance_job_frame_count(
 pub(super) fn export_dicom_instance_job(
     slide: &Slide,
     request: &ExportRequest,
+    options: &NormalizedExportOptions,
     metadata: &DicomMetadata,
     identity: &DicomExportIdentity,
     job: &DicomExportInstanceJob<'_>,
 ) -> Result<InstanceReport, Error> {
-    if request.options.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
-        export_jpeg_passthrough_instance(
-            slide,
-            request,
-            metadata,
-            identity,
-            job.instance_number,
-            job.coordinate,
-            job.level,
-        )
+    let context = InstanceExportContext {
+        options,
+        metadata,
+        identity,
+        instance_number: job.instance_number,
+        coordinate: job.coordinate,
+        level: job.level,
+    };
+    if options.semantics.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
+        export_jpeg_passthrough_instance(slide, request, context)
     } else {
-        export_instance(
-            slide,
-            request,
-            metadata,
-            identity,
-            job.instance_number,
-            job.coordinate,
-            job.level,
-        )
+        export_instance(slide, request, context)
     }
 }
 
@@ -422,14 +451,14 @@ fn configured_export_instance_worker_count() -> Result<Option<usize>, Error> {
 }
 
 pub(super) fn default_export_instance_worker_count(
-    options: &ExportOptions,
+    options: &NormalizedExportOptions,
     job_count: usize,
     rayon_threads: usize,
 ) -> usize {
     if job_count <= 1 {
         return 1;
     }
-    if !options.encode_backend.cpu_batch_safe() {
+    if !options.execution.encode_backend.cpu_batch_safe() {
         return 1;
     }
     job_count.min(rayon_threads.saturating_sub(1).max(1)).max(1)

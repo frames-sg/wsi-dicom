@@ -10,7 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 serde_json = "1"
-wsi-rs = "0.5.2"
+wsi-rs = { version = "0.6.0", git = "https://github.com/frames-sg/wsi-rs.git", rev = "b940ea94f3290e54ca2c5f87823109538709c59d" }
 wsi-dicom = { path = "..", features = ["bench-internals"] }
 
 [workspace]

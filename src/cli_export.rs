@@ -1,15 +1,11 @@
 use std::path::PathBuf;
 
-use wsi_dicom::{Error, Export, ExportReport, MetadataSource};
+use wsi_dicom::{run_export_workflow, ExportReport, ExportWorkflowRequest, MetadataInput};
 
 use crate::cli_args::{AnnotationCliArgs, ExportCliArgs};
 use crate::cli_output::{print_cli_output, print_json_line};
-use crate::cli_report::{
-    format_report_summary, format_sustain_export_iteration_summary, process_memory_pressure,
-    process_resident_memory_bytes, process_thermal_state,
-};
-use crate::sleep_between_iterations;
-use crate::time;
+use crate::cli_report::{format_report_summary, format_sustain_export_iteration_summary};
+use crate::cli_sustain::{run_sustained, SustainConfig};
 
 pub(crate) struct ConvertRequest {
     pub(crate) source: PathBuf,
@@ -22,7 +18,7 @@ pub(crate) struct ConvertRequest {
     pub(crate) json: bool,
 }
 
-pub(crate) fn handle_convert(request: ConvertRequest) -> Result<(), Error> {
+pub(crate) fn handle_convert(request: ConvertRequest) -> Result<(), Box<dyn std::error::Error>> {
     let ConvertRequest {
         source,
         out,
@@ -33,21 +29,20 @@ pub(crate) fn handle_convert(request: ConvertRequest) -> Result<(), Error> {
         level,
         json,
     } = request;
-    let metadata = load_metadata_source(metadata, research_placeholder)?;
+    let metadata = MetadataInput::from_parts(metadata, research_placeholder)?;
     let color_management = export_args.color_management.resolve()?;
-    let mut export = Export::from_slide(source)
-        .to_directory(out)
-        .with_metadata(metadata)
-        .with_options(export_args.options()?)
-        .color_management(color_management);
-    if let Some(level) = level {
-        export = export.level(level);
-    }
-    let report = match annotation_args.options()? {
-        Some(annotations) => export.run_with_qupath_annotations(annotations)?,
-        None => export.run()?,
-    };
-    print_cli_output(json, &report, format_report_summary)
+    let mut workflow = ExportWorkflowRequest::new(
+        source,
+        out,
+        export_args.options()?,
+        color_management,
+        metadata,
+    );
+    workflow.level_filter = level;
+    workflow.annotations = annotation_args.options()?;
+    let report = run_export_workflow(workflow)?;
+    print_cli_output(json, &report.export, format_report_summary)?;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -61,59 +56,57 @@ pub(crate) fn handle_sustain_convert(
     iterations: u32,
     interval_ms: u64,
     json: bool,
-) -> Result<(), Error> {
-    if iterations == 0 {
-        return Err(Error::Unsupported {
-            reason: "sustain-convert requires iterations > 0".into(),
-        });
-    }
-    let metadata = load_metadata_source(metadata, research_placeholder)?;
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config = SustainConfig::new(iterations, interval_ms)?;
+    let metadata = MetadataInput::from_parts(metadata, research_placeholder)?;
     let options = export_args.options()?;
     let color_management = export_args.color_management.resolve()?;
-    for iteration in 1..=iterations {
-        let output_dir = out.join(format!("iteration-{iteration:04}"));
-        let started = std::time::Instant::now();
-        let mut export = Export::from_slide(source.clone())
-            .to_directory(output_dir)
-            .with_metadata(metadata.clone())
-            .with_options(options.clone())
-            .color_management(color_management.clone());
-        if let Some(level) = level {
-            export = export.level(level);
-        }
-        let report = export.run()?;
-        let elapsed_micros = time::duration_as_reported_micros(started.elapsed());
-        let thermal_state = process_thermal_state();
-        let memory_pressure = process_memory_pressure();
-        let rss_bytes = process_resident_memory_bytes();
-        if json {
-            print_json_line(&SustainExportIterationJson {
-                mode: "convert",
-                iteration,
-                iterations,
-                elapsed_micros,
-                rss_bytes,
-                thermal_state: thermal_state.as_deref(),
-                memory_pressure: memory_pressure.as_deref(),
-                report: &report,
-            })?;
-        } else {
-            println!(
-                "{}",
-                format_sustain_export_iteration_summary(
-                    iteration,
-                    iterations,
-                    &report,
-                    elapsed_micros,
-                    rss_bytes,
-                    thermal_state.as_deref(),
-                    memory_pressure.as_deref(),
-                )
+    run_sustained(
+        config,
+        |iteration| {
+            let output_dir = out.join(format!("iteration-{iteration:04}"));
+            let mut workflow = ExportWorkflowRequest::new(
+                source.clone(),
+                output_dir,
+                options.clone(),
+                color_management.clone(),
+                metadata.clone(),
             );
-        }
-        sleep_between_iterations(interval_ms, iteration, iterations);
-    }
-    Ok(())
+            workflow.level_filter = level;
+            run_export_workflow(workflow)
+                .map(|report| report.export)
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+        },
+        |iteration, report| {
+            if json {
+                print_json_line(&SustainExportIterationJson {
+                    mode: "convert",
+                    iteration: iteration.iteration,
+                    iterations: iteration.iterations,
+                    elapsed_micros: iteration.elapsed_micros,
+                    rss_bytes: iteration.rss_bytes,
+                    thermal_state: iteration.thermal_state.as_deref(),
+                    memory_pressure: iteration.memory_pressure.as_deref(),
+                    report,
+                })
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
+            } else {
+                println!(
+                    "{}",
+                    format_sustain_export_iteration_summary(
+                        iteration.iteration,
+                        iteration.iterations,
+                        report,
+                        iteration.elapsed_micros,
+                        iteration.rss_bytes,
+                        iteration.thermal_state.as_deref(),
+                        iteration.memory_pressure.as_deref(),
+                    )
+                );
+            }
+            Ok(())
+        },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -127,26 +120,4 @@ struct SustainExportIterationJson<'a> {
     thermal_state: Option<&'a str>,
     memory_pressure: Option<&'a str>,
     report: &'a ExportReport,
-}
-
-pub(crate) fn load_metadata_source(
-    metadata_path: Option<PathBuf>,
-    research_placeholder: bool,
-) -> Result<MetadataSource, Error> {
-    if metadata_path.is_some() && research_placeholder {
-        return Err(Error::Metadata {
-            reason: "--metadata cannot be combined with --research-placeholder".into(),
-        });
-    }
-    if research_placeholder {
-        return Ok(MetadataSource::ResearchPlaceholder);
-    }
-
-    let Some(path) = metadata_path else {
-        return Err(Error::Metadata {
-            reason: "provide --metadata <json> or explicitly pass --research-placeholder".into(),
-        });
-    };
-
-    MetadataSource::from_json_file(path)
 }

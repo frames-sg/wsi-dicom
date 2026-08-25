@@ -1,4 +1,30 @@
-use super::*;
+use std::time::{Duration, Instant};
+
+use j2k_jpeg::{EncodedJpeg, JpegBackend, JpegSamples, JpegSubsampling};
+use rayon::prelude::*;
+use wsi_rs::{Compression, LevelIdx, PlaneSelection, RegionRequest, SceneId, SeriesId, Slide};
+
+use super::frame_region::{
+    FrameRectGrid, FrameRectOverflowReasons, OutputFrameRect, PreparedCpuRegion,
+};
+use super::jpeg_baseline::{
+    blank_jpeg_baseline_frame, encode_jpeg_baseline_cpu_fragment,
+    jpeg_baseline_cpu_restart_interval, pixel_profile_from_raw_jpeg_tile,
+    raw_compressed_error_is_empty_tile, raw_jpeg_matches_frame_geometry,
+    raw_jpeg_profile_can_passthrough, uncompressed_frame_bytes, JpegBaselineFallbackFrame,
+    JpegBaselineFrameLocation, JpegBaselineMetalEncodedRun, JpegBaselinePlannedFrame,
+};
+use super::jpeg_retile::{read_raw_jpeg_retile_display_tile, RawJpegRetileProbe};
+use super::{ensure_consistent_pixel_profile, missing_metal_frame_indices};
+use crate::error::Error;
+use crate::options::EncodeBackendPreference;
+use crate::report::{ExportMetrics, JpegRetileRejectionReason};
+use crate::tile::{prepare_tile_samples_with_limit, PixelProfile};
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::jpeg_baseline_metal::try_encode_jpeg_baseline_metal_input_tile_run;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::metal_input::MetalInputTileReader;
 
 pub(super) fn jpeg_backend_uses_device(backend: JpegBackend) -> bool {
     matches!(backend, JpegBackend::Metal | JpegBackend::Cuda)
@@ -76,7 +102,6 @@ pub(super) struct JpegBaselineRowPlanRequest {
     pub(super) tile_count: u64,
     pub(super) grid: FrameRectGrid,
     pub(super) allow_raw_rgb_passthrough: bool,
-    pub(super) jpeg_quality: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -172,7 +197,6 @@ pub(super) fn take_consistent_jpeg_baseline_fallback_frame(
 pub(super) fn plan_jpeg_baseline_row(
     slide: &Slide,
     request: JpegBaselineRowPlanRequest,
-    blank_jpeg_cache: &mut Option<(Vec<u8>, Duration)>,
 ) -> Result<JpegBaselineRowPlan, Error> {
     let row_frame_capacity =
         usize::try_from(request.tile_count).map_err(|_| Error::Unsupported {
@@ -232,8 +256,6 @@ pub(super) fn plan_jpeg_baseline_row(
             planned.push(blank_jpeg_baseline_frame(
                 request.grid.frame_columns,
                 request.grid.frame_rows,
-                request.jpeg_quality,
-                blank_jpeg_cache,
             )?);
             continue;
         }

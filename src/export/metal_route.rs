@@ -1,4 +1,6 @@
-use super::*;
+use wsi_rs::TileLayout;
+
+use super::metal_row_batch::WholeLevelStripLayout;
 
 pub(super) fn regular_tiled_source_layout(level: &wsi_rs::Level) -> Option<WholeLevelStripLayout> {
     let TileLayout::Regular {

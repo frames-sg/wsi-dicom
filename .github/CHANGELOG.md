@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.2] - 2026-08-08
+The next planned release is `0.7.2`. Version `0.7.1` was an unpublished
+development baseline used for the reviewed API comparison; its changes are
+carried forward below.
 
 ### Added
 
@@ -31,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added optional governed Specimen UIDs and structured HL7 identifier issuers
   to `DicomMetadata`. FHIR `Specimen.identifier.system` maps to a universal URI
   issuer.
+- Added a shared application workflow for metadata resolution, annotation
+  preparation, export, validation, report persistence, progress, and
+  stage-aware errors across CLI and GUI frontends.
+- Added typed `SlideRouteCoverageRequest` and `CorpusRouteCoverageRequest`
+  entry points while retaining `RouteCoverageRequest` as a compatibility
+  wrapper.
 
 ### Changed
 
@@ -42,15 +50,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configured/source profile conflicts default to failure before staging or
   output creation. Callers may explicitly prefer the configured or source
   bytes; identical SHA-256 digests are recorded as a match.
-- Upgraded the complete `j2k` codec family to 0.8 and raised the `wsi-rs`
-  dependency floor to 0.5.2 so export, passthrough, transcode, and optional
-  accelerator routes resolve one codec generation.
+- Upgraded the complete `j2k` codec family to 0.10 and `wsi-rs` to 0.6.0 at
+  immutable Git revisions so export, passthrough, transcode, and optional
+  accelerator routes resolve one codec generation. Metal ownership now uses
+  the shared `objc2-metal` API across the reader and exporter.
 - Color output now requires a valid DICOM input-device ICC profile. Generated
   sRGB and Display P3 fallbacks identify as `scnr` and remain explicit research
   assumptions rather than scanner calibrations.
 - Generated Specimen UIDs now include export identity and identifier issuer
   scope. Governed UIDs are preserved, fresh exports remain fresh, and
   deterministic exports remain repeatable.
+- Source-aware `Export::run` now opens the source once and reuses the prepared
+  slide for transfer-syntax selection and export.
+- Export and profiling now consume one bounded route planner with explicit
+  rejection and fallback decisions. Raw J2K inspection is shared per planning
+  step, and validated options are normalized once into internal semantic,
+  resource, execution, and GPU groups.
+- CLI and GUI export paths now use the same application workflow; the GUI
+  startup, state, mapping, worker, presenter, and view responsibilities are
+  separated without changing the report contract.
 
 ### Fixed
 
@@ -79,6 +97,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attested crate candidate and a human explicitly approves finalization.
 - These attestations establish artifact origin; they do not turn the documented
   cargo-vet exemption baseline into audited dependency provenance.
+- The standalone manifest now uses immutable HTTPS Git revisions for the
+  unpublished compatible `wsi-rs` 0.6.0 and coherent J2K 0.10 family, while
+  `wsi-dicom-annotations` remains an exact registry release. CI verifies locked
+  metadata and package contents without sibling checkouts; its packaging and
+  extracted-crate steps remain release-blocking until registry sources replace
+  the Git pins after upstream publication.
+- Split the GDC benchmark harness into typed discovery, command, execution,
+  preflight, validation, aggregation, reporting, and CLI modules while keeping
+  the original script as a compatibility entry point.
+- Added a CUDA-only require-device regression that performs real device encode
+  and CPU round-trip validation. CUDA evidence builds document mandatory
+  cuda-oxide PTX generation so a compile-only fallback cannot be mistaken for
+  runtime support.
 
 ### Clinical limitations
 
@@ -96,9 +127,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a workspace-wide RustSec audit gate and updated the vulnerable GUI
   transitive dependencies to patched releases.
 
-## [0.7.1] - 2026-07-21
+### Changes carried forward from the unpublished 0.7.1 development baseline
 
-### Added
+#### Added
 
 - Added bounded DICOM metadata preflight and write-time accounting. The default
   limits are 256 MiB per instance and 1 GiB per export; Rust callers can set
@@ -113,7 +144,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   DICOM text, person-name structure, scalar delimiters and controls, and imaged
   volume depth.
 
-### Changed
+#### Changed
 
 - Per-frame functional groups are streamed as undefined-length sequences and
   items rather than assembled as one in-memory object list. Pixel Data frame
@@ -127,7 +158,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after interruption, but concurrent readers are not given simultaneous
   generation visibility and can observe an in-progress promotion.
 
-### Fixed
+#### Fixed
 
 - Corrected `imaged_volume_depth_mm`: Imaged Volume Depth is now an FL value in
   micrometers, while Slice Thickness remains a validated DS value in
@@ -343,7 +374,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Moved export behavior behind the `frames-sg/wsi-dicom` public repository and
   aligned dependencies with `wsi-rs` 0.3 and `j2k` 0.4.
 
-## [0.1.0] - 2026-05-09
+## 0.1.0 - 2026-05-09
 
 ### Added
 
@@ -353,9 +384,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation, and JPEG 2000 / HTJ2K frame encoding primitives.
 - Added passthrough-first planning for compatible compressed WSI source frames.
 
-[Unreleased]: https://github.com/frames-sg/wsi-dicom/compare/v0.7.2...HEAD
-[0.7.2]: https://github.com/frames-sg/wsi-dicom/compare/v0.7.1...v0.7.2
-[0.7.1]: https://github.com/frames-sg/wsi-dicom/compare/v0.7.0...v0.7.1
+[Unreleased]: https://github.com/frames-sg/wsi-dicom/compare/v0.7.0...HEAD
 [0.7.0]: https://github.com/frames-sg/wsi-dicom/compare/v0.2.0...v0.7.0
-[0.2.0]: https://github.com/frames-sg/wsi-dicom/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/frames-sg/wsi-dicom/releases/tag/v0.1.0
+[0.2.0]: https://github.com/frames-sg/wsi-dicom/releases/tag/v0.2.0
