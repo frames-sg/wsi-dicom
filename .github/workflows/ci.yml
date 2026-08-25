@@ -63,16 +63,6 @@ jobs:
       - run: cargo metadata --locked --format-version 1 > /dev/null
       - run: python -m unittest discover -s tests -p 'test_dependency_topology.py'
       - run: cargo package --list
-      - run: cargo package --locked
-      - name: Test the packaged crate without repository siblings
-        shell: bash
-        run: |
-          package_version="$(cargo metadata --locked --no-deps --format-version 1 |
-            python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "wsi-dicom"))')"
-          cargo test \
-            --manifest-path "target/package/wsi-dicom-${package_version}/Cargo.toml" \
-            --locked \
-            --no-default-features
 
   fmt:
     runs-on: ubuntu-latest

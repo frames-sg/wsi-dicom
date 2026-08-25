@@ -33,10 +33,10 @@ package proof.
 
 ## Consequences
 
-CI runs locked metadata, topology policy tests, packaging, and tests against the
-packaged artifact before release-oriented jobs. While a selected Git-pinned version
-is unpublished, the package step remains an intentional release blocker rather than
-being skipped or supplied by a sibling checkout. After publication, the manifest
-moves to the matching registry versions and the packaged-artifact tests must pass.
+Main CI runs locked metadata, standalone-topology policy tests, and package-content
+enumeration without requiring unpublished Git-pinned crates to exist on crates.io.
+The protected publish workflow retains the exact `cargo package --locked` and
+packaged-artifact test gates. After upstream publication, the manifest moves to the
+matching registry versions and those release gates must pass before publication.
 Moving to a later J2K family requires a published or immutable compatible `wsi-rs`
 source first.
