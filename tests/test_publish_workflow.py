@@ -223,10 +223,18 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
 
     def test_tag_binding_registry_checksum_and_draft_release_are_controlled(self):
         verify = self.job("verify_release")
+        registry = self.job("registry_status")
+        publish = self.job("publish")
         checksum = self.job("verify_registry_checksum")
         draft = self.job("draft_release")
         self.assertIn('expected_tag="v${version}"', verify)
         self.assertIn("successful CI", verify)
+        self.assertIn("state: ${{ steps.registry.outputs.state }}", registry)
+        self.assertIn("state=unpublished", registry)
+        self.assertIn("always() &&", publish)
+        for required_job in ("verify_release", "registry_status", "release_evidence", "attest"):
+            self.assertIn(f"needs.{required_job}.result == 'success'", publish)
+        self.assertIn("needs.registry_status.outputs.state == 'unpublished'", publish)
         self.assertIn("scripts/verify-registry-checksum.py", checksum)
         self.assertIn("scripts/extract-release-notes.py", draft)
         self.assertIn("gh release create", draft)
