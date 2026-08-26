@@ -7,6 +7,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] - 2026-08-25
+
+### Release engineering
+
+- Normalized the root lockfile to LF on every release runner so artifact
+  metadata binds to one portable dependency-lock digest.
+- Replaced the boolean-like registry output with explicit `published` and
+  `unpublished` states and made every protected publication prerequisite
+  fail-closed.
+- Advanced the release so the registry crate checksum can be verified against
+  the exact attested candidate produced from the tagged Git checkout.
+
 ## [0.7.3] - 2026-08-25
 
 ### Fixed
