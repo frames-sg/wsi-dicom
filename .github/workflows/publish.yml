@@ -464,7 +464,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      published: ${{ steps.registry.outputs.published }}
+      state: ${{ steps.registry.outputs.state }}
     steps:
       - name: Query public registry before authentication
         id: registry
@@ -487,8 +487,8 @@ jobs:
             exit 1
           fi
           case "$status" in
-            200) printf 'published=true\n' >> "$GITHUB_OUTPUT" ;;
-            404) printf 'published=false\n' >> "$GITHUB_OUTPUT" ;;
+            200) printf 'state=published\n' >> "$GITHUB_OUTPUT" ;;
+            404) printf 'state=unpublished\n' >> "$GITHUB_OUTPUT" ;;
             *)
               echo "crates.io version query returned HTTP ${status}" >&2
               exit 1
@@ -498,9 +498,14 @@ jobs:
   publish:
     name: Publish verified crate
     if: >-
+      always() &&
+      needs.verify_release.result == 'success' &&
+      needs.registry_status.result == 'success' &&
+      needs.release_evidence.result == 'success' &&
+      needs.attest.result == 'success' &&
       github.event_name == 'push' &&
       github.ref_type == 'tag' &&
-      needs.registry_status.outputs.published == 'false'
+      needs.registry_status.outputs.state == 'unpublished'
     needs:
       - verify_release
       - registry_status
