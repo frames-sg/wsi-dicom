@@ -123,7 +123,7 @@ fn print_help() {
            deny         run cargo-deny advisories, bans, licenses, and sources checks\n\
            docs-strict  build public API docs with missing docs denied\n\
            coverage     run core library coverage with the 80% line threshold\n\
-           semver       verify the exact reviewed 0.7.1-to-0.7.3 API break set\n\
+           semver       verify the exact reviewed 0.7.1-to-0.7.4 API break set\n\
            package      package from a clean worktree with cargo verification\n\
            release-test run release-mode tests\n\
            validate-dicom <path> [args]\n\

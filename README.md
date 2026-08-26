@@ -26,35 +26,32 @@ Use the Rust API:
 
 ```toml
 [dependencies]
-wsi-dicom = "0.7.0"
+wsi-dicom = "0.7.4"
 ```
 
 GPU support is opt-in:
 
 ```toml
 [dependencies]
-wsi-dicom = { version = "0.7.0", features = ["metal"] } # macOS
+wsi-dicom = { version = "0.7.4", features = ["metal"] } # macOS
 # or
-wsi-dicom = { version = "0.7.0", features = ["cuda"] } # CUDA-capable Linux/Windows
+wsi-dicom = { version = "0.7.4", features = ["cuda"] } # CUDA-capable Linux/Windows
 ```
 
-This source tree is the unreleased `0.7.3` candidate. Build it directly when
-evaluating candidate behavior:
+This source tree is the `0.7.4` release. Build it directly with:
 
 ```sh
 cargo build --release --locked
 ```
 
-The commands and APIs below describe that 0.7.3 candidate. Refer to the
-[v0.7.0 README](https://github.com/frames-sg/wsi-dicom/blob/v0.7.0/README.md)
-for the exact published interface.
+The commands and APIs below describe the 0.7.4 interface.
 
 Feature flags:
 
 | Feature | Effect |
 | --- | --- |
 | `default` | CPU-only DICOM export. |
-| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. wsi-rs CUDA tile decode and direct JPEG-to-HTJ2K CUDA transcode are not exposed by the 0.7.3 candidate. |
+| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. wsi-rs CUDA tile decode and direct JPEG-to-HTJ2K CUDA transcode are not exposed by the 0.7.4 release. |
 | `metal` | Enables Metal JPEG 2000 encode acceleration on macOS, Metal codestream validation decode, and wsi-rs Metal tile decode plumbing. |
 
 CUDA release and hardware-evidence builds should require cuda-oxide PTX
@@ -239,7 +236,7 @@ wsi-dicom calibration create --icc vendor-profile.icc \
 
 `calibration create` validates and packages an existing vendor- or
 target-generated profile. It does not derive scanner calibration from an
-ordinary tissue slide. Calibration selection is CLI/API-only in 0.7.3; the GUI
+ordinary tissue slide. Calibration selection is CLI/API-only in 0.7.4; the GUI
 offers source-required, sRGB fallback, and Display P3 fallback choices.
 
 The default conversion preset is `lossless-review`, which emits HTJ2K Lossless
@@ -431,7 +428,7 @@ any performance claim.
 `wsi-dicom` is pre-1.0. The builder API is the preferred integration surface.
 Lower-level request, report, validation, and profiling types are public, but
 callers should prefer constructors and defaults over struct literals where
-provided. The unreleased 0.7.3 candidate deliberately breaks the pre-1.0
+provided. The 0.7.4 release deliberately breaks the pre-1.0
 color-management API: `IccProfilePolicy` is removed, `ExportRequest::new` requires a
 `ColorManagement`, and `Export` requires `.color_management(...)`.
 
