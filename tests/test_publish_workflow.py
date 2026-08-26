@@ -235,6 +235,8 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         for required_job in ("verify_release", "registry_status", "release_evidence", "attest"):
             self.assertIn(f"needs.{required_job}.result == 'success'", publish)
         self.assertIn("needs.registry_status.outputs.state == 'unpublished'", publish)
+        self.assertIn('path: ${{ runner.temp }}/candidate', publish)
+        self.assertIn('candidate="${RUNNER_TEMP}/candidate/wsi-dicom-${version}.crate"', publish)
         self.assertIn("needs.registry_status.outputs.state == 'published'", checksum)
         self.assertNotIn("outputs.published", self.workflow)
         self.assertIn("scripts/verify-registry-checksum.py", checksum)
