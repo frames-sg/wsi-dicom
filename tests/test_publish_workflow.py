@@ -240,6 +240,8 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("needs.registry_status.outputs.state == 'published'", checksum)
         self.assertNotIn("outputs.published", self.workflow)
         self.assertIn("scripts/verify-registry-checksum.py", checksum)
+        self.assertIn("always() &&", draft)
+        self.assertIn("needs.verify_registry_checksum.result == 'success'", draft)
         self.assertIn("scripts/extract-release-notes.py", draft)
         self.assertIn("gh release create", draft)
         self.assertIn("--draft", draft)

@@ -579,7 +579,11 @@ jobs:
 
   draft_release:
     name: Create controlled draft GitHub Release
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: >-
+      always() &&
+      needs.verify_registry_checksum.result == 'success' &&
+      github.event_name == 'push' &&
+      github.ref_type == 'tag'
     needs: verify_registry_checksum
     runs-on: ubuntu-24.04
     permissions:
