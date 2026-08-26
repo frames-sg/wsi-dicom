@@ -552,7 +552,7 @@ jobs:
       github.ref_type == 'tag' &&
       needs.attest.result == 'success' &&
       (needs.publish.result == 'success' ||
-      (needs.publish.result == 'skipped' && needs.registry_status.outputs.published == 'true'))
+      (needs.publish.result == 'skipped' && needs.registry_status.outputs.state == 'published'))
     needs:
       - registry_status
       - publish

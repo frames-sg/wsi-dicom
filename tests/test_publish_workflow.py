@@ -235,6 +235,8 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         for required_job in ("verify_release", "registry_status", "release_evidence", "attest"):
             self.assertIn(f"needs.{required_job}.result == 'success'", publish)
         self.assertIn("needs.registry_status.outputs.state == 'unpublished'", publish)
+        self.assertIn("needs.registry_status.outputs.state == 'published'", checksum)
+        self.assertNotIn("outputs.published", self.workflow)
         self.assertIn("scripts/verify-registry-checksum.py", checksum)
         self.assertIn("scripts/extract-release-notes.py", draft)
         self.assertIn("gh release create", draft)
