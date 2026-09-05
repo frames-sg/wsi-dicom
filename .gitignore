@@ -24,6 +24,10 @@ fuzz/target/
 .codex/
 .claude/
 .local-docs/
+# Session reports belong in .local-docs/, never in tracked docs.
+/docs/audit/
+/docs/audits/
+/docs/performance-survey-*.md
 .local-tools/
 .codex-security-*/
 reasonix.toml
