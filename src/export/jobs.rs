@@ -172,8 +172,9 @@ pub(super) fn preflight_metadata_budgets(
     let mut total = 0u64;
     for job in jobs {
         let (frame_count, frame_grid) = metadata_frame_plan(slide, options, job)?;
-        let (row_spacing_mm, column_spacing_mm) =
-            require_pixel_spacing_mm(level_pixel_spacing_mm(slide, job.level))?;
+        let (row_spacing_mm, column_spacing_mm) = require_pixel_spacing_mm(
+            level_pixel_spacing_mm(slide, job.level, options.semantics.source_pixel_spacing_mm)?,
+        )?;
         let plan = PerFrameFunctionalGroupsPlan::new(
             frame_count,
             frame_grid,

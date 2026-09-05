@@ -1,0 +1,13 @@
+{
+  "schema_version": "wsi-dicom-negative-bench-adjudications-v1",
+  "cases": {
+    "NB-CF-005": {"disposition": "related_rule_cascade", "rationale": "The intentional Samples per Pixel contradiction also caused independent decoded-frame geometry to disagree; no second mutation was introduced."},
+    "NB-ID-001": {"disposition": "related_rule_cascade", "rationale": "The missing specimen sequence also prevents set-level Specimen UID reconciliation."},
+    "NB-ID-002": {"disposition": "related_rule_cascade", "rationale": "The missing specimen identifier also prevents set-level Specimen UID reconciliation."},
+    "NB-PX-001": {"disposition": "related_rule_cascade", "rationale": "The frame-count defect also contradicts TILED_FULL frame coverage and prevents bounded frame assembly for decode."},
+    "NB-PX-002": {"disposition": "related_rule_cascade", "rationale": "The missing fragments also prevents bounded independent frame decode."},
+    "NB-PX-003": {"disposition": "related_rule_cascade", "rationale": "The invalid Basic Offset Table also prevents bounded independent frame decode."},
+    "NB-PX-004": {"disposition": "related_rule_cascade", "rationale": "The invalid Extended Offset Table also prevents bounded independent frame decode."},
+    "NB-PX-005": {"disposition": "related_rule_cascade", "rationale": "The invalid Extended Offset Table Length also prevents bounded independent frame decode."}
+  }
+}

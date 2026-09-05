@@ -14,8 +14,8 @@ use super::pixel_structure::{
 };
 use super::process::ValidationCommandRunner;
 use super::{
-    failed_check, run_named_command_check, skipped_check, CommandCheckRequest, ValidationCheck,
-    ValidationOptions, ValidationStatus,
+    execution_failed_check, failed_check, run_named_command_check, skipped_check,
+    CommandCheckRequest, ValidationCheck, ValidationOptions, ValidationStatus,
 };
 
 pub(super) const AUTO_HTJ2K_DECODER_COMMAND: &str = "grk_decompress";
@@ -43,20 +43,11 @@ fn shlex_quote_path_for_template(path: &Path) -> String {
 pub(super) fn run_pixel_decode_checks(
     file_idx: usize,
     file: &PathBuf,
+    object: &dicom_object::DefaultDicomObject,
     options: &ValidationOptions,
     runner: &impl ValidationCommandRunner,
     temp_dir: &Path,
 ) -> Vec<ValidationCheck> {
-    let object = match dicom_object::open_file(file) {
-        Ok(object) => object,
-        Err(err) => {
-            return vec![failed_check(
-                "pixel-decode",
-                Some(file),
-                format!("failed to read DICOM file for pixel decode: {err}"),
-            )];
-        }
-    };
     let transfer_syntax = object.meta().transfer_syntax.trim_end_matches('\0');
     let Some(decoder) = pixel_decoder_for_transfer_syntax(transfer_syntax, options, runner) else {
         return vec![skipped_check(
@@ -72,6 +63,11 @@ pub(super) fn run_pixel_decode_checks(
             ValidationStatus::Skipped
         };
         return vec![ValidationCheck {
+            execution: Some(super::ValidationExecution {
+                return_code: None,
+                elapsed_millis: 0,
+                failure: Some(super::ExecutionFailure::Unavailable),
+            }),
             name: "pixel-htj2k".to_string(),
             path: Some(file.clone()),
             status,
@@ -82,11 +78,11 @@ pub(super) fn run_pixel_decode_checks(
         }];
     }
 
-    let expected = match decoded_frame_expectation(&object) {
+    let expected = match decoded_frame_expectation(object) {
         Ok(expected) => expected,
         Err(message) => return vec![failed_check("pixel-decode", Some(file), message)],
     };
-    let frame_count = match dicom_frame_count(&object) {
+    let frame_count = match dicom_frame_count(object) {
         Ok(frame_count) => frame_count,
         Err(message) => return vec![failed_check("pixel-decode", Some(file), message)],
     };
@@ -116,11 +112,11 @@ pub(super) fn run_pixel_decode_checks(
         )];
     }
 
-    let extended_offsets = match optional_u64_values(&object, tags::EXTENDED_OFFSET_TABLE) {
+    let extended_offsets = match optional_u64_values(object, tags::EXTENDED_OFFSET_TABLE) {
         Ok(values) => values,
         Err(message) => return vec![failed_check("pixel-decode", Some(file), message)],
     };
-    let extended_lengths = match optional_u64_values(&object, tags::EXTENDED_OFFSET_TABLE_LENGTHS) {
+    let extended_lengths = match optional_u64_values(object, tags::EXTENDED_OFFSET_TABLE_LENGTHS) {
         Ok(values) => values,
         Err(message) => return vec![failed_check("pixel-decode", Some(file), message)],
     };
@@ -274,10 +270,11 @@ fn run_pixel_decoder_for_fragment<R: ValidationCommandRunner>(
         request.file_idx, request.frame_idx
     ));
     if let Err(err) = write_private_validation_file(&input, request.fragment) {
-        return failed_check(
+        return execution_failed_check(
             "pixel-decode",
             Some(request.file),
             format!("failed to write temporary codestream: {err}"),
+            super::ExecutionFailure::Io,
         );
     }
 
@@ -321,7 +318,12 @@ fn run_pixel_decoder_for_fragment<R: ValidationCommandRunner>(
             let (command, args) = match htj2k_decoder_command(template, &input, &output) {
                 Ok(command) => command,
                 Err(message) => {
-                    return failed_check("pixel-htj2k", Some(request.file), message);
+                    return execution_failed_check(
+                        "pixel-htj2k",
+                        Some(request.file),
+                        message,
+                        super::ExecutionFailure::Configuration,
+                    );
                 }
             };
             run_named_command_check(
@@ -359,6 +361,11 @@ fn validate_decoded_output(
     if let Err(message) = inspect_pnm_output(output, expected, max_decoded_bytes) {
         check.status = ValidationStatus::Failed;
         check.message = message;
+        if !output.is_file() {
+            if let Some(execution) = &mut check.execution {
+                execution.failure = Some(super::ExecutionFailure::Io);
+            }
+        }
     }
     check
 }

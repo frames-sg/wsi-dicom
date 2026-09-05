@@ -4,10 +4,11 @@ use super::{
     run_named_command_check, staged_dicom3tools_probe_enabled_from,
     validate_dicom_path_with_runner, write_private_validation_file, CommandCheckRequest,
     CommandOutcome, DecodedFrameExpectation, DoctorOptions, DoctorStatus, SystemCommandRunner,
-    ValidationCommandRunner, ValidationOptions, ValidationStatus, ValidationTempDir,
-    AUTO_HTJ2K_DECODER_COMMAND, VALIDATOR_SET_FILE_CHUNK_SIZE,
+    ValidationCommandRunner, ValidationOptions, ValidationProfile, ValidationStatus,
+    ValidationTempDir, AUTO_HTJ2K_DECODER_COMMAND, VALIDATOR_SET_FILE_CHUNK_SIZE,
 };
 use crate::TransferSyntax;
+use dicom_core::value::DataSetSequence;
 use dicom_core::{DataElement, PrimitiveValue, VR};
 use dicom_dictionary_std::tags;
 use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
@@ -74,6 +75,8 @@ impl ValidationCommandRunner for FakeRunner {
             key.push_str(&arg.to_string_lossy());
         }
         let outcome = self.outcomes.get(&key).cloned().unwrap_or(CommandOutcome {
+            return_code: Some(0),
+            elapsed_millis: 0,
             success: true,
             timed_out: false,
             stdout: String::new(),
@@ -96,6 +99,7 @@ mod conformance;
 mod doctor;
 mod orchestration;
 mod pixel_decode;
+mod profile_contract;
 mod runner;
 
 fn write_encapsulated_dicom(path: &Path, transfer_syntax: &str, frame: &[u8]) {
@@ -146,6 +150,18 @@ fn write_encapsulated_dicom(path: &Path, transfer_syntax: &str, frame: &[u8]) {
 }
 
 fn write_primitive_pixel_dicom(path: &Path, transfer_syntax: &str, bytes: &[u8]) {
+    write_primitive_pixel_dicom_with_geometry(path, transfer_syntax, bytes, 1, 1, 1, 8);
+}
+
+fn write_primitive_pixel_dicom_with_geometry(
+    path: &Path,
+    transfer_syntax: &str,
+    bytes: &[u8],
+    rows: u16,
+    columns: u16,
+    samples_per_pixel: u16,
+    bits_allocated: u16,
+) {
     const SECONDARY_CAPTURE_SOP_CLASS_UID: &str = "1.2.840.10008.5.1.4.1.1.7";
     let mut object = InMemDicomObject::new_empty();
     object.put(DataElement::<InMemDicomObject>::new(
@@ -161,12 +177,22 @@ fn write_primitive_pixel_dicom(path: &Path, transfer_syntax: &str, bytes: &[u8])
     object.put(DataElement::<InMemDicomObject>::new(
         tags::ROWS,
         VR::US,
-        PrimitiveValue::from(1u16),
+        PrimitiveValue::from(rows),
     ));
     object.put(DataElement::<InMemDicomObject>::new(
         tags::COLUMNS,
         VR::US,
-        PrimitiveValue::from(1u16),
+        PrimitiveValue::from(columns),
+    ));
+    object.put(DataElement::<InMemDicomObject>::new(
+        tags::SAMPLES_PER_PIXEL,
+        VR::US,
+        PrimitiveValue::from(samples_per_pixel),
+    ));
+    object.put(DataElement::<InMemDicomObject>::new(
+        tags::BITS_ALLOCATED,
+        VR::US,
+        PrimitiveValue::from(bits_allocated),
     ));
     object.put(DataElement::<InMemDicomObject>::new(
         tags::NUMBER_OF_FRAMES,
@@ -191,14 +217,24 @@ fn write_primitive_pixel_dicom(path: &Path, transfer_syntax: &str, bytes: &[u8])
 }
 
 fn export_valid_color_wsi_for_validation(root: &Path, name: &str) -> PathBuf {
+    export_valid_color_wsi_grid_for_validation(root, name, 2, 2, 2)
+}
+
+fn export_valid_color_wsi_grid_for_validation(
+    root: &Path,
+    name: &str,
+    width: u32,
+    height: u32,
+    tile_size: u32,
+) -> PathBuf {
     let source = root.join(format!("{name}-source.dcm"));
-    let pixels = crate::synthetic_source::deterministic_rgb_pixels(2, 2).unwrap();
+    let pixels = crate::synthetic_source::deterministic_rgb_pixels(width, height).unwrap();
     crate::synthetic_source::write_rgb_source_dicom(
         &source,
         "1.2.826.0.1.3680043.10.999.301",
         "1.2.826.0.1.3680043.10.999.302",
-        2,
-        2,
+        width,
+        height,
         pixels,
     )
     .unwrap();
@@ -206,7 +242,7 @@ fn export_valid_color_wsi_for_validation(root: &Path, name: &str) -> PathBuf {
         source_path: source,
         output_dir: root.join(format!("{name}-out")),
         options: crate::ExportOptions {
-            tile_size: 2,
+            tile_size,
             transfer_syntax: TransferSyntax::Jpeg2000Lossless,
             encode_backend: crate::EncodeBackendPreference::CpuOnly,
             ..crate::ExportOptions::default()
@@ -225,6 +261,7 @@ fn assert_intrinsic_rule_fails(path: &Path, name: &str) {
     let report = validate_dicom_path_with_runner(
         path,
         &ValidationOptions {
+            profile: ValidationProfile::Core2026c,
             max_pixel_frames: 0,
             ..ValidationOptions::default()
         },

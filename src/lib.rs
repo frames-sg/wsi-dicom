@@ -74,7 +74,7 @@ pub use metadata::{
 };
 pub use options::{
     CodecValidation, EncodeBackendPreference, ExportOptions, ExportPreset, JpegDirectHtj2kProfile,
-    TransferSyntax, UidPolicy,
+    SourcePixelSpacingMm, TransferSyntax, UidPolicy,
 };
 pub use report::{
     EncodedFrame, ExportMetrics, ExportReport, GpuEncodeMetrics, IccConflictDecision,
@@ -89,7 +89,8 @@ pub use request::{
 };
 pub use validation::{
     doctor_dicom_environment, validate_dicom_path, DoctorOptions, DoctorReport, DoctorStatus,
-    DoctorTool, ValidationCheck, ValidationOptions, ValidationReport, ValidationStatus,
+    DoctorTool, ExecutionFailure, ValidationCheck, ValidationExecution, ValidationOptions,
+    ValidationProfile, ValidationReport, ValidationStatus,
 };
 
 pub mod prelude {
@@ -100,7 +101,7 @@ pub mod prelude {
         ExportOptions, ExportPreset, ExportReport, ExportRequest, FrameSamples,
         IccCalibrationRegistry, IccConflictDecision, IccConflictPolicy, IccProfile,
         IccProfileSource, J2kFrameEncodeRequest, JpegDirectHtj2kProfile, MetadataSource,
-        ScannerIdentity, SpecimenIdentifierIssuer, TransferSyntax, UidPolicy,
+        ScannerIdentity, SourcePixelSpacingMm, SpecimenIdentifierIssuer, TransferSyntax, UidPolicy,
         UniversalEntityIdType, ValidationOptions,
     };
 }

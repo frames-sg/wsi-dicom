@@ -138,7 +138,7 @@ fn strict_mode_fails_missing_required_tools() {
     assert!(report
         .checks
         .iter()
-        .any(|check| check.name == "validate_iods" && check.status == ValidationStatus::Skipped));
+        .any(|check| check.name == "validate_iods" && check.status == ValidationStatus::Failed));
     assert!(report.has_failures());
 }
 
@@ -187,6 +187,8 @@ fn set_level_validators_are_chunked_and_preserve_failures() {
     let runner = FakeRunner::default().with_command("dcentvfy").with_outcome(
         &failing_key,
         CommandOutcome {
+            return_code: Some(1),
+            elapsed_millis: 0,
             success: false,
             timed_out: false,
             stdout: String::new(),
@@ -369,4 +371,28 @@ fn zero_pixel_frame_limit_disables_optional_decode_but_keeps_intrinsic_checks() 
         .checks
         .iter()
         .any(|check| check.name == "pixel-djpeg"));
+}
+
+#[test]
+fn iod_validation_records_an_explicit_standard_edition() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = export_valid_color_wsi_for_validation(tmp.path(), "edition");
+    let report = validate_dicom_path_with_runner(
+        &path,
+        &ValidationOptions {
+            max_pixel_frames: 0,
+            ..Default::default()
+        },
+        &FakeRunner::default().with_command("validate_iods"),
+    )
+    .unwrap();
+    let check = report
+        .checks
+        .iter()
+        .find(|c| c.name == "validate_iods")
+        .unwrap();
+    assert!(check
+        .command
+        .windows(2)
+        .any(|pair| pair == ["--edition", "2026c"]));
 }

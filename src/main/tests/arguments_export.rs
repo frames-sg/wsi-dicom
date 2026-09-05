@@ -2,7 +2,8 @@ use crate::cli_args::{Cli, Command};
 use crate::cli_calibration::CalibrationCommand;
 use clap::Parser;
 use wsi_dicom::{
-    AnnotationCoordinateSpace, AnnotationTarget, ColorManagement, JpegDirectHtj2kProfile, UidPolicy,
+    AnnotationCoordinateSpace, AnnotationTarget, ColorManagement, JpegDirectHtj2kProfile,
+    SourcePixelSpacingMm, UidPolicy,
 };
 
 #[test]
@@ -334,4 +335,27 @@ fn cli_convert_accepts_jpeg_quality_and_j2k_decomposition_levels() {
 
     assert_eq!(export.encode.jpeg_quality, 80);
     assert_eq!(export.encode.j2k_decomposition_levels, Some(0));
+}
+
+#[test]
+fn cli_convert_accepts_explicit_anisotropic_source_pixel_spacing() {
+    let cli = Cli::try_parse_from([
+        "wsi-dicom",
+        "convert",
+        "source.vsi",
+        "--out",
+        "out",
+        "--source-pixel-spacing-mm",
+        "0.00034605325860336383,0.0003460559834973875",
+    ])
+    .unwrap();
+
+    let Command::Convert { export, .. } = cli.command else {
+        panic!("expected convert command");
+    };
+
+    assert_eq!(
+        export.source_pixel_spacing_mm.unwrap(),
+        SourcePixelSpacingMm::new(0.00034605325860336383, 0.0003460559834973875).unwrap()
+    );
 }

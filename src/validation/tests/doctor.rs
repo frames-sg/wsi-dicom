@@ -26,6 +26,9 @@ fn doctor_fails_missing_baseline_tools_in_strict_mode() {
         .tools
         .iter()
         .any(|tool| { tool.name == "dciodvfy" && tool.status == DoctorStatus::Failed }));
+    assert!(report.tools.iter().any(|tool| {
+        tool.name == "validate_iods" && tool.required && tool.status == DoctorStatus::Failed
+    }));
     assert!(report.has_failures());
 }
 
@@ -51,6 +54,8 @@ fn doctor_fails_found_command_when_probe_fails() {
     let runner = FakeRunner::default().with_command("dciodvfy").with_outcome(
         "dciodvfy -version",
         CommandOutcome {
+            return_code: Some(1),
+            elapsed_millis: 0,
             success: false,
             timed_out: false,
             stdout: String::new(),
@@ -77,6 +82,8 @@ fn doctor_accepts_openjpeg_help_output_when_it_exits_nonzero() {
         .with_outcome(
             "opj_decompress -h",
             CommandOutcome {
+                return_code: Some(1),
+                elapsed_millis: 0,
                 success: false,
                 timed_out: false,
                 stdout: "This is the opj_decompress utility from the OpenJPEG project.".to_string(),

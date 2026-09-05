@@ -1,0 +1,114 @@
+{
+  "schema_version": "wsi-dicom-format-coverage-v2",
+  "rule_catalog": {
+    "version": "wsi-dicom-bench-rules-2026c-v2",
+    "path": "rules/wsi-dicom-bench-rules-2026c-v2.json",
+    "sha256": "fb46995075e516340bae3736af94ba97ca0a7c6873627d39978ce4fbe3fc9f00"
+  },
+  "corpus": {
+    "name": "OpenSlide test data",
+    "citation": "Goode A. et al. OpenSlide: A vendor-neutral software foundation for digital pathology. J Pathol Inform. 2013.",
+    "origin": "https://openslide.cs.cmu.edu/download/openslide-testdata/"
+  },
+  "cases": [
+    {
+      "id": "leica-scn-fluorescence-1",
+      "format": "Leica SCN",
+      "source": "Leica/Leica-Fluorescence-1.scn",
+      "source_sha256": "a9037f7d683dc0a95e2e5f33bceee71f0449042e70e6d1421ca580bcd97a023a",
+      "level": 2,
+      "transfer_syntax": "jpeg-baseline8-bit",
+      "expected": {
+        "outcome": "success"
+      }
+    },
+    {
+      "id": "ventana-bif-1",
+      "format": "Ventana BIF",
+      "source": "Ventana/Ventana-1.bif",
+      "source_sha256": "2eb05cd8f628c36408c3fde09beeeebaaae90181c4f840d5475ec7594bdcbbb6",
+      "level": 6,
+      "transfer_syntax": "htj2k-lossless-rpcl",
+      "expected": {
+        "outcome": "success"
+      }
+    },
+    {
+      "id": "mirax-saved-1-16",
+      "format": "3DHISTECH MIRAX/MRXS",
+      "source": "Mirax/CMU-1-Saved-1_16.zip",
+      "source_sha256": "5bf66d612475e30bdc46e0f16e8e88558e02fb1fd3cb83bfd804366462b842bc",
+      "archive_entry": "CMU-1-Saved-1_16.mrxs",
+      "level": 5,
+      "transfer_syntax": "htj2k-lossless-rpcl",
+      "expected": {
+        "outcome": "success"
+      }
+    },
+    {
+      "id": "hamamatsu-vms-cmu-1",
+      "format": "Hamamatsu VMS",
+      "source": "Hamamatsu-vms/CMU-1.zip",
+      "source_sha256": "bc63f85e3de63711fd649e70ab605ef1bf81bc2e2ca2ae82e295dfaa19fddfcd",
+      "archive_entry": "CMU-1-40x - 2010-01-12 13.24.05.vms",
+      "level": 6,
+      "transfer_syntax": "htj2k-lossless-rpcl",
+      "expected": {
+        "outcome": "success"
+      }
+    },
+    {
+      "id": "olympus-vsi-os-2",
+      "format": "Olympus VSI/ETS",
+      "source": "Olympus/OS-2.zip",
+      "source_sha256": "0fe056a4e89d5b8a6d7f15b1de3b9cac68f840da07cf3dd738fd31e58851b07f",
+      "archive_entry": "OS-2.vsi",
+      "level": 8,
+      "transfer_syntax": "htj2k-lossless-rpcl",
+      "source_pixel_spacing_mm": [
+        0.00034605325860336385,
+        0.0003460559834973875
+      ],
+      "source_pixel_spacing_provenance": {
+        "tool": "QuPath 0.6.0 BioFormatsServerBuilder",
+        "bio_formats_version": "8.2.0",
+        "series": 1,
+        "series_dimensions": [
+          48502,
+          77578
+        ],
+        "reported_micrometers_per_pixel_xy": [
+          0.3460559834973875,
+          0.34605325860336383
+        ],
+        "interpretation": "converted to DICOM row/column order and millimeters without rounding"
+      },
+      "expected": {
+        "outcome": "success"
+      }
+    },
+    {
+      "id": "zeiss-zvi-merged-1",
+      "format": "Zeiss ZVI 16-bit",
+      "source": "Zeiss/Zeiss-1-Merged.zvi",
+      "source_sha256": "507a59a0a22e7a51ee8f19f82bdfe9291e10f49dd73d2f552a6d9b5b516fc72a",
+      "level": 0,
+      "transfer_syntax": "htj2k-lossless-rpcl",
+      "expected": {
+        "outcome": "success"
+      }
+    },
+    {
+      "id": "zeiss-czi-zstd0-preview",
+      "format": "Zeiss CZI",
+      "source": "Zeiss/Zeiss-5-SlidePreview-Zstd0.czi",
+      "source_sha256": "920c10f45b781591d7a46759e692e18e14278c2d41b069b518f81fda0748dd22",
+      "level": 0,
+      "transfer_syntax": "htj2k-lossless-rpcl",
+      "expected": {
+        "outcome": "rejected",
+        "message_contains": "requires direct subblock composition"
+      }
+    }
+  ]
+}

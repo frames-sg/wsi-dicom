@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this challenge, cite the archived dataset and the WSI-DICOM Bench software."
+title: "WSI-DICOM Core Profile Negative Bench"
+type: dataset
+version: "unreleased"
+authors:
+  - name: "WSI-DICOM Bench contributors"
+repository-code: "https://github.com/frames-sg/wsi-dicom"
+license: MIT
+abstract: >-
+  A frozen engineered challenge set for detection and rule/domain localization of known DICOM 2026c
+  core-profile VL Whole Slide Microscopy pixel, geometry, color, identity, compression, and conformance defects.
+keywords:
+  - DICOM
+  - whole-slide imaging
+  - digital pathology
+  - conformance
+  - validation
+  - negative testing

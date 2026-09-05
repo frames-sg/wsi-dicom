@@ -1,0 +1,1352 @@
+{
+  "schema_version": "wsi-dicom-core-profile-v1",
+  "profile_id": "wsi-dicom-core-profile-2026c-v2",
+  "profile_version": "2",
+  "dicom_edition": "2026c",
+  "sop_class_uid": "1.2.840.10008.5.1.4.1.1.77.1.6",
+  "title": "DICOM 2026c selected VL WSI rule-family challenge profile",
+  "scope": {
+    "image_flavor": "VOLUME",
+    "dimension_organization_type": "TILED_FULL",
+    "optical_paths": 1,
+    "focal_planes": 1,
+    "extended_depth_of_field": "NO",
+    "photometric_interpretations": [
+      "MONOCHROME2",
+      "RGB",
+      "YBR_FULL_422",
+      "YBR_ICT",
+      "YBR_RCT"
+    ],
+    "pyramid_levels": "one_or_more",
+    "transfer_syntaxes": [
+      "1.2.840.10008.1.2.1",
+      "1.2.840.10008.1.2.4.50",
+      "1.2.840.10008.1.2.4.90",
+      "1.2.840.10008.1.2.4.91",
+      "1.2.840.10008.1.2.4.201",
+      "1.2.840.10008.1.2.4.202",
+      "1.2.840.10008.1.2.4.203"
+    ],
+    "concatenations": false
+  },
+  "required_external_validators": [
+    "dciodvfy",
+    "dcentvfy",
+    "validate_iods"
+  ],
+  "excluded_capabilities": [
+    "TILED_SPARSE and other sparse-pyramid behaviors",
+    "LABEL, OVERVIEW, and THUMBNAIL image flavors",
+    "multiple optical paths or focal planes",
+    "extended depth of field YES",
+    "calibrated color transformation and scanner-profile accuracy",
+    "source-to-DICOM pixel and metadata fidelity",
+    "DICOMweb sender or receiver behavior",
+    "compound-defect scoring",
+    "concatenations and exhaustive normative attribute/condition coverage"
+  ],
+  "normative_module_table": {
+    "part": "PS3.3",
+    "section": "A.32.8.3",
+    "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_A.32.8.3.html"
+  },
+  "requirements": [
+    {
+      "requirement_id": "CP-MOD-001",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.7.1.1",
+      "requirement_type": "mandatory_module_and_type_2_presence",
+      "applicability": "required",
+      "statement": "The Patient Module is present; Patient Name, Patient ID, Patient Birth Date, and Patient Sex are present even when empty.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-ID-001",
+        "CP-ID-009"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-002",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.7.2.1",
+      "requirement_type": "mandatory_module_type_1_and_type_2_presence",
+      "applicability": "required",
+      "statement": "The General Study Module is present with a valid Study Instance UID and its Type 2 Study Date, Study Time, Referring Physician Name, Study ID, and Accession Number attributes.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-ID-001",
+        "CP-ID-010"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-003",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.7.3.1; C.8.12.3",
+      "requirement_type": "mandatory_modules_type_1_and_type_2_presence",
+      "applicability": "required",
+      "statement": "The General Series and Whole Slide Microscopy Series Modules are present with a valid Series Instance UID, Modality SM, and Series Number present.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-core-image-profile",
+          "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-ID-002",
+        "CP-ID-011"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-004",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.7.4.1",
+      "requirement_type": "conditional_module_required_for_volume",
+      "applicability": "required",
+      "statement": "The Frame of Reference Module is present for VOLUME images, with a valid Frame of Reference UID and Position Reference Indicator present.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+          "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+          "intrinsic-wsi-dicom-2026c-core-image-profile"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO",
+        "CP12-PYRAMID-2L"
+      ],
+      "negative_case_ids": [
+        "CP-ID-003",
+        "CP-GE-005",
+        "CP-CF-012"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-005",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.7.5.1; C.7.5.2",
+      "requirement_type": "mandatory_modules_type_1",
+      "applicability": "required",
+      "statement": "The General and Enhanced General Equipment Modules identify the manufacturer, model, device serial number, and software version with non-empty values.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-core-image-profile"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-CF-008",
+        "CP-CF-009"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-006",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.7.10.1",
+      "requirement_type": "mandatory_module",
+      "applicability": "required",
+      "statement": "The General Acquisition Module is present and the acquisition timing required by the WSI specialization is coherent.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-core-image-profile"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-CF-001"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-007",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.7.6.1",
+      "requirement_type": "mandatory_module",
+      "applicability": "required",
+      "statement": "The General Image Module is present and its image identification, instance number, burned-in annotation, and lossy-history semantics are valid.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-core-image-profile",
+          "intrinsic-wsi-dicom-2026c-lossy-history"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-CF-002",
+        "NB-CF-001"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-008",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.8.12.14",
+      "requirement_type": "mandatory_module",
+      "applicability": "required",
+      "statement": "The Microscope Slide Layer Tile Organization Module completely describes a TILED_FULL total pixel matrix, its origin, orientation, and one focal plane.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-core-image-profile",
+          "intrinsic-wsi-dicom-2026c-tile-geometry",
+          "intrinsic-wsi-dicom-2026c-slide-coordinate-system"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "NB-GE-004",
+        "CP-GE-001",
+        "CP-GE-003"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-009",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.7.6.3",
+      "requirement_type": "mandatory_module_type_1",
+      "applicability": "required",
+      "statement": "The Image Pixel Module contains valid rows, columns, sample count, photometric interpretation, bit depth, pixel representation, and pixel data.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-image-metadata",
+          "intrinsic-wsi-dicom-2026c-pixel-structure",
+          "pixel-decode-wsi-dicom-2026c-frame-geometry"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO",
+        "CP02-JPEG-16F",
+        "CP11-MONO-EVRLE-4F"
+      ],
+      "negative_case_ids": [
+        "NB-CF-005",
+        "NB-PX-001",
+        "NB-PX-006"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-010",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.7.6.14",
+      "requirement_type": "mandatory_module_type_2_sequence",
+      "applicability": "required",
+      "statement": "Acquisition Context Sequence is present; it may contain zero items when no acquisition context is asserted.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-core-image-profile"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-CF-007"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-011",
+      "part": "PS3.3",
+      "section": "A.32.8.3; A.32.8.4; C.7.6.16",
+      "requirement_type": "mandatory_module_and_functional_groups",
+      "applicability": "required",
+      "statement": "The Multi-frame Functional Groups Module supplies shared Pixel Measures and per-frame Frame Content, Plane Position (Slide), and Optical Path Identification as required for every frame.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-dimension-order",
+          "intrinsic-wsi-dicom-2026c-tile-geometry",
+          "intrinsic-wsi-dicom-2026c-optical-path-structure"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "NB-GE-002",
+        "NB-GE-005",
+        "CP-CL-006"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-012",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.7.6.17",
+      "requirement_type": "mandatory_module",
+      "applicability": "required",
+      "statement": "The Multi-frame Dimension Module defines dimension organization and index pointers whose order and per-frame values agree.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-dimension-order"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "NB-GE-001",
+        "NB-GE-002"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-013",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.7.6.22",
+      "requirement_type": "mandatory_module_type_1_and_type_2",
+      "applicability": "required",
+      "statement": "The Specimen Module identifies the microscope-slide container and specimen and preserves required issuer and preparation-sequence presence.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-specimen-identity",
+          "intrinsic-wsi-dicom-2026c-specimen-container",
+          "intrinsic-wsi-dicom-2026c-specimen-uid-set"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "NB-ID-001",
+        "NB-ID-002",
+        "CP-ID-006",
+        "CP-ID-007"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-014",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.8.12.4",
+      "requirement_type": "mandatory_module_type_1_and_1c",
+      "applicability": "required",
+      "statement": "The Whole Slide Microscopy Image Module satisfies all core VOLUME conditions for dimensions, pixels, acquisition, presentation, focusing, and compression history.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-core-image-profile",
+          "intrinsic-wsi-dicom-2026c-image-metadata",
+          "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+          "intrinsic-wsi-dicom-2026c-lossy-history"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO",
+        "CP11-MONO-EVRLE-4F"
+      ],
+      "negative_case_ids": [
+        "CP-CF-001",
+        "CP-CF-003",
+        "CP-CF-004",
+        "CP-CF-005",
+        "NB-CF-003"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-015",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.8.12.5",
+      "requirement_type": "mandatory_module_type_1_and_1c",
+      "applicability": "required",
+      "statement": "The Optical Path Module declares exactly one identifiable path, its illumination semantics, frame reference, and required ICC profile for color.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-optical-path-structure",
+          "intrinsic-wsi-dicom-2026c-icc-profile"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO",
+        "CP11-MONO-EVRLE-4F"
+      ],
+      "negative_case_ids": [
+        "CP-CL-001",
+        "CP-CL-003",
+        "CP-CL-004",
+        "CP-CL-005",
+        "CP-CL-006",
+        "NB-CO-001"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-016",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.12.1",
+      "requirement_type": "mandatory_module",
+      "applicability": "required",
+      "statement": "The SOP Common Module identifies the VL WSI SOP Class and a valid SOP Instance consistently with File Meta Information.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-identity-set"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "NB-ID-004",
+        "NB-ID-005"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-017",
+      "part": "PS3.3",
+      "section": "A.32.8.3; C.12.2; C.12.4",
+      "requirement_type": "mandatory_module_and_conditional_references",
+      "applicability": "required",
+      "statement": "Common-instance and source references, when present, resolve to the correct SOP Class and Instance without self-reference or contradictions.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-source-relationship"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP12-PYRAMID-2L"
+      ],
+      "negative_case_ids": [
+        "NB-ID-006"
+      ]
+    },
+    {
+      "requirement_id": "CP-MOD-018",
+      "part": "PS3.3",
+      "section": "C.7.11.1",
+      "requirement_type": "profile_selected_optional_module_when_multiresolution",
+      "applicability": "required",
+      "statement": "When a multi-resolution pyramid is supplied, its Pyramid UID, layer geometry, physical extent, origin, orientation, specimen, and container identity agree across instances.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+          "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+          "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+          "intrinsic-wsi-dicom-2026c-specimen-uid-set"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP12-PYRAMID-2L"
+      ],
+      "negative_case_ids": [
+        "NB-GE-008",
+        "CP-GE-005",
+        "CP-ID-003"
+      ]
+    },
+    {
+      "requirement_id": "CP-IMG-001",
+      "part": "PS3.3",
+      "section": "C.8.12.4.1.1",
+      "requirement_type": "type_1_enumerated_values",
+      "applicability": "required",
+      "statement": "Image Type contains exactly ORIGINAL or DERIVED, PRIMARY, VOLUME, and NONE or RESAMPLED.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-core-image-profile"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO",
+        "CP12-PYRAMID-2L"
+      ],
+      "negative_case_ids": [
+        "CP-CF-002"
+      ]
+    },
+    {
+      "requirement_id": "CP-IMG-002",
+      "part": "PS3.3",
+      "section": "C.8.12.4.1.2",
+      "requirement_type": "type_1c_volume_condition",
+      "applicability": "required",
+      "statement": "VOLUME images contain positive Imaged Volume Width, Height, and Depth, and width and height agree with pixel spacing and total-matrix dimensions.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-tile-geometry",
+          "intrinsic-wsi-dicom-2026c-pyramid-geometry"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO",
+        "CP12-PYRAMID-2L"
+      ],
+      "negative_case_ids": [
+        "NB-GE-006",
+        "NB-GE-008"
+      ]
+    },
+    {
+      "requirement_id": "CP-IMG-003",
+      "part": "PS3.3",
+      "section": "C.8.12.4.1.5",
+      "requirement_type": "type_1_conditional_value_coupling",
+      "applicability": "required",
+      "statement": "Samples per Pixel and Photometric Interpretation agree with each other and with the transfer syntax; Planar Configuration is present and zero for color.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-image-metadata"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO",
+        "CP11-MONO-EVRLE-4F"
+      ],
+      "negative_case_ids": [
+        "NB-CF-005"
+      ]
+    },
+    {
+      "requirement_id": "CP-IMG-004",
+      "part": "PS3.3",
+      "section": "C.8.12.4",
+      "requirement_type": "type_1_pixel_representation",
+      "applicability": "required",
+      "statement": "Number of Frames, Bits Allocated, Bits Stored, High Bit, and unsigned Pixel Representation are valid for the core images.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-image-metadata",
+          "intrinsic-wsi-dicom-2026c-pixel-structure"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO",
+        "CP11-MONO-EVRLE-4F"
+      ],
+      "negative_case_ids": [
+        "NB-PX-001",
+        "NB-PX-007"
+      ]
+    },
+    {
+      "requirement_id": "CP-IMG-005",
+      "part": "PS3.3",
+      "section": "C.8.12.4",
+      "requirement_type": "type_1",
+      "applicability": "required",
+      "statement": "Acquisition DateTime is present and non-empty.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-core-image-profile"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-CF-001"
+      ]
+    },
+    {
+      "requirement_id": "CP-IMG-006",
+      "part": "PS3.3",
+      "section": "C.8.12.4; C.7.6.1.1.5",
+      "requirement_type": "type_1_and_type_1c",
+      "applicability": "required",
+      "statement": "Lossy Image Compression is present and truthful, with required method and ratio values paired when lossy history is declared.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-lossy-history"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO",
+        "CP02-JPEG-16F"
+      ],
+      "negative_case_ids": [
+        "NB-CF-001",
+        "NB-CF-002",
+        "NB-CF-003",
+        "NB-CF-004"
+      ]
+    },
+    {
+      "requirement_id": "CP-IMG-007",
+      "part": "PS3.3",
+      "section": "C.8.12.4",
+      "requirement_type": "type_1c_monochrome_condition",
+      "applicability": "required",
+      "statement": "MONOCHROME2 images contain IDENTITY Presentation LUT Shape, Rescale Intercept 0, and Rescale Slope 1.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-monochrome-presentation"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP11-MONO-EVRLE-4F"
+      ],
+      "negative_case_ids": [
+        "CP-CF-005",
+        "CP-CF-006"
+      ]
+    },
+    {
+      "requirement_id": "CP-IMG-008",
+      "part": "PS3.3",
+      "section": "C.8.12.4",
+      "requirement_type": "type_1_core_values",
+      "applicability": "required",
+      "statement": "Volumetric Properties is VOLUME, Specimen Label in Image is NO, and Burned In Annotation is NO.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-core-image-profile"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-CF-004"
+      ]
+    },
+    {
+      "requirement_id": "CP-IMG-009",
+      "part": "PS3.3",
+      "section": "C.8.12.4",
+      "requirement_type": "type_1_and_excluded_1c_condition",
+      "applicability": "required",
+      "statement": "Focus Method is AUTO or MANUAL, Extended Depth of Field is NO, and extended-depth focal-plane count and spacing attributes are not required by the declared profile.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-core-image-profile"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-CF-003"
+      ]
+    },
+    {
+      "requirement_id": "CP-TILE-001",
+      "part": "PS3.3",
+      "section": "C.8.12.14",
+      "requirement_type": "type_1_and_type_1c_tiled_full_condition",
+      "applicability": "required",
+      "statement": "Dimension Organization Type is TILED_FULL; Total Pixel Matrix Rows and Columns are positive; Total Pixel Matrix Focal Planes is one; and all expected tile positions are encoded exactly once.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-core-image-profile",
+          "intrinsic-wsi-dicom-2026c-tile-geometry"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "NB-GE-003",
+        "NB-GE-004",
+        "NB-GE-005",
+        "NB-GE-007"
+      ]
+    },
+    {
+      "requirement_id": "CP-COORD-001",
+      "part": "PS3.3",
+      "section": "C.8.12.14.1.2",
+      "requirement_type": "type_1_sequence_and_coordinates",
+      "applicability": "required",
+      "statement": "Total Pixel Matrix Origin Sequence has one item with finite X and Y offsets and, when present, a finite Z offset.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-slide-coordinate-system"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-GE-001",
+        "CP-GE-002"
+      ]
+    },
+    {
+      "requirement_id": "CP-COORD-002",
+      "part": "PS3.3",
+      "section": "C.8.12.14.1.2",
+      "requirement_type": "type_1_direction_cosines",
+      "applicability": "required",
+      "statement": "Image Orientation (Slide) contains six finite direction cosines whose row and column vectors are unit length and orthogonal.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-slide-coordinate-system"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-GE-003",
+        "CP-GE-004"
+      ]
+    },
+    {
+      "requirement_id": "CP-DIM-001",
+      "part": "PS3.3",
+      "section": "A.32.8.4; C.7.6.17; C.8.12.6",
+      "requirement_type": "mandatory_functional_group_macros",
+      "applicability": "required",
+      "statement": "Dimension index pointers and values correspond in order to each frame's row and column positions in the total pixel matrix.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-dimension-order"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "NB-GE-001",
+        "NB-GE-002"
+      ]
+    },
+    {
+      "requirement_id": "CP-OPT-001",
+      "part": "PS3.3",
+      "section": "C.8.12.5",
+      "requirement_type": "type_1_and_tiled_full_1c",
+      "applicability": "required",
+      "statement": "Number of Optical Paths is one and matches the single Optical Path Sequence item, whose identifier is non-empty and unique.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-optical-path-structure"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-CL-001",
+        "CP-CL-002",
+        "CP-CL-003"
+      ]
+    },
+    {
+      "requirement_id": "CP-OPT-002",
+      "part": "PS3.3",
+      "section": "C.8.12.5",
+      "requirement_type": "type_1_sequence",
+      "applicability": "required",
+      "statement": "Illumination Type Code Sequence is present and contains at least one coded illumination method.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-optical-path-structure"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-CL-004"
+      ]
+    },
+    {
+      "requirement_id": "CP-OPT-003",
+      "part": "PS3.3",
+      "section": "C.8.12.5",
+      "requirement_type": "complementary_type_1c_condition",
+      "applicability": "required",
+      "statement": "Each optical path has either a positive Illumination Wave Length or one-item Illumination Color Code Sequence.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-optical-path-structure"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-CL-005"
+      ]
+    },
+    {
+      "requirement_id": "CP-OPT-004",
+      "part": "PS3.3",
+      "section": "A.32.8.4; C.8.12.6.2",
+      "requirement_type": "mandatory_functional_group_reference",
+      "applicability": "required",
+      "statement": "The Optical Path Identification functional group references the declared Optical Path Identifier.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-optical-path-structure"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-CL-006"
+      ]
+    },
+    {
+      "requirement_id": "CP-OPT-005",
+      "part": "PS3.3",
+      "section": "C.8.12.5.1.4",
+      "requirement_type": "type_1c_color_condition",
+      "applicability": "required",
+      "statement": "Every non-MONOCHROME2 optical path contains a structurally valid input-device ICC profile with a color space compatible with stored samples.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-icc-profile"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "NB-CO-001",
+        "NB-CO-002",
+        "NB-CO-003",
+        "NB-CO-004"
+      ]
+    },
+    {
+      "requirement_id": "CP-SPEC-001",
+      "part": "PS3.3",
+      "section": "C.7.6.22",
+      "requirement_type": "type_1",
+      "applicability": "required",
+      "statement": "Container Identifier is present and non-empty.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-specimen-container",
+          "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-ID-005"
+      ]
+    },
+    {
+      "requirement_id": "CP-SPEC-002",
+      "part": "PS3.3",
+      "section": "C.7.6.22",
+      "requirement_type": "type_2_sequence",
+      "applicability": "required",
+      "statement": "Issuer of the Container Identifier Sequence is present with zero or one structurally valid issuer item.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-specimen-container",
+          "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-ID-004",
+        "CP-ID-006"
+      ]
+    },
+    {
+      "requirement_id": "CP-SPEC-003",
+      "part": "PS3.3",
+      "section": "C.7.6.22",
+      "requirement_type": "type_1_sequences",
+      "applicability": "required",
+      "statement": "Container Type Code Sequence identifies a microscope slide and Specimen Description Sequence contains at least one specimen item.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-specimen-container",
+          "intrinsic-wsi-dicom-2026c-specimen-identity"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "NB-ID-001"
+      ]
+    },
+    {
+      "requirement_id": "CP-SPEC-004",
+      "part": "PS3.3",
+      "section": "C.7.6.22",
+      "requirement_type": "type_1_specimen_identifiers",
+      "applicability": "required",
+      "statement": "Each specimen item has a non-empty Specimen Identifier and globally valid Specimen UID whose scope remains consistent across the set.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-specimen-identity",
+          "intrinsic-wsi-dicom-2026c-specimen-uid-set"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO",
+        "CP12-PYRAMID-2L"
+      ],
+      "negative_case_ids": [
+        "NB-ID-002",
+        "NB-ID-003"
+      ]
+    },
+    {
+      "requirement_id": "CP-SPEC-005",
+      "part": "PS3.3",
+      "section": "C.7.6.22",
+      "requirement_type": "type_2_sequence_and_type_1_item_content",
+      "applicability": "required",
+      "statement": "Specimen Preparation Sequence is present even when empty; every present preparation item contains a non-empty Preparation Step Content Item Sequence.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-specimen-container"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "negative_case_ids": [
+        "CP-ID-007",
+        "CP-ID-008"
+      ]
+    },
+    {
+      "requirement_id": "CP-SET-001",
+      "part": "PS3.3",
+      "section": "A.1.2; A.32.8",
+      "requirement_type": "information_entity_consistency",
+      "applicability": "required",
+      "statement": "Patient identity is consistent within a Study; Series maps to one Study and Frame of Reference; and a Frame of Reference maps to one patient, Study, container, and issuer.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+        ],
+        "external_check_names": [
+          "dcentvfy"
+        ]
+      },
+      "positive_control_ids": [
+        "CP12-PYRAMID-2L"
+      ],
+      "negative_case_ids": [
+        "CP-ID-001",
+        "CP-ID-002",
+        "CP-ID-003",
+        "CP-ID-004"
+      ]
+    },
+    {
+      "requirement_id": "CP-SET-002",
+      "part": "PS3.3",
+      "section": "C.7.6.22.1.2",
+      "requirement_type": "set_level_identifier_consistency",
+      "applicability": "required",
+      "statement": "A Specimen UID resolves consistently to one Specimen Identifier and issuer scope across all instances.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-specimen-uid-set"
+        ],
+        "external_check_names": [
+          "dcentvfy"
+        ]
+      },
+      "positive_control_ids": [
+        "CP12-PYRAMID-2L"
+      ],
+      "negative_case_ids": [
+        "NB-ID-003"
+      ]
+    },
+    {
+      "requirement_id": "CP-SET-003",
+      "part": "PS3.3",
+      "section": "C.12.1; PS3.10 7.1",
+      "requirement_type": "instance_identity_consistency",
+      "applicability": "required",
+      "statement": "File Meta and data-set SOP identities agree, and a SOP Instance UID is not reused for divergent instance identity.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-identity-set"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP12-PYRAMID-2L"
+      ],
+      "negative_case_ids": [
+        "NB-ID-004",
+        "NB-ID-005"
+      ]
+    },
+    {
+      "requirement_id": "CP-SET-004",
+      "part": "PS3.3",
+      "section": "C.7.11.1; C.8.12.14",
+      "requirement_type": "multi_instance_pyramid_consistency",
+      "applicability": "required",
+      "statement": "All layers sharing a Pyramid UID have the same physical extent, total-matrix origin, and slide orientation.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+          "intrinsic-wsi-dicom-2026c-slide-coordinate-system"
+        ],
+        "external_check_names": [
+          "dcentvfy"
+        ]
+      },
+      "positive_control_ids": [
+        "CP12-PYRAMID-2L"
+      ],
+      "negative_case_ids": [
+        "NB-GE-008",
+        "CP-GE-005"
+      ]
+    },
+    {
+      "requirement_id": "CP-PIX-001",
+      "part": "PS3.5",
+      "section": "8; A; Annex A transfer-syntax definitions",
+      "requirement_type": "pixel_data_structure",
+      "applicability": "required",
+      "statement": "Native and encapsulated Pixel Data structure, frame count, fragments, basic offsets, extended offsets, and extended lengths are coherent with the selected transfer syntax.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-pixel-structure"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO",
+        "CP02-JPEG-16F",
+        "CP04-J2K-LOSSLESS-16F"
+      ],
+      "negative_case_ids": [
+        "NB-PX-001",
+        "NB-PX-002",
+        "NB-PX-003",
+        "NB-PX-004",
+        "NB-PX-005",
+        "NB-PX-007"
+      ]
+    },
+    {
+      "requirement_id": "CP-PIX-002",
+      "part": "PS3.5",
+      "section": "8; Annex A transfer-syntax definitions",
+      "requirement_type": "full_frame_decodability",
+      "applicability": "required",
+      "statement": "Every selected frame decodes to the declared rows, columns, sample count, and bit depth.",
+      "enforcement": {
+        "rule_ids": [
+          "pixel-decode-wsi-dicom-2026c-frame-geometry"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP01-EVRLE-4F-ANISO",
+        "CP02-JPEG-16F",
+        "CP04-J2K-LOSSLESS-16F"
+      ],
+      "negative_case_ids": [
+        "NB-PX-006"
+      ]
+    },
+    {
+      "requirement_id": "CP-REF-001",
+      "part": "PS3.3",
+      "section": "C.12.2; C.12.4; A.32.8.4.1.1",
+      "requirement_type": "conditional_reference_integrity",
+      "applicability": "required",
+      "statement": "When derivation or source references are present, referenced SOP Class and Instance identities are correct and do not create self-reference.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-source-relationship"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP12-PYRAMID-2L"
+      ],
+      "negative_case_ids": [
+        "NB-ID-006"
+      ]
+    },
+    {
+      "requirement_id": "CP-FG-001",
+      "part": "PS3.3",
+      "section": "A.32.8.4; C.7.6.16",
+      "requirement_type": "required_functional_group_or_attribute",
+      "applicability": "required",
+      "statement": "The shared WSI Image Frame Type functional group is present and agrees with Image Type.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-core-image-profile"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP12-PYRAMID-2L"
+      ],
+      "negative_case_ids": [
+        "CP-CF-010"
+      ]
+    },
+    {
+      "requirement_id": "CP-FG-002",
+      "part": "PS3.3",
+      "section": "A.32.8.4; C.7.6.16",
+      "requirement_type": "required_functional_group_or_attribute",
+      "applicability": "required",
+      "statement": "An image derived from another SOP Instance includes the Derivation Image functional group with coded derivation and source references.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-core-image-profile"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP12-PYRAMID-2L"
+      ],
+      "negative_case_ids": [
+        "CP-CF-011"
+      ]
+    },
+    {
+      "requirement_id": "CP-FG-003",
+      "part": "PS3.3",
+      "section": "A.32.8.4; C.7.6.16",
+      "requirement_type": "required_functional_group_or_attribute",
+      "applicability": "required",
+      "statement": "The Type 1 Content Date is present.",
+      "enforcement": {
+        "rule_ids": [
+          "intrinsic-wsi-dicom-2026c-core-image-profile"
+        ],
+        "external_check_names": [
+          "dciodvfy",
+          "dcentvfy",
+          "validate_iods"
+        ]
+      },
+      "positive_control_ids": [
+        "CP12-PYRAMID-2L"
+      ],
+      "negative_case_ids": [
+        "CP-CF-016"
+      ]
+    }
+  ],
+  "coverage_scope": "declared_challenge_rows_only",
+  "normative_completeness_evaluated": false
+}
