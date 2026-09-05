@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use wsi_dicom::{
     AnnotationCoordinateSpace, AnnotationTarget, CodecValidation, EncodeBackendPreference, Error,
-    ExportOptions, ExportPreset, JpegDirectHtj2kProfile, QuPathAnnotationOptions, TransferSyntax,
-    UidPolicy,
+    ExportOptions, ExportPreset, JpegDirectHtj2kProfile, QuPathAnnotationOptions,
+    SourcePixelSpacingMm, TransferSyntax, UidPolicy,
 };
 
 use crate::cli_calibration::{CalibrationCommand, ColorManagementArgs};
@@ -119,21 +119,7 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
-    Validate {
-        path: PathBuf,
-        #[arg(long)]
-        strict: bool,
-        #[arg(long)]
-        dcmvalidate_iod: Option<PathBuf>,
-        #[arg(long)]
-        htj2k_decoder: Option<String>,
-        #[arg(long, default_value_t = 1)]
-        max_pixel_frames: usize,
-        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
-        command_timeout_secs: u64,
-        #[arg(long)]
-        json: bool,
-    },
+    Validate(ValidateArgs),
     Doctor {
         #[arg(long)]
         strict: bool,
@@ -321,6 +307,9 @@ pub(crate) struct ExportCliArgs {
     pub(crate) color_management: ColorManagementArgs,
     #[arg(long, value_enum, default_value_t = UidPolicy::Fresh)]
     pub(crate) uid_policy: UidPolicy,
+    /// Governed level-zero spacing as ROW_MM,COLUMN_MM when source calibration is unavailable.
+    #[arg(long, value_name = "ROW_MM,COLUMN_MM")]
+    pub(crate) source_pixel_spacing_mm: Option<SourcePixelSpacingMm>,
     #[arg(long)]
     pub(crate) overwrite: bool,
     #[arg(long, default_value_t = 256)]
@@ -339,6 +328,7 @@ impl ExportCliArgs {
             transfer_syntax,
         );
         options.uid_policy = self.uid_policy;
+        options.source_pixel_spacing_mm = self.source_pixel_spacing_mm;
         options.overwrite = self.overwrite;
         options.max_instance_metadata_bytes = checked_metadata_mib_to_bytes(
             "max_instance_metadata_mib",
@@ -396,4 +386,25 @@ pub(crate) fn resolve_export_transfer_syntax(
         (ExportPreset::FastJpeg, None) => Ok(TransferSyntax::JpegBaseline8Bit),
         (_, None) => Ok(TransferSyntax::Htj2kLosslessRpcl),
     }
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ValidateArgs {
+    pub(crate) path: PathBuf,
+    #[arg(long)]
+    pub(crate) strict: bool,
+    #[arg(long)]
+    pub(crate) dcmvalidate_iod: Option<PathBuf>,
+    #[arg(long)]
+    pub(crate) htj2k_decoder: Option<String>,
+    #[arg(long, default_value_t = 1)]
+    pub(crate) max_pixel_frames: usize,
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
+    pub(crate) command_timeout_secs: u64,
+    #[arg(long, value_enum, default_value = "general")]
+    pub(crate) profile: wsi_dicom::ValidationProfile,
+    #[arg(long, default_value_t = 1024 * 1024 * 1024)]
+    pub(crate) max_input_bytes: u64,
+    #[arg(long)]
+    pub(crate) json: bool,
 }

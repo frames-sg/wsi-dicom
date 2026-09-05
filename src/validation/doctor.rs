@@ -43,6 +43,8 @@ fn doctor_command_tool(
     match runner.find_command(tool.name) {
         Some(path) => match runner.run(&path, &args, DOCTOR_PROBE_TIMEOUT, 4 * 1024 * 1024) {
             Ok(outcome) if doctor_probe_passed(tool, &outcome) => DoctorTool {
+                probe_stdout: outcome.stdout.clone(),
+                probe_stderr: outcome.stderr.clone(),
                 name: tool.name.to_string(),
                 required: tool.required,
                 status: DoctorStatus::Available,
@@ -61,6 +63,8 @@ fn doctor_command_tool(
                     format!("{} probe failed", tool.name)
                 };
                 DoctorTool {
+                    probe_stdout: outcome.stdout.clone(),
+                    probe_stderr: outcome.stderr.clone(),
                     name: tool.name.to_string(),
                     required: tool.required,
                     status: DoctorStatus::Failed,
@@ -70,6 +74,8 @@ fn doctor_command_tool(
                 }
             }
             Err(source) => DoctorTool {
+                probe_stdout: String::new(),
+                probe_stderr: String::new(),
                 name: tool.name.to_string(),
                 required: tool.required,
                 status: DoctorStatus::Failed,
@@ -85,6 +91,8 @@ fn doctor_command_tool(
                 DoctorStatus::Missing
             };
             DoctorTool {
+                probe_stdout: String::new(),
+                probe_stderr: String::new(),
                 name: tool.name.to_string(),
                 required: tool.required,
                 status,
@@ -126,6 +134,8 @@ fn doctor_htj2k_decoder_tool(
                 DoctorStatus::Skipped
             };
             return DoctorTool {
+                probe_stdout: String::new(),
+                probe_stderr: String::new(),
                 name: "htj2k_decoder".to_string(),
                 required: options.strict,
                 status,
@@ -141,6 +151,8 @@ fn doctor_htj2k_decoder_tool(
             Ok(command) => command,
             Err(message) => {
                 return DoctorTool {
+                    probe_stdout: String::new(),
+                    probe_stderr: String::new(),
                     name: "htj2k_decoder".to_string(),
                     required: options.strict || configured,
                     status: DoctorStatus::Failed,
@@ -155,6 +167,8 @@ fn doctor_htj2k_decoder_tool(
         .collect::<Vec<_>>();
     match runner.find_command(&name) {
         Some(path) => DoctorTool {
+            probe_stdout: String::new(),
+            probe_stderr: String::new(),
             name: "htj2k_decoder".to_string(),
             required: options.strict || configured,
             status: DoctorStatus::Available,
@@ -167,6 +181,8 @@ fn doctor_htj2k_decoder_tool(
             },
         },
         None => DoctorTool {
+            probe_stdout: String::new(),
+            probe_stderr: String::new(),
             name: "htj2k_decoder".to_string(),
             required: options.strict || configured,
             status: DoctorStatus::Failed,
@@ -179,6 +195,8 @@ fn doctor_htj2k_decoder_tool(
 
 fn skipped_doctor_tool(name: &str, required: bool, message: String) -> DoctorTool {
     DoctorTool {
+        probe_stdout: String::new(),
+        probe_stderr: String::new(),
         name: name.to_string(),
         required,
         status: DoctorStatus::Skipped,

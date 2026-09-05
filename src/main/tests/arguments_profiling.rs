@@ -73,36 +73,26 @@ fn cli_profile_coverage_and_sustain_accept_equivalence_flags() {
 
 #[test]
 fn cli_coverage_corpus_accepts_max_level_elapsed_limit_ms() {
-    let cli = Cli::try_parse_from([
+    let max_level_ms = super::parsed_max_level_ms(&[
         "wsi-dicom",
         "coverage-corpus",
         "slides",
         "--max-level-ms",
         "250",
-    ])
-    .unwrap();
-
-    let Command::CoverageCorpus { max_level_ms, .. } = cli.command else {
-        panic!("expected coverage-corpus command");
-    };
+    ]);
 
     assert_eq!(max_level_ms, Some(250));
 }
 
 #[test]
 fn cli_sustain_accepts_max_level_elapsed_limit_ms() {
-    let cli = Cli::try_parse_from([
+    let max_level_ms = super::parsed_max_level_ms(&[
         "wsi-dicom",
         "sustain",
         "source.svs",
         "--max-level-ms",
         "250",
-    ])
-    .unwrap();
-
-    let Command::Sustain { max_level_ms, .. } = cli.command else {
-        panic!("expected sustain command");
-    };
+    ]);
 
     assert_eq!(max_level_ms, Some(250));
 }

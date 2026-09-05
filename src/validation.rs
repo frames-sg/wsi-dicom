@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -33,13 +34,36 @@ pub(crate) use pixel_structure::fragment_payload_without_padding;
 use pixel_structure::run_intrinsic_pixel_structure_check;
 use process::SystemCommandRunner;
 pub(crate) use process::{CommandOutcome, ValidationCommandRunner};
-use wsi_conformance::{run_intrinsic_wsi_conformance_checks, run_specimen_uid_set_check};
+use wsi_conformance::{
+    run_clinical_identity_set_check, run_identity_set_check, run_intrinsic_wsi_conformance_checks,
+    run_pyramid_geometry_set_check, run_slide_coordinate_set_check,
+    run_source_relationship_set_check, run_specimen_uid_set_check, WsiConformanceCorpus,
+};
+
+/// Intrinsic validation contract; general checks remain compatible with legacy catalogs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum ValidationProfile {
+    /// Selected reusable WSI checks, without the restricted core scope.
+    #[default]
+    General,
+    /// DICOM 2026c single-path, single-plane, non-concatenated TILED_FULL VOLUME profile.
+    #[value(name = "core-2026c")]
+    #[serde(rename = "core-2026c")]
+    Core2026c,
+}
 
 /// Options for validating generated DICOM files with external tools.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 #[non_exhaustive]
 pub struct ValidationOptions {
+    /// Select the intrinsic rule set explicitly. Defaults to general.
+    pub profile: ValidationProfile,
+    /// Maximum encoded file bytes admitted before parsing (default 1 GiB).
+    /// This bounds input, not the parser's heap amplification.
+    pub max_input_bytes: u64,
     /// Treat missing required validators or pixel decoders as failures.
     pub strict: bool,
     /// Optional dcm4che IOD XML file used by `dcmvalidate`.
@@ -63,6 +87,8 @@ pub struct ValidationOptions {
 impl Default for ValidationOptions {
     fn default() -> Self {
         Self {
+            profile: ValidationProfile::General,
+            max_input_bytes: 1024 * 1024 * 1024,
             strict: false,
             dcmvalidate_iod: None,
             htj2k_decoder: None,
@@ -149,6 +175,10 @@ impl DoctorReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct DoctorTool {
+    /// Standard output retained from the availability/version probe.
+    pub probe_stdout: String,
+    /// Standard error retained from the availability/version probe.
+    pub probe_stderr: String,
     /// Tool name.
     pub name: String,
     /// Whether strict mode treats this tool as required.
@@ -182,6 +212,8 @@ pub enum DoctorStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct ValidationReport {
+    /// Intrinsic rule set used for this report.
+    pub profile: ValidationProfile,
     /// Input path passed to validation.
     pub input: PathBuf,
     /// DICOM files discovered and checked.
@@ -223,10 +255,46 @@ impl ValidationReport {
     }
 }
 
+/// Retained process facts for an external validation command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct ValidationExecution {
+    /// Exit code when the operating system supplied one.
+    pub return_code: Option<i32>,
+    /// Monotonic elapsed wall time in milliseconds.
+    pub elapsed_millis: u64,
+    /// Infrastructure failure; a completed nonzero validator verdict has no failure here.
+    pub failure: Option<ExecutionFailure>,
+}
+
+/// An external check that could not produce a usable conformance verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ExecutionFailure {
+    /// Required executable was absent.
+    Unavailable,
+    /// Executable could not be started.
+    Launch,
+    /// Decoder or validator configuration was invalid.
+    Configuration,
+    /// Evidence staging or output could not be read or written.
+    Io,
+    /// Process exceeded its time budget.
+    Timeout,
+    /// Output exceeded the evidence capture budget.
+    OutputLimit,
+    /// Process terminated without an exit code.
+    Terminated,
+}
+
 /// Result of one external validator or pixel decode check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct ValidationCheck {
+    /// Process outcome, separate from the DICOM verdict; absent for intrinsic checks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ValidationExecution>,
     /// Check name.
     pub name: String,
     /// File path associated with this check, when file-specific.
@@ -280,7 +348,7 @@ const DCENTVFY_TOOL: ValidatorToolSpec = ValidatorToolSpec {
 };
 const VALIDATE_IODS_TOOL: ValidatorToolSpec = ValidatorToolSpec {
     name: "validate_iods",
-    required: false,
+    required: true,
     doctor_args: &["-h"],
     nonzero_success_output: None,
 };
@@ -349,15 +417,88 @@ pub(crate) fn validate_dicom_path_with_runner(
     let input = path.as_ref().to_path_buf();
     let files = discover_dicom_files(&input, options)?;
     let mut checks = Vec::new();
+    let mut corpus = WsiConformanceCorpus::default();
 
-    for file in &files {
+    let temp_dir = if options.max_pixel_frames > 0 {
+        Some(ValidationTempDir::create()?)
+    } else {
+        None
+    };
+    for (file_idx, file) in files.iter().enumerate() {
+        let input_file = std::fs::File::open(file).map_err(|err| Error::Validation {
+            reason: format!("cannot open {}: {err}", file.display()),
+        })?;
+        let bytes = input_file
+            .metadata()
+            .map_err(|err| Error::Validation {
+                reason: format!("cannot inspect {}: {err}", file.display()),
+            })?
+            .len();
+        if bytes > options.max_input_bytes {
+            return Err(Error::Validation {
+                reason: format!(
+                    "{} has {bytes} bytes, exceeding max_input_bytes={}",
+                    file.display(),
+                    options.max_input_bytes
+                ),
+            });
+        }
+        // Reuse the parsed object for intrinsic and decoder checks. Limiting the
+        // opened handle also prevents reading beyond policy if the file grows.
+        let object = match dicom_object::OpenFileOptions::new()
+            .read_preamble(dicom_object::file::ReadPreamble::Auto)
+            .from_reader(input_file.take(options.max_input_bytes))
+        {
+            Ok(object) => object,
+            Err(err) => {
+                checks.push(failed_check(
+                    "intrinsic-pixel-structure",
+                    Some(file),
+                    format!("failed to read DICOM file: {err}"),
+                ));
+                continue;
+            }
+        };
         checks.push(run_intrinsic_pixel_structure_check(
             file,
+            &object,
             options.max_pixel_frame_bytes,
         ));
-        checks.extend(run_intrinsic_wsi_conformance_checks(file));
+        checks.extend(run_intrinsic_wsi_conformance_checks(
+            file,
+            &object,
+            options.profile,
+        ));
+        corpus.observe(file, &object);
+        if let Some(temp_dir) = &temp_dir {
+            checks.extend(run_pixel_decode_checks(
+                file_idx,
+                file,
+                &object,
+                options,
+                runner,
+                temp_dir.path(),
+            ));
+        }
     }
-    if let Some(check) = run_specimen_uid_set_check(&files) {
+    if let Some(check) = run_specimen_uid_set_check(&corpus) {
+        checks.push(check);
+    }
+    if let Some(check) = run_identity_set_check(&corpus) {
+        checks.push(check);
+    }
+    if options.profile == ValidationProfile::Core2026c {
+        if let Some(check) = run_clinical_identity_set_check(&corpus) {
+            checks.push(check);
+        }
+    }
+    if let Some(check) = run_pyramid_geometry_set_check(&corpus) {
+        checks.push(check);
+    }
+    if let Some(check) = run_slide_coordinate_set_check(&corpus) {
+        checks.push(check);
+    }
+    if let Some(check) = run_source_relationship_set_check(&corpus) {
         checks.push(check);
     }
 
@@ -381,6 +522,7 @@ pub(crate) fn validate_dicom_path_with_runner(
         runner,
         &files,
         SetLevelCommandCheckRequest {
+            prefix_args: Vec::new(),
             check_name: DCENTVFY_TOOL.name,
             command_name: DCENTVFY_TOOL.name,
             required: options.strict && DCENTVFY_TOOL.required,
@@ -395,6 +537,7 @@ pub(crate) fn validate_dicom_path_with_runner(
         runner,
         &files,
         SetLevelCommandCheckRequest {
+            prefix_args: vec![OsString::from("--edition"), OsString::from("2026c")],
             check_name: VALIDATE_IODS_TOOL.name,
             command_name: VALIDATE_IODS_TOOL.name,
             required: options.strict && VALIDATE_IODS_TOOL.required,
@@ -427,20 +570,8 @@ pub(crate) fn validate_dicom_path_with_runner(
         }
     }
 
-    if options.max_pixel_frames > 0 {
-        let temp_dir = ValidationTempDir::create()?;
-        for (file_idx, file) in files.iter().enumerate() {
-            checks.extend(run_pixel_decode_checks(
-                file_idx,
-                file,
-                options,
-                runner,
-                temp_dir.path(),
-            ));
-        }
-    }
-
     Ok(ValidationReport {
+        profile: options.profile,
         input,
         files,
         checks,
@@ -449,6 +580,7 @@ pub(crate) fn validate_dicom_path_with_runner(
 
 fn failed_check(name: &str, path: Option<&PathBuf>, message: String) -> ValidationCheck {
     ValidationCheck {
+        execution: None,
         name: name.to_string(),
         path: path.cloned(),
         status: ValidationStatus::Failed,
@@ -459,8 +591,24 @@ fn failed_check(name: &str, path: Option<&PathBuf>, message: String) -> Validati
     }
 }
 
+fn execution_failed_check(
+    name: &str,
+    path: Option<&PathBuf>,
+    message: String,
+    failure: ExecutionFailure,
+) -> ValidationCheck {
+    let mut check = failed_check(name, path, message);
+    check.execution = Some(ValidationExecution {
+        return_code: None,
+        elapsed_millis: 0,
+        failure: Some(failure),
+    });
+    check
+}
+
 fn skipped_check(name: &str, path: Option<&PathBuf>, message: String) -> ValidationCheck {
     ValidationCheck {
+        execution: None,
         name: name.to_string(),
         path: path.cloned(),
         status: ValidationStatus::Skipped,

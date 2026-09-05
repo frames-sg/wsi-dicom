@@ -1,5 +1,9 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 
+The current WSI validation challenge is the [validation workbench](docs/WORKBENCH.md):
+69 authored defects and 14 controls covering 18 selected rule families. Earlier sealed studies
+remain historical evidence; this challenge does not claim exhaustive normative DICOM coverage.
+
 # wsi-dicom
 
 `wsi-dicom` converts whole-slide imaging files that `wsi-rs` can open into
@@ -16,7 +20,7 @@ conversion.
 
 ## Install
 
-The latest published release is `0.7.0`:
+The latest published release is `0.7.4`:
 
 ```sh
 cargo install wsi-dicom
@@ -26,32 +30,35 @@ Use the Rust API:
 
 ```toml
 [dependencies]
-wsi-dicom = "0.7.4"
+wsi-dicom = "0.7.5"
 ```
 
 GPU support is opt-in:
 
 ```toml
 [dependencies]
-wsi-dicom = { version = "0.7.4", features = ["metal"] } # macOS
+wsi-dicom = { version = "0.7.5", features = ["metal"] } # macOS
 # or
-wsi-dicom = { version = "0.7.4", features = ["cuda"] } # CUDA-capable Linux/Windows
+wsi-dicom = { version = "0.7.5", features = ["cuda"] } # CUDA-capable Linux/Windows
 ```
 
-This source tree is the `0.7.4` release. Build it directly with:
+This source tree prepares the `0.7.5` release and requires Rust 1.96.
+The manifest and lockfile resolve registry dependencies, including `wsi-rs`
+0.6.0 and `wsi-dicom-annotations` 0.1.1. No sibling source checkout or local
+Cargo patch is required for the default CPU build:
 
 ```sh
 cargo build --release --locked
 ```
 
-The commands and APIs below describe the 0.7.4 interface.
+The commands and APIs below describe the 0.7.5 interface.
 
 Feature flags:
 
 | Feature | Effect |
 | --- | --- |
 | `default` | CPU-only DICOM export. |
-| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. wsi-rs CUDA tile decode and direct JPEG-to-HTJ2K CUDA transcode are not exposed by the 0.7.4 release. |
+| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. wsi-rs CUDA tile decode and direct JPEG-to-HTJ2K CUDA transcode are not exposed by the 0.7.5 release. |
 | `metal` | Enables Metal JPEG 2000 encode acceleration on macOS, Metal codestream validation decode, and wsi-rs Metal tile decode plumbing. |
 
 CUDA release and hardware-evidence builds should require cuda-oxide PTX
@@ -88,6 +95,15 @@ placeholder metadata.
 ```sh
 wsi-dicom convert slide.ndpi --out dicom-out --research-placeholder \
   --icc source-or-srgb
+```
+
+If a proprietary reader can decode pixels but cannot surface physical calibration, provide a
+governed level-zero spacing explicitly in DICOM row/column order. The converter rejects non-positive
+values and rejects a supplied value that conflicts with calibration already present in the source:
+
+```sh
+wsi-dicom convert slide.vsi --out dicom-out --research-placeholder \
+  --source-pixel-spacing-mm 0.00034605325860336383,0.0003460559834973875
 ```
 
 To convert a QuPath-annotated slide in the same operation, export the QuPath
@@ -236,7 +252,7 @@ wsi-dicom calibration create --icc vendor-profile.icc \
 
 `calibration create` validates and packages an existing vendor- or
 target-generated profile. It does not derive scanner calibration from an
-ordinary tissue slide. Calibration selection is CLI/API-only in 0.7.4; the GUI
+ordinary tissue slide. Calibration selection is CLI/API-only in 0.7.5; the GUI
 offers source-required, sRGB fallback, and Display P3 fallback choices.
 
 The default conversion preset is `lossless-review`, which emits HTJ2K Lossless
@@ -254,6 +270,15 @@ wsi-dicom doctor --strict --json
 wsi-dicom self-test --json --out self-test-evidence --keep-output
 wsi-dicom validate dicom-out --strict --json
 wsi-dicom coverage slide.ndpi --json
+```
+
+For the complete cataloged DICOM-side evaluation and one unified per-slide evidence bundle, use the
+[WSI-DICOM Bench workbench entry point](docs/WORKBENCH.md):
+
+```sh
+.venv/bin/python bench/wsi_dicom_bench.py dicom-out \
+  --output evidence/slide-id \
+  --wsi-dicom target/release/wsi-dicom
 ```
 
 HTJ2K pixel decode validation auto-detects `grk_decompress` when it is on
@@ -428,7 +453,7 @@ any performance claim.
 `wsi-dicom` is pre-1.0. The builder API is the preferred integration surface.
 Lower-level request, report, validation, and profiling types are public, but
 callers should prefer constructors and defaults over struct literals where
-provided. The 0.7.4 release deliberately breaks the pre-1.0
+provided. The 0.7.4 release deliberately broke the pre-1.0
 color-management API: `IccProfilePolicy` is removed, `ExportRequest::new` requires a
 `ColorManagement`, and `Export` requires `.color_management(...)`.
 

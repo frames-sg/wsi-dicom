@@ -72,18 +72,13 @@ fn cli_coverage_full_frame_coverage_overrides_bounded_frame_count() {
 
 #[test]
 fn cli_coverage_accepts_max_level_elapsed_limit_ms() {
-    let cli = Cli::try_parse_from([
+    let max_level_ms = super::parsed_max_level_ms(&[
         "wsi-dicom",
         "coverage",
         "source.svs",
         "--max-level-ms",
         "250",
-    ])
-    .unwrap();
-
-    let Command::Coverage { max_level_ms, .. } = cli.command else {
-        panic!("expected coverage command");
-    };
+    ]);
 
     assert_eq!(max_level_ms, Some(250));
 }
@@ -337,7 +332,7 @@ fn cli_validate_accepts_validation_options() {
     ])
     .unwrap();
 
-    let Command::Validate {
+    let Command::Validate(crate::cli_args::ValidateArgs {
         path,
         strict,
         json,
@@ -345,7 +340,8 @@ fn cli_validate_accepts_validation_options() {
         htj2k_decoder,
         max_pixel_frames,
         command_timeout_secs,
-    } = cli.command
+        ..
+    }) = cli.command
     else {
         panic!("expected validate command");
     };
@@ -366,7 +362,7 @@ fn cli_validate_accepts_validation_options() {
 fn cli_validate_defaults_to_one_pixel_frame_smoke() {
     let cli = Cli::try_parse_from(["wsi-dicom", "validate", "dicom-out"]).unwrap();
 
-    let Command::Validate {
+    let Command::Validate(crate::cli_args::ValidateArgs {
         strict,
         json,
         dcmvalidate_iod,
@@ -374,7 +370,7 @@ fn cli_validate_defaults_to_one_pixel_frame_smoke() {
         max_pixel_frames,
         command_timeout_secs,
         ..
-    } = cli.command
+    }) = cli.command
     else {
         panic!("expected validate command");
     };
@@ -447,6 +443,7 @@ fn cli_self_test_accepts_reviewer_evidence_options() {
         dcmvalidate_iod,
         htj2k_decoder,
         command_timeout_secs,
+        ..
     }) = cli.command
     else {
         panic!("expected self-test command");

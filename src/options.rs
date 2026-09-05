@@ -1,7 +1,74 @@
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 use crate::Error;
+
+/// Explicit level-zero source pixel spacing in DICOM row/column order, in millimeters.
+///
+/// This is intended for governed metadata supplied when a proprietary source
+/// reader cannot surface its physical calibration. Export rejects a supplied
+/// value that conflicts with calibration already present in the source.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SourcePixelSpacingMm {
+    /// Vertical pixel spacing (row spacing), in millimeters.
+    pub row: f64,
+    /// Horizontal pixel spacing (column spacing), in millimeters.
+    pub column: f64,
+}
+
+impl PartialEq for SourcePixelSpacingMm {
+    fn eq(&self, other: &Self) -> bool {
+        self.row.to_bits() == other.row.to_bits() && self.column.to_bits() == other.column.to_bits()
+    }
+}
+
+impl Eq for SourcePixelSpacingMm {}
+
+impl SourcePixelSpacingMm {
+    /// Construct a finite, positive row/column spacing pair.
+    pub fn new(row: f64, column: f64) -> Result<Self, Error> {
+        let spacing = Self { row, column };
+        spacing.validate()?;
+        Ok(spacing)
+    }
+
+    fn validate(self) -> Result<(), Error> {
+        if !self.row.is_finite()
+            || !self.column.is_finite()
+            || self.row <= 0.0
+            || self.column <= 0.0
+        {
+            return Err(Error::InvalidOptions {
+                reason:
+                    "source_pixel_spacing_mm row and column must be finite and greater than zero"
+                        .into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl FromStr for SourcePixelSpacingMm {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (row, column) = value.split_once(',').ok_or_else(|| {
+            "source pixel spacing must be ROW_MM,COLUMN_MM in DICOM order".to_string()
+        })?;
+        if column.contains(',') {
+            return Err("source pixel spacing must contain exactly two values".into());
+        }
+        let row = row
+            .parse::<f64>()
+            .map_err(|_| "source pixel row spacing is not a number".to_string())?;
+        let column = column
+            .parse::<f64>()
+            .map_err(|_| "source pixel column spacing is not a number".to_string())?;
+        Self::new(row, column).map_err(|error| error.to_string())
+    }
+}
 
 /// Runtime preference for JPEG 2000 Lossless encode backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
@@ -252,6 +319,8 @@ pub struct ExportOptions {
     pub jpeg_quality: u8,
     /// Policy for generated Study, Series, SOP, and related DICOM UIDs.
     pub uid_policy: UidPolicy,
+    /// Optional governed level-zero source spacing when the reader lacks calibration metadata.
+    pub source_pixel_spacing_mm: Option<SourcePixelSpacingMm>,
     /// Runtime encoder backend preference.
     pub encode_backend: EncodeBackendPreference,
     /// Runtime codec validation policy.
@@ -281,6 +350,7 @@ pub(crate) struct NormalizedExportSemantics {
     pub(crate) jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile,
     pub(crate) jpeg_quality: u8,
     pub(crate) uid_policy: UidPolicy,
+    pub(crate) source_pixel_spacing_mm: Option<SourcePixelSpacingMm>,
 }
 
 /// Validated memory and metadata bounds used by internal execution code.
@@ -334,6 +404,7 @@ impl NormalizedExportOptions {
                 jpeg_direct_htj2k_profile: options.jpeg_direct_htj2k_profile,
                 jpeg_quality: options.jpeg_quality,
                 uid_policy: options.uid_policy,
+                source_pixel_spacing_mm: options.source_pixel_spacing_mm,
             },
             resources: ResourceLimits {
                 max_prepared_frame_bytes: options.max_prepared_frame_bytes,
@@ -369,6 +440,7 @@ impl Default for ExportOptions {
             jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossless53,
             jpeg_quality: 90,
             uid_policy: UidPolicy::Fresh,
+            source_pixel_spacing_mm: None,
             encode_backend: EncodeBackendPreference::Auto,
             codec_validation: CodecValidation::Disabled,
             source_device_decode: false,
@@ -426,6 +498,9 @@ impl ExportOptions {
             return Err(Error::InvalidOptions {
                 reason: "jpeg_quality must be in the range 1..=100".into(),
             });
+        }
+        if let Some(spacing) = self.source_pixel_spacing_mm {
+            spacing.validate()?;
         }
         let profile = self.jpeg_direct_htj2k_profile;
         if self.transfer_syntax == TransferSyntax::Htj2k {
@@ -695,6 +770,7 @@ mod tests {
             jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossy97Aggressive,
             jpeg_quality: 77,
             uid_policy: UidPolicy::Deterministic,
+            source_pixel_spacing_mm: Some(SourcePixelSpacingMm::new(0.0005, 0.00025).unwrap()),
             encode_backend: EncodeBackendPreference::PreferDevice,
             codec_validation: CodecValidation::RoundTrip,
             source_device_decode: true,

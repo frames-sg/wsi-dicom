@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::{assert_htj2k_rpcl_codestream, j2k_cod_marker_offset};
 use wsi_rs::TileRequest;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -503,13 +504,7 @@ pub(super) fn assert_transfer_syntax_codestream(
             assert!(codestream.windows(2).any(|window| window == [0xFF, 0x50]));
         }
         TransferSyntax::Htj2kLosslessRpcl => {
-            let cod_offset = codestream
-                .windows(2)
-                .position(|window| window == [0xFF, 0x52])
-                .expect("COD marker");
-            assert_eq!(codestream[cod_offset + 5], 0x02);
-            assert!(codestream.windows(2).any(|window| window == [0xFF, 0x50]));
-            assert!(codestream.windows(2).any(|window| window == [0xFF, 0x55]));
+            assert_htj2k_rpcl_codestream(codestream);
         }
         TransferSyntax::JpegBaseline8Bit
         | TransferSyntax::Jpeg2000
@@ -615,26 +610,17 @@ pub(super) fn j2k_passthrough_transfer_syntax(codestream: &[u8]) -> CompressedTr
 }
 
 pub(super) fn j2k_cod_decomposition_levels(codestream: &[u8]) -> u8 {
-    let cod_offset = codestream
-        .windows(2)
-        .position(|window| window == [0xFF, 0x52])
-        .expect("COD marker");
+    let cod_offset = j2k_cod_marker_offset(codestream);
     codestream[cod_offset + 9]
 }
 
 pub(super) fn j2k_cod_mct(codestream: &[u8]) -> u8 {
-    let cod_offset = codestream
-        .windows(2)
-        .position(|window| window == [0xFF, 0x52])
-        .expect("COD marker");
+    let cod_offset = j2k_cod_marker_offset(codestream);
     codestream[cod_offset + 8]
 }
 
 pub(super) fn patch_j2k_cod_wavelet_transform(codestream: &mut [u8], transform: u8) {
-    let cod_offset = codestream
-        .windows(2)
-        .position(|window| window == [0xFF, 0x52])
-        .expect("COD marker");
+    let cod_offset = j2k_cod_marker_offset(codestream);
     codestream[cod_offset + 13] = transform;
 }
 

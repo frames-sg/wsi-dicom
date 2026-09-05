@@ -55,6 +55,17 @@ def cargo_package(manifest_path, package_name):
 
 
 class DependencyTopologyTests(unittest.TestCase):
+    def test_python_benchmark_ci_runs_the_full_hermetic_suite_without_manuscript_dependencies(self):
+        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "pip install -r bench/requirements.txt",
+            workflow,
+        )
+        self.assertIn("python -m unittest discover -s tests -v", workflow)
+        self.assertNotIn("docs/manuscript/", workflow)
+
     def test_ci_separates_source_topology_from_registry_package_gate(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
@@ -86,6 +97,14 @@ class DependencyTopologyTests(unittest.TestCase):
             workflow,
         )
 
+    def test_crate_package_excludes_unpublished_publication_artifacts(self):
+        result = subprocess.run(["cargo", "package", "--list", "--allow-dirty", "--offline"], cwd=REPO_ROOT, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        paths = result.stdout.splitlines()
+        self.assertIn("src/lib.rs", paths)
+        leaked = [path for path in paths if path.startswith(("docs/USCAP", "docs/manuscript/", "grant/")) or path == "figure1.pptx"]
+        self.assertEqual(leaked, [], "unpublished artifacts must not enter the public crate archive")
+
     def test_direct_project_dependencies_use_reproducible_sources(self):
         package = cargo_package("Cargo.toml", "wsi-dicom")
         project_dependencies = [
@@ -110,7 +129,17 @@ class DependencyTopologyTests(unittest.TestCase):
             shutil.copytree(
                 REPO_ROOT,
                 clean_root,
-                ignore=shutil.ignore_patterns(".git", ".codex", "target", ".venv*"),
+                ignore=shutil.ignore_patterns(
+                    ".git",
+                    ".codex",
+                    ".DS_Store",
+                    ".local-docs",
+                    ".venv*",
+                    "__pycache__",
+                    "generated",
+                    "results",
+                    "target",
+                ),
             )
             result = subprocess.run(
                 ["cargo", "metadata", "--locked", "--format-version", "1"],
