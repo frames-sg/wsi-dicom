@@ -356,6 +356,7 @@ fn dicom_export_builder_with_options_preserves_explicit_option_fields() {
         jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossless53,
         jpeg_quality: 80,
         uid_policy: UidPolicy::Deterministic,
+        source_pixel_spacing_mm: Some(SourcePixelSpacingMm::new(0.0005, 0.00025).unwrap()),
         encode_backend: EncodeBackendPreference::CpuOnly,
         codec_validation: CodecValidation::RoundTrip,
         source_device_decode: true,

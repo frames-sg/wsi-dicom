@@ -3,10 +3,10 @@ set -euo pipefail
 
 readonly BASELINE_VERSION="0.7.1"
 readonly BASELINE_COMMIT="88c0dc357740cb6d344389449e01b008bb3f2649"
-readonly CANDIDATE_VERSION="0.7.4"
+readonly CANDIDATE_VERSION="0.7.5"
 readonly SEMVER_CHECKS_VERSION="cargo-semver-checks 0.48.0"
-readonly ALLOWLIST=".github/semver-0.7.1-to-0.7.4-allowed-breaks.txt"
-readonly ARCHIVED_REPORT=".github/semver-0.7.1-to-0.7.4-report.md"
+readonly ALLOWLIST=".github/semver-0.7.1-to-0.7.5-allowed-breaks.txt"
+readonly ARCHIVED_REPORT=".github/semver-0.7.1-to-0.7.5-report.md"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work_dir="$(mktemp -d)"
@@ -20,6 +20,16 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$repo_root"
+write_report=false
+case "${1:-}" in
+  "") ;;
+  --write-report) write_report=true; shift ;;
+  *) echo "usage: $0 [--write-report]" >&2; exit 2 ;;
+esac
+if [[ "$#" -ne 0 ]]; then
+  echo "usage: $0 [--write-report]" >&2
+  exit 2
+fi
 if [[ "$(cargo semver-checks --version)" != "$SEMVER_CHECKS_VERSION" ]]; then
   echo "semver report requires ${SEMVER_CHECKS_VERSION}" >&2
   exit 1
@@ -31,7 +41,8 @@ fi
 
 baseline_root="$work_dir/wsi-dicom-${BASELINE_VERSION}"
 mkdir "$baseline_root"
-git archive --format=tar "$BASELINE_COMMIT" | tar --extract --file - --directory "$baseline_root"
+git archive --format=tar --output "$work_dir/baseline.tar" "$BASELINE_COMMIT"
+tar --extract --file "$work_dir/baseline.tar" --directory "$baseline_root"
 baseline_manifest_version="$(
   cargo metadata \
     --manifest-path "$baseline_root/Cargo.toml" \
@@ -79,7 +90,7 @@ patch_status=$?
 set -e
 printf '%s\n' "$patch_report"
 if [[ "$patch_status" -eq 0 ]]; then
-  echo "expected the reviewed 0.7.4 API transition, but no patch-level breaks were reported" >&2
+  echo "expected the reviewed 0.7.5 API transition, but no patch-level breaks were reported" >&2
   exit 1
 fi
 
@@ -97,7 +108,7 @@ if [[ ! -s "$actual_breaks" ]]; then
   exit 1
 fi
 if ! diff -u "$ALLOWLIST" "$actual_breaks"; then
-  echo "semver break set differs from the reviewed 0.7.1-to-0.7.4 transition" >&2
+  echo "semver break set differs from the reviewed 0.7.1-to-0.7.5 transition" >&2
   exit 1
 fi
 
@@ -116,7 +127,7 @@ breaks = Path(os.environ["ACTUAL_BREAKS"]).read_text(encoding="utf-8").splitline
 report = [
     "<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->",
     "",
-    "# wsi-dicom 0.7.1 to 0.7.4 semver report",
+    f"# wsi-dicom {os.environ['REPORT_BASELINE_VERSION']} to {os.environ['REPORT_CANDIDATE_VERSION']} semver report",
     "",
     f"- Baseline: `{os.environ['REPORT_BASELINE_VERSION']}` at immutable commit `{os.environ['REPORT_BASELINE_COMMIT']}`.",
     "- Baseline publication state: merged, but not tagged or published to crates.io.",
@@ -133,6 +144,9 @@ report = [
 ]
 Path(sys.argv[1]).write_text("\n".join(report), encoding="utf-8")
 PY
+if [[ "$write_report" == true ]]; then
+  cp "$generated_report" "$ARCHIVED_REPORT"
+fi
 if ! diff -u "$ARCHIVED_REPORT" "$generated_report"; then
   echo "archived semver report is stale" >&2
   exit 1

@@ -1,25 +1,13 @@
+use super::{export_report, route_coverage_report, test_metrics};
 use crate::cli_report::{
     format_corpus_coverage_summary_with_memory, format_coverage_summary_with_memory,
     format_profile_summary_with_memory, format_report_summary_with_memory,
 };
 use std::path::PathBuf;
 use wsi_dicom::{
-    ExportMetrics, ExportReport, RouteCorpusCoverageFailure, RouteCorpusCoverageReport,
-    RouteCoverageReport, RouteProfileReport,
+    ExportMetrics, RouteCorpusCoverageFailure, RouteCorpusCoverageReport, RouteCoverageReport,
+    RouteProfileReport,
 };
-
-fn test_metrics(configure: impl FnOnce(&mut ExportMetrics)) -> ExportMetrics {
-    let mut metrics = ExportMetrics::default();
-    configure(&mut metrics);
-    metrics
-}
-
-fn export_report(output_dir: &str, metrics: ExportMetrics) -> ExportReport {
-    let mut report = ExportReport::default();
-    report.output_dir = PathBuf::from(output_dir);
-    report.metrics = metrics;
-    report
-}
 
 fn route_profile_report(
     source_path: &str,
@@ -36,29 +24,6 @@ fn route_profile_report(
     report.level = level;
     report.requested_frames = requested_frames;
     report.available_frames = available_frames;
-    report.metrics = metrics;
-    report.elapsed_micros = elapsed_micros;
-    report
-}
-
-#[allow(clippy::too_many_arguments)]
-fn route_coverage_report(
-    source_path: &str,
-    transfer_syntax_uid: &'static str,
-    requested_frames_per_level: u64,
-    available_frames: u64,
-    complete_frame_coverage: bool,
-    levels: Vec<RouteProfileReport>,
-    metrics: ExportMetrics,
-    elapsed_micros: u128,
-) -> RouteCoverageReport {
-    let mut report = RouteCoverageReport::default();
-    report.source_path = PathBuf::from(source_path);
-    report.transfer_syntax_uid = transfer_syntax_uid;
-    report.requested_frames_per_level = requested_frames_per_level;
-    report.available_frames = available_frames;
-    report.complete_frame_coverage = complete_frame_coverage;
-    report.levels = levels;
     report.metrics = metrics;
     report.elapsed_micros = elapsed_micros;
     report

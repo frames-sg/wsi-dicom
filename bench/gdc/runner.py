@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import subprocess
-import time
 from pathlib import Path
 from typing import Sequence
+
+from bench.process_evidence import run_bounded_command
+
 
 def run_command(
     command: Sequence[str],
@@ -15,34 +16,33 @@ def run_command(
     stderr_path: Path,
     timeout_secs: int,
 ) -> dict:
-    started = time.perf_counter()
-    stdout_path.parent.mkdir(parents=True, exist_ok=True)
-    with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
-        "w", encoding="utf-8"
-    ) as stderr_file:
-        try:
-            completed = subprocess.run(
-                list(command),
-                cwd=cwd,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                text=True,
-                timeout=timeout_secs,
-                check=False,
-            )
-            returncode = completed.returncode
-            status = "passed" if returncode == 0 else "failed"
-        except subprocess.TimeoutExpired:
-            returncode = None
-            status = "timeout"
-        except OSError as exc:
-            returncode = None
-            status = "failed"
-            stderr_file.write(f"{type(exc).__name__}: {exc}\n")
+    evidence = run_bounded_command(
+        command,
+        cwd=cwd,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        timeout_secs=timeout_secs,
+    )
+    status = (
+        "timeout"
+        if evidence["timed_out"]
+        else "failed"
+        if evidence["launch_error"] is not None
+        or evidence["stdout_truncated"]
+        or evidence["stderr_truncated"]
+        else "passed"
+        if evidence["returncode"] == 0
+        else "failed"
+    )
     return {
         "status": status,
-        "returncode": returncode,
-        "elapsed_secs": time.perf_counter() - started,
+        "returncode": evidence["returncode"],
+        "elapsed_secs": evidence["elapsed_seconds"],
         "stdout_path": str(stdout_path),
         "stderr_path": str(stderr_path),
+        "stdout_bytes": evidence["stdout_bytes"],
+        "stderr_bytes": evidence["stderr_bytes"],
+        "stdout_truncated": evidence["stdout_truncated"],
+        "stderr_truncated": evidence["stderr_truncated"],
+        "launch_error": evidence["launch_error"],
     }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{find_command_for_test, read_binary_ppm_for_test};
+use crate::test_support::{find_command_for_test, j2k_cod_marker_offset, read_binary_ppm_for_test};
 use crate::{CodecValidation, EncodeBackendPreference, TransferSyntax};
 use j2k::{
     j2k_lossless_decomposition_levels_for_options, J2kBlockCodingMode, J2kLosslessEncodeOptions,
@@ -241,10 +241,7 @@ fn metal_tile_encode_returns_buffer_backed_codestream_for_htj2k_tiles() {
     assert!(frame.codestream_is_metal_buffer_backed());
     let codestream = frame.codestream_bytes().expect("codestream bytes");
     assert!(codestream.windows(2).any(|window| window == [0xFF, 0x50]));
-    let cod_marker = codestream
-        .windows(2)
-        .position(|window| window == [0xFF, 0x52])
-        .expect("COD marker");
+    let cod_marker = j2k_cod_marker_offset(codestream.as_ref());
     assert_eq!(codestream[cod_marker + 12], 0x40);
     let mut decoded = vec![0u8; pixels.len()];
     j2k::J2kDecoder::new(codestream.as_ref())
@@ -280,10 +277,7 @@ fn metal_tile_encode_returns_buffer_backed_codestream_for_wsi_sized_htj2k_rpcl_t
     assert!(frame.codestream_is_metal_buffer_backed());
     let codestream = frame.codestream_bytes().expect("codestream bytes");
     assert!(codestream.windows(2).any(|window| window == [0xFF, 0x50]));
-    let cod_marker = codestream
-        .windows(2)
-        .position(|window| window == [0xFF, 0x52])
-        .expect("COD marker");
+    let cod_marker = j2k_cod_marker_offset(codestream.as_ref());
     assert_eq!(codestream[cod_marker + 5], 0x02);
     assert_eq!(j2k_cod_decomposition_levels(codestream.as_ref()), 1);
     assert_eq!(codestream[cod_marker + 12], 0x40);
@@ -384,10 +378,7 @@ fn metal_edge_rgb8_htj2k_rpcl_codestream_decodes_with_reference_codec_when_avail
     assert!(frame.codestream_is_metal_buffer_backed());
     let codestream = frame.codestream_bytes().expect("codestream bytes");
     assert!(codestream.windows(2).any(|window| window == [0xFF, 0x50]));
-    let cod_marker = codestream
-        .windows(2)
-        .position(|window| window == [0xFF, 0x52])
-        .expect("COD marker");
+    let cod_marker = j2k_cod_marker_offset(codestream.as_ref());
     assert_eq!(codestream[cod_marker + 5], 0x02);
     assert_eq!(codestream[cod_marker + 12], 0x40);
 
@@ -446,9 +437,6 @@ fn prefer_device_metal_tile_encode_returns_buffer_backed_codestream_for_wsi_size
 }
 
 fn j2k_cod_decomposition_levels(codestream: &[u8]) -> u8 {
-    let cod_marker = codestream
-        .windows(2)
-        .position(|window| window == [0xFF, 0x52])
-        .expect("COD marker");
+    let cod_marker = j2k_cod_marker_offset(codestream);
     codestream[cod_marker + 9]
 }

@@ -38,6 +38,10 @@ fn htj2k_decoder_template_rejects_bare_command_name() {
 
 #[test]
 fn empty_htj2k_decoder_template_is_reported_as_configuration_failure() {
+    assert_htj2k_decoder_template_configuration_failure("   ", "HTJ2K decoder command is empty");
+}
+
+fn assert_htj2k_decoder_template_configuration_failure(template: &str, expected: &str) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let file = tmp.path().join("htj2k.dcm");
     write_encapsulated_dicom(&file, "1.2.840.10008.1.2.4.202", &[0xFF, 0x4F, 0xFF, 0x51]);
@@ -45,7 +49,7 @@ fn empty_htj2k_decoder_template_is_reported_as_configuration_failure() {
     let report = validate_dicom_path_with_runner(
         &file,
         &ValidationOptions {
-            htj2k_decoder: Some("   ".to_string()),
+            htj2k_decoder: Some(template.to_string()),
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -55,31 +59,21 @@ fn empty_htj2k_decoder_template_is_reported_as_configuration_failure() {
     assert!(report.checks.iter().any(|check| {
         check.name == "pixel-htj2k"
             && check.status == ValidationStatus::Failed
-            && check.message.contains("HTJ2K decoder command is empty")
+            && check.message.contains(expected)
+            && check
+                .execution
+                .as_ref()
+                .and_then(|execution| execution.failure)
+                .is_some()
     }));
 }
 
 #[test]
 fn bare_htj2k_decoder_template_is_reported_as_configuration_failure() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let file = tmp.path().join("htj2k.dcm");
-    write_encapsulated_dicom(&file, "1.2.840.10008.1.2.4.202", &[0xFF, 0x4F, 0xFF, 0x51]);
-
-    let report = validate_dicom_path_with_runner(
-        &file,
-        &ValidationOptions {
-            htj2k_decoder: Some("ojph_expand -i {input} -o {output}".to_string()),
-            ..ValidationOptions::default()
-        },
-        &FakeRunner::default(),
-    )
-    .expect("validation report");
-
-    assert!(report.checks.iter().any(|check| {
-        check.name == "pixel-htj2k"
-            && check.status == ValidationStatus::Failed
-            && check.message.contains("absolute executable path")
-    }));
+    assert_htj2k_decoder_template_configuration_failure(
+        "ojph_expand -i {input} -o {output}",
+        "absolute executable path",
+    );
 }
 
 #[test]
@@ -106,6 +100,28 @@ fn encapsulated_frame_assembly_uses_offsets_and_extended_lengths() {
             .unwrap();
 
     assert_eq!(frames, vec![vec![1, 2, 3], vec![4, 5]]);
+}
+
+#[test]
+fn encapsulated_frame_assembly_rejects_extended_length_including_item_header() {
+    const PRESERVED_FRAME_PAYLOAD_BYTES: usize = 116_106;
+    const ITEM_HEADER_BYTES: u64 = 8;
+
+    let sequence = dicom_core::value::PixelFragmentSequence::new_fragments(vec![
+        vec![0xA5; PRESERVED_FRAME_PAYLOAD_BYTES],
+        vec![0x5A; 2],
+    ]);
+    let error = super::assemble_encapsulated_frames(
+        &sequence,
+        2,
+        Some(&[0, 116_114]),
+        Some(&[116_106 + ITEM_HEADER_BYTES, 2]),
+        2,
+        200_000,
+    )
+    .expect_err("an Extended Offset Table Length must exclude the Item header");
+
+    assert!(error.contains("includes the 8-byte Item header"), "{error}");
 }
 
 #[test]
@@ -169,6 +185,8 @@ fn command_timeout_is_reported_as_failed_check() {
     let runner = FakeRunner::default().with_command("dciodvfy").with_outcome(
         "dciodvfy -new one.dcm",
         CommandOutcome {
+            return_code: Some(1),
+            elapsed_millis: 0,
             success: false,
             timed_out: true,
             stdout: String::new(),
@@ -201,6 +219,8 @@ fn command_output_limit_is_reported_as_failed_check() {
     let runner = FakeRunner::default().with_command("dciodvfy").with_outcome(
         "dciodvfy -new one.dcm",
         CommandOutcome {
+            return_code: Some(0),
+            elapsed_millis: 0,
             success: true,
             timed_out: false,
             stdout: "prefix".to_string(),
@@ -231,6 +251,8 @@ fn command_output_limit_is_reported_as_failed_check() {
 #[test]
 fn validation_options_use_seconds_for_json_and_runtime_timeout() {
     let options = ValidationOptions {
+        profile: super::ValidationProfile::General,
+        max_input_bytes: 1024 * 1024 * 1024,
         strict: true,
         dcmvalidate_iod: Some(PathBuf::from("iod.xml")),
         htj2k_decoder: Some("ojph_expand -i {input} -o {output}".to_string()),

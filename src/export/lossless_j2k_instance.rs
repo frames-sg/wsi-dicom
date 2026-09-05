@@ -141,7 +141,11 @@ pub(super) fn prepare_lossless_j2k_instance(
     let context = DicomInstanceContext::new(
         identity,
         &request.output_dir,
-        require_pixel_spacing_mm(level_pixel_spacing_mm(slide, level))?,
+        require_pixel_spacing_mm(level_pixel_spacing_mm(
+            slide,
+            level,
+            options.semantics.source_pixel_spacing_mm,
+        )?)?,
         coordinate,
     )?;
     let declared_lossy_compression =

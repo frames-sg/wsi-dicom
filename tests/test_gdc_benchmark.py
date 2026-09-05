@@ -1,8 +1,10 @@
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -21,13 +23,13 @@ def write_benchmark_slide(bench, root):
     source = root / "slide.svs"
     source.write_bytes(b"svs")
     slide = bench.Slide(
-        slide_id="tcga-a",
-        display_name="TCGA-A.svs",
+        slide_id="public-a",
+        display_name="PUBLIC-WSI-A.svs",
         path=source,
         download_dir=root,
         relative_path="slide.svs",
         gdc_file_id="file-id",
-        manifest_filename="file-id/TCGA-A.svs",
+        manifest_filename="file-id/PUBLIC-WSI-A.svs",
         manifest_md5="abc",
         manifest_size=3,
         manifest_state="validated",
@@ -36,7 +38,88 @@ def write_benchmark_slide(bench, root):
     return source, slide
 
 
+def benchmark_row(tool, status, **overrides):
+    row = {
+        "slide": "tcga-a",
+        "tool": tool,
+        "profile": "htj2k-lossless-rpcl",
+        "scope": "base",
+        "status": status,
+    }
+    row.update(overrides)
+    return row
+
+
+def evaluate_device_preflight_fixture(
+    bench,
+    root,
+    *,
+    cpu_metrics,
+    device_metrics,
+    cpu_elapsed,
+    device_elapsed,
+    device_status="passed",
+    device_returncode=0,
+    device_stderr="",
+):
+    cpu_stdout = root / "cpu.json"
+    device_stdout = root / "device.json"
+    cpu_stderr = root / "cpu.stderr.txt"
+    device_stderr_path = root / "device.stderr.txt"
+    cpu_stdout.write_text(json.dumps({"metrics": cpu_metrics}) + "\n", encoding="utf-8")
+    device_stdout.write_text(
+        "" if device_metrics is None else json.dumps({"metrics": device_metrics}) + "\n",
+        encoding="utf-8",
+    )
+    device_stderr_path.write_text(device_stderr, encoding="utf-8")
+
+    return bench.evaluate_device_preflight(
+        cpu_result={
+            "status": "passed",
+            "returncode": 0,
+            "elapsed_secs": cpu_elapsed,
+            "stdout_path": str(cpu_stdout),
+            "stderr_path": str(cpu_stderr),
+        },
+        device_result={
+            "status": device_status,
+            "returncode": device_returncode,
+            "elapsed_secs": device_elapsed,
+            "stdout_path": str(device_stdout),
+            "stderr_path": str(device_stderr_path),
+        },
+        min_speedup=1.0,
+        min_device_frame_pct=100.0,
+    )
+
+
 class GdcBenchmarkTests(unittest.TestCase):
+    def test_environment_probe_uses_shared_process_bounds(self):
+        from bench.gdc import environment
+
+        def execute(command, *, stdout_path, stderr_path, **kwargs):
+            stdout_path.write_text("tool 1.2.3\n", encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+            self.assertEqual(kwargs["max_output_bytes"], 1024 * 1024)
+            return {
+                "command": command,
+                "returncode": 0,
+                "timed_out": False,
+                "launch_error": None,
+                "stdout_truncated": False,
+                "stderr_truncated": False,
+            }
+
+        with mock.patch.object(
+            environment, "run_bounded_command", side_effect=execute, create=True
+        ) as bounded:
+            self.assertEqual(
+                environment.command_output(["fake-tool", "--version"], cwd=REPO_ROOT),
+                "tool 1.2.3",
+            )
+
+        bounded.assert_called_once()
+
     def test_compatibility_entry_point_delegates_to_cohesive_modules(self):
         bench = load_benchmark_module()
         from bench.gdc import commands, discovery, reporting, trial
@@ -52,15 +135,15 @@ class GdcBenchmarkTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             download = root / "gdc_download_20260222_001131.215561"
-            slide_dir = download / "e2170a4b-c9d6-4f9d-b95c-0be2ecf42196"
+            slide_dir = download / "public-file-id-001"
             slide_dir.mkdir(parents=True)
             (download / "MANIFEST.txt").write_text(
                 "\t".join(["id", "filename", "md5", "size", "state"])
                 + "\n"
                 + "\t".join(
                     [
-                        "e2170a4b-c9d6-4f9d-b95c-0be2ecf42196",
-                        "e2170a4b-c9d6-4f9d-b95c-0be2ecf42196/TCGA-WE-A8ZR.svs",
+                        "public-file-id-001",
+                        "public-file-id-001/PUBLIC-WSI-B.svs",
                         "abc123",
                         "3",
                         "validated",
@@ -75,8 +158,8 @@ class GdcBenchmarkTests(unittest.TestCase):
             slides = bench.discover_gdc_slides(root)
 
         self.assertEqual(len(slides), 1)
-        self.assertEqual(slides[0].display_name, "TCGA-WE-A8ZR.svs")
-        self.assertEqual(slides[0].gdc_file_id, "e2170a4b-c9d6-4f9d-b95c-0be2ecf42196")
+        self.assertEqual(slides[0].display_name, "PUBLIC-WSI-B.svs")
+        self.assertEqual(slides[0].gdc_file_id, "public-file-id-001")
         self.assertEqual(slides[0].manifest_md5, "abc123")
         self.assertEqual(slides[0].manifest_size, 3)
 
@@ -242,30 +325,9 @@ class GdcBenchmarkTests(unittest.TestCase):
     def test_markdown_summary_reports_device_speedups(self):
         bench = load_benchmark_module()
         rows = [
-            {
-                "slide": "tcga-a",
-                "tool": "wsi-dicom-cpu",
-                "profile": "htj2k-lossless-rpcl",
-                "scope": "base",
-                "status": "passed",
-                "elapsed_secs": 10.0,
-            },
-            {
-                "slide": "tcga-a",
-                "tool": "wsi-dicom-device",
-                "profile": "htj2k-lossless-rpcl",
-                "scope": "base",
-                "status": "passed",
-                "elapsed_secs": 2.0,
-            },
-            {
-                "slide": "tcga-a",
-                "tool": "wsidicomizer",
-                "profile": "htj2k-lossless-rpcl",
-                "scope": "base",
-                "status": "passed",
-                "elapsed_secs": 12.0,
-            },
+            benchmark_row("wsi-dicom-cpu", "passed", elapsed_secs=10.0),
+            benchmark_row("wsi-dicom-device", "passed", elapsed_secs=2.0),
+            benchmark_row("wsidicomizer", "passed", elapsed_secs=12.0),
         ]
 
         markdown = bench.render_markdown_summary(rows, title="GDC")
@@ -279,14 +341,7 @@ class GdcBenchmarkTests(unittest.TestCase):
     def test_markdown_summary_keeps_failure_only_rows(self):
         bench = load_benchmark_module()
         rows = [
-            {
-                "slide": "tcga-a",
-                "tool": "wsi-dicom-device",
-                "profile": "htj2k-lossless-rpcl",
-                "scope": "base",
-                "status": "timeout",
-                "elapsed_secs": 180.0,
-            }
+            benchmark_row("wsi-dicom-device", "timeout", elapsed_secs=180.0)
         ]
 
         markdown = bench.render_markdown_summary(rows, title="GDC")
@@ -299,38 +354,18 @@ class GdcBenchmarkTests(unittest.TestCase):
     def test_markdown_summary_keeps_metal_and_cuda_device_rows_separate(self):
         bench = load_benchmark_module()
         rows = [
-            {
-                "slide": "tcga-a",
-                "tool": "wsi-dicom-cpu",
-                "profile": "htj2k-lossless-rpcl",
-                "scope": "base",
-                "status": "passed",
-                "elapsed_secs": 10.0,
-            },
-            {
-                "slide": "tcga-a",
-                "tool": "wsi-dicom-device",
-                "profile": "htj2k-lossless-rpcl",
-                "scope": "base",
-                "status": "timeout",
-                "result_set": "gdc-local-metal-device-smoke",
-            },
-            {
-                "slide": "tcga-a",
-                "tool": "wsi-dicom-device",
-                "profile": "htj2k-lossless-rpcl",
-                "scope": "base",
-                "status": "failed",
-                "result_set": "gdc-cuda-device-smoke",
-            },
-            {
-                "slide": "tcga-a",
-                "tool": "wsidicomizer",
-                "profile": "htj2k-lossless-rpcl",
-                "scope": "base",
-                "status": "passed",
-                "elapsed_secs": 12.0,
-            },
+            benchmark_row("wsi-dicom-cpu", "passed", elapsed_secs=10.0),
+            benchmark_row(
+                "wsi-dicom-device",
+                "timeout",
+                result_set="gdc-local-metal-device-smoke",
+            ),
+            benchmark_row(
+                "wsi-dicom-device",
+                "failed",
+                result_set="gdc-cuda-device-smoke",
+            ),
+            benchmark_row("wsidicomizer", "passed", elapsed_secs=12.0),
         ]
 
         markdown = bench.render_markdown_summary(rows, title="GDC")
@@ -437,34 +472,13 @@ class GdcBenchmarkTests(unittest.TestCase):
         bench = load_benchmark_module()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            cpu_stdout = root / "cpu.json"
-            device_stdout = root / "device.json"
-            cpu_stdout.write_text(
-                '{"metrics": {"total_frames": 64, "gpu_encode_frames": 0}}\n',
-                encoding="utf-8",
-            )
-            device_stdout.write_text(
-                '{"metrics": {"total_frames": 64, "gpu_encode_frames": 64}}\n',
-                encoding="utf-8",
-            )
-
-            preflight = bench.evaluate_device_preflight(
-                cpu_result={
-                    "status": "passed",
-                    "returncode": 0,
-                    "elapsed_secs": 0.1,
-                    "stdout_path": str(cpu_stdout),
-                    "stderr_path": str(root / "cpu.stderr.txt"),
-                },
-                device_result={
-                    "status": "passed",
-                    "returncode": 0,
-                    "elapsed_secs": 26.0,
-                    "stdout_path": str(device_stdout),
-                    "stderr_path": str(root / "device.stderr.txt"),
-                },
-                min_speedup=1.0,
-                min_device_frame_pct=100.0,
+            preflight = evaluate_device_preflight_fixture(
+                bench,
+                root,
+                cpu_metrics={"total_frames": 64, "gpu_encode_frames": 0},
+                device_metrics={"total_frames": 64, "gpu_encode_frames": 64},
+                cpu_elapsed=0.1,
+                device_elapsed=26.0,
             )
 
         self.assertEqual(preflight["status"], "failed")
@@ -475,34 +489,13 @@ class GdcBenchmarkTests(unittest.TestCase):
         bench = load_benchmark_module()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            cpu_stdout = root / "cpu.json"
-            device_stdout = root / "device.json"
-            cpu_stdout.write_text(
-                '{"metrics": {"total_frames": 10, "gpu_encode_frames": 0}}\n',
-                encoding="utf-8",
-            )
-            device_stdout.write_text(
-                '{"metrics": {"total_frames": 10, "gpu_encode_frames": 9}}\n',
-                encoding="utf-8",
-            )
-
-            preflight = bench.evaluate_device_preflight(
-                cpu_result={
-                    "status": "passed",
-                    "returncode": 0,
-                    "elapsed_secs": 10.0,
-                    "stdout_path": str(cpu_stdout),
-                    "stderr_path": str(root / "cpu.stderr.txt"),
-                },
-                device_result={
-                    "status": "passed",
-                    "returncode": 0,
-                    "elapsed_secs": 1.0,
-                    "stdout_path": str(device_stdout),
-                    "stderr_path": str(root / "device.stderr.txt"),
-                },
-                min_speedup=1.0,
-                min_device_frame_pct=100.0,
+            preflight = evaluate_device_preflight_fixture(
+                bench,
+                root,
+                cpu_metrics={"total_frames": 10, "gpu_encode_frames": 0},
+                device_metrics={"total_frames": 10, "gpu_encode_frames": 9},
+                cpu_elapsed=10.0,
+                device_elapsed=1.0,
             )
 
         self.assertEqual(preflight["status"], "failed")
@@ -512,36 +505,16 @@ class GdcBenchmarkTests(unittest.TestCase):
         bench = load_benchmark_module()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            cpu_stdout = root / "cpu.json"
-            device_stdout = root / "device.json"
-            device_stderr = root / "device.stderr.txt"
-            cpu_stdout.write_text(
-                '{"metrics": {"total_frames": 1, "gpu_encode_frames": 0}}\n',
-                encoding="utf-8",
-            )
-            device_stdout.write_text("", encoding="utf-8")
-            device_stderr.write_text(
-                "unsupported export request: backend unavailable\n",
-                encoding="utf-8",
-            )
-
-            preflight = bench.evaluate_device_preflight(
-                cpu_result={
-                    "status": "passed",
-                    "returncode": 0,
-                    "elapsed_secs": 0.1,
-                    "stdout_path": str(cpu_stdout),
-                    "stderr_path": str(root / "cpu.stderr.txt"),
-                },
-                device_result={
-                    "status": "failed",
-                    "returncode": 1,
-                    "elapsed_secs": 0.1,
-                    "stdout_path": str(device_stdout),
-                    "stderr_path": str(device_stderr),
-                },
-                min_speedup=1.0,
-                min_device_frame_pct=100.0,
+            preflight = evaluate_device_preflight_fixture(
+                bench,
+                root,
+                cpu_metrics={"total_frames": 1, "gpu_encode_frames": 0},
+                device_metrics=None,
+                cpu_elapsed=0.1,
+                device_elapsed=0.1,
+                device_status="failed",
+                device_returncode=1,
+                device_stderr="unsupported export request: backend unavailable\n",
             )
 
         self.assertEqual(preflight["status"], "failed")
@@ -554,13 +527,13 @@ class GdcBenchmarkTests(unittest.TestCase):
             source = root / "slide.svs"
             source.write_bytes(b"svs")
             slide = bench.Slide(
-                slide_id="tcga-a",
-                display_name="TCGA-A.svs",
+                slide_id="public-a",
+                display_name="PUBLIC-WSI-A.svs",
                 path=source,
                 download_dir=root,
                 relative_path="slide.svs",
                 gdc_file_id="file-id",
-                manifest_filename="file-id/TCGA-A.svs",
+                manifest_filename="file-id/PUBLIC-WSI-A.svs",
                 manifest_md5="abc",
                 manifest_size=3,
                 manifest_state="validated",

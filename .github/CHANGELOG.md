@@ -7,6 +7,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5] - 2026-08-30
+
+### Added
+
+- Added the versioned 2026c v2 workbench catalog, catalog-bound format-coverage manifests, and
+  deterministic synthetic negative-bench controls.
+- Added schema-validated aggregate publication results and a path-free publication freeze for
+  reproducible SVG, PNG, and DOCX generation.
+
+### Changed
+
+- Open each DICOM instance once for intrinsic validation and reuse captured facts for ordered
+  corpus checks.
+- Split conformance, negative-mutation, format-coverage, and manuscript responsibilities into
+  focused modules with shared typed spacing, plane-position, digest, and bounded-process owners.
+- Use `wsi-rs` as the owner of slide-candidate discovery and source micrometre calibration.
+
+### Fixed
+
+- Preserve unequal high-precision source axes without six-decimal round trips.
+- Keep default tests independent of private evidence, remote hosts, and full retained corpora.
+- Remove automatic private-inventory discovery and exclude operational paths and source identifiers
+  from public publication inputs.
+
 ## [0.7.4] - 2026-08-25
 
 ### Release engineering

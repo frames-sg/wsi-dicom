@@ -2,18 +2,18 @@ use std::path::PathBuf;
 
 use dicom_core::value::{PixelFragmentSequence, Value};
 use dicom_dictionary_std::tags;
+use dicom_object::DefaultDicomObject;
 
 use super::{failed_check, ValidationCheck, ValidationStatus};
 
 pub(super) fn run_intrinsic_pixel_structure_check(
     file: &PathBuf,
+    object: &DefaultDicomObject,
     max_frame_bytes: usize,
 ) -> ValidationCheck {
     let result = (|| -> Result<(), String> {
-        let object = dicom_object::open_file(file)
-            .map_err(|err| format!("failed to read DICOM file: {err}"))?;
         let transfer_syntax = object.meta().transfer_syntax.trim_end_matches('\0');
-        let frame_count = dicom_frame_count(&object)?;
+        let frame_count = dicom_frame_count(object)?;
         let pixel_data = object
             .element(tags::PIXEL_DATA)
             .map_err(|err| format!("failed to read Pixel Data: {err}"))?;
@@ -24,9 +24,9 @@ pub(super) fn run_intrinsic_pixel_structure_check(
                 if sequence.fragments().is_empty() {
                     return Err("compressed Pixel Data has no fragments".into());
                 }
-                let extended_offsets = optional_u64_values(&object, tags::EXTENDED_OFFSET_TABLE)?;
+                let extended_offsets = optional_u64_values(object, tags::EXTENDED_OFFSET_TABLE)?;
                 let extended_lengths =
-                    optional_u64_values(&object, tags::EXTENDED_OFFSET_TABLE_LENGTHS)?;
+                    optional_u64_values(object, tags::EXTENDED_OFFSET_TABLE_LENGTHS)?;
                 assemble_encapsulated_frames(
                     sequence,
                     frame_count,
@@ -48,6 +48,13 @@ pub(super) fn run_intrinsic_pixel_structure_check(
                 if bytes.is_empty() {
                     return Err("primitive Pixel Data is empty".into());
                 }
+                if primitive_pixel_data_contains_encapsulated_item_stream(&bytes)
+                    && !native_pixel_data_length_matches(object, frame_count, bytes.len())
+                {
+                    return Err(format!(
+                        "native transfer syntax {transfer_syntax} cannot contain an encapsulated item stream in Pixel Data"
+                    ));
+                }
             }
             (false, Value::PixelSequence(_)) => {
                 return Err(format!(
@@ -61,6 +68,7 @@ pub(super) fn run_intrinsic_pixel_structure_check(
 
     match result {
         Ok(()) => ValidationCheck {
+            execution: None,
             name: "intrinsic-pixel-structure".into(),
             path: Some(file.clone()),
             status: ValidationStatus::Passed,
@@ -71,6 +79,66 @@ pub(super) fn run_intrinsic_pixel_structure_check(
         },
         Err(message) => failed_check("intrinsic-pixel-structure", Some(file), message),
     }
+}
+
+fn native_pixel_data_length_matches(
+    object: &DefaultDicomObject,
+    frame_count: usize,
+    actual_bytes: usize,
+) -> bool {
+    let Some(rows) = positive_usize(object, tags::ROWS) else {
+        return false;
+    };
+    let Some(columns) = positive_usize(object, tags::COLUMNS) else {
+        return false;
+    };
+    let Some(samples_per_pixel) = positive_usize(object, tags::SAMPLES_PER_PIXEL) else {
+        return false;
+    };
+    let Some(bits_allocated) = positive_usize(object, tags::BITS_ALLOCATED) else {
+        return false;
+    };
+    let photometric = object
+        .element(tags::PHOTOMETRIC_INTERPRETATION)
+        .ok()
+        .and_then(|element| element.to_str().ok());
+    let samples_per_frame = if photometric
+        .as_deref()
+        .is_some_and(|value| value.trim() == "YBR_FULL_422")
+    {
+        columns
+            .checked_add(1)
+            .map(|value| value / 2)
+            .and_then(|pairs| pairs.checked_mul(4))
+            .and_then(|samples| samples.checked_mul(rows))
+    } else {
+        rows.checked_mul(columns)
+            .and_then(|value| value.checked_mul(samples_per_pixel))
+    };
+    let Some(sample_count) = samples_per_frame.and_then(|value| value.checked_mul(frame_count))
+    else {
+        return false;
+    };
+    let Some(total_bits) = sample_count.checked_mul(bits_allocated) else {
+        return false;
+    };
+    let Some(rounded_bits) = total_bits.checked_add(7) else {
+        return false;
+    };
+    let expected_bytes = rounded_bits / 8;
+    let Some(padded_bytes) = expected_bytes.checked_add(expected_bytes % 2) else {
+        return false;
+    };
+    actual_bytes == expected_bytes || actual_bytes == padded_bytes
+}
+
+fn positive_usize(object: &DefaultDicomObject, tag: dicom_core::Tag) -> Option<usize> {
+    object
+        .element(tag)
+        .ok()?
+        .to_int::<usize>()
+        .ok()
+        .filter(|value| *value > 0)
 }
 
 pub(super) fn dicom_frame_count(
@@ -88,6 +156,72 @@ pub(super) fn dicom_frame_count(
 
 fn pixel_data_transfer_syntax_is_compressed(transfer_syntax: &str) -> bool {
     transfer_syntax.starts_with("1.2.840.10008.1.2.4.") || transfer_syntax == "1.2.840.10008.1.2.5"
+}
+
+fn primitive_pixel_data_contains_encapsulated_item_stream(bytes: &[u8]) -> bool {
+    const ITEM_TAG: [u8; 4] = [0xFE, 0xFF, 0x00, 0xE0];
+    const SEQUENCE_DELIMITATION_TAG: [u8; 4] = [0xFE, 0xFF, 0xDD, 0xE0];
+    const ITEM_HEADER_BYTES: usize = 8;
+
+    // A malformed writer can assign a native transfer syntax and then serialize encapsulated
+    // items with a defined Pixel Data length. In that case the object parser exposes primitive
+    // bytes, so require a complete item-stream parse rather than relying on the first tag alone.
+    let Some(mut cursor) = item_end(bytes, 0) else {
+        return false;
+    };
+    let basic_offset_table_length = cursor - ITEM_HEADER_BYTES;
+    if !basic_offset_table_length.is_multiple_of(4) {
+        return false;
+    }
+
+    let mut fragment_count = 0_usize;
+    while cursor < bytes.len() {
+        if bytes[cursor..].starts_with(&ITEM_TAG) {
+            let Some(next_cursor) = item_end(bytes, cursor) else {
+                return false;
+            };
+            if !(next_cursor - cursor - ITEM_HEADER_BYTES).is_multiple_of(2) {
+                return false;
+            }
+            fragment_count += 1;
+            cursor = next_cursor;
+            continue;
+        }
+        if bytes[cursor..].starts_with(&SEQUENCE_DELIMITATION_TAG) {
+            let Some(header_end) = cursor.checked_add(ITEM_HEADER_BYTES) else {
+                return false;
+            };
+            if header_end != bytes.len() {
+                return false;
+            }
+            let Ok(length_bytes) = bytes[cursor + 4..header_end].try_into() else {
+                return false;
+            };
+            let length = u32::from_le_bytes(length_bytes);
+            return fragment_count > 0 && length == 0;
+        }
+        return false;
+    }
+
+    fragment_count > 0
+}
+
+fn item_end(bytes: &[u8], offset: usize) -> Option<usize> {
+    const ITEM_TAG: [u8; 4] = [0xFE, 0xFF, 0x00, 0xE0];
+    const ITEM_HEADER_BYTES: usize = 8;
+
+    let header_end = offset.checked_add(ITEM_HEADER_BYTES)?;
+    let header = bytes.get(offset..header_end)?;
+    if !header.starts_with(&ITEM_TAG) {
+        return None;
+    }
+    let length = u32::from_le_bytes(header[4..8].try_into().ok()?);
+    if length == u32::MAX {
+        return None;
+    }
+    header_end
+        .checked_add(usize::try_from(length).ok()?)
+        .filter(|end| *end <= bytes.len())
 }
 
 pub(super) fn optional_u64_values(
@@ -328,6 +462,11 @@ fn validate_and_visit_frame_span(
         return Err(format!("Pixel Data frame {frame_index} is empty"));
     }
     if output_len > assembled_len {
+        if end == start + 1 && output_len.checked_sub(assembled_len) == Some(8) {
+            return Err(format!(
+                "Pixel Data frame {frame_index} Extended Offset Table Lengths entry includes the 8-byte Item header; DICOM requires only Frame payload bytes"
+            ));
+        }
         return Err(format!(
             "Pixel Data frame {frame_index} declares {output_len} bytes but only {assembled_len} are available"
         ));
