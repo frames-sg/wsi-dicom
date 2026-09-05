@@ -112,6 +112,176 @@ fn multi_scene_multi_series_jobs_export_unique_instances() {
 }
 
 #[test]
+fn export_preserves_anisotropic_pixel_spacing_in_dicom_order() {
+    let mut properties = Properties::new();
+    properties.insert("openslide.vendor", "philips");
+    properties.insert("openslide.mpp-x", "0.25");
+    properties.insert("openslide.mpp-y", "0.5");
+    let dataset = Dataset::new(
+        DatasetId::new(8),
+        vec![Scene::new("scene-0", vec![one_pixel_series("series-0")])],
+    )
+    .with_properties(properties);
+    let slide = Slide::from_source_with_cache_bytes(Box::new(MultiSceneSource { dataset }), 0);
+    let output = tempfile::tempdir().unwrap();
+    let request = ExportRequest::new(
+        PathBuf::from("synthetic-anisotropic-spacing"),
+        output.path().to_path_buf(),
+        ExportOptions {
+            tile_size: 1,
+            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            ..ExportOptions::default()
+        },
+        ColorManagement::SourceOrSrgb,
+        MetadataSource::ResearchPlaceholder,
+    )
+    .unwrap();
+    let metadata = request.metadata.resolve().unwrap();
+    let options = NormalizedExportOptions::from_validated(&request.options);
+    let identity = DicomExportIdentity::from_seed("1.2.3".into(), "anisotropic-spacing".into());
+    let jobs = dicom_export_instance_jobs(&slide, &request).unwrap();
+
+    let reports =
+        export_dicom_instance_jobs(&slide, &request, &options, &metadata, &identity, &jobs)
+            .unwrap();
+
+    let object = dicom_object::open_file(&reports[0].path).unwrap();
+    let shared = object
+        .element(tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE)
+        .unwrap()
+        .items()
+        .unwrap();
+    let pixel_measures = shared[0]
+        .element(tags::PIXEL_MEASURES_SEQUENCE)
+        .unwrap()
+        .items()
+        .unwrap();
+    assert_eq!(
+        pixel_measures[0]
+            .element(tags::PIXEL_SPACING)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "0.0005\\0.00025"
+    );
+}
+
+#[test]
+fn export_writes_governed_spacing_when_source_calibration_is_missing() {
+    let dataset = Dataset::new(
+        DatasetId::new(12),
+        vec![Scene::new("scene-0", vec![one_pixel_series("series-0")])],
+    );
+    let slide = Slide::from_source_with_cache_bytes(Box::new(MultiSceneSource { dataset }), 0);
+    let output = tempfile::tempdir().unwrap();
+    let request = ExportRequest::new(
+        PathBuf::from("synthetic-supplied-spacing"),
+        output.path().to_path_buf(),
+        ExportOptions {
+            tile_size: 1,
+            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            source_pixel_spacing_mm: Some(SourcePixelSpacingMm::new(0.0006, 0.0004).unwrap()),
+            ..ExportOptions::default()
+        },
+        ColorManagement::SourceOrSrgb,
+        MetadataSource::ResearchPlaceholder,
+    )
+    .unwrap();
+    let metadata = request.metadata.resolve().unwrap();
+    let options = NormalizedExportOptions::from_validated(&request.options);
+    let identity = DicomExportIdentity::from_seed("1.2.3".into(), "supplied-spacing".into());
+    let jobs = dicom_export_instance_jobs(&slide, &request).unwrap();
+
+    let reports =
+        export_dicom_instance_jobs(&slide, &request, &options, &metadata, &identity, &jobs)
+            .unwrap();
+
+    let object = dicom_object::open_file(&reports[0].path).unwrap();
+    let shared = object
+        .element(tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE)
+        .unwrap()
+        .items()
+        .unwrap();
+    let pixel_measures = shared[0]
+        .element(tags::PIXEL_MEASURES_SEQUENCE)
+        .unwrap()
+        .items()
+        .unwrap();
+    assert_eq!(
+        pixel_measures[0]
+            .element(tags::PIXEL_SPACING)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "0.0006\\0.0004"
+    );
+}
+
+#[test]
+fn slide_spacing_uses_the_reader_owned_anisotropic_mpp() {
+    let mut properties = Properties::new();
+    properties.insert("openslide.vendor", "philips");
+    properties.insert("openslide.mpp-x", "0.226907");
+    properties.insert("openslide.mpp-y", "0.226891");
+    let dataset = Dataset::new(
+        DatasetId::new(9),
+        vec![Scene::new("scene-0", vec![one_pixel_series("series-0")])],
+    )
+    .with_properties(properties);
+    let slide = Slide::from_source_with_cache_bytes(Box::new(MultiSceneSource { dataset }), 0);
+    let level = &slide.dataset().scenes[0].series[0].levels[0];
+
+    assert_eq!(
+        level_pixel_spacing_mm(&slide, level, None).unwrap(),
+        Some((0.000226891, 0.000226907))
+    );
+}
+
+#[test]
+fn explicit_source_spacing_supplies_missing_metadata_and_scales_with_level() {
+    let mut series = one_pixel_series("series-0");
+    series.levels[0].downsample = 4.0;
+    let dataset = Dataset::new(
+        DatasetId::new(10),
+        vec![Scene::new("scene-0", vec![series])],
+    );
+    let slide = Slide::from_source_with_cache_bytes(Box::new(MultiSceneSource { dataset }), 0);
+    let level = &slide.dataset().scenes[0].series[0].levels[0];
+    let supplied =
+        SourcePixelSpacingMm::new(0.00034605325860336383, 0.0003460559834973875).unwrap();
+
+    assert_eq!(
+        level_pixel_spacing_mm(&slide, level, Some(supplied)).unwrap(),
+        Some((0.0013842130344134553, 0.00138422393398955))
+    );
+}
+
+#[test]
+fn explicit_source_spacing_rejects_a_conflicting_source_value() {
+    let mut properties = Properties::new();
+    properties.insert("openslide.mpp-x", "0.5");
+    properties.insert("openslide.mpp-y", "0.5");
+    let dataset = Dataset::new(
+        DatasetId::new(11),
+        vec![Scene::new("scene-0", vec![one_pixel_series("series-0")])],
+    )
+    .with_properties(properties);
+    let slide = Slide::from_source_with_cache_bytes(Box::new(MultiSceneSource { dataset }), 0);
+    let level = &slide.dataset().scenes[0].series[0].levels[0];
+    let supplied = SourcePixelSpacingMm::new(0.0006, 0.0006).unwrap();
+
+    let error = level_pixel_spacing_mm(&slide, level, Some(supplied)).unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("conflicts with source pixel spacing"));
+}
+
+#[test]
 fn preflight_accepts_same_axes_from_different_scenes_and_series() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source.dcm");

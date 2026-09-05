@@ -142,7 +142,9 @@ fn preflight_pixel_profile(
     let coordinate = job.coordinate;
     if let Ok(raw) = slide.read_raw_compressed_tile(&coordinate.tile_request(0, 0)) {
         if raw.compression() == Compression::Jpeg {
-            return super::pixel_profile_from_raw_jpeg_tile(&raw);
+            if let Ok(profile) = super::pixel_profile_from_raw_jpeg_tile(&raw) {
+                return Ok(profile);
+            }
         }
     }
     let tile = slide

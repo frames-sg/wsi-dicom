@@ -462,6 +462,36 @@ fn corpus_candidate_limits_apply_equally_to_direct_files_and_directories() {
 }
 
 #[test]
+fn corpus_candidate_discovery_matches_wsi_rs_entry_file_formats() {
+    let tmp = tempfile::tempdir().unwrap();
+    let supported = crate::export::corpus_discovery::BUILTIN_SLIDE_CANDIDATE_EXTENSIONS
+        .iter()
+        .map(|extension| format!("slide.{extension}"))
+        .collect::<Vec<_>>();
+    let companions_or_archives = ["frame_t.ets", "Data0001.dat", "tile.jpg", "slide.zip"];
+
+    for name in supported
+        .iter()
+        .map(String::as_str)
+        .chain(companions_or_archives)
+    {
+        std::fs::write(tmp.path().join(name), b"candidate").unwrap();
+    }
+    std::fs::write(tmp.path().join("uppercase.SVS"), b"candidate").unwrap();
+
+    let discovered = collect_wsi_candidate_paths(tmp.path(), supported.len() + 1, 64).unwrap();
+    let discovered_names = discovered
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    let mut expected_names = supported;
+    expected_names.push("uppercase.SVS".into());
+    expected_names.sort();
+    assert_eq!(discovered_names, expected_names);
+}
+
+#[test]
 fn profile_dicom_route_coverage_classifies_jpeg_fallback_without_decoding() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source.dcm");

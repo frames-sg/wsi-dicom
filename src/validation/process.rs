@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -9,6 +9,8 @@ use super::staged_dicom3tools_command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CommandOutcome {
+    pub(crate) return_code: Option<i32>,
+    pub(crate) elapsed_millis: u64,
     pub(crate) success: bool,
     pub(crate) timed_out: bool,
     pub(crate) stdout: String,
@@ -74,12 +76,48 @@ impl ValidationCommandRunner for SystemCommandRunner {
         let stdout_reader = read_child_pipe(stdout, max_output_bytes);
         let stderr_reader = read_child_pipe(stderr, max_output_bytes);
         let started = Instant::now();
+        let mut child_status: Option<ExitStatus> = None;
         loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
+            if child_status.is_none() {
+                match child.try_wait() {
+                    Ok(Some(status)) => child_status = Some(status),
+                    Ok(None) => {}
+                    Err(err) => {
+                        let mut cleanup_errors = Vec::new();
+                        if let Err(cleanup_err) = terminate_validation_process_tree(&mut child) {
+                            cleanup_errors.push(format!("terminate process tree: {cleanup_err}"));
+                        }
+                        if let Err(cleanup_err) = child.wait() {
+                            cleanup_errors.push(format!("wait for child: {cleanup_err}"));
+                        }
+                        if cleanup_errors.is_empty() {
+                            if let Err(cleanup_err) =
+                                collect_child_pipes(stdout_reader, stderr_reader)
+                            {
+                                cleanup_errors.push(format!("collect child output: {cleanup_err}"));
+                            }
+                        }
+                        if cleanup_errors.is_empty() {
+                            return Err(err);
+                        }
+                        return Err(io::Error::new(
+                            err.kind(),
+                            format!(
+                                "{err}; cleanup after child wait failure also failed: {}",
+                                cleanup_errors.join("; ")
+                            ),
+                        ));
+                    }
+                }
+            }
+            if let Some(status) = child_status.as_ref() {
+                if stdout_reader.is_finished() && stderr_reader.is_finished() {
                     let (stdout, stderr, stdout_truncated, stderr_truncated) =
                         collect_child_pipes(stdout_reader, stderr_reader)?;
                     return Ok(CommandOutcome {
+                        return_code: status.code(),
+                        elapsed_millis: u64::try_from(started.elapsed().as_millis())
+                            .unwrap_or(u64::MAX),
                         success: status.success(),
                         timed_out: false,
                         stdout,
@@ -88,36 +126,16 @@ impl ValidationCommandRunner for SystemCommandRunner {
                         stderr_truncated,
                     });
                 }
-                Ok(None) => {}
-                Err(err) => {
-                    let mut cleanup_errors = Vec::new();
-                    if let Err(cleanup_err) = terminate_validation_process_tree(&mut child) {
-                        cleanup_errors.push(format!("terminate process tree: {cleanup_err}"));
-                    }
-                    if let Err(cleanup_err) = child.wait() {
-                        cleanup_errors.push(format!("wait for child: {cleanup_err}"));
-                    }
-                    if let Err(cleanup_err) = collect_child_pipes(stdout_reader, stderr_reader) {
-                        cleanup_errors.push(format!("collect child output: {cleanup_err}"));
-                    }
-                    if cleanup_errors.is_empty() {
-                        return Err(err);
-                    }
-                    return Err(io::Error::new(
-                        err.kind(),
-                        format!(
-                            "{err}; cleanup after child wait failure also failed: {}",
-                            cleanup_errors.join("; ")
-                        ),
-                    ));
-                }
             }
             if started.elapsed() >= timeout {
                 terminate_validation_process_tree(&mut child)?;
-                child.wait()?;
+                let status = child.wait()?;
                 let (stdout, stderr, stdout_truncated, stderr_truncated) =
                     collect_child_pipes(stdout_reader, stderr_reader)?;
                 return Ok(CommandOutcome {
+                    return_code: status.code(),
+                    elapsed_millis: u64::try_from(started.elapsed().as_millis())
+                        .unwrap_or(u64::MAX),
                     success: false,
                     timed_out: true,
                     stdout,

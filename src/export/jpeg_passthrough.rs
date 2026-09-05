@@ -138,7 +138,9 @@ pub(super) fn try_plan_direct_jpeg_passthrough_frames(
                         Some(raw) => raw,
                         None => return Ok(None),
                     };
-                let profile = pixel_profile_from_raw_jpeg_tile(&raw)?;
+                let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&raw) else {
+                    return Ok(None);
+                };
                 if !raw_jpeg_profile_can_passthrough(profile, allow_raw_rgb_passthrough) {
                     return Ok(None);
                 }

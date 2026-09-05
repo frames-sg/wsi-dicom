@@ -236,14 +236,16 @@ pub(super) fn plan_jpeg_baseline_row(
                     request.grid.frame_rows,
                 ) =>
             {
-                let profile = pixel_profile_from_raw_jpeg_tile(&raw)?;
-                if raw_jpeg_profile_can_passthrough(profile, request.allow_raw_rgb_passthrough) {
-                    planned.push(JpegBaselinePlannedFrame::Passthrough {
-                        uncompressed_bytes: uncompressed_frame_bytes(&raw)?,
-                        data: raw.into_data(),
-                        profile,
-                    });
-                    continue;
+                if let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&raw) {
+                    if raw_jpeg_profile_can_passthrough(profile, request.allow_raw_rgb_passthrough)
+                    {
+                        planned.push(JpegBaselinePlannedFrame::Passthrough {
+                            uncompressed_bytes: uncompressed_frame_bytes(&raw)?,
+                            data: raw.into_data(),
+                            profile,
+                        });
+                        continue;
+                    }
                 }
             }
             Ok(raw) if raw.compression() == Compression::Jpeg => {
@@ -270,16 +272,19 @@ pub(super) fn plan_jpeg_baseline_row(
                 request.grid.frame_rows,
             )? {
                 RawJpegRetileProbe::Accepted(retiled) => {
-                    let profile = pixel_profile_from_raw_jpeg_tile(&retiled.raw)?;
-                    if raw_jpeg_profile_can_passthrough(profile, request.allow_raw_rgb_passthrough)
-                    {
-                        planned.push(JpegBaselinePlannedFrame::Retile {
-                            uncompressed_bytes: uncompressed_frame_bytes(&retiled.raw)?,
-                            data: retiled.raw.into_data(),
+                    if let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&retiled.raw) {
+                        if raw_jpeg_profile_can_passthrough(
                             profile,
-                            retile_duration: retiled.duration,
-                        });
-                        continue;
+                            request.allow_raw_rgb_passthrough,
+                        ) {
+                            planned.push(JpegBaselinePlannedFrame::Retile {
+                                uncompressed_bytes: uncompressed_frame_bytes(&retiled.raw)?,
+                                data: retiled.raw.into_data(),
+                                profile,
+                                retile_duration: retiled.duration,
+                            });
+                            continue;
+                        }
                     }
                     retile_rejections.push(JpegRetileRejectionReason::ProfileUnsupported);
                 }

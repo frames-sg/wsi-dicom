@@ -121,13 +121,17 @@ pub(crate) fn dicom_fragment_payload_without_padding(fragment: &[u8]) -> &[u8] {
 }
 
 pub(crate) fn assert_htj2k_rpcl_codestream(codestream: &[u8]) {
-    let cod_offset = codestream
-        .windows(2)
-        .position(|window| window == [0xFF, 0x52])
-        .expect("COD marker");
+    let cod_offset = j2k_cod_marker_offset(codestream);
     assert_eq!(codestream[cod_offset + 5], 0x02);
     assert!(codestream.windows(2).any(|window| window == [0xFF, 0x50]));
     assert!(codestream.windows(2).any(|window| window == [0xFF, 0x55]));
+}
+
+pub(crate) fn j2k_cod_marker_offset(codestream: &[u8]) -> usize {
+    codestream
+        .windows(2)
+        .position(|window| window == [0xFF, 0x52])
+        .expect("COD marker")
 }
 
 pub(crate) fn write_tiled_jpeg_tiff(

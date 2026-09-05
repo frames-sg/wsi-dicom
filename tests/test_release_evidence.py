@@ -13,6 +13,24 @@ NOTES_SCRIPT = REPO_ROOT / "scripts" / "extract-release-notes.py"
 CHECKSUM_SCRIPT = REPO_ROOT / "scripts" / "verify-registry-checksum.py"
 
 
+def run_checksum_verification(candidate, registry):
+    return subprocess.run(
+        [
+            str(CHECKSUM_SCRIPT),
+            "--candidate",
+            str(candidate),
+            "--version",
+            "0.7.2",
+            "--registry-json",
+            str(registry),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 class ReleaseEvidenceTests(unittest.TestCase):
     def test_metadata_and_evidence_bind_artifact_sbom_and_validation(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -139,41 +157,13 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 json.dumps({"version": {"num": "0.7.2", "checksum": digest}}),
                 encoding="utf-8",
             )
-            good = subprocess.run(
-                [
-                    str(CHECKSUM_SCRIPT),
-                    "--candidate",
-                    str(candidate),
-                    "--version",
-                    "0.7.2",
-                    "--registry-json",
-                    str(registry),
-                ],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            good = run_checksum_verification(candidate, registry)
             self.assertEqual(good.returncode, 0, good.stderr)
             registry.write_text(
                 json.dumps({"version": {"num": "0.7.2", "checksum": "0" * 64}}),
                 encoding="utf-8",
             )
-            bad = subprocess.run(
-                [
-                    str(CHECKSUM_SCRIPT),
-                    "--candidate",
-                    str(candidate),
-                    "--version",
-                    "0.7.2",
-                    "--registry-json",
-                    str(registry),
-                ],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            bad = run_checksum_verification(candidate, registry)
             self.assertNotEqual(bad.returncode, 0)
             self.assertIn("checksum mismatch", bad.stderr)
 

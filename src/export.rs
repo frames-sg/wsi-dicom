@@ -37,6 +37,8 @@ use crate::metadata::DicomMetadata;
 #[cfg(test)]
 use crate::metadata::MetadataSource;
 #[cfg(test)]
+use crate::options::SourcePixelSpacingMm;
+#[cfg(test)]
 use crate::options::{
     CodecValidation, EncodeBackendPreference, ExportOptions, JpegDirectHtj2kProfile,
 };
@@ -72,6 +74,7 @@ mod j2k_direct_htj2k;
 mod j2k_policy;
 mod jobs;
 mod jpeg_baseline;
+mod jpeg_baseline_frames;
 mod jpeg_baseline_instance;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod jpeg_baseline_metal;
@@ -207,16 +210,50 @@ pub(super) struct InstanceExportContext<'a> {
     pub(super) level: &'a wsi_rs::Level,
 }
 
-fn level_pixel_spacing_mm(slide: &Slide, level: &wsi_rs::Level) -> Option<(f64, f64)> {
-    let (mpp_x, mpp_y) = slide.dataset().properties.mpp()?;
+fn level_pixel_spacing_mm(
+    slide: &Slide,
+    level: &wsi_rs::Level,
+    supplied: Option<crate::options::SourcePixelSpacingMm>,
+) -> Result<Option<(f64, f64)>, Error> {
+    let properties = &slide.dataset().properties;
+    let source = properties
+        .mpp()
+        .map(|(mpp_x, mpp_y)| (mpp_y / 1000.0, mpp_x / 1000.0));
+    let supplied = supplied.map(|spacing| (spacing.row, spacing.column));
+    let base_spacing = match (source, supplied) {
+        (Some(source), Some(supplied)) if !spacing_pairs_match(source, supplied) => {
+            return Err(Error::Metadata {
+                reason: format!(
+                    "supplied source_pixel_spacing_mm row={} column={} conflicts with source pixel spacing row={} column={}",
+                    supplied.0, supplied.1, source.0, source.1
+                ),
+            });
+        }
+        (Some(source), _) => source,
+        (None, Some(supplied)) => supplied,
+        (None, None) => return Ok(None),
+    };
     let downsample = level.downsample;
-    if !(mpp_x.is_finite() && mpp_y.is_finite() && downsample.is_finite()) {
-        return None;
+    if !(base_spacing.0.is_finite() && base_spacing.1.is_finite() && downsample.is_finite()) {
+        return Ok(None);
     }
-    if mpp_x <= 0.0 || mpp_y <= 0.0 || downsample <= 0.0 {
-        return None;
+    if base_spacing.0 <= 0.0 || base_spacing.1 <= 0.0 || downsample <= 0.0 {
+        return Ok(None);
     }
-    Some((mpp_y * downsample / 1000.0, mpp_x * downsample / 1000.0))
+    Ok(Some((
+        base_spacing.0 * downsample,
+        base_spacing.1 * downsample,
+    )))
+}
+
+fn spacing_pairs_match(left: (f64, f64), right: (f64, f64)) -> bool {
+    [left.0, left.1]
+        .into_iter()
+        .zip([right.0, right.1])
+        .all(|(left, right)| {
+            let scale = left.abs().max(right.abs()).max(f64::MIN_POSITIVE);
+            (left - right).abs() <= scale * 1e-9
+        })
 }
 
 fn require_pixel_spacing_mm(pixel_spacing_mm: Option<(f64, f64)>) -> Result<(f64, f64), Error> {

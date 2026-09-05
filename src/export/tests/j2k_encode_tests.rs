@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::j2k_cod_marker_offset;
 
 fn raw_compressed_tile(
     compression: Compression,
@@ -241,10 +242,7 @@ fn dicom_htj2k_rpcl_encode_writes_tlm_marker() {
     )
     .unwrap();
 
-    let cod_offset = codestream
-        .windows(2)
-        .position(|window| window == [0xFF, 0x52])
-        .expect("COD marker");
+    let cod_offset = j2k_cod_marker_offset(&codestream);
     assert_eq!(codestream[cod_offset + 5], 0x02);
     assert!(codestream.windows(2).any(|window| window == [0xFF, 0x55]));
     assert_j2k_facade_roundtrip(samples, &codestream);

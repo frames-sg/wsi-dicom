@@ -1,0 +1,4007 @@
+{
+  "authorship": {
+    "independent_second_person_retention_review": "not_completed",
+    "mutation_implementation": "repository-authored deterministic generator"
+  },
+  "challenge_id": "wsi-dicom-negative-bench-v3",
+  "cohorts": {
+    "compound": "separate-future-robustness-cohort",
+    "controls": "core-profile-controls-v1",
+    "development": "development-v1",
+    "evaluation": "core-profile-evaluation-v2",
+    "private_holdout": "separate-future-replication"
+  },
+  "compound_cases": [],
+  "control_generation": {
+    "commands": [
+      ".venv-bench/bin/python bench/negative_bench/build_core_profile_controls.py bench/negative_bench/controls-v2 bench/negative_bench/controls-v4"
+    ],
+    "synthetic_source": "fresh deterministic derivatives of the sealed PHI-free 4x4 research fixtures"
+  },
+  "core_profile": {
+    "path": "rules/wsi-dicom-core-profile-2026c-v2.json",
+    "profile_id": "wsi-dicom-core-profile-2026c-v2"
+  },
+  "created_date": "2026-09-04",
+  "development_cases": [
+    {
+      "case_id": "DEV-ICC-001",
+      "mutation": "ICC device class scnr to mntr",
+      "rule_id": "intrinsic-wsi-dicom-2026c-icc-profile",
+      "test": "src/validation/tests/conformance.rs::intrinsic_wsi_icc_rule_fails_even_when_external_validators_pass"
+    },
+    {
+      "case_id": "DEV-MONO-001",
+      "mutation": "Photometric Interpretation to MONOCHROME2 without identity presentation metadata",
+      "rule_id": "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+      "test": "src/validation/tests/conformance.rs::versioned_intrinsic_wsi_rules_reject_targeted_metadata_mutations"
+    },
+    {
+      "case_id": "DEV-LOSSY-001",
+      "mutation": "Lossy Image Compression to 01 without method/ratio",
+      "rule_id": "intrinsic-wsi-dicom-2026c-lossy-history",
+      "test": "src/validation/tests/conformance.rs::versioned_intrinsic_wsi_rules_reject_targeted_metadata_mutations"
+    },
+    {
+      "case_id": "DEV-SPEC-001",
+      "mutation": "Specimen UID to invalid-uid",
+      "rule_id": "intrinsic-wsi-dicom-2026c-specimen-identity",
+      "test": "src/validation/tests/conformance.rs::versioned_intrinsic_wsi_rules_reject_targeted_metadata_mutations"
+    },
+    {
+      "case_id": "DEV-DIM-001",
+      "mutation": "swap row and column Dimension Index Sequence items",
+      "rule_id": "intrinsic-wsi-dicom-2026c-dimension-order",
+      "test": "src/validation/tests/conformance.rs::versioned_intrinsic_wsi_rules_reject_targeted_metadata_mutations"
+    },
+    {
+      "case_id": "DEV-SPECSET-001",
+      "mutation": "same Specimen UID with conflicting identifier",
+      "rule_id": "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+      "test": "src/validation/tests/conformance.rs::specimen_uid_set_rule_rejects_conflicting_identifier_scope"
+    },
+    {
+      "case_id": "DEV-PIX-001",
+      "mutation": "native transfer syntax with encapsulated Pixel Data",
+      "rule_id": "intrinsic-wsi-dicom-2026c-pixel-structure",
+      "test": "src/validation/tests/conformance.rs::inverse_transfer_syntax_pixel_data_mismatch_is_intrinsically_invalid"
+    },
+    {
+      "case_id": "DEV-PIX-002",
+      "mutation": "compressed transfer syntax with primitive Pixel Data",
+      "rule_id": "intrinsic-wsi-dicom-2026c-pixel-structure",
+      "test": "tests/cli_e2e.rs::shipped_binary_rejects_malformed_compressed_pixel_data_without_external_tools"
+    },
+    {
+      "case_id": "DEV-PYRAMID-001",
+      "mutation": "shared Pyramid UID with inconsistent physical extent",
+      "rule_id": "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+      "test": "src/validation/tests/conformance.rs::pyramid_geometry_rule_rejects_inconsistent_physical_extent"
+    },
+    {
+      "case_id": "DEV-SOURCE-001",
+      "mutation": "self-referential Source Image Sequence",
+      "rule_id": "intrinsic-wsi-dicom-2026c-source-relationship",
+      "test": "src/validation/tests/conformance.rs::source_relationship_rule_rejects_self_reference"
+    }
+  ],
+  "dicom_edition": "2026c",
+  "evaluation_cases": [
+    {
+      "adjudicated_cascade_rules": [
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "adjudication_rationale": "The declared frame count cannot be reconciled with encapsulated frames or tiled geometry.",
+      "case_id": "NB-PX-001",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-PX-001",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.5",
+        "section": "8.2 and A.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part05/sect_A.4.html"
+      },
+      "domain": "pixel",
+      "exact_attributes_or_bytes_changed": "Set Number of Frames from 16 to 17 without adding a frame, functional-group item, or offset entry.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-tile-geometry"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "number_of_frames_plus_one",
+      "mutation_parameters": {
+        "value": 17
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP04-J2K-LOSSLESS-16F"
+      ],
+      "source_control_sha256": "b78edf044dec45e9ef9c60e59bed97461af0c29bd2deaacf8188c8c1192295aa"
+    },
+    {
+      "adjudicated_cascade_rules": [
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "adjudication_rationale": "A compressed multi-frame object contains no frame fragment.",
+      "case_id": "NB-PX-002",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-PX-002",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.5",
+        "section": "8.2 and A.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part05/sect_A.4.html"
+      },
+      "domain": "pixel",
+      "exact_attributes_or_bytes_changed": "Replace Pixel Data with an empty Basic Offset Table and sequence delimiter; remove both extended offset tables.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-pixel-structure"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter_or_codec",
+      "mutation_name": "encapsulated_pixel_data_without_fragments",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP02-JPEG-16F"
+      ],
+      "source_control_sha256": "fadcb381180cd832d6e1185ca3c0896b8274250a359c4bef4c452f8714dc24bc"
+    },
+    {
+      "adjudicated_cascade_rules": [
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "adjudication_rationale": "The first Basic Offset Table entry must address the first frame item.",
+      "case_id": "NB-PX-003",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-PX-003",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.5",
+        "section": "8.2 and A.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part05/sect_A.4.html"
+      },
+      "domain": "pixel",
+      "exact_attributes_or_bytes_changed": "Re-encapsulate unchanged frames with a BOT and change its first offset from 0 to 8; remove EOT and EOT Lengths.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-pixel-structure"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "basic_offset_table_nonzero_origin",
+      "mutation_parameters": {
+        "first_offset": 8
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP05-J2K-LOSSY-4F"
+      ],
+      "source_control_sha256": "8adc28a18c071be30ef22f2eed21cca4f91a412979fc87bbd53ea0bdc0051679"
+    },
+    {
+      "adjudicated_cascade_rules": [
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "adjudication_rationale": "An extended frame offset no longer identifies an item boundary.",
+      "case_id": "NB-PX-004",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-PX-004",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.5",
+        "section": "8.2 and A.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part05/sect_A.4.html"
+      },
+      "domain": "pixel",
+      "exact_attributes_or_bytes_changed": "Add one byte to a seed-selected nonzero Extended Offset Table entry, moving it off a fragment boundary.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-pixel-structure"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "extended_offset_not_fragment_boundary",
+      "mutation_parameters": {
+        "delta": 1,
+        "entry_index_candidates": [
+          1,
+          2,
+          3
+        ]
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP07-HTJ2K-RPCL-4F"
+      ],
+      "source_control_sha256": "266c48733a55e7ee37dc0395eab03a65c61d4bc0d69630cb838e3da4fc8bab67"
+    },
+    {
+      "adjudicated_cascade_rules": [
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "adjudication_rationale": "The recorded frame length includes bytes outside the compressed frame value.",
+      "case_id": "NB-PX-005",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-PX-005",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.5",
+        "section": "8.2 and A.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part05/sect_A.4.html"
+      },
+      "domain": "pixel",
+      "exact_attributes_or_bytes_changed": "Add eight bytes to a seed-selected Extended Offset Table Lengths entry.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-pixel-structure"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "extended_length_includes_item_header",
+      "mutation_parameters": {
+        "delta": 8,
+        "entry_index_candidates": [
+          0,
+          7,
+          15
+        ]
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP06-HTJ2K-LOSSLESS-16F"
+      ],
+      "source_control_sha256": "e3f3049b5ae22c06c71369ffb09b1ad5e2667f4708b69fcf03c17b84c89fc0cb"
+    },
+    {
+      "adjudication_rationale": "The selected frame has an incomplete main header and is independently undecodable.",
+      "case_id": "NB-PX-006",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-PX-006",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.5",
+        "section": "8.2 and A.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part05/sect_A.4.html"
+      },
+      "domain": "pixel",
+      "exact_attributes_or_bytes_changed": "Retain only four bytes of a seed-selected HTJ2K codestream and re-encapsulate all frames.",
+      "expected_failing_rules": [
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry"
+      ],
+      "likely_fix_owner": "codec_or_converter",
+      "mutation_name": "truncate_first_codestream",
+      "mutation_parameters": {
+        "frame_index_candidates": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "retain_prefix_bytes": 4
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP08-HTJ2K-LOSSY-4F"
+      ],
+      "source_control_sha256": "fe60e21918c179014dd91d5cb8809b873cfbd6ac92ab60f4403b16939bd32bc5"
+    },
+    {
+      "adjudication_rationale": "Native transfer syntax and encapsulated Pixel Data representation contradict each other.",
+      "case_id": "NB-PX-007",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-PX-007",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.5",
+        "section": "8.2 and A.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part05/sect_A.4.html"
+      },
+      "domain": "pixel",
+      "exact_attributes_or_bytes_changed": "Encapsulate the unchanged native frames while retaining Explicit VR Little Endian Transfer Syntax.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-pixel-structure"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "native_transfer_syntax_with_encapsulation",
+      "mutation_parameters": {
+        "transfer_syntax_uid": "1.2.840.10008.1.2.1"
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP10-EVRLE-16F"
+      ],
+      "source_control_sha256": "50e5c186537403aab74aaafac588ace819b1b68c3300c699b916aedc6bc7d62d"
+    },
+    {
+      "adjudication_rationale": "Row must be the slower-varying dimension before column.",
+      "case_id": "NB-GE-001",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-GE-001",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.6 and C.7.6.17",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.6.html"
+      },
+      "domain": "geometry",
+      "exact_attributes_or_bytes_changed": "Swap the row and column Dimension Index Sequence items.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-dimension-order"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "swap_row_column_dimension_indices",
+      "mutation_parameters": {},
+      "operational_severity": "major",
+      "source_control_ids": [
+        "CP07-HTJ2K-RPCL-4F"
+      ],
+      "source_control_sha256": "266c48733a55e7ee37dc0395eab03a65c61d4bc0d69630cb838e3da4fc8bab67"
+    },
+    {
+      "adjudication_rationale": "Dimension indices disagree with the slide-coordinate tile position.",
+      "case_id": "NB-GE-002",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-GE-002",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.6 and C.7.6.17",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.6.html"
+      },
+      "domain": "geometry",
+      "exact_attributes_or_bytes_changed": "Set a seed-selected non-origin frame Dimension Index Values to [1,1] without moving the frame.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-dimension-order"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "incorrect_frame_dimension_index",
+      "mutation_parameters": {
+        "frame_index_candidates": [
+          5,
+          10,
+          15
+        ],
+        "value": [
+          1,
+          1
+        ]
+      },
+      "operational_severity": "major",
+      "source_control_ids": [
+        "CP04-J2K-LOSSLESS-16F"
+      ],
+      "source_control_sha256": "b78edf044dec45e9ef9c60e59bed97461af0c29bd2deaacf8188c8c1192295aa"
+    },
+    {
+      "adjudication_rationale": "Two frames claim the same TILED_FULL tile position.",
+      "case_id": "NB-GE-003",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-GE-003",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.6 and C.7.6.17",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.6.html"
+      },
+      "domain": "geometry",
+      "exact_attributes_or_bytes_changed": "Copy frame zero plane position and dimension values to a seed-selected different frame.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-tile-geometry"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "duplicate_tile_position",
+      "mutation_parameters": {
+        "frame_index_candidates": [
+          1,
+          2,
+          3
+        ],
+        "source_frame_index": 0
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP08-HTJ2K-LOSSY-4F"
+      ],
+      "source_control_sha256": "fe60e21918c179014dd91d5cb8809b873cfbd6ac92ab60f4403b16939bd32bc5"
+    },
+    {
+      "adjudication_rationale": "The declared full tiling omits a required position.",
+      "case_id": "NB-GE-004",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-GE-004",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.6 and C.7.6.17",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.6.html"
+      },
+      "domain": "geometry",
+      "exact_attributes_or_bytes_changed": "Remove one seed-selected frame and its functional-group item while retaining the TILED_FULL matrix.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-tile-geometry"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "missing_tile",
+      "mutation_parameters": {
+        "frame_index_candidates": [
+          0,
+          7,
+          15
+        ]
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP02-JPEG-16F"
+      ],
+      "source_control_sha256": "fadcb381180cd832d6e1185ca3c0896b8274250a359c4bef4c452f8714dc24bc"
+    },
+    {
+      "adjudication_rationale": "A tile position lies outside the Total Pixel Matrix.",
+      "case_id": "NB-GE-005",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-GE-005",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.6 and C.7.6.17",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.6.html"
+      },
+      "domain": "geometry",
+      "exact_attributes_or_bytes_changed": "Move a seed-selected frame to row position 5 in a four-row matrix and update its row dimension index to 5.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-tile-geometry"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "out_of_range_tile_position",
+      "mutation_parameters": {
+        "frame_index_candidates": [
+          3,
+          7,
+          11,
+          15
+        ],
+        "row_dimension_index": 5,
+        "row_position": 5
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP06-HTJ2K-LOSSLESS-16F"
+      ],
+      "source_control_sha256": "e3f3049b5ae22c06c71369ffb09b1ad5e2667f4708b69fcf03c17b84c89fc0cb"
+    },
+    {
+      "adjudication_rationale": "The spacing axes now contradict the physical extent metadata.",
+      "case_id": "NB-GE-006",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-GE-006",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.6 and C.7.6.17",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.6.html"
+      },
+      "domain": "geometry",
+      "exact_attributes_or_bytes_changed": "Swap the valid anisotropic row and column Pixel Spacing values without changing Imaged Volume Width or Height.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-tile-geometry"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "metadata_or_converter",
+      "mutation_name": "swap_anisotropic_pixel_spacing",
+      "mutation_parameters": {
+        "pixel_spacing": [
+          "0.00025",
+          "0.0005"
+        ]
+      },
+      "operational_severity": "major",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "Existing frame coverage exceeds the declared total matrix.",
+      "case_id": "NB-GE-007",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-GE-007",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.6 and C.7.6.17",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.6.html"
+      },
+      "domain": "geometry",
+      "exact_attributes_or_bytes_changed": "Reduce Total Pixel Matrix Columns from 4 to 3 without changing frames or positions.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-tile-geometry"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "total_matrix_too_small",
+      "mutation_parameters": {
+        "value": 3
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP09-J2K-LOSSLESS-4F"
+      ],
+      "source_control_sha256": "3a81d0a506f967c25e807b758a34056a38a646f42c5141ece8afcb2e97f3de66"
+    },
+    {
+      "adjudication_rationale": "Objects in one pyramid describe materially different physical extents while remaining individually self-consistent.",
+      "case_id": "NB-GE-008",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-GE-008",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.6 and C.7.6.17",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.6.html"
+      },
+      "domain": "geometry",
+      "exact_attributes_or_bytes_changed": "Create a second uniquely identified object with the same Pyramid UID and change only its spacing and matching imaged-volume dimensions.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "inconsistent_pyramid_physical_extent",
+      "mutation_parameters": {
+        "second_pixel_spacing": [
+          "0.001",
+          "0.001"
+        ]
+      },
+      "operational_severity": "major",
+      "source_control_ids": [
+        "CP09-J2K-LOSSLESS-4F"
+      ],
+      "source_control_sha256": "3a81d0a506f967c25e807b758a34056a38a646f42c5141ece8afcb2e97f3de66"
+    },
+    {
+      "adjudication_rationale": "A color VL WSI optical path lacks its required input profile.",
+      "case_id": "NB-CO-001",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-CO-001",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.11.15 and C.8.12.5",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.11.15.html"
+      },
+      "domain": "color",
+      "exact_attributes_or_bytes_changed": "Remove ICC Profile from the sole color Optical Path Sequence item.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-icc-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter_or_scanner_metadata",
+      "mutation_name": "remove_required_icc",
+      "mutation_parameters": {
+        "optical_path_index": 0
+      },
+      "operational_severity": "major",
+      "source_control_ids": [
+        "CP03-JPEG-1F"
+      ],
+      "source_control_sha256": "6fcd33f71cfb85f30098f9487a5b6a67c1bafad31bd6eb84f2affae12a089755"
+    },
+    {
+      "adjudication_rationale": "The ICC header and declared profile size cannot be parsed.",
+      "case_id": "NB-CO-002",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-CO-002",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.11.15 and C.8.12.5",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.11.15.html"
+      },
+      "domain": "color",
+      "exact_attributes_or_bytes_changed": "Truncate the ICC Profile from 612 bytes to 64 bytes.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-icc-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "truncate_icc_header",
+      "mutation_parameters": {
+        "length": 64
+      },
+      "operational_severity": "major",
+      "source_control_ids": [
+        "CP03-JPEG-1F"
+      ],
+      "source_control_sha256": "6fcd33f71cfb85f30098f9487a5b6a67c1bafad31bd6eb84f2affae12a089755"
+    },
+    {
+      "adjudication_rationale": "A display-device profile is not a valid WSI input-device profile.",
+      "case_id": "NB-CO-003",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-CO-003",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.11.15 and C.8.12.5",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.11.15.html"
+      },
+      "domain": "color",
+      "exact_attributes_or_bytes_changed": "Patch ICC bytes 12..16 from scanner/input class 'scnr' to monitor class 'mntr'.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-icc-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "profile_supplier_or_converter",
+      "mutation_name": "wrong_icc_device_class",
+      "mutation_parameters": {
+        "after_hex": "6d6e7472",
+        "before_hex": "73636e72",
+        "offset": 12
+      },
+      "operational_severity": "major",
+      "source_control_ids": [
+        "CP07-HTJ2K-RPCL-4F"
+      ],
+      "source_control_sha256": "266c48733a55e7ee37dc0395eab03a65c61d4bc0d69630cb838e3da4fc8bab67"
+    },
+    {
+      "adjudication_rationale": "The embedded input color space contradicts three-sample color image metadata.",
+      "case_id": "NB-CO-004",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-CO-004",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.11.15 and C.8.12.5",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.11.15.html"
+      },
+      "domain": "color",
+      "exact_attributes_or_bytes_changed": "Patch ICC input color-space bytes 16..20 from 'RGB ' to 'GRAY'.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-icc-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "profile_supplier_or_converter",
+      "mutation_name": "inconsistent_icc_input_color_space",
+      "mutation_parameters": {
+        "after_hex": "47524159",
+        "before_hex": "52474220",
+        "offset": 16
+      },
+      "operational_severity": "major",
+      "source_control_ids": [
+        "CP05-J2K-LOSSY-4F"
+      ],
+      "source_control_sha256": "8adc28a18c071be30ef22f2eed21cca4f91a412979fc87bbd53ea0bdc0051679"
+    },
+    {
+      "adjudication_rationale": "The image no longer identifies the imaged specimen.",
+      "case_id": "NB-ID-001",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-ID-001",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.1, C.7.6.22, and C.12.1",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.22.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Remove Specimen Description Sequence.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-specimen-container"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "metadata_mapping",
+      "mutation_name": "remove_specimen_description",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP10-EVRLE-16F"
+      ],
+      "source_control_sha256": "50e5c186537403aab74aaafac588ace819b1b68c3300c699b916aedc6bc7d62d"
+    },
+    {
+      "adjudication_rationale": "The specimen item lacks its required human-readable identifier.",
+      "case_id": "NB-ID-002",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-ID-002",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.1, C.7.6.22, and C.12.1",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.22.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Remove Specimen Identifier from the sole specimen item.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "metadata_mapping",
+      "mutation_name": "remove_specimen_identifier",
+      "mutation_parameters": {
+        "specimen_index": 0
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP04-J2K-LOSSLESS-16F"
+      ],
+      "source_control_sha256": "b78edf044dec45e9ef9c60e59bed97461af0c29bd2deaacf8188c8c1192295aa"
+    },
+    {
+      "adjudication_rationale": "One Specimen UID maps to conflicting identities within the evaluated set.",
+      "case_id": "NB-ID-003",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-ID-003",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.1, C.7.6.22, and C.12.1",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.22.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Create two unique SOP instances with one Specimen UID but different Specimen Identifiers.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "metadata_mapping",
+      "mutation_name": "conflicting_specimen_uid_scope",
+      "mutation_parameters": {
+        "second_specimen_identifier": "CONFLICTING-SPECIMEN"
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP09-J2K-LOSSLESS-4F"
+      ],
+      "source_control_sha256": "3a81d0a506f967c25e807b758a34056a38a646f42c5141ece8afcb2e97f3de66"
+    },
+    {
+      "adjudication_rationale": "File Meta and data-set identities refer to different stored objects.",
+      "case_id": "NB-ID-004",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-ID-004",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.1, C.7.6.22, and C.12.1",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.22.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Patch the raw File Meta Media Storage SOP Instance UID bytes to a different same-length valid UID after serialization.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-identity-set"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "dicom_writer",
+      "mutation_name": "file_meta_dataset_sop_mismatch",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "One SOP identity is reused for divergent objects.",
+      "case_id": "NB-ID-005",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-ID-005",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.1, C.7.6.22, and C.12.1",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.22.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Create two files with the same SOP Instance UID and different Series Instance UIDs.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-identity-set"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "uid_allocator",
+      "mutation_name": "duplicate_sop_uid_divergent_series",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP10-EVRLE-16F"
+      ],
+      "source_control_sha256": "50e5c186537403aab74aaafac588ace819b1b68c3300c699b916aedc6bc7d62d"
+    },
+    {
+      "adjudication_rationale": "The referenced class does not match the referenced object present in the set.",
+      "case_id": "NB-ID-006",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-ID-006",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.1, C.7.6.22, and C.12.1",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.22.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Create a source/derived pair but identify the present VL WSI source as CT Image Storage in Source Image Sequence.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-source-relationship"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "relationship_mapping",
+      "mutation_name": "incorrect_source_image_reference_class",
+      "mutation_parameters": {
+        "referenced_sop_class_uid": "1.2.840.10008.5.1.4.1.1.2"
+      },
+      "operational_severity": "major",
+      "source_control_ids": [
+        "CP06-HTJ2K-LOSSLESS-16F"
+      ],
+      "source_control_sha256": "e3f3049b5ae22c06c71369ffb09b1ad5e2667f4708b69fcf03c17b84c89fc0cb"
+    },
+    {
+      "adjudication_rationale": "Lossy history is not declared.",
+      "case_id": "NB-CF-001",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-CF-001",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.1 and C.8.12.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Remove Lossy Image Compression while retaining JPEG Baseline Pixel Data.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-lossy-history"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_lossy_declaration",
+      "mutation_parameters": {},
+      "operational_severity": "major",
+      "source_control_ids": [
+        "CP02-JPEG-16F"
+      ],
+      "source_control_sha256": "fadcb381180cd832d6e1185ca3c0896b8274250a359c4bef4c452f8714dc24bc"
+    },
+    {
+      "adjudication_rationale": "The current lossy representation is declared lossless.",
+      "case_id": "NB-CF-002",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-CF-002",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.1 and C.8.12.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Set Lossy Image Compression from 01 to 00 while retaining lossy JPEG 2000 Pixel Data.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-lossy-history"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "lossy_syntax_declared_lossless",
+      "mutation_parameters": {
+        "value": "00"
+      },
+      "operational_severity": "major",
+      "source_control_ids": [
+        "CP05-J2K-LOSSY-4F"
+      ],
+      "source_control_sha256": "8adc28a18c071be30ef22f2eed21cca4f91a412979fc87bbd53ea0bdc0051679"
+    },
+    {
+      "adjudication_rationale": "The compression history omits its method.",
+      "case_id": "NB-CF-003",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-CF-003",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.1 and C.8.12.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Remove Lossy Image Compression Method while retaining flag 01 and ratio.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-lossy-history"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "missing_lossy_method",
+      "mutation_parameters": {},
+      "operational_severity": "major",
+      "source_control_ids": [
+        "CP08-HTJ2K-LOSSY-4F"
+      ],
+      "source_control_sha256": "fe60e21918c179014dd91d5cb8809b873cfbd6ac92ab60f4403b16939bd32bc5"
+    },
+    {
+      "adjudication_rationale": "Lossy method and ratio histories have different multiplicities.",
+      "case_id": "NB-CF-004",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-CF-004",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.1 and C.8.12.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Set two lossy method values but only one compression-ratio value.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-lossy-history"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "lossy_history_vm_mismatch",
+      "mutation_parameters": {
+        "methods": [
+          "ISO_10918_1",
+          "ISO_10918_1"
+        ],
+        "ratios": [
+          2.0
+        ]
+      },
+      "operational_severity": "major",
+      "source_control_ids": [
+        "CP03-JPEG-1F"
+      ],
+      "source_control_sha256": "6fcd33f71cfb85f30098f9487a5b6a67c1bafad31bd6eb84f2affae12a089755"
+    },
+    {
+      "adjudication_rationale": "Core image metadata contradicts the encoded sample organization.",
+      "case_id": "NB-CF-005",
+      "clinical_severity": "critical",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:NB-CF-005",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.1 and C.8.12.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Set Samples per Pixel from 3 to 1 while retaining RGB Photometric Interpretation and interleaved RGB bytes.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-image-metadata"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "samples_photometric_contradiction",
+      "mutation_parameters": {
+        "value": 1
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The Type 1 acquisition timestamp is absent.",
+      "case_id": "CP-CF-001",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-001",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.4.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Remove Acquisition DateTime.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_acquisition_datetime",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The object no longer describes the declared core VOLUME profile.",
+      "case_id": "CP-CF-002",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-002",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.4.1.1",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.4.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Change Image Type value 3 from VOLUME to LABEL without changing the object profile.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "invalid_image_type_flavor",
+      "mutation_parameters": {
+        "value": "LABEL"
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "A mandatory WSI image attribute is absent.",
+      "case_id": "CP-CF-003",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-003",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.4.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Remove Focus Method.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_focus_method",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "VOLUME images require Specimen Label in Image to be NO.",
+      "case_id": "CP-CF-004",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-004",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.4.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Set Specimen Label in Image to YES for a VOLUME image.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "volume_specimen_label_yes",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "MONOCHROME2 requires identity presentation metadata.",
+      "case_id": "CP-CF-005",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-005",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.4.html"
+      },
+      "domain": "color",
+      "exact_attributes_or_bytes_changed": "Remove Presentation LUT Shape, Rescale Intercept, and Rescale Slope from MONOCHROME2.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_monochrome_presentation",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP11-MONO-EVRLE-4F"
+      ],
+      "source_control_sha256": "ff1573277f7df99e047b9de01e9cbc28428a87783314b7e368eb78ee73edd4f5"
+    },
+    {
+      "adjudication_rationale": "MONOCHROME2 requires unit rescale slope.",
+      "case_id": "CP-CF-006",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-006",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.4",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.4.html"
+      },
+      "domain": "color",
+      "exact_attributes_or_bytes_changed": "Set Rescale Slope to 2.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "incorrect_monochrome_rescale_slope",
+      "mutation_parameters": {
+        "value": "2"
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP11-MONO-EVRLE-4F"
+      ],
+      "source_control_sha256": "ff1573277f7df99e047b9de01e9cbc28428a87783314b7e368eb78ee73edd4f5"
+    },
+    {
+      "adjudication_rationale": "The Type 2 acquisition-context sequence is absent rather than present and empty.",
+      "case_id": "CP-CF-007",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-007",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.14",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.4.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Remove Acquisition Context Sequence.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_acquisition_context_sequence",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "Enhanced General Equipment requires a non-empty equipment manufacturer.",
+      "case_id": "CP-CF-008",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-008",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.5.2",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_A.32.8.3.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Remove Manufacturer.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_manufacturer",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "Enhanced General Equipment requires a non-empty device serial number.",
+      "case_id": "CP-CF-009",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-009",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.5.2",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_A.32.8.3.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Remove Device Serial Number.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_device_serial_number",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The mandatory slide-coordinate origin is absent.",
+      "case_id": "CP-GE-001",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-GE-001",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.14",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.14.html"
+      },
+      "domain": "geometry",
+      "exact_attributes_or_bytes_changed": "Remove Total Pixel Matrix Origin Sequence.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_total_matrix_origin",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The origin item is incomplete.",
+      "case_id": "CP-GE-002",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-GE-002",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.14",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.14.html"
+      },
+      "domain": "geometry",
+      "exact_attributes_or_bytes_changed": "Remove X Offset in Slide Coordinate System.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_origin_x_offset",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "TILED_FULL VL WSI requires slide orientation.",
+      "case_id": "CP-GE-003",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-GE-003",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.14",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.14.html"
+      },
+      "domain": "geometry",
+      "exact_attributes_or_bytes_changed": "Remove Image Orientation (Slide).",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_image_orientation",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "Direction cosines are not orthonormal.",
+      "case_id": "CP-GE-004",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-GE-004",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.14",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.14.html"
+      },
+      "domain": "geometry",
+      "exact_attributes_or_bytes_changed": "Make the row and column orientation vectors parallel.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "nonorthogonal_image_orientation",
+      "mutation_parameters": {
+        "value": [
+          "1",
+          "0",
+          "0",
+          "1",
+          "0",
+          "0"
+        ]
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "Pyramid layers disagree on the slide-coordinate origin.",
+      "case_id": "CP-GE-005",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-GE-005",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.14",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.14.html"
+      },
+      "domain": "geometry",
+      "exact_attributes_or_bytes_changed": "Create two instances in one Pyramid UID with different X origins.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "conflicting_slide_origin_set",
+      "mutation_parameters": {
+        "value": "1"
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The count and Optical Path Sequence disagree.",
+      "case_id": "CP-CL-001",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CL-001",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.5",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.5.html"
+      },
+      "domain": "color",
+      "exact_attributes_or_bytes_changed": "Declare two optical paths while retaining one sequence item.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-optical-path-structure"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "optical_path_count_mismatch",
+      "mutation_parameters": {
+        "value": 2
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The mandatory optical-path description and color profile are absent.",
+      "case_id": "CP-CL-002",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CL-002",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.5",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.5.html"
+      },
+      "domain": "color",
+      "exact_attributes_or_bytes_changed": "Remove Optical Path Sequence.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-icc-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_optical_path_sequence",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The optical path cannot be referenced.",
+      "case_id": "CP-CL-003",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CL-003",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.5",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.5.html"
+      },
+      "domain": "color",
+      "exact_attributes_or_bytes_changed": "Remove Optical Path Identifier.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-optical-path-structure"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_optical_path_identifier",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The required illumination method is absent.",
+      "case_id": "CP-CL-004",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CL-004",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.5",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.5.html"
+      },
+      "domain": "color",
+      "exact_attributes_or_bytes_changed": "Remove Illumination Type Code Sequence.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-optical-path-structure"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "source_metadata",
+      "mutation_name": "remove_illumination_type",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "Neither conditional illumination description is present.",
+      "case_id": "CP-CL-005",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CL-005",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.5",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.5.html"
+      },
+      "domain": "color",
+      "exact_attributes_or_bytes_changed": "Remove both illumination color and wavelength.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-optical-path-structure"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "source_metadata",
+      "mutation_name": "remove_illumination_description",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The frame-level optical-path reference does not resolve.",
+      "case_id": "CP-CL-006",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CL-006",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.8.12.6",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.5.html"
+      },
+      "domain": "color",
+      "exact_attributes_or_bytes_changed": "Change the functional-group Optical Path Identifier to an undefined value.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-optical-path-structure"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "dangling_optical_path_reference",
+      "mutation_parameters": {
+        "value": "missing"
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "One Study maps to conflicting patient identity.",
+      "case_id": "CP-ID-001",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-ID-001",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "A.32.8",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_A.32.8.3.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Create two instances in one Study with different Patient IDs.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "source_metadata",
+      "mutation_name": "conflicting_patient_study_set",
+      "mutation_parameters": {
+        "value": "ANON"
+      },
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "One Series maps to conflicting studies.",
+      "case_id": "CP-ID-002",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-ID-002",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "A.32.8",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_A.32.8.3.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Create two instances in one Series with different Study Instance UIDs.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "conflicting_study_series_set",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "One slide coordinate frame maps to conflicting physical slides.",
+      "case_id": "CP-ID-003",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-ID-003",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.4.1 and C.7.6.22",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_A.32.8.3.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Create two instances in one Frame of Reference with different Container Identifiers.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "source_metadata",
+      "mutation_name": "conflicting_container_frame_set",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The physical slide identity has conflicting issuer scope.",
+      "case_id": "CP-ID-004",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-ID-004",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.22",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.22.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Create two instances in one Frame of Reference with different container issuers.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "source_metadata",
+      "mutation_name": "conflicting_container_issuer_set",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The Type 1 physical-container identifier is absent.",
+      "case_id": "CP-ID-005",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-ID-005",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.22",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.22.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Remove Container Identifier.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "source_metadata",
+      "mutation_name": "remove_container_identifier",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The Type 2 issuer sequence is absent rather than present and empty.",
+      "case_id": "CP-ID-006",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-ID-006",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.22",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.22.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Remove Issuer of the Container Identifier Sequence.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_container_issuer_sequence",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The Type 2 preparation sequence is absent rather than present and empty.",
+      "case_id": "CP-ID-007",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-ID-007",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.22",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.22.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Remove Specimen Preparation Sequence.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-specimen-container"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_specimen_preparation_sequence",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "A present preparation step lacks its Type 1 content sequence.",
+      "case_id": "CP-ID-008",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-ID-008",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.6.22",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.22.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Add a preparation item without its required content-item sequence.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-specimen-container"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "source_metadata",
+      "mutation_name": "invalid_specimen_preparation_item",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The mandatory Type 2 Patient attribute is absent rather than present and empty.",
+      "case_id": "CP-ID-009",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-ID-009",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.1.1",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_A.32.8.3.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Remove Patient Birth Date.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "source_metadata",
+      "mutation_name": "remove_patient_birth_date",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The mandatory Type 2 Study attribute is absent rather than present and empty.",
+      "case_id": "CP-ID-010",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-ID-010",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.2.1",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_A.32.8.3.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Remove Study Date.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "source_metadata",
+      "mutation_name": "remove_study_date",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "The mandatory Type 2 Series attribute is absent rather than present and empty.",
+      "case_id": "CP-ID-011",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-ID-011",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "C.7.3.1",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_A.32.8.3.html"
+      },
+      "domain": "identity",
+      "exact_attributes_or_bytes_changed": "Remove Series Number.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "source_metadata",
+      "mutation_name": "remove_series_number",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "Remove the shared Whole Slide Microscopy Image Frame Type Sequence.",
+      "case_id": "CP-CF-010",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-010",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "A.32.8.4; C.8.12.4; C.7.6.17.3",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.4.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Remove the shared Whole Slide Microscopy Image Frame Type Sequence.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_wsi_frame_type",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "Remove the shared Derivation Image Sequence from the derived pyramid instance, retaining its source.",
+      "case_id": "CP-CF-011",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-011",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "A.32.8.4; C.8.12.4; C.7.6.17.3",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.4.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Remove the shared Derivation Image Sequence from the derived pyramid instance, retaining its source.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_derivation_image",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP12-PYRAMID-2L"
+      ],
+      "source_control_sha256": [
+        "218b2b6f6904bf12630a718713b692d1ff26112f4a9af295252117d3f4ec69c0",
+        "5b7ae5d4613196d008f629d74595147b98ee193951e2d0e9df9ea8d8425cd0a4"
+      ]
+    },
+    {
+      "adjudication_rationale": "Remove the Type 2 Position Reference Indicator.",
+      "case_id": "CP-CF-012",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-012",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "A.32.8.4; C.8.12.4; C.7.6.17.3",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.4.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Remove the Type 2 Position Reference Indicator.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_position_reference",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "Set Pixel Representation to signed 1.",
+      "case_id": "CP-CF-013",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-013",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "A.32.8.4; C.8.12.4; C.7.6.17.3",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.4.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Set Pixel Representation to signed 1.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-image-metadata"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "signed_wsi_pixels",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "Set Bits Stored to 7 and matching High Bit to 6, retaining Bits Allocated 8.",
+      "case_id": "CP-CF-014",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-014",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "A.32.8.4; C.8.12.4; C.7.6.17.3",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.4.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Set Bits Stored to 7 and matching High Bit to 6, retaining Bits Allocated 8.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-image-metadata"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "unequal_wsi_bit_depth",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "Set Planar Configuration to 1.",
+      "case_id": "CP-CF-015",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-015",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "A.32.8.4; C.8.12.4; C.7.6.17.3",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.4.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Set Planar Configuration to 1.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-image-metadata"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "planar_wsi_pixels",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "Remove Content Date.",
+      "case_id": "CP-CF-016",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-CF-016",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "A.32.8.4; C.8.12.4; C.7.6.17.3",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.4.html"
+      },
+      "domain": "conformance",
+      "exact_attributes_or_bytes_changed": "Remove Content Date.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-core-image-profile"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "intrinsic-wsi-dicom-2026c-tile-geometry",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "remove_content_date",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    },
+    {
+      "adjudication_rationale": "Exchange the first two complete per-frame functional groups, retaining all tile positions.",
+      "case_id": "CP-GE-006",
+      "clinical_severity": "major",
+      "cohort": "core-profile-evaluation-v2",
+      "deterministic_seed": "wsi-dicom-core-profile-v1:CP-GE-006",
+      "dicom_citation": {
+        "edition": "2026c",
+        "part": "PS3.3",
+        "section": "A.32.8.4; C.8.12.4; C.7.6.17.3",
+        "url": "https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.8.12.4.html"
+      },
+      "domain": "geometry",
+      "exact_attributes_or_bytes_changed": "Exchange the first two complete per-frame functional groups, retaining all tile positions.",
+      "expected_failing_rules": [
+        "intrinsic-wsi-dicom-2026c-tile-geometry"
+      ],
+      "expected_outcome": {
+        "domain_localized": true,
+        "rule_localized": true,
+        "wsi_dicom_bench": "failed"
+      },
+      "expected_unaffected_rules": [
+        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
+        "intrinsic-wsi-dicom-2026c-core-image-profile",
+        "intrinsic-wsi-dicom-2026c-dimension-order",
+        "intrinsic-wsi-dicom-2026c-icc-profile",
+        "intrinsic-wsi-dicom-2026c-identity-set",
+        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-lossy-history",
+        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
+        "intrinsic-wsi-dicom-2026c-optical-path-structure",
+        "intrinsic-wsi-dicom-2026c-pixel-structure",
+        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
+        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-2026c-specimen-container",
+        "intrinsic-wsi-dicom-2026c-specimen-identity",
+        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
+        "pixel-decode-wsi-dicom-2026c-frame-geometry"
+      ],
+      "likely_fix_owner": "converter",
+      "mutation_name": "permute_tiled_full_frames",
+      "mutation_parameters": {},
+      "operational_severity": "critical",
+      "source_control_ids": [
+        "CP01-EVRLE-4F-ANISO"
+      ],
+      "source_control_sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905"
+    }
+  ],
+  "expected_results_lock": "expected-results-lock-v4.json",
+  "private_holdout_plan": {
+    "cases": 15,
+    "minimum_real_base_objects": 10,
+    "minimum_real_slides": 8,
+    "per_domain": 3,
+    "publication": "excluded_pending_provenance_phi_and_redistribution_review",
+    "required_transfer_syntaxes": [
+      "1.2.840.10008.1.2.4.50",
+      "1.2.840.10008.1.2.4.90",
+      "1.2.840.10008.1.2.4.91"
+    ]
+  },
+  "protocol": "protocol-v4.md",
+  "resource_limits": {
+    "case_timeout_secs": 300,
+    "command_timeout_secs": 60,
+    "max_cases": 80,
+    "max_command_output_bytes": 1048576,
+    "max_controls": 14,
+    "max_depth": 4,
+    "max_file_bytes": 4194304,
+    "max_files": 128,
+    "max_pixel_frame_bytes": 4194304,
+    "max_pixel_frames": 3
+  },
+  "rule_catalog": {
+    "catalog_version": "wsi-dicom-bench-rules-2026c-v4",
+    "path": "rules/wsi-dicom-bench-rules-2026c-v4.json",
+    "required_new_rule_ids": [
+      "intrinsic-wsi-dicom-2026c-core-image-profile",
+      "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
+      "intrinsic-wsi-dicom-2026c-optical-path-structure",
+      "intrinsic-wsi-dicom-2026c-specimen-container",
+      "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+    ]
+  },
+  "schema_version": "wsi-dicom-negative-bench-manifest-v4",
+  "state": "expected-results-locked-before-evaluation-object-generation",
+  "title": "WSI-DICOM Core Profile Negative Bench v3",
+  "valid_controls": [
+    {
+      "cohort": "core-profile-controls-v1",
+      "control_id": "CP01-EVRLE-4F-ANISO",
+      "expected_outcome": {
+        "configured_independent_validators": "passed",
+        "wsi_dicom_bench": "passed"
+      },
+      "number_of_frames": 4,
+      "original_path": "bench/negative_bench/controls-v4/CP01-EVRLE-4F-ANISO.dcm",
+      "package_path": "controls/CP01-EVRLE-4F-ANISO.dcm",
+      "series_instance_uid": "2.25.333394542215729642448758844770508578065",
+      "sha256": "00deaa80ca08df0e4373b0f460d106fe57b0da5e6f34e7073f4094bdb3449905",
+      "size_bytes": 3984,
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.77.1.6",
+      "sop_instance_uid": "2.25.79368436683437430788080448857196728361",
+      "source_kind": "repository_generated_synthetic_no_patient_data",
+      "study_instance_uid": "2.25.49787383240376349644212035790025031668",
+      "transfer_syntax_uid": "1.2.840.10008.1.2.1"
+    },
+    {
+      "cohort": "core-profile-controls-v1",
+      "control_id": "CP02-JPEG-16F",
+      "expected_outcome": {
+        "configured_independent_validators": "passed",
+        "wsi_dicom_bench": "passed"
+      },
+      "number_of_frames": 16,
+      "original_path": "bench/negative_bench/controls-v4/CP02-JPEG-16F.dcm",
+      "package_path": "controls/CP02-JPEG-16F.dcm",
+      "series_instance_uid": "2.25.9538586729834871630639575599829797842",
+      "sha256": "fadcb381180cd832d6e1185ca3c0896b8274250a359c4bef4c452f8714dc24bc",
+      "size_bytes": 16184,
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.77.1.6",
+      "sop_instance_uid": "2.25.90885913577546800651700558468491539097",
+      "source_kind": "repository_generated_synthetic_no_patient_data",
+      "study_instance_uid": "2.25.261652183963584647285603508004384450962",
+      "transfer_syntax_uid": "1.2.840.10008.1.2.4.50"
+    },
+    {
+      "cohort": "core-profile-controls-v1",
+      "control_id": "CP03-JPEG-1F",
+      "expected_outcome": {
+        "configured_independent_validators": "passed",
+        "wsi_dicom_bench": "passed"
+      },
+      "number_of_frames": 1,
+      "original_path": "bench/negative_bench/controls-v4/CP03-JPEG-1F.dcm",
+      "package_path": "controls/CP03-JPEG-1F.dcm",
+      "series_instance_uid": "2.25.220909186050913335448111076231176934780",
+      "sha256": "6fcd33f71cfb85f30098f9487a5b6a67c1bafad31bd6eb84f2affae12a089755",
+      "size_bytes": 4166,
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.77.1.6",
+      "sop_instance_uid": "2.25.269452728216566586832979846103831829795",
+      "source_kind": "repository_generated_synthetic_no_patient_data",
+      "study_instance_uid": "2.25.124125695272484979953615464181880256661",
+      "transfer_syntax_uid": "1.2.840.10008.1.2.4.50"
+    },
+    {
+      "cohort": "core-profile-controls-v1",
+      "control_id": "CP04-J2K-LOSSLESS-16F",
+      "expected_outcome": {
+        "configured_independent_validators": "passed",
+        "wsi_dicom_bench": "passed"
+      },
+      "number_of_frames": 16,
+      "original_path": "bench/negative_bench/controls-v4/CP04-J2K-LOSSLESS-16F.dcm",
+      "package_path": "controls/CP04-J2K-LOSSLESS-16F.dcm",
+      "series_instance_uid": "2.25.288240011289233825065303345939173124747",
+      "sha256": "b78edf044dec45e9ef9c60e59bed97461af0c29bd2deaacf8188c8c1192295aa",
+      "size_bytes": 7998,
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.77.1.6",
+      "sop_instance_uid": "2.25.41140250025632026653971773501855835822",
+      "source_kind": "repository_generated_synthetic_no_patient_data",
+      "study_instance_uid": "2.25.177642642201429092806387563799619892071",
+      "transfer_syntax_uid": "1.2.840.10008.1.2.4.90"
+    },
+    {
+      "cohort": "core-profile-controls-v1",
+      "control_id": "CP05-J2K-LOSSY-4F",
+      "expected_outcome": {
+        "configured_independent_validators": "passed",
+        "wsi_dicom_bench": "passed"
+      },
+      "number_of_frames": 4,
+      "original_path": "bench/negative_bench/controls-v4/CP05-J2K-LOSSY-4F.dcm",
+      "package_path": "controls/CP05-J2K-LOSSY-4F.dcm",
+      "series_instance_uid": "2.25.12799535593101357794902605437953450356",
+      "sha256": "8adc28a18c071be30ef22f2eed21cca4f91a412979fc87bbd53ea0bdc0051679",
+      "size_bytes": 4706,
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.77.1.6",
+      "sop_instance_uid": "2.25.234251903655844825490205476023384953431",
+      "source_kind": "repository_generated_synthetic_no_patient_data",
+      "study_instance_uid": "2.25.214034835866304192842631466675014912825",
+      "transfer_syntax_uid": "1.2.840.10008.1.2.4.91"
+    },
+    {
+      "cohort": "core-profile-controls-v1",
+      "control_id": "CP06-HTJ2K-LOSSLESS-16F",
+      "expected_outcome": {
+        "configured_independent_validators": "passed",
+        "wsi_dicom_bench": "passed"
+      },
+      "number_of_frames": 16,
+      "original_path": "bench/negative_bench/controls-v4/CP06-HTJ2K-LOSSLESS-16F.dcm",
+      "package_path": "controls/CP06-HTJ2K-LOSSLESS-16F.dcm",
+      "series_instance_uid": "2.25.81995471997251257294946740606708434319",
+      "sha256": "e3f3049b5ae22c06c71369ffb09b1ad5e2667f4708b69fcf03c17b84c89fc0cb",
+      "size_bytes": 8224,
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.77.1.6",
+      "sop_instance_uid": "2.25.157818915664984474415836153959888422075",
+      "source_kind": "repository_generated_synthetic_no_patient_data",
+      "study_instance_uid": "2.25.272303541680954913702075071896999353067",
+      "transfer_syntax_uid": "1.2.840.10008.1.2.4.201"
+    },
+    {
+      "cohort": "core-profile-controls-v1",
+      "control_id": "CP07-HTJ2K-RPCL-4F",
+      "expected_outcome": {
+        "configured_independent_validators": "passed",
+        "wsi_dicom_bench": "passed"
+      },
+      "number_of_frames": 4,
+      "original_path": "bench/negative_bench/controls-v4/CP07-HTJ2K-RPCL-4F.dcm",
+      "package_path": "controls/CP07-HTJ2K-RPCL-4F.dcm",
+      "series_instance_uid": "2.25.209505978372882342894010381486698249905",
+      "sha256": "266c48733a55e7ee37dc0395eab03a65c61d4bc0d69630cb838e3da4fc8bab67",
+      "size_bytes": 4626,
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.77.1.6",
+      "sop_instance_uid": "2.25.307417167574949794821222870283334300524",
+      "source_kind": "repository_generated_synthetic_no_patient_data",
+      "study_instance_uid": "2.25.68662785584917997454013377231827668787",
+      "transfer_syntax_uid": "1.2.840.10008.1.2.4.202"
+    },
+    {
+      "cohort": "core-profile-controls-v1",
+      "control_id": "CP08-HTJ2K-LOSSY-4F",
+      "expected_outcome": {
+        "configured_independent_validators": "passed",
+        "wsi_dicom_bench": "passed"
+      },
+      "number_of_frames": 4,
+      "original_path": "bench/negative_bench/controls-v4/CP08-HTJ2K-LOSSY-4F.dcm",
+      "package_path": "controls/CP08-HTJ2K-LOSSY-4F.dcm",
+      "series_instance_uid": "2.25.143984550531908656208892874507271804525",
+      "sha256": "fe60e21918c179014dd91d5cb8809b873cfbd6ac92ab60f4403b16939bd32bc5",
+      "size_bytes": 4686,
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.77.1.6",
+      "sop_instance_uid": "2.25.267920342474654401023759088139020632909",
+      "source_kind": "repository_generated_synthetic_no_patient_data",
+      "study_instance_uid": "2.25.272023635403644192119694872494047852299",
+      "transfer_syntax_uid": "1.2.840.10008.1.2.4.203"
+    },
+    {
+      "cohort": "core-profile-controls-v1",
+      "control_id": "CP09-J2K-LOSSLESS-4F",
+      "expected_outcome": {
+        "configured_independent_validators": "passed",
+        "wsi_dicom_bench": "passed"
+      },
+      "number_of_frames": 4,
+      "original_path": "bench/negative_bench/controls-v4/CP09-J2K-LOSSLESS-4F.dcm",
+      "package_path": "controls/CP09-J2K-LOSSLESS-4F.dcm",
+      "series_instance_uid": "2.25.136668354182437527195888474466086228270",
+      "sha256": "3a81d0a506f967c25e807b758a34056a38a646f42c5141ece8afcb2e97f3de66",
+      "size_bytes": 4528,
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.77.1.6",
+      "sop_instance_uid": "2.25.148492941173411699833417747401448207178",
+      "source_kind": "repository_generated_synthetic_no_patient_data",
+      "study_instance_uid": "2.25.151165160135623240466256899805733181183",
+      "transfer_syntax_uid": "1.2.840.10008.1.2.4.90"
+    },
+    {
+      "cohort": "core-profile-controls-v1",
+      "control_id": "CP10-EVRLE-16F",
+      "expected_outcome": {
+        "configured_independent_validators": "passed",
+        "wsi_dicom_bench": "passed"
+      },
+      "number_of_frames": 16,
+      "original_path": "bench/negative_bench/controls-v4/CP10-EVRLE-16F.dcm",
+      "package_path": "controls/CP10-EVRLE-16F.dcm",
+      "series_instance_uid": "2.25.160178623980639293038326355459719042797",
+      "sha256": "50e5c186537403aab74aaafac588ace819b1b68c3300c699b916aedc6bc7d62d",
+      "size_bytes": 5948,
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.77.1.6",
+      "sop_instance_uid": "2.25.140213591682377304526712530378795857061",
+      "source_kind": "repository_generated_synthetic_no_patient_data",
+      "study_instance_uid": "2.25.283701441638061526979686638984636378376",
+      "transfer_syntax_uid": "1.2.840.10008.1.2.1"
+    },
+    {
+      "cohort": "core-profile-controls-v1",
+      "control_id": "CP11-MONO-EVRLE-4F",
+      "expected_outcome": {
+        "configured_independent_validators": "passed",
+        "wsi_dicom_bench": "passed"
+      },
+      "number_of_frames": 4,
+      "original_path": "bench/negative_bench/controls-v4/CP11-MONO-EVRLE-4F.dcm",
+      "package_path": "controls/CP11-MONO-EVRLE-4F.dcm",
+      "series_instance_uid": "2.25.13486722262053795734079254967100456191",
+      "sha256": "ff1573277f7df99e047b9de01e9cbc28428a87783314b7e368eb78ee73edd4f5",
+      "size_bytes": 3358,
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.77.1.6",
+      "sop_instance_uid": "2.25.274003664202707171820386795740932866935",
+      "source_kind": "repository_generated_synthetic_no_patient_data",
+      "study_instance_uid": "2.25.280041947058436794095846264822850224205",
+      "transfer_syntax_uid": "1.2.840.10008.1.2.1"
+    },
+    {
+      "cohort": "core-profile-controls-v1",
+      "control_id": "CP12-PYRAMID-2L",
+      "expected_outcome": {
+        "configured_independent_validators": "passed",
+        "wsi_dicom_bench": "passed"
+      },
+      "object_count": 2,
+      "original_paths": [
+        "bench/negative_bench/controls-v4/CP12-PYRAMID-2L/level-0.dcm",
+        "bench/negative_bench/controls-v4/CP12-PYRAMID-2L/level-1.dcm"
+      ],
+      "package_paths": [
+        "controls/CP12-PYRAMID-2L/level-0.dcm",
+        "controls/CP12-PYRAMID-2L/level-1.dcm"
+      ],
+      "series_instance_uid": "2.25.98616610931348373385257471081082330290",
+      "sha256": [
+        "218b2b6f6904bf12630a718713b692d1ff26112f4a9af295252117d3f4ec69c0",
+        "5b7ae5d4613196d008f629d74595147b98ee193951e2d0e9df9ea8d8425cd0a4"
+      ],
+      "size_bytes": [
+        3976,
+        4060
+      ],
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.77.1.6",
+      "sop_instance_uids": [
+        "2.25.52012031790397401411496663953142193882",
+        "2.25.46906494363476203538132861256865639328"
+      ],
+      "source_kind": "repository_generated_synthetic_no_patient_data",
+      "study_instance_uid": "2.25.91377140152254719573571000013980927017",
+      "transfer_syntax_uids": [
+        "1.2.840.10008.1.2.1"
+      ]
+    },
+    {
+      "cohort": "core-profile-controls-v1",
+      "control_id": "CP13-IMPLICIT-TILED-FULL",
+      "expected_outcome": {
+        "configured_independent_validators": "passed",
+        "wsi_dicom_bench": "passed"
+      },
+      "number_of_frames": 4,
+      "original_path": "bench/negative_bench/controls-v4/CP13-IMPLICIT-TILED-FULL.dcm",
+      "package_path": "controls/CP13-IMPLICIT-TILED-FULL.dcm",
+      "series_instance_uid": "2.25.93728105944813007316739446232040622048",
+      "sha256": "be1d004b11b24163b2aae813a1fd592431a79708be69a1a57bbfa06afcfa8096",
+      "size_bytes": 3074,
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.77.1.6",
+      "sop_instance_uid": "2.25.79816286575598241719910812579919444523",
+      "source_kind": "repository_generated_synthetic_no_patient_data",
+      "study_instance_uid": "2.25.113896013236778111338724349668348956163",
+      "transfer_syntax_uid": "1.2.840.10008.1.2.1"
+    },
+    {
+      "cohort": "core-profile-controls-v1",
+      "control_id": "CP14-MONO16-EVRLE",
+      "expected_outcome": {
+        "configured_independent_validators": "passed",
+        "wsi_dicom_bench": "passed"
+      },
+      "number_of_frames": 4,
+      "original_path": "bench/negative_bench/controls-v4/CP14-MONO16-EVRLE.dcm",
+      "package_path": "controls/CP14-MONO16-EVRLE.dcm",
+      "series_instance_uid": "2.25.112403155440953505748775852447173776706",
+      "sha256": "4f7d9f17aff2e24809406f2c0406f671a29243831a6e4cb248fe01402c671bc3",
+      "size_bytes": 3374,
+      "sop_class_uid": "1.2.840.10008.5.1.4.1.1.77.1.6",
+      "sop_instance_uid": "2.25.129829268870819691017928668605912313248",
+      "source_kind": "repository_generated_synthetic_no_patient_data",
+      "study_instance_uid": "2.25.15464850468654010911140580374613963942",
+      "transfer_syntax_uid": "1.2.840.10008.1.2.1"
+    }
+  ]
+}

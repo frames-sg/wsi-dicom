@@ -12,6 +12,7 @@ pub(super) struct CommandCheckRequest<'a> {
 }
 
 pub(super) struct SetLevelCommandCheckRequest<'a> {
+    pub(super) prefix_args: Vec<OsString>,
     pub(super) check_name: &'a str,
     pub(super) command_name: &'a str,
     pub(super) required: bool,
@@ -35,9 +36,11 @@ pub(super) fn run_set_level_command_checks(
                 CommandCheckRequest {
                     check_name: request.check_name,
                     command_name: request.command_name,
-                    args: chunk
+                    args: request
+                        .prefix_args
                         .iter()
-                        .map(|file| file.as_os_str().to_os_string())
+                        .cloned()
+                        .chain(chunk.iter().map(|file| file.as_os_str().to_os_string()))
                         .collect(),
                     path: None,
                     required: request.required,
@@ -67,85 +70,78 @@ pub(super) fn run_named_command_check(
     let command = std::iter::once(command_name.to_string())
         .chain(args.iter().map(|arg| arg.to_string_lossy().into_owned()))
         .collect::<Vec<_>>();
+    let mut check = ValidationCheck {
+        name: check_name.to_string(),
+        path: path.cloned(),
+        status: ValidationStatus::Failed,
+        command,
+        message: String::new(),
+        stdout: String::new(),
+        stderr: String::new(),
+        execution: Some(ValidationExecution {
+            return_code: None,
+            elapsed_millis: 0,
+            failure: None,
+        }),
+    };
+    let execution = check
+        .execution
+        .as_mut()
+        .expect("external check retains process facts");
     let Some(program) = runner.find_command(command_name) else {
-        let status = if required {
+        check.status = if required {
             ValidationStatus::Failed
         } else {
             ValidationStatus::Skipped
         };
-        return ValidationCheck {
-            name: check_name.to_string(),
-            path: path.cloned(),
-            status,
-            command,
-            message: format!("{command_name} not found"),
-            stdout: String::new(),
-            stderr: String::new(),
-        };
+        check.message = format!("{command_name} not found");
+        execution.failure = Some(ExecutionFailure::Unavailable);
+        return check;
     };
-
     match runner.run(&program, &args, timeout, max_output_bytes) {
         Ok(outcome) => {
-            if outcome.stdout_truncated || outcome.stderr_truncated {
-                return ValidationCheck {
-                    name: check_name.to_string(),
-                    path: path.cloned(),
-                    status: ValidationStatus::Failed,
-                    command,
-                    message: format!(
-                        "{command_name} output exceeded {} byte capture limit",
-                        max_output_bytes
-                    ),
-                    stdout: outcome.stdout,
-                    stderr: outcome.stderr,
-                };
-            }
-            if outcome.timed_out {
-                return ValidationCheck {
-                    name: check_name.to_string(),
-                    path: path.cloned(),
-                    status: ValidationStatus::Failed,
-                    command,
-                    message: format!("{command_name} timed out after {}", format_timeout(timeout)),
-                    stdout: outcome.stdout,
-                    stderr: outcome.stderr,
-                };
-            }
+            execution.return_code = outcome.return_code;
+            execution.elapsed_millis = outcome.elapsed_millis;
+            execution.failure = if outcome.timed_out {
+                Some(ExecutionFailure::Timeout)
+            } else if outcome.stdout_truncated || outcome.stderr_truncated {
+                Some(ExecutionFailure::OutputLimit)
+            } else if !outcome.success && outcome.return_code.is_none() {
+                Some(ExecutionFailure::Terminated)
+            } else {
+                None
+            };
             let output_has_error = error_line_is_failure
                 && outcome
                     .stdout
                     .lines()
                     .chain(outcome.stderr.lines())
                     .any(|line| line.trim_start().starts_with("Error"));
-            let status = if outcome.success && !output_has_error {
-                ValidationStatus::Passed
-            } else {
-                ValidationStatus::Failed
-            };
-            ValidationCheck {
-                name: check_name.to_string(),
-                path: path.cloned(),
-                status,
-                command,
-                message: if status == ValidationStatus::Passed {
-                    format!("{command_name} passed")
-                } else {
-                    format!("{command_name} failed")
-                },
-                stdout: outcome.stdout,
-                stderr: outcome.stderr,
+            if execution.failure.is_none() && outcome.success && !output_has_error {
+                check.status = ValidationStatus::Passed;
             }
+            check.message = match execution.failure {
+                Some(ExecutionFailure::Timeout) => {
+                    format!("{command_name} timed out after {}", format_timeout(timeout))
+                }
+                Some(ExecutionFailure::OutputLimit) => {
+                    format!("{command_name} output exceeded {max_output_bytes} byte capture limit")
+                }
+                Some(_) => format!("{command_name} did not complete"),
+                None if check.status == ValidationStatus::Passed => {
+                    format!("{command_name} passed")
+                }
+                None => format!("{command_name} failed"),
+            };
+            check.stdout = outcome.stdout;
+            check.stderr = outcome.stderr;
         }
-        Err(source) => ValidationCheck {
-            name: check_name.to_string(),
-            path: path.cloned(),
-            status: ValidationStatus::Failed,
-            command,
-            message: format!("failed to start {command_name}: {source}"),
-            stdout: String::new(),
-            stderr: String::new(),
-        },
+        Err(source) => {
+            execution.failure = Some(ExecutionFailure::Launch);
+            check.message = format!("failed to start {command_name}: {source}");
+        }
     }
+    check
 }
 
 pub(super) fn format_timeout(timeout: Duration) -> String {

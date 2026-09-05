@@ -7,17 +7,21 @@ use wsi_dicom::{
 
 use crate::cli_args::SelfTestArgs;
 use crate::cli_output::print_cli_output;
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn handle_validate(
-    path: PathBuf,
-    strict: bool,
-    dcmvalidate_iod: Option<PathBuf>,
-    htj2k_decoder: Option<String>,
-    max_pixel_frames: usize,
-    command_timeout_secs: u64,
-    json: bool,
-) -> Result<(), Error> {
+pub(crate) fn handle_validate(arguments: crate::cli_args::ValidateArgs) -> Result<(), Error> {
+    let crate::cli_args::ValidateArgs {
+        path,
+        strict,
+        dcmvalidate_iod,
+        htj2k_decoder,
+        max_pixel_frames,
+        command_timeout_secs,
+        profile,
+        max_input_bytes,
+        json,
+    } = arguments;
     let mut options = ValidationOptions::default();
+    options.profile = profile;
+    options.max_input_bytes = max_input_bytes;
     options.strict = strict;
     options.dcmvalidate_iod = dcmvalidate_iod;
     options.htj2k_decoder = htj2k_decoder;

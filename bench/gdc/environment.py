@@ -5,30 +5,49 @@ from __future__ import annotations
 import datetime as dt
 import platform
 import socket
-import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Sequence
 
-def command_output(command: Sequence[str], *, cwd: Path, timeout_secs: int = 30) -> str | None:
-    try:
-        completed = subprocess.run(
+from bench.process_evidence import run_bounded_command
+
+
+MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
+
+
+def command_output(
+    command: Sequence[str], *, cwd: Path, timeout_secs: int = 30
+) -> str | None:
+    with tempfile.TemporaryDirectory(prefix="wsi-gdc-environment-") as temporary:
+        root = Path(temporary)
+        stdout_path = root / "stdout.txt"
+        stderr_path = root / "stderr.txt"
+        completed = run_bounded_command(
             list(command),
             cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=timeout_secs,
-            check=False,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            timeout_secs=timeout_secs,
+            max_output_bytes=MAX_COMMAND_OUTPUT_BYTES,
         )
-    except (OSError, subprocess.TimeoutExpired):
+        output = (stdout_path.read_bytes() + stderr_path.read_bytes()).decode(
+            "utf-8", errors="replace"
+        )
+    if (
+        completed["returncode"] != 0
+        or completed["timed_out"]
+        or completed["launch_error"] is not None
+        or completed["stdout_truncated"]
+        or completed["stderr_truncated"]
+    ):
         return None
-    if completed.returncode != 0:
-        return None
-    output = completed.stdout.strip()
-    return output or None
+    return output.strip() or None
 
-def python_package_version(python_command: Sequence[str], package: str, *, cwd: Path) -> str | None:
+
+def python_package_version(
+    python_command: Sequence[str], package: str, *, cwd: Path
+) -> str | None:
     return command_output(
         [
             *python_command,
@@ -38,12 +57,14 @@ def python_package_version(python_command: Sequence[str], package: str, *, cwd: 
         cwd=cwd,
     )
 
+
 def cargo_package_version(*, cwd: Path) -> str | None:
     output = command_output(["cargo", "pkgid", "-p", "wsi-dicom"], cwd=cwd)
     if not output:
         return None
     package = output.rsplit("#", maxsplit=1)[-1]
     return package.rsplit("@", maxsplit=1)[-1] if "@" in package else package
+
 
 def host_accelerator_info() -> dict:
     info: dict[str, object] = {}
@@ -68,6 +89,7 @@ def host_accelerator_info() -> dict:
         if output:
             info["nvidia_smi"] = output
     return info
+
 
 def collect_environment(
     *,

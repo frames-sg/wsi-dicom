@@ -315,6 +315,35 @@ pub(crate) fn pixel_profile_from_raw_jpeg_tile(
             ),
         });
     }
+    let encoded = j2k_jpeg::Decoder::inspect(raw.data()).map_err(|err| Error::Unsupported {
+        reason: format!("JPEG passthrough could not inspect the encoded frame: {err}"),
+    })?;
+    if encoded.sof_kind != j2k_jpeg::SofKind::Baseline8 {
+        return Err(Error::Unsupported {
+            reason: format!(
+                "JPEG Baseline passthrough requires SOF0, got {:?}",
+                encoded.sof_kind
+            ),
+        });
+    }
+    if encoded.bit_depth != 8
+        || encoded.sampling.len() != usize::from(raw.samples_per_pixel())
+        || encoded.dimensions != (raw.width(), raw.height())
+    {
+        return Err(Error::UnsupportedPixelData {
+            reason: format!(
+                "JPEG passthrough metadata does not match the encoded frame (metadata {}x{} {}-bit/{} components, encoded {}x{} {}-bit/{} components)",
+                raw.width(),
+                raw.height(),
+                raw.bits_allocated(),
+                raw.samples_per_pixel(),
+                encoded.dimensions.0,
+                encoded.dimensions.1,
+                encoded.bit_depth,
+                encoded.sampling.len()
+            ),
+        });
+    }
     let photometric_interpretation = match raw.photometric_interpretation() {
         EncodedTilePhotometricInterpretation::Monochrome2 => "MONOCHROME2",
         EncodedTilePhotometricInterpretation::Rgb => "RGB",
@@ -510,6 +539,16 @@ pub(super) fn jpeg_baseline_cpu_restart_interval(
 mod tests {
     use super::*;
 
+    fn lossless_gray_1x1() -> Vec<u8> {
+        vec![
+            0xff, 0xd8, // SOI
+            0xff, 0xc3, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xff,
+            0xc4, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // category zero
+            0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x01, 0x00, 0x00, 0x7f, 0xff, 0xd9,
+        ]
+    }
+
     #[test]
     fn empty_tile_detection_is_limited_to_wsi_rs_unsupported_reason() {
         assert!(raw_compressed_error_is_empty_tile(
@@ -525,5 +564,21 @@ mod tests {
                 reason: "empty TIFF tiles".into(),
             }
         ));
+    }
+
+    #[test]
+    fn jpeg_baseline_passthrough_rejects_lossless_sof3() {
+        let raw = RawCompressedTile::builder(Compression::Jpeg)
+            .dimensions(1, 1)
+            .bits_allocated(8)
+            .samples_per_pixel(1)
+            .photometric_interpretation(EncodedTilePhotometricInterpretation::Monochrome2)
+            .data(lossless_gray_1x1())
+            .build()
+            .unwrap();
+
+        let error = pixel_profile_from_raw_jpeg_tile(&raw)
+            .expect_err("SOF3 must not be emitted under the JPEG Baseline UID");
+        assert!(error.to_string().contains("requires SOF0"));
     }
 }

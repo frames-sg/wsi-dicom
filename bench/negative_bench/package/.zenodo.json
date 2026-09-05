@@ -1,0 +1,21 @@
+{
+  "access_right": "open",
+  "creators": [
+    {
+      "name": "WSI-DICOM Bench contributors"
+    }
+  ],
+  "description": "Unpublished challenge package template. The generator supplies the locked case counts, catalog identity and scope.",
+  "keywords": [
+    "DICOM",
+    "whole-slide imaging",
+    "digital pathology",
+    "conformance",
+    "validation",
+    "negative testing"
+  ],
+  "license": "MIT",
+  "title": "WSI-DICOM Core Profile Negative Bench",
+  "upload_type": "dataset",
+  "version": "unreleased"
+}

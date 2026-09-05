@@ -8,21 +8,25 @@ use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+fn run_self_test(workspace: &Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_wsi-dicom"))
+        .arg("self-test")
+        .arg("--json")
+        .arg("--out")
+        .arg(workspace)
+        .arg("--keep-output")
+        .arg("--command-timeout-secs")
+        .arg("15")
+        .output()
+        .expect("execute shipped wsi-dicom self-test")
+}
+
 #[test]
 fn shipped_binary_self_test_emits_json_and_preserves_validation_evidence() {
     let temporary_directory = tempfile::tempdir().expect("create temporary directory");
     let workspace = temporary_directory.path().join("self-test-evidence");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_wsi-dicom"))
-        .arg("self-test")
-        .arg("--json")
-        .arg("--out")
-        .arg(&workspace)
-        .arg("--keep-output")
-        .arg("--command-timeout-secs")
-        .arg("15")
-        .output()
-        .expect("execute shipped wsi-dicom binary");
+    let output = run_self_test(&workspace);
 
     assert!(
         output.status.success(),
@@ -113,16 +117,7 @@ fn shipped_binary_rejects_malformed_compressed_pixel_data_without_external_tools
 fn shipped_binary_converts_qupath_geojson_with_the_wsi() {
     let temporary_directory = tempfile::tempdir().expect("create temporary directory");
     let self_test_workspace = temporary_directory.path().join("synthetic-source");
-    let self_test = Command::new(env!("CARGO_BIN_EXE_wsi-dicom"))
-        .arg("self-test")
-        .arg("--json")
-        .arg("--out")
-        .arg(&self_test_workspace)
-        .arg("--keep-output")
-        .arg("--command-timeout-secs")
-        .arg("15")
-        .output()
-        .expect("create synthetic source through shipped CLI");
+    let self_test = run_self_test(&self_test_workspace);
     assert!(
         self_test.status.success(),
         "self-test source creation failed: {}",
@@ -192,16 +187,7 @@ fn shipped_binary_converts_qupath_geojson_with_the_wsi() {
 fn calibration_bundle_cli_flow_embeds_verified_profile_without_leaking_local_paths() {
     let temporary_directory = tempfile::tempdir().expect("create temporary directory");
     let self_test_workspace = temporary_directory.path().join("synthetic-source");
-    let self_test = Command::new(env!("CARGO_BIN_EXE_wsi-dicom"))
-        .arg("self-test")
-        .arg("--json")
-        .arg("--out")
-        .arg(&self_test_workspace)
-        .arg("--keep-output")
-        .arg("--command-timeout-secs")
-        .arg("15")
-        .output()
-        .expect("create synthetic color source through shipped CLI");
+    let self_test = run_self_test(&self_test_workspace);
     assert!(
         self_test.status.success(),
         "self-test source creation failed: {}",
