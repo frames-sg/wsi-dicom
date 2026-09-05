@@ -11,7 +11,7 @@ If compatible code is not published, an HTTPS Git dependency may be used only wi
 an immutable 40-character revision and a matching package version. Dependencies may
 not escape the repository through relative paths.
 
-The coherent dependency family selected for the 0.7.4 release is:
+The current registry dependency family, retained from the 0.7.4 release, is:
 
 | Dependency | Version | Source |
 | --- | --- | --- |
