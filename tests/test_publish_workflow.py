@@ -210,12 +210,16 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         self.assertIn(install, crate)
         self.assertIn('pydicom==3.0.2', crate)
         self.assertLess(crate.index(install), crate.index('doctor --strict'))
+        prepare = 'validate_iods" --edition 2026c'
+        self.assertIn(prepare, crate)
+        self.assertLess(crate.index(prepare), crate.index('cargo package --locked'))
         self.assertIn('"validate_iods"', crate)
         ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         external = re.search(
             r"(?ms)^  external-conformance:\n.*?(?=^  [a-zA-Z0-9_-]+:\n|\Z)", ci
         ).group(0)
         self.assertIn(install, external)
+        self.assertIn(prepare, external)
 
     def test_attestation_permissions_are_isolated_from_crates_credentials(self):
         attest = self.job("attest")
