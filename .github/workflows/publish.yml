@@ -264,7 +264,11 @@ jobs:
         shell: bash
         run: |
           cargo build --release --locked --no-default-features --bin wsi-dicom
-          target/release/wsi-dicom doctor --strict --json > dist/validation/doctor.json
+          if ! target/release/wsi-dicom doctor --strict --json > dist/validation/doctor.json
+          then
+            cat dist/validation/doctor.json
+            exit 1
+          fi
           if ! target/release/wsi-dicom self-test \
               --strict \
               --json \
