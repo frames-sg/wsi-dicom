@@ -193,6 +193,7 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         evidence = self.job("release_evidence")
         self.assertIn("cargo package --locked", crate)
         self.assertIn(".crate", crate)
+        self.assertIn('cat dist/validation/doctor.json', crate)
         self.assertIn('cat dist/validation/self-test.json', crate)
         self.assertIn("SYFT_VERSION: 1.50.0", evidence)
         self.assertIn(
