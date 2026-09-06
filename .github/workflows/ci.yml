@@ -114,7 +114,7 @@ jobs:
   external-conformance:
     runs-on: ubuntu-latest
     env:
-      WSI_DICOM_REQUIRED_EXTERNAL_TOOLS: dciodvfy,dcentvfy,opj_decompress,djpeg,grk_decompress
+      WSI_DICOM_REQUIRED_EXTERNAL_TOOLS: dciodvfy,dcentvfy,validate_iods,opj_decompress,djpeg,grk_decompress
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -126,10 +126,15 @@ jobs:
           sudo apt-get update &&
           sudo apt-get install -y
           dicom3tools grokj2k-tools libjpeg-turbo-progs libopenjp2-tools
+      - name: Install the required Python IOD validator
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/dicom-validator"
+          "${RUNNER_TEMP}/dicom-validator/bin/python" -m pip install "dicom-validator==0.8.3" "pydicom==3.0.2"
+          echo "${RUNNER_TEMP}/dicom-validator/bin" >> "$GITHUB_PATH"
       - name: Prove every required validator is present
         shell: bash
         run: |
-          for tool in dciodvfy dcentvfy opj_decompress djpeg grk_decompress; do
+          for tool in dciodvfy dcentvfy validate_iods opj_decompress djpeg grk_decompress; do
             command -v "$tool"
           done
       - name: Run external conformance integration tests

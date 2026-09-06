@@ -204,6 +204,19 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("SHA256SUMS", evidence)
         self.assertIn("scripts/build-release-evidence.py", evidence)
 
+    def test_required_python_validator_is_installed_before_release_checks(self):
+        crate = self.job("crate_candidate")
+        install = 'dicom-validator==0.8.3'
+        self.assertIn(install, crate)
+        self.assertIn('pydicom==3.0.2', crate)
+        self.assertLess(crate.index(install), crate.index('doctor --strict'))
+        self.assertIn('"validate_iods"', crate)
+        ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        external = re.search(
+            r"(?ms)^  external-conformance:\n.*?(?=^  [a-zA-Z0-9_-]+:\n|\Z)", ci
+        ).group(0)
+        self.assertIn(install, external)
+
     def test_attestation_permissions_are_isolated_from_crates_credentials(self):
         attest = self.job("attest")
         publish = self.job("publish")
