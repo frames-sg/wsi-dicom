@@ -226,7 +226,7 @@ jobs:
     permissions:
       contents: read
     env:
-      WSI_DICOM_REQUIRED_EXTERNAL_TOOLS: dciodvfy,dcentvfy,opj_decompress,djpeg,grk_decompress
+      WSI_DICOM_REQUIRED_EXTERNAL_TOOLS: dciodvfy,dcentvfy,validate_iods,opj_decompress,djpeg,grk_decompress
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -238,6 +238,15 @@ jobs:
           sudo apt-get update &&
           sudo apt-get install -y
           dicom3tools grokj2k-tools libjpeg-turbo-progs libopenjp2-tools
+      - name: Install the required Python IOD validator
+        timeout-minutes: 5
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/dicom-validator"
+          "${RUNNER_TEMP}/dicom-validator/bin/python" -m pip install "dicom-validator==0.8.3" "pydicom==3.0.2"
+          echo "${RUNNER_TEMP}/dicom-validator/bin" >> "$GITHUB_PATH"
+          # Prepare the standard cache before per-file validation's 15s limit.
+          mkdir -p "${RUNNER_TEMP}/empty-dicom"
+          "${RUNNER_TEMP}/dicom-validator/bin/validate_iods" --edition 2026c "${RUNNER_TEMP}/empty-dicom"
       - name: Build and test the exact crate package
         shell: bash
         run: |
@@ -264,7 +273,11 @@ jobs:
         shell: bash
         run: |
           cargo build --release --locked --no-default-features --bin wsi-dicom
-          target/release/wsi-dicom doctor --strict --json > dist/validation/doctor.json
+          if ! target/release/wsi-dicom doctor --strict --json > dist/validation/doctor.json
+          then
+            cat dist/validation/doctor.json
+            exit 1
+          fi
           if ! target/release/wsi-dicom self-test \
               --strict \
               --json \
@@ -294,10 +307,13 @@ jobs:
           ).splitlines()
           tools = {
               name: shutil.which(name)
-              for name in ("dciodvfy", "dcentvfy", "opj_decompress", "djpeg", "grk_decompress")
+              for name in ("dciodvfy", "dcentvfy", "validate_iods", "opj_decompress", "djpeg", "grk_decompress")
           }
           document = {
               "packages": packages,
+              "python_packages": subprocess.check_output(
+                  ["python3", "-m", "pip", "freeze"], text=True
+              ).splitlines(),
               "tools": tools,
               "wsi_dicom": subprocess.check_output(
                   ["target/release/wsi-dicom", "--version"], text=True
