@@ -239,10 +239,14 @@ jobs:
           sudo apt-get install -y
           dicom3tools grokj2k-tools libjpeg-turbo-progs libopenjp2-tools
       - name: Install the required Python IOD validator
+        timeout-minutes: 5
         run: |
           python3 -m venv "${RUNNER_TEMP}/dicom-validator"
           "${RUNNER_TEMP}/dicom-validator/bin/python" -m pip install "dicom-validator==0.8.3" "pydicom==3.0.2"
           echo "${RUNNER_TEMP}/dicom-validator/bin" >> "$GITHUB_PATH"
+          # Prepare the standard cache before per-file validation's 15s limit.
+          mkdir -p "${RUNNER_TEMP}/empty-dicom"
+          "${RUNNER_TEMP}/dicom-validator/bin/validate_iods" --edition 2026c "${RUNNER_TEMP}/empty-dicom"
       - name: Build and test the exact crate package
         shell: bash
         run: |
