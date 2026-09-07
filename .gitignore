@@ -82,3 +82,10 @@ lcov*.info
 /tests/test_manuscript*.py
 /tests/test_uscap*.py
 /tests/fixtures/publication-*/
+
+# Local-only technical and research documentation
+/docs/
+/bench/**/*.md
+/rules/README.md
+/bench/negative_bench/package/CITATION.cff
+/bench/negative_bench/package/.zenodo.json
