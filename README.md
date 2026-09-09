@@ -281,9 +281,11 @@ python -m pip wheel \
   "git+https://github.com/frames-sg/wsi-dicom-bench@caafcd9bc660fa86a7fc6db09a08bd8538181400" \
   --wheel-dir .benchmark-wheel
 python -m pip install .benchmark-wheel/wsi_dicom_bench-*.whl
+profile="$(python -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("rules/wsi-dicom-core-profile-2026c-v2.json"))')"
 wsi-dicom-bench-workbench dicom-out \
   --output evidence/slide-id \
-  --wsi-dicom target/release/wsi-dicom
+  --wsi-dicom target/release/wsi-dicom \
+  --profile "${profile}"
 ```
 
 HTJ2K pixel decode validation auto-detects `grk_decompress` when it is on
