@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 from bench.process_evidence import run_bounded_command
@@ -14,14 +13,13 @@ def execute_workbench(
     *,
     conversion_output: Path,
     case_root: Path,
-    workbench: Path,
+    workbench_command: str,
     wsi_dicom: Path,
     catalog: Path,
     timeout_secs: int,
 ) -> dict:
     command = [
-        sys.executable,
-        str(workbench),
+        workbench_command,
         str(conversion_output),
         "--output",
         str(case_root / "workbench"),

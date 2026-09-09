@@ -286,6 +286,54 @@ jobs:
       - run: .venv-bench/bin/python -m pip install -r bench/requirements.txt
       - run: .venv-bench/bin/python -m unittest discover -s tests -v
 
+  controlled-failure-benchmark:
+    if: github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: wsi-dicom
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: frames-sg/wsi-dicom-bench
+          ref: caafcd9bc660fa86a7fc6db09a08bd8538181400
+          path: wsi-dicom-bench
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+      - name: Install independent DICOM and codec validators
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install -y
+          dicom3tools grokj2k-tools libjpeg-turbo-progs libopenjp2-tools
+      - name: Install the pinned benchmark and Python IOD validator
+        run: |
+          python -m venv "${RUNNER_TEMP}/wsi-dicom-bench"
+          mkdir -p "${RUNNER_TEMP}/benchmark-wheel"
+          "${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -m pip wheel ../wsi-dicom-bench --wheel-dir "${RUNNER_TEMP}/benchmark-wheel"
+          "${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -m pip install "${RUNNER_TEMP}"/benchmark-wheel/wsi_dicom_bench-*.whl "dicom-validator==0.8.3"
+          echo "${RUNNER_TEMP}/wsi-dicom-bench/bin" >> "${GITHUB_PATH}"
+          mkdir -p "${RUNNER_TEMP}/empty-dicom"
+          "${RUNNER_TEMP}/wsi-dicom-bench/bin/validate_iods" --edition 2026c "${RUNNER_TEMP}/empty-dicom"
+      - name: Run the complete locked challenge against this source revision
+        env:
+          WSI_DICOM_BENCH: ${{ runner.temp }}/wsi-dicom-bench/bin/wsi-dicom-bench
+        run: |
+          suite="$("${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("negative_bench/manifest-v4.json"))')"
+          cargo xtask benchmark --suite "${suite}" --output "${RUNNER_TEMP}/controlled-failure-evidence"
+          candidate_sha256="$(sha256sum target/release/wsi-dicom | cut -d ' ' -f 1)"
+          recorded_sha256="$("${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -c 'import json, os; from pathlib import Path; report=json.loads((Path(os.environ["RUNNER_TEMP"]) / "controlled-failure-evidence/observed-results/run-summary.json").read_text()); print(report["environment"]["wsi_dicom_sha256"])')"
+          test "${recorded_sha256}" = "${candidate_sha256}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: controlled-failure-evidence
+          path: ${{ runner.temp }}/controlled-failure-evidence
+          if-no-files-found: warn
+
   typos:
     runs-on: ubuntu-latest
     steps:

@@ -107,6 +107,8 @@ fn shipped_binary_rejects_malformed_compressed_pixel_data_without_external_tools
             String::from_utf8_lossy(&output.stderr)
         )
     });
+    assert_eq!(report["schema_version"], "wsi-dicom-validation-report-v1");
+    assert_eq!(report["rule_set_id"], "wsi-dicom-general-v1");
     let checks = report["checks"].as_array().expect("validation checks");
     assert!(checks.iter().any(|check| {
         check["name"] == "intrinsic-pixel-structure" && check["status"] == "failed"
@@ -331,4 +333,15 @@ fn write_compressed_transfer_syntax_with_primitive_pixel_data(path: &Path) {
 
 fn path_from_json(value: &Value) -> &Path {
     Path::new(value.as_str().expect("JSON path string"))
+}
+
+#[test]
+fn shipped_binary_doctor_identifies_its_json_contract() {
+    let output = Command::new(env!("CARGO_BIN_EXE_wsi-dicom"))
+        .args(["doctor", "--json"])
+        .output()
+        .expect("execute doctor");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("doctor JSON");
+    assert_eq!(report["schema_version"], "wsi-dicom-doctor-report-v1");
+    assert!(report["tools"].is_array());
 }
