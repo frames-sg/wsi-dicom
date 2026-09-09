@@ -14,12 +14,7 @@ LEGACY_SCHEMA_VERSION = "wsi-dicom-format-coverage-v1"
 SCHEMA_VERSION = "wsi-dicom-format-coverage-v2"
 SUPPORTED_SCHEMA_VERSIONS = {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}
 DEFAULT_MANIFEST = Path(__file__).resolve().parents[1] / "format-coverage-v2.json"
-DEFAULT_WORKBENCH = Path(__file__).resolve().parents[1] / "wsi_dicom_bench.py"
-DEFAULT_CATALOG = (
-    Path(__file__).resolve().parents[2]
-    / "rules"
-    / "wsi-dicom-bench-rules-2026c-v2.json"
-)
+DEFAULT_WORKBENCH_COMMAND = "wsi-dicom-bench-workbench"
 ALLOWED_TRANSFER_SYNTAXES = {
     "jpeg-baseline8-bit",
     "jpeg2000-lossless",
@@ -37,6 +32,26 @@ ALLOWED_ROUTE_CLASSIFICATIONS = {
 
 class FormatCoverageError(RuntimeError):
     """The format-coverage run could not produce trustworthy evidence."""
+
+
+def installed_catalog_path() -> Path:
+    """Resolve the format-coverage catalog from the installed benchmark package."""
+    try:
+        from importlib.resources import files
+
+        catalog = files("wsi_dicom_bench").joinpath(
+            "rules/wsi-dicom-bench-rules-2026c-v2.json"
+        )
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise FormatCoverageError(
+            "wsi-dicom-bench is not installed; install the pinned benchmark package"
+        ) from exc
+    path = Path(str(catalog))
+    if not path.is_file():
+        raise FormatCoverageError(
+            "installed wsi-dicom-bench lacks the format-coverage rule catalog"
+        )
+    return path
 
 
 def load_manifest(path: Path) -> dict:

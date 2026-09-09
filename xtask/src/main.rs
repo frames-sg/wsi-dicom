@@ -30,6 +30,7 @@ fn run() -> Result<(), String> {
         "semver" => semver(),
         "release-test" => release_test(),
         "validate-dicom" => validate_dicom(args.collect()),
+        "benchmark" => benchmark(args.collect()),
         "ci" => ci(),
         "help" | "-h" | "--help" => {
             print_help();
@@ -126,6 +127,8 @@ fn print_help() {
            semver       verify the exact reviewed 0.7.1-to-0.7.5 API break set\n\
            package      package from a clean worktree with cargo verification\n\
            release-test run release-mode tests\n\
+           benchmark <wsi-dicom-bench challenge arguments>\n\
+                        build the release candidate and run the installed benchmark\n\
            validate-dicom <path> [args]\n\
                         run wsi-dicom validate through cargo"
     );
@@ -180,6 +183,64 @@ fn validate_dicom_cargo_args(args: impl IntoIterator<Item = OsString>) -> Vec<Os
     .collect()
 }
 
+fn benchmark(args: Vec<OsString>) -> Result<(), String> {
+    let candidate = build_release_candidate()?;
+    let program =
+        env::var_os("WSI_DICOM_BENCH").unwrap_or_else(|| OsString::from("wsi-dicom-bench"));
+    run_program(program, &benchmark_args(candidate, args)?)
+}
+
+fn benchmark_args(
+    candidate: OsString,
+    args: impl IntoIterator<Item = OsString>,
+) -> Result<Vec<OsString>, String> {
+    let args = args.into_iter().collect::<Vec<_>>();
+    if args.iter().any(|argument| {
+        let argument = argument.to_string_lossy();
+        argument == "--wsi-dicom" || argument.starts_with("--wsi-dicom=")
+    }) {
+        return Err(
+            "cargo xtask benchmark selects the freshly built candidate; do not pass --wsi-dicom"
+                .into(),
+        );
+    }
+    Ok([OsString::from("challenge"), OsString::from("run")]
+        .into_iter()
+        .chain(args)
+        .chain([OsString::from("--wsi-dicom"), candidate])
+        .collect())
+}
+
+fn build_release_candidate() -> Result<OsString, String> {
+    let output = Command::new(cargo())
+        .args([
+            "build",
+            "--release",
+            "--locked",
+            "--package",
+            "wsi-dicom",
+            "--bin",
+            "wsi-dicom",
+            "--message-format=json",
+        ])
+        .output()
+        .map_err(|err| format!("failed to start `cargo build`: {err}"))?;
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    if !output.status.success() {
+        return Err(format!("`cargo build` exited with {}", output.status));
+    }
+    output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+        .find_map(|message| {
+            (message["reason"] == "compiler-artifact" && message["target"]["name"] == "wsi-dicom")
+                .then(|| message["executable"].as_str().map(OsString::from))
+                .flatten()
+        })
+        .ok_or_else(|| "cargo did not report the built wsi-dicom executable".into())
+}
+
 fn run_program(program: OsString, args: &[OsString]) -> Result<(), String> {
     let display = program.to_string_lossy();
     let args_display = args
@@ -205,7 +266,7 @@ fn cargo() -> OsString {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_dicom_cargo_args;
+    use super::{benchmark_args, validate_dicom_cargo_args};
     use std::ffi::OsString;
 
     #[test]
@@ -230,5 +291,39 @@ mod tests {
                 OsString::from("0"),
             ]
         );
+    }
+
+    #[test]
+    fn benchmark_supplies_the_built_candidate_and_forwards_suite_arguments() {
+        let args = benchmark_args(
+            OsString::from("target/release/wsi-dicom"),
+            [
+                OsString::from("--suite"),
+                OsString::from("suite/manifest.json"),
+                OsString::from("--output"),
+                OsString::from("evidence"),
+            ],
+        )
+        .expect("benchmark arguments");
+
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("challenge"),
+                OsString::from("run"),
+                OsString::from("--suite"),
+                OsString::from("suite/manifest.json"),
+                OsString::from("--output"),
+                OsString::from("evidence"),
+                OsString::from("--wsi-dicom"),
+                OsString::from("target/release/wsi-dicom"),
+            ]
+        );
+
+        assert!(benchmark_args(
+            OsString::from("target/release/wsi-dicom"),
+            [OsString::from("--wsi-dicom=other")]
+        )
+        .is_err());
     }
 }

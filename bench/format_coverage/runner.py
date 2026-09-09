@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -15,11 +16,11 @@ from bench.format_coverage.conversion import execute_conversion
 from bench.format_coverage.finalization import build_run_report, finalize_case
 from bench.format_coverage.manifest import (
     ALLOWED_BACKENDS,
-    DEFAULT_CATALOG,
     DEFAULT_MANIFEST,
-    DEFAULT_WORKBENCH,
+    DEFAULT_WORKBENCH_COMMAND,
     SCHEMA_VERSION,
     FormatCoverageError,
+    installed_catalog_path,
     load_manifest,
     validate_rule_catalog_provenance,
 )
@@ -35,11 +36,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--corpus-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
+    parser.add_argument(
+        "--catalog",
+        type=Path,
+        help="rule catalog (defaults to the installed benchmark's v2 catalog)",
+    )
     parser.add_argument(
         "--wsi-dicom", type=Path, default=Path("target/release/wsi-dicom")
     )
-    parser.add_argument("--workbench", type=Path, default=DEFAULT_WORKBENCH)
+    parser.add_argument(
+        "--workbench-command",
+        default=DEFAULT_WORKBENCH_COMMAND,
+        help="installed WSI-DICOM Bench workbench command",
+    )
     parser.add_argument(
         "--backend", choices=sorted(ALLOWED_BACKENDS), default="cpu"
     )
@@ -68,7 +77,7 @@ def run_case(case: dict, args: argparse.Namespace, staging: Path) -> dict:
         workbench = execute_workbench(
             conversion_output=conversion.output_path,
             case_root=case_root,
-            workbench=args.workbench,
+            workbench_command=args.workbench_command,
             wsi_dicom=args.wsi_dicom,
             catalog=args.catalog,
             timeout_secs=args.workbench_timeout_secs,
@@ -88,17 +97,20 @@ def run(args: argparse.Namespace) -> dict:
     args.corpus_root = args.corpus_root.resolve()
     args.output = args.output.resolve()
     args.manifest = args.manifest.resolve()
-    args.catalog = args.catalog.resolve()
+    args.catalog = (args.catalog or installed_catalog_path()).resolve()
     args.wsi_dicom = args.wsi_dicom.resolve()
-    args.workbench = args.workbench.resolve()
+    workbench_command = shutil.which(args.workbench_command)
     if args.output.exists():
         raise FormatCoverageError(f"output already exists: {args.output}")
     if not args.corpus_root.is_dir():
         raise FormatCoverageError(f"corpus root does not exist: {args.corpus_root}")
     if not args.wsi_dicom.is_file():
         raise FormatCoverageError(f"wsi-dicom executable does not exist: {args.wsi_dicom}")
-    if not args.workbench.is_file():
-        raise FormatCoverageError(f"workbench entry point does not exist: {args.workbench}")
+    if workbench_command is None:
+        raise FormatCoverageError(
+            f"workbench command is not installed or executable: {args.workbench_command}"
+        )
+    args.workbench_command = workbench_command
     manifest = load_manifest(args.manifest)
     catalog_provenance = (
         validate_rule_catalog_provenance(manifest, args.catalog)

@@ -1,6 +1,7 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 
-The current WSI validation challenge is the [validation workbench](docs/WORKBENCH.md):
+The current WSI validation challenge is maintained in
+[`wsi-dicom-bench`](https://github.com/frames-sg/wsi-dicom-bench):
 69 authored defects and 14 controls covering 18 selected rule families. Earlier sealed studies
 remain historical evidence; this challenge does not claim exhaustive normative DICOM coverage.
 
@@ -272,13 +273,19 @@ wsi-dicom validate dicom-out --strict --json
 wsi-dicom coverage slide.ndpi --json
 ```
 
-For the complete cataloged DICOM-side evaluation and one unified per-slide evidence bundle, use the
-[WSI-DICOM Bench workbench entry point](docs/WORKBENCH.md):
+For the complete cataloged DICOM-side evaluation and one unified per-slide evidence bundle, install
+the independently versioned [WSI-DICOM Bench](https://github.com/frames-sg/wsi-dicom-bench) package:
 
 ```sh
-.venv/bin/python bench/wsi_dicom_bench.py dicom-out \
+python -m pip wheel \
+  "git+https://github.com/frames-sg/wsi-dicom-bench@caafcd9bc660fa86a7fc6db09a08bd8538181400" \
+  --wheel-dir .benchmark-wheel
+python -m pip install .benchmark-wheel/wsi_dicom_bench-*.whl
+profile="$(python -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("rules/wsi-dicom-core-profile-2026c-v2.json"))')"
+wsi-dicom-bench-workbench dicom-out \
   --output evidence/slide-id \
-  --wsi-dicom target/release/wsi-dicom
+  --wsi-dicom target/release/wsi-dicom \
+  --profile "${profile}"
 ```
 
 HTJ2K pixel decode validation auto-detects `grk_decompress` when it is on
