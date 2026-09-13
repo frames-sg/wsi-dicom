@@ -308,7 +308,28 @@ jobs:
         run: >-
           sudo apt-get update &&
           sudo apt-get install -y
-          dicom3tools grokj2k-tools libjpeg-turbo-progs libopenjp2-tools
+          grokj2k-tools libjpeg-turbo-progs libopenjp2-tools
+          xutils-dev libx11-dev libxext-dev
+      - name: Build pinned dicom3tools with HTJ2K support
+        # Ubuntu's 2024 snapshot does not recognize the HTJ2K transfer syntaxes.
+        env:
+          DICOM3TOOLS_VERSION: 1.00.snapshot.20260320044638
+          DICOM3TOOLS_SHA256: 669b0c5e28535327ed0c0375491901bc553c2493923cc55e71a09eba07e7bdd2
+        run: |
+          source_dir="${RUNNER_TEMP}/dicom3tools_${DICOM3TOOLS_VERSION}"
+          archive_path="${source_dir}.tar.bz2"
+          curl -sSfL --retry 3 \
+            "https://dclunie.com/dicom3tools/workinprogress/dicom3tools_${DICOM3TOOLS_VERSION}.tar.bz2" \
+            --output "${archive_path}"
+          printf '%s  %s\n' "${DICOM3TOOLS_SHA256}" "${archive_path}" | sha256sum --check --strict
+          tar -xjf "${archive_path}" -C "${RUNNER_TEMP}"
+          cd "${source_dir}"
+          ./Configure
+          imake -I./config -DInstallInTopDir
+          make -j2 World
+          "${source_dir}/appsrc/dcfile/dciodvfy" -version
+          "${source_dir}/appsrc/dcfile/dcentvfy" -version
+          printf '%s\n' "${source_dir}/appsrc/dcfile" >> "${GITHUB_PATH}"
       - name: Install the pinned benchmark and Python IOD validator
         run: |
           python -m venv "${RUNNER_TEMP}/wsi-dicom-bench"
