@@ -2,7 +2,7 @@
 
 # wsi-dicom 0.7.1 to 0.7.5 semver report
 
-- Baseline: `0.7.1` at immutable commit `88c0dc357740cb6d344389449e01b008bb3f2649`.
+- Baseline: `0.7.1` at immutable commit `bc98cb1e086aefae80832491d619ab5659d458d2`.
 - Baseline publication state: merged, but not tagged or published to crates.io.
 - Candidate: `0.7.5`.
 - Tool: `cargo-semver-checks 0.48.0` with Rust `1.96` rustdoc JSON.
