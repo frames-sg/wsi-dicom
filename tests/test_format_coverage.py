@@ -59,6 +59,17 @@ class FormatCoverageManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(FormatCoverageError, "SHA-256"):
                 validate_rule_catalog_provenance(manifest, catalog_path)
 
+    def test_installed_catalog_path_uses_the_benchmark_package_resource(self):
+        from bench.format_coverage.manifest import installed_catalog_path
+
+        resource = mock.Mock()
+        resource.joinpath.return_value = Path(__file__)
+        with mock.patch("importlib.resources.files", return_value=resource):
+            self.assertEqual(installed_catalog_path(), Path(__file__))
+        resource.joinpath.assert_called_once_with(
+            "rules/wsi-dicom-bench-rules-2026c-v2.json"
+        )
+
     def test_load_manifest_rejects_duplicate_case_ids_and_unsafe_paths(self):
         from bench.format_coverage.manifest import FormatCoverageError, load_manifest
 
@@ -391,8 +402,10 @@ class FormatCoverageManifestTests(unittest.TestCase):
         case["expected_route"] = {"cpu": "cpu_encode"}
         with tempfile.TemporaryDirectory() as tmp:
             case_root = Path(tmp)
+            commands = []
 
-            def execute(_command, *, stdout_path, stderr_path, **_kwargs):
+            def execute(command, *, stdout_path, stderr_path, **_kwargs):
+                commands.append(command)
                 stdout_path.write_text('{"status":"passed"}', encoding="utf-8")
                 stderr_path.write_text("", encoding="utf-8")
                 return {"returncode": 0, "timed_out": False}
@@ -404,7 +417,7 @@ class FormatCoverageManifestTests(unittest.TestCase):
                 workbench = execute_workbench(
                     conversion_output=case_root / "dicom",
                     case_root=case_root,
-                    workbench=Path("bench/wsi_dicom_bench.py"),
+                    workbench_command="wsi-dicom-bench-workbench",
                     wsi_dicom=Path("target/release/wsi-dicom"),
                     catalog=Path("bench/rules/catalog.json"),
                     timeout_secs=30,
@@ -426,6 +439,7 @@ class FormatCoverageManifestTests(unittest.TestCase):
 
             self.assertEqual(workbench["status"], "passed")
             self.assertEqual(workbench["report"], {"status": "passed"})
+            self.assertEqual(commands[0][0], "wsi-dicom-bench-workbench")
             self.assertEqual(
                 list(result),
                 [
@@ -511,7 +525,7 @@ class FormatCoverageManifestTests(unittest.TestCase):
                         result = execute_workbench(
                             conversion_output=case_root / "dicom",
                             case_root=case_root,
-                            workbench=Path("bench/wsi_dicom_bench.py"),
+                            workbench_command="wsi-dicom-bench-workbench",
                             wsi_dicom=Path("target/release/wsi-dicom"),
                             catalog=Path("rules/catalog.json"),
                             timeout_secs=30,
@@ -567,6 +581,7 @@ class FormatCoverageManifestTests(unittest.TestCase):
             catalog = root / "catalog.json"
             for path in (binary, workbench, manifest, catalog):
                 path.write_text("fixture")
+            workbench.chmod(0o755)
             output = root / "output"
             args = argparse.Namespace(
                 corpus_root=corpus,
@@ -574,7 +589,7 @@ class FormatCoverageManifestTests(unittest.TestCase):
                 manifest=manifest,
                 catalog=catalog,
                 wsi_dicom=binary,
-                workbench=workbench,
+                workbench_command=str(workbench),
                 backend="cpu",
                 conversion_timeout_secs=30,
                 workbench_timeout_secs=30,
