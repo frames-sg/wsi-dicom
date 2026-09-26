@@ -159,18 +159,18 @@ fn export_direct(
     let chunk_byte_budget =
         usize::try_from(output.export.options.resources.max_prepared_frame_bytes)
             .unwrap_or(usize::MAX);
+    let profile = start.profile;
     let mut source = DirectJpegPassthroughFrameWriter::new(
         slide,
         output.export.coordinate,
         geometry,
         frame_count,
-        start.profile,
-        start.first_frame,
+        start,
         DIRECT_JPEG_PASSTHROUGH_WRITE_CHUNK_FRAMES,
         chunk_byte_budget,
     );
     let result = output.write(
-        start.profile,
+        profile,
         icc,
         lossy,
         deferred_lossy_compression,

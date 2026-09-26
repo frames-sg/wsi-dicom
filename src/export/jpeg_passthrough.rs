@@ -34,11 +34,14 @@ impl<'a> DirectJpegPassthroughFrameWriter<'a> {
         location: JpegBaselineFrameLocation,
         geometry: JpegBaselineFrameGeometry,
         frame_count: usize,
-        expected_profile: PixelProfile,
-        first_frame: Vec<u8>,
+        start: DirectJpegPassthroughStart,
         chunk_frame_limit: usize,
         chunk_byte_budget: usize,
     ) -> Self {
+        let DirectJpegPassthroughStart {
+            profile: expected_profile,
+            first_frame,
+        } = start;
         Self {
             slide,
             location,

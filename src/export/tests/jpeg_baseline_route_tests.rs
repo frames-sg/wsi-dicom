@@ -126,14 +126,7 @@ fn direct_jpeg_buffer_holds_at_most_budget_plus_one_variable_frame() {
     .unwrap();
     let budget = start.first_frame.len() + 32;
     let mut frames = super::super::jpeg_passthrough::DirectJpegPassthroughFrameWriter::new(
-        &slide,
-        location,
-        geometry,
-        4,
-        start.profile,
-        start.first_frame,
-        2048,
-        budget,
+        &slide, location, geometry, 4, start, 2048, budget,
     );
 
     frames.frame_len(1).unwrap();
@@ -291,7 +284,7 @@ fn export_dicom_passthrough_writes_jpeg_baseline_vl_wsi_instance() {
 #[test]
 fn ambiguous_rgb_tiff_jpeg_decodes_and_reencodes_with_matching_color() {
     let tmp = tempfile::tempdir().unwrap();
-    let pixels = vec![80u8, 140, 220].repeat(8 * 8);
+    let pixels = [80u8, 140, 220].repeat(8 * 8);
     let jpeg = j2k_jpeg::encode_jpeg_baseline(
         JpegSamples::Rgb8 {
             data: &pixels,
