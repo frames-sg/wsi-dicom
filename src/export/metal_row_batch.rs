@@ -75,11 +75,23 @@ impl MetalTileGridRunRequest<'_> {
     fn row_batch_rows(self, metal_input: &MetalInputTileReader) -> Result<usize, Error> {
         metal_row_batch_rows(
             self.row,
-            self.matrix_rows.div_ceil(u64::from(self.tile_size)),
+            self.complete_rows(metal_input),
             self.tile_count,
             metal_input.row_batch_rows,
             metal_input.row_batch_target_tiles,
         )
+    }
+
+    fn complete_rows(self, metal_input: &MetalInputTileReader) -> u64 {
+        let rows = self.matrix_rows.div_ceil(u64::from(self.tile_size));
+        // Partial final rows use the ordinary row executor with its exact count.
+        metal_input.frame_limit.map_or(rows, |frames| {
+            rows.min(
+                frames
+                    .checked_div(self.matrix_columns.div_ceil(u64::from(self.tile_size)))
+                    .unwrap_or(0),
+            )
+        })
     }
 
     fn whole_level_request(
@@ -170,7 +182,7 @@ pub(super) fn try_encode_metal_input_tile_grid_pipeline_run(
         return try_encode_metal_input_tile_grid_run(slide, metal_input, j2k_encoder, request);
     }
 
-    let tiles_down = request.matrix_rows.div_ceil(u64::from(request.tile_size));
+    let tiles_down = request.complete_rows(metal_input);
     if metal_input
         .next_grid_pipeline_row
         .is_none_or(|next| next < request.row)
@@ -350,9 +362,11 @@ fn cache_split_metal_grid_run(
         .map_err(|_| Error::Unsupported {
             reason: "Metal row batch result allocation exceeds available memory".into(),
         })?;
+    let mut tiles = std::mem::take(&mut grid_run.tiles).into_iter();
     for _ in 0..row_count {
-        let row_tiles = grid_run.tiles.drain(..tiles_per_row).collect::<Vec<_>>();
+        let row_tiles = tiles.by_ref().take(tiles_per_row).collect::<Vec<_>>();
         rows.push(MetalEncodedTileRun {
+            used_gpu_input: grid_run.used_gpu_input,
             tiles: row_tiles,
             input_decode_duration: Duration::ZERO,
             compose_duration: Duration::ZERO,
@@ -554,9 +568,10 @@ fn cache_and_store_whole_level_source_tile(
     index: usize,
     key: MetalSourceTileKey,
     tile: MetalDeviceTile,
-) {
-    metal_input.whole_level_cache.insert(key, tile.clone());
+) -> Result<(), Error> {
+    metal_input.whole_level_cache.insert(key, tile.clone())?;
     source_tiles[index] = Some(tile);
+    Ok(())
 }
 
 #[cfg(test)]

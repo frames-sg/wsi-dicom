@@ -145,6 +145,10 @@ fn preflight_pixel_profile(
             if let Ok(profile) = super::pixel_profile_from_raw_jpeg_tile(&raw) {
                 return Ok(profile);
             }
+        } else if let Some(profile) =
+            super::j2k_policy::RawJ2kInspection::new(&raw).and_then(|view| view.profile())
+        {
+            return Ok(profile);
         }
     }
     let tile = slide

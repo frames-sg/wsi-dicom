@@ -1,7 +1,6 @@
 use std::time::{Duration, Instant};
 
 use j2k::{J2kLosslessSamples, ReversibleTransform};
-use rayon::prelude::*;
 use wsi_rs::{Slide, TileLayout, TileOutputPreference, TilePixels, TileRequest};
 
 use crate::encode::{self, EncodedDicomJ2kFrame};
@@ -10,6 +9,7 @@ use crate::options::{CodecValidation, TransferSyntax};
 use crate::tile::{prepare_tile_samples_with_limit, PixelProfile};
 
 use super::{
+    cpu_batch::{frame_batch_len, map_cpu_frames},
     frame_region::{OutputFrameRect, PreparedCpuRegion},
     jpeg_baseline::JpegBaselineFrameLocation,
     jpeg_baseline_pipeline::{read_and_prepare_region, CpuRegionReadRequest},
@@ -44,25 +44,67 @@ pub(super) fn encode_cpu_input_lossless_j2k_tile_batch(
     frames: &[LosslessJ2kCpuBatchFrame],
     tile_size: u32,
 ) -> Result<Vec<LosslessJ2kCpuBatchOutcome>, Error> {
-    let prepared = if let Some(requests) =
+    let mut outcomes = Vec::new();
+    for batch in frames.chunks(frame_batch_len(tile_size, tile_size)) {
+        let prepared = prepare_cpu_input_batch(
+            slide,
+            level,
+            location,
+            batch,
+            tile_size,
+            settings.max_prepared_frame_bytes,
+        )?;
+        outcomes.extend(encode_prepared_lossless_j2k_cpu_batch(
+            settings, &prepared, tile_size,
+        )?);
+    }
+    Ok(outcomes)
+}
+
+pub(super) fn prepare_cpu_input_batch(
+    slide: &Slide,
+    level: &wsi_rs::Level,
+    location: JpegBaselineFrameLocation,
+    frames: &[LosslessJ2kCpuBatchFrame],
+    tile_size: u32,
+    max_prepared_frame_bytes: u64,
+) -> Result<Vec<PreparedCpuRegion>, Error> {
+    let mut prepared: Vec<Option<PreparedCpuRegion>> = (0..frames.len()).map(|_| None).collect();
+    if let Some(indexed_requests) =
         native_lossless_j2k_cpu_tile_requests(level, location, frames, tile_size)
     {
-        prepare_native_cpu_input_lossless_j2k_tile_batch(
+        let (indices, requests): (Vec<_>, Vec<_>) = indexed_requests.into_iter().unzip();
+        let native = prepare_native_cpu_input_lossless_j2k_tile_batch(
             slide,
             &requests,
             tile_size,
-            settings.max_prepared_frame_bytes,
-        )?
-    } else {
-        prepare_region_cpu_input_lossless_j2k_tile_batch(
+            max_prepared_frame_bytes,
+        )?;
+        super::scatter_indexed_results(&mut prepared, indices.into_iter().zip(native))?;
+    }
+    let indices: Vec<_> = prepared
+        .iter()
+        .enumerate()
+        .filter_map(|(i, tile)| tile.is_none().then_some(i))
+        .collect();
+    let fallback = map_cpu_frames(&indices, rayon::current_num_threads(), |&index| {
+        prepare_cpu_input_lossless_j2k_tile(
             slide,
             location,
-            frames,
+            frames[index],
             tile_size,
-            settings.max_prepared_frame_bytes,
-        )?
-    };
-    encode_prepared_lossless_j2k_cpu_batch(settings, prepared, tile_size)
+            max_prepared_frame_bytes,
+        )
+    })?;
+    super::scatter_indexed_results(&mut prepared, indices.into_iter().zip(fallback))?;
+    prepared
+        .into_iter()
+        .map(|tile| {
+            tile.ok_or_else(|| Error::Encode {
+                message: "CPU batch is missing a prepared frame".into(),
+            })
+        })
+        .collect()
 }
 
 pub(super) fn encode_cpu_input_lossless_j2k_planned_batch(
@@ -92,7 +134,7 @@ fn native_lossless_j2k_cpu_tile_requests(
     location: JpegBaselineFrameLocation,
     frames: &[LosslessJ2kCpuBatchFrame],
     tile_size: u32,
-) -> Option<Vec<TileRequest>> {
+) -> Option<Vec<(usize, TileRequest)>> {
     if frames.is_empty() {
         return Some(Vec::new());
     }
@@ -109,9 +151,10 @@ fn native_lossless_j2k_cpu_tile_requests(
         return None;
     }
     let tile_size_u64 = u64::from(tile_size);
-    frames
+    let requests: Vec<_> = frames
         .iter()
-        .map(|frame| {
+        .enumerate()
+        .filter_map(|(index, frame)| {
             if frame.width != tile_size
                 || frame.height != tile_size
                 || frame.x % tile_size_u64 != 0
@@ -124,9 +167,13 @@ fn native_lossless_j2k_cpu_tile_requests(
             if col >= tiles_across || row >= tiles_down {
                 return None;
             }
-            Some(location.tile_request(i64::try_from(col).ok()?, i64::try_from(row).ok()?))
+            Some((
+                index,
+                location.tile_request(i64::try_from(col).ok()?, i64::try_from(row).ok()?),
+            ))
         })
-        .collect()
+        .collect();
+    (!requests.is_empty()).then_some(requests)
 }
 
 fn prepare_native_cpu_input_lossless_j2k_tile_batch(
@@ -189,30 +236,9 @@ fn prepare_native_cpu_input_lossless_j2k_tile_batch(
         .collect()
 }
 
-fn prepare_region_cpu_input_lossless_j2k_tile_batch(
-    slide: &Slide,
-    location: JpegBaselineFrameLocation,
-    frames: &[LosslessJ2kCpuBatchFrame],
-    tile_size: u32,
-    max_prepared_frame_bytes: u64,
-) -> Result<Vec<PreparedCpuRegion>, Error> {
-    frames
-        .par_iter()
-        .map(|frame| {
-            prepare_cpu_input_lossless_j2k_tile(
-                slide,
-                location,
-                *frame,
-                tile_size,
-                max_prepared_frame_bytes,
-            )
-        })
-        .collect()
-}
-
-fn encode_prepared_lossless_j2k_cpu_batch(
+pub(super) fn encode_prepared_lossless_j2k_cpu_batch(
     settings: LosslessJ2kCpuBatchSettings,
-    prepared: Vec<PreparedCpuRegion>,
+    prepared: &[PreparedCpuRegion],
     tile_size: u32,
 ) -> Result<Vec<LosslessJ2kCpuBatchOutcome>, Error> {
     let max_bytes_per_pixel = prepared
@@ -226,24 +252,17 @@ fn encode_prepared_lossless_j2k_cpu_batch(
         max_bytes_per_pixel,
         rayon::current_num_threads(),
     );
-    if workers <= 1 {
-        return prepared
-            .into_iter()
-            .map(|tile| encode_prepared_lossless_j2k_cpu_tile(settings, tile, tile_size))
-            .collect();
-    }
-    prepared
-        .into_par_iter()
-        .map(|tile| encode_prepared_lossless_j2k_cpu_tile(settings, tile, tile_size))
-        .collect()
+    map_cpu_frames(prepared, workers, |tile| {
+        encode_prepared_lossless_j2k_cpu_tile(settings, tile, tile_size)
+    })
 }
 
 fn encode_prepared_lossless_j2k_cpu_tile(
     settings: LosslessJ2kCpuBatchSettings,
-    tile: PreparedCpuRegion,
+    tile: &PreparedCpuRegion,
     tile_size: u32,
 ) -> Result<LosslessJ2kCpuBatchOutcome, Error> {
-    let samples = lossless_j2k_samples_from_prepared_region(&tile, tile_size)?;
+    let samples = lossless_j2k_samples_from_prepared_region(tile, tile_size)?;
     Ok(LosslessJ2kCpuBatchOutcome {
         encoded: encode::encode_lossless_cpu(
             samples,
@@ -322,6 +341,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_batch_retains_interior_tiles_when_a_boundary_needs_padding() {
+        let level = wsi_rs::Level::new(
+            (513, 512),
+            1.0,
+            TileLayout::Regular {
+                tile_width: 512,
+                tile_height: 512,
+                tiles_across: 2,
+                tiles_down: 1,
+            },
+        );
+        let frames = [
+            OutputFrameRect::new(0, 0, 512, 512),
+            OutputFrameRect::new(512, 0, 1, 512),
+        ];
+        assert!(
+            native_lossless_j2k_cpu_tile_requests(
+                &level,
+                JpegBaselineFrameLocation::first_series_level(0),
+                &frames,
+                512
+            )
+            .is_some(),
+            "the interior tile must retain the native batch route"
+        );
+    }
+
+    #[test]
     fn native_cpu_tile_batch_requests_require_exact_source_tile_geometry() {
         let level = wsi_rs::Level::new(
             (2048, 1024),
@@ -353,15 +400,15 @@ mod tests {
             .expect("exact regular source tiles should use wsi_rs batch reads");
 
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].scene.get(), 1);
-        assert_eq!(requests[0].series.get(), 2);
-        assert_eq!(requests[0].level.get(), 3);
+        assert_eq!(requests[0].1.scene.get(), 1);
+        assert_eq!(requests[0].1.series.get(), 2);
+        assert_eq!(requests[0].1.level.get(), 3);
         assert_eq!(
-            requests[0].plane,
+            requests[0].1.plane,
             wsi_rs::PlaneIdx::new(wsi_rs::PlaneSelection::new(4, 5, 6))
         );
-        assert_eq!((requests[0].col, requests[0].row), (0, 0));
-        assert_eq!((requests[1].col, requests[1].row), (1, 1));
+        assert_eq!((requests[0].1.col, requests[0].1.row), (0, 0));
+        assert_eq!((requests[1].1.col, requests[1].1.row), (1, 1));
 
         let edge = [LosslessJ2kCpuBatchFrame {
             x: 1536,
@@ -383,7 +430,7 @@ mod tests {
     #[test]
     fn prepared_cpu_region_builds_lossless_j2k_samples_from_profile() {
         let prepared = PreparedCpuRegion {
-            bytes: vec![0; 2 * 2 * 3],
+            bytes: vec![0; 2 * 2 * 3].into(),
             profile: PixelProfile {
                 components: 3,
                 bits_allocated: 8,

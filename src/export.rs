@@ -63,9 +63,11 @@ use crate::tile::prepare_tile_samples;
 use crate::tile::PixelProfile;
 use crate::uid::DicomExportIdentity;
 #[cfg(test)]
-use crate::writer::{extended_offset_table_metadata_bytes, PerFrameFunctionalGroupsPlan};
+use crate::writer::extended_offset_table_metadata_bytes;
+use crate::writer::PerFrameFunctionalGroupsPlan;
 
 mod corpus_discovery;
+mod cpu_batch;
 mod defaults;
 mod frame_region;
 mod hybrid_lane;
@@ -80,10 +82,13 @@ mod jpeg_baseline_instance;
 mod jpeg_baseline_metal;
 mod jpeg_baseline_pipeline;
 mod jpeg_direct_htj2k;
+mod jpeg_frame_spool;
 mod jpeg_passthrough;
 mod jpeg_retile;
 mod lossless_j2k_cpu;
 mod lossless_j2k_direct_routes;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+mod lossless_j2k_host;
 mod lossless_j2k_instance;
 mod lossless_j2k_pipeline;
 mod lossless_j2k_plan;
@@ -117,9 +122,8 @@ use self::corpus_discovery::collect_wsi_candidate_paths;
 use self::metal_compose::{MetalComposeTileRequest, MetalStripComposer};
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 use self::metal_input::{
-    cpu_input_device_encode_auto_allowed, cpu_input_device_encode_auto_probe_allowed,
-    select_auto_lossless_j2k_probe_route, wsi_rs_device_decode_opted_in,
-    AutoLosslessJ2kRouteCandidate, CpuEncodedTileRun,
+    cpu_input_device_encode_profile_allowed, select_auto_lossless_j2k_probe_route,
+    wsi_rs_device_decode_opted_in, AutoLosslessJ2kRouteCandidate,
 };
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 use self::metal_input::{
@@ -192,10 +196,10 @@ pub(crate) use self::lossless_j2k_plan::{
 use self::profiling::{check_route_level_deadline, RouteLevelDeadline};
 use self::transaction::{ExportTransaction, OutputDirectoryLock};
 
-#[cfg(all(test, feature = "metal", target_os = "macos"))]
+#[cfg(all(feature = "metal", target_os = "macos"))]
 const WSI_RS_JPEG_DEVICE_DECODE_ENV: &str = "WSI_RS_JPEG_DEVICE_DECODE";
 
-#[cfg(all(test, feature = "metal", target_os = "macos"))]
+#[cfg(all(feature = "metal", target_os = "macos"))]
 const WSI_RS_JP2K_DEVICE_DECODE_ENV: &str = "WSI_RS_JP2K_DEVICE_DECODE";
 
 const DIRECT_JPEG_PASSTHROUGH_WRITE_CHUNK_FRAMES: usize = 2048;
@@ -208,6 +212,7 @@ pub(super) struct InstanceExportContext<'a> {
     pub(super) instance_number: u32,
     pub(super) coordinate: InstanceCoordinate,
     pub(super) level: &'a wsi_rs::Level,
+    pub(super) per_frame_plan: Option<PerFrameFunctionalGroupsPlan>,
 }
 
 fn level_pixel_spacing_mm(
@@ -277,15 +282,19 @@ pub fn encode_dicom_j2k_frame(request: J2kFrameEncodeRequest<'_>) -> Result<Enco
         request.codec_validation,
     );
     let encoded = encoder.encode(request.samples.to_j2k()?)?;
-    let bytes = encoded.codestream_bytes()?.to_vec();
+    let used_device_encode = encoded.used_device_encode;
+    let used_device_validation = encoded.used_device_validation;
+    let encode_micros = encoded.encode_duration.as_micros();
+    let validation_micros = encoded.validation_duration.as_micros();
+    let bytes = encoded.into_codestream()?;
 
     Ok(EncodedFrame {
         transfer_syntax_uid: request.transfer_syntax.uid(),
         bytes,
-        used_device_encode: encoded.used_device_encode,
-        used_device_validation: encoded.used_device_validation,
-        encode_micros: encoded.encode_duration.as_micros(),
-        validation_micros: encoded.validation_duration.as_micros(),
+        used_device_encode,
+        used_device_validation,
+        encode_micros,
+        validation_micros,
     })
 }
 
@@ -321,9 +330,9 @@ pub(crate) fn export_dicom_prepared(
 ) -> Result<ExportReport, Error> {
     #[cfg(all(feature = "metal", target_os = "macos"))]
     load_persistent_auto_metal_input_route_cache_if_requested()?;
-    let jobs = dicom_export_instance_jobs(&slide, &request)?;
+    let mut jobs = dicom_export_instance_jobs(&slide, &request)?;
     preflight_output_paths(&request, &options, &jobs)?;
-    preflight_metadata_budgets(&slide, &options, &jobs)?;
+    preflight_metadata_budgets(&slide, &options, &mut jobs)?;
     let effective_icc_digests = preflight_icc_profiles(&slide, &request, &metadata, &jobs)?;
     let identity = DicomExportIdentity::for_export(
         &request.source_path,

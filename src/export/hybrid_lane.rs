@@ -149,7 +149,7 @@ pub(crate) fn export_dicom_instance_jobs_prefer_device_htj2k_hybrid_lanes(
 
     let mut reports = std::thread::scope(|scope| -> Result<Vec<_>, Error> {
         let (writer_tx, writer_rx) =
-            std::sync::mpsc::channel::<(usize, PendingLosslessJ2kInstance)>();
+            std::sync::mpsc::sync_channel::<(usize, PendingLosslessJ2kInstance)>(1);
         let writer_handle = scope.spawn(move || {
             let mut writer_reports = Vec::new();
             for (ordinal, pending) in writer_rx {
@@ -188,6 +188,7 @@ pub(crate) fn export_dicom_instance_jobs_prefer_device_htj2k_hybrid_lanes(
                     instance_number: job.instance_number,
                     coordinate: job.coordinate,
                     level: job.level,
+                    per_frame_plan: job.per_frame_plan,
                 },
             )?;
             writer_tx

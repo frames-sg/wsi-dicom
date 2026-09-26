@@ -15,14 +15,15 @@ fn per_frame_functional_groups_stream_with_an_exact_budget() {
     )
     .unwrap();
     let estimate = plan.encoded_len().unwrap();
+    for plan in [plan, plan.preflight(estimate).unwrap()] {
+        let mut rejected = Vec::new();
+        let error = plan.write_to(&mut rejected, estimate - 1).unwrap_err();
+        assert!(error.to_string().contains("metadata"));
+        assert!(rejected.is_empty(), "preflight must precede output");
 
-    let mut rejected = Vec::new();
-    let error = plan.write_to(&mut rejected, estimate - 1).unwrap_err();
-    assert!(error.to_string().contains("metadata"));
-    assert!(rejected.is_empty(), "preflight must precede output");
-
-    let written = plan.write_to(&mut std::io::sink(), estimate).unwrap();
-    assert_eq!(written, estimate);
+        let written = plan.write_to(&mut std::io::sink(), estimate).unwrap();
+        assert_eq!(written, estimate);
+    }
 }
 
 #[test]

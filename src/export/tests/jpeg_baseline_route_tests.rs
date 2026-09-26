@@ -4,6 +4,145 @@ use j2k_jpeg::{JpegBackend, JpegSamples, JpegSubsampling};
 
 use super::*;
 
+#[test]
+fn mixed_jpeg_preparation_spools_only_encoded_exceptions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source.svs");
+    let tiles = [
+        encode_test_jpeg(32, 32, [180, 30, 40]),
+        encode_test_jpeg(32, 32, [20, 170, 60]),
+    ];
+    write_tiled_jpeg_tiff(&source, 33, 32, 32, 32, &tiles);
+    let options = NormalizedExportOptions::from_validated(&ExportOptions {
+        tile_size: 32,
+        transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+        encode_backend: EncodeBackendPreference::CpuOnly,
+        ..ExportOptions::default()
+    });
+    let metadata = MetadataSource::ResearchPlaceholder.resolve().unwrap();
+    let identity =
+        DicomExportIdentity::for_export(&source, &options, &metadata, Some(0), &[]).unwrap();
+    let slide = Slide::open(&source).unwrap();
+    let level = &slide.dataset().scenes[0].series[0].levels[0];
+    let location = InstanceCoordinate::new(0, 0, 0, 0, 0, 0);
+    let geometry = jpeg_baseline_route_frame_geometry(&slide, level, location, 32).unwrap();
+    let spool_path = tmp.path().join("frames.spool");
+    let prepared = super::super::jpeg_baseline_frames::prepare_jpeg_frames(
+        &slide,
+        InstanceExportContext {
+            options: &options,
+            metadata: &metadata,
+            identity: &identity,
+            instance_number: 1,
+            coordinate: location,
+            level,
+            per_frame_plan: None,
+        },
+        geometry,
+        spool_path.clone(),
+        2,
+    )
+    .unwrap();
+    assert_eq!(prepared.metrics.routes.jpeg_passthrough_frames, 1);
+    assert_eq!(prepared.metrics.routes.jpeg_cpu_encode_frames, 1);
+    let boundary = encode_jpeg_baseline_cpu_input_tile(
+        &slide,
+        location,
+        JpegBaselineFallbackFrame {
+            x: 32,
+            y: 0,
+            width: 1,
+            height: 32,
+        },
+        JpegBaselineCpuEncodeSettings {
+            frame_columns: 32,
+            frame_rows: 32,
+            jpeg_quality: options.semantics.jpeg_quality,
+            max_prepared_frame_bytes: options.resources.max_prepared_frame_bytes,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::metadata(spool_path).unwrap().len(),
+        boundary.encoded.data.len() as u64,
+        "unchanged JPEG bytes should not be copied to the payload spool"
+    );
+    let report = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 32,
+            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: Some(0),
+    })
+    .unwrap();
+    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+    let fragments = object
+        .element(tags::PIXEL_DATA)
+        .unwrap()
+        .value()
+        .fragments()
+        .unwrap();
+    assert_eq!(fragments.len(), 2);
+    for (actual, expected) in fragments.iter().zip([&tiles[0], &boundary.encoded.data]) {
+        assert_eq!(&actual[..expected.len()], expected.as_slice());
+        assert_eq!(actual.len(), expected.len().next_multiple_of(2));
+    }
+}
+
+#[test]
+fn direct_jpeg_buffer_holds_at_most_budget_plus_one_variable_frame() {
+    let tmp = tempfile::tempdir().unwrap();
+    let small = encode_test_jpeg(32, 32, [180, 30, 40]);
+    let mut large = encode_test_jpeg(32, 32, [20, 170, 60]);
+    let eoi = large.split_off(large.len() - 2);
+    let comment = vec![0x5a; 4096];
+    large.extend_from_slice(&[0xFF, 0xFE]);
+    large.extend_from_slice(&u16::try_from(comment.len() + 2).unwrap().to_be_bytes());
+    large.extend_from_slice(&comment);
+    large.extend_from_slice(&eoi);
+    let source = tmp.path().join("variable-frames.svs");
+    write_tiled_jpeg_tiff(
+        &source,
+        128,
+        32,
+        32,
+        32,
+        &[small.clone(), small.clone(), large.clone(), small],
+    );
+    let slide = Slide::open(&source).unwrap();
+    let level = &slide.dataset().scenes[0].series[0].levels[0];
+    let location = InstanceCoordinate::new(0, 0, 0, 0, 0, 0);
+    let geometry = jpeg_baseline_route_frame_geometry(&slide, level, location, 32).unwrap();
+    let start = super::super::jpeg_passthrough::try_prepare_direct_jpeg_passthrough(
+        &slide, location, level, geometry,
+    )
+    .unwrap()
+    .unwrap();
+    let budget = start.first_frame.len() + 32;
+    let mut frames = super::super::jpeg_passthrough::DirectJpegPassthroughFrameWriter::new(
+        &slide,
+        location,
+        geometry,
+        4,
+        start.profile,
+        start.first_frame,
+        2048,
+        budget,
+    );
+
+    frames.frame_len(1).unwrap();
+
+    assert!(frames.buffered_chunk_bytes() <= budget);
+    assert_eq!(frames.pending_frame_bytes(), Some(large.len()));
+    assert_eq!(frames.frame_len(2).unwrap(), large.len() as u64);
+}
+
 fn export_jpeg_baseline_native_geometry_for_test(
     source_path: std::path::PathBuf,
     output_dir: std::path::PathBuf,
@@ -147,6 +286,92 @@ fn export_dicom_passthrough_writes_jpeg_baseline_vl_wsi_instance() {
         .unwrap();
     assert_eq!(fragments.len(), 1);
     assert_eq!(fragments[0], jpeg);
+}
+
+#[test]
+fn ambiguous_rgb_tiff_jpeg_decodes_and_reencodes_with_matching_color() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pixels = vec![80u8, 140, 220].repeat(8 * 8);
+    let jpeg = j2k_jpeg::encode_jpeg_baseline(
+        JpegSamples::Rgb8 {
+            data: &pixels,
+            width: 8,
+            height: 8,
+        },
+        j2k_jpeg::JpegEncodeOptions {
+            quality: 95,
+            subsampling: JpegSubsampling::Ybr444,
+            restart_interval: None,
+            backend: JpegBackend::Cpu,
+        },
+    )
+    .unwrap()
+    .data;
+    assert_eq!(
+        super::super::jpeg_baseline::jpeg_color_evidence(&jpeg).unwrap(),
+        super::super::jpeg_baseline::JpegColorEvidence::Ambiguous
+    );
+    let source = tmp.path().join("ambiguous-rgb.tiff");
+    crate::test_support::write_tiled_compressed_tiff(
+        &source,
+        8,
+        8,
+        8,
+        8,
+        7,
+        2,
+        3,
+        std::slice::from_ref(&jpeg),
+    );
+    let slide = Slide::open(&source).unwrap();
+    let source_tile = slide
+        .read_region(&wsi_rs::RegionRequest::new(
+            0usize,
+            0usize,
+            0u32,
+            (0, 0),
+            (8, 8),
+        ))
+        .unwrap();
+    let wsi_rs::CpuTileData::U8(expected) = source_tile.data() else {
+        panic!("expected 8-bit RGB source tile")
+    };
+    let expected = expected[..3].to_vec();
+
+    let report = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 8,
+            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: false,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: Some(0),
+    })
+    .unwrap();
+    assert_eq!(report.metrics.routes.jpeg_passthrough_frames, 0);
+    assert_eq!(report.metrics.routes.jpeg_cpu_encode_frames, 1);
+    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+    let fragment = dicom_fragment_jpeg_payload(
+        &object
+            .element(tags::PIXEL_DATA)
+            .unwrap()
+            .value()
+            .fragments()
+            .unwrap()[0],
+    );
+    let (decoded, _) = j2k_jpeg::Decoder::new(fragment)
+        .unwrap()
+        .decode_request(j2k_jpeg::DecodeRequest::full(j2k_jpeg::PixelFormat::Rgb8))
+        .unwrap();
+    for (actual, expected) in decoded.as_slice()[..3].iter().zip(expected) {
+        assert!(i16::from(*actual).abs_diff(i16::from(expected)) <= 4);
+    }
 }
 
 #[test]

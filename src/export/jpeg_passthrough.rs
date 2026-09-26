@@ -1,32 +1,17 @@
 use std::io::{self, Write};
 
-use rayon::prelude::*;
-
-use super::jpeg_baseline::uncompressed_frame_bytes;
 use super::{
-    ensure_consistent_pixel_profile, pixel_profile_from_raw_jpeg_tile,
-    raw_jpeg_matches_frame_geometry, raw_jpeg_profile_can_passthrough,
-    raw_rgb_passthrough_has_no_geometry_fallback, JpegBaselineFrameGeometry,
-    JpegBaselineFrameLocation,
+    pixel_profile_from_raw_jpeg_tile, raw_jpeg_matches_frame_geometry,
+    raw_jpeg_profile_can_passthrough, raw_rgb_passthrough_has_no_geometry_fallback,
+    JpegBaselineFrameGeometry, JpegBaselineFrameLocation,
 };
 use crate::error::Error;
 use crate::tile::PixelProfile;
 use wsi_rs::{RawCompressedTile, Slide};
 
-const DIRECT_JPEG_PASSTHROUGH_PLAN_CHUNK_FRAMES: usize = 2_048;
-
-#[derive(Clone, Copy)]
-pub(super) struct DirectJpegPassthroughFrame {
+pub(super) struct DirectJpegPassthroughStart {
     pub(super) profile: PixelProfile,
-    pub(super) compressed_bytes: u64,
-    pub(super) uncompressed_bytes: u64,
-}
-
-pub(super) struct DirectJpegPassthroughPlan {
-    pub(super) profile: PixelProfile,
-    pub(super) compressed_bytes: u64,
-    pub(super) uncompressed_bytes: u64,
-    pub(super) frame_count: usize,
+    pub(super) first_frame: Vec<u8>,
 }
 
 pub(super) struct DirectJpegPassthroughFrameWriter<'a> {
@@ -34,9 +19,13 @@ pub(super) struct DirectJpegPassthroughFrameWriter<'a> {
     location: JpegBaselineFrameLocation,
     geometry: JpegBaselineFrameGeometry,
     frame_count: usize,
-    chunk_size: usize,
+    expected_profile: PixelProfile,
+    chunk_frame_limit: usize,
+    chunk_byte_budget: usize,
     chunk_start: usize,
     chunk_frames: Vec<Vec<u8>>,
+    pending_frame: Option<(usize, Vec<u8>)>,
+    became_ineligible: bool,
 }
 
 impl<'a> DirectJpegPassthroughFrameWriter<'a> {
@@ -45,16 +34,23 @@ impl<'a> DirectJpegPassthroughFrameWriter<'a> {
         location: JpegBaselineFrameLocation,
         geometry: JpegBaselineFrameGeometry,
         frame_count: usize,
-        chunk_size: usize,
+        expected_profile: PixelProfile,
+        first_frame: Vec<u8>,
+        chunk_frame_limit: usize,
+        chunk_byte_budget: usize,
     ) -> Self {
         Self {
             slide,
             location,
             geometry,
             frame_count,
-            chunk_size: chunk_size.max(1),
+            expected_profile,
+            chunk_frame_limit: chunk_frame_limit.max(1),
+            chunk_byte_budget: chunk_byte_budget.max(first_frame.len()).max(1),
             chunk_start: 0,
-            chunk_frames: Vec::new(),
+            chunk_frames: vec![first_frame],
+            pending_frame: None,
+            became_ineligible: false,
         }
     }
 
@@ -65,6 +61,20 @@ impl<'a> DirectJpegPassthroughFrameWriter<'a> {
     pub(super) fn frame_len(&mut self, idx: usize) -> io::Result<u64> {
         u64::try_from(self.frame(idx)?.len())
             .map_err(|_| io::Error::other("JPEG passthrough frame length exceeds u64"))
+    }
+
+    pub(super) fn became_ineligible(&self) -> bool {
+        self.became_ineligible
+    }
+
+    #[cfg(test)]
+    pub(super) fn buffered_chunk_bytes(&self) -> usize {
+        self.chunk_frames.iter().map(Vec::len).sum()
+    }
+
+    #[cfg(test)]
+    pub(super) fn pending_frame_bytes(&self) -> Option<usize> {
+        self.pending_frame.as_ref().map(|(_, frame)| frame.len())
     }
 
     fn frame(&mut self, idx: usize) -> io::Result<&[u8]> {
@@ -88,95 +98,86 @@ impl<'a> DirectJpegPassthroughFrameWriter<'a> {
                 "frame index out of range",
             ));
         }
-        let end = idx.saturating_add(self.chunk_size).min(self.frame_count);
-        let frames = (idx..end)
-            .into_par_iter()
-            .map(|frame_idx| {
-                read_direct_jpeg_passthrough_frame(
-                    self.slide,
-                    self.location,
-                    self.geometry,
-                    frame_idx,
-                )
-            })
-            .collect::<io::Result<Vec<_>>>()?;
+        self.chunk_frames.clear();
         self.chunk_start = idx;
+        let first = match self.pending_frame.take() {
+            Some((pending_index, frame)) if pending_index == idx => Ok(frame),
+            Some((pending_index, _)) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "buffered direct JPEG frame index {pending_index} does not match requested {idx}"
+                ),
+            )),
+            None => read_direct_jpeg_passthrough_frame(
+                self.slide,
+                self.location,
+                self.geometry,
+                self.expected_profile,
+                idx,
+            ),
+        };
+        let first = match first {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.became_ineligible = true;
+                return Err(error);
+            }
+        };
+        let mut buffered_bytes = first.len();
+        let remaining_frames = self.frame_count - idx;
+        let mut frames = Vec::with_capacity(remaining_frames.min(self.chunk_frame_limit));
+        frames.push(first);
+        let mut next_index = idx + 1;
+        while next_index < self.frame_count
+            && frames.len() < self.chunk_frame_limit
+            && buffered_bytes < self.chunk_byte_budget
+        {
+            let frame = match read_direct_jpeg_passthrough_frame(
+                self.slide,
+                self.location,
+                self.geometry,
+                self.expected_profile,
+                next_index,
+            ) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    self.became_ineligible = true;
+                    return Err(error);
+                }
+            };
+            let next_bytes = buffered_bytes.saturating_add(frame.len());
+            if next_bytes > self.chunk_byte_budget {
+                self.pending_frame = Some((next_index, frame));
+                break;
+            }
+            buffered_bytes = next_bytes;
+            frames.push(frame);
+            next_index += 1;
+        }
         self.chunk_frames = frames;
         Ok(())
     }
 }
 
-pub(super) fn try_plan_direct_jpeg_passthrough_frames(
+pub(super) fn try_prepare_direct_jpeg_passthrough(
     slide: &Slide,
     location: JpegBaselineFrameLocation,
     level: &wsi_rs::Level,
     geometry: JpegBaselineFrameGeometry,
-) -> Result<Option<DirectJpegPassthroughPlan>, Error> {
-    let frame_count = geometry
-        .tiles_across
-        .checked_mul(geometry.tiles_down)
-        .ok_or_else(|| Error::Unsupported {
-            reason: "JPEG passthrough frame count overflow".into(),
-        })?;
-    let frame_count = usize::try_from(frame_count).map_err(|_| Error::Unsupported {
-        reason: "JPEG passthrough frame count exceeds platform addressable memory".into(),
-    })?;
+) -> Result<Option<DirectJpegPassthroughStart>, Error> {
     let allow_raw_rgb_passthrough = raw_rgb_passthrough_has_no_geometry_fallback(level, geometry);
-    let mut profile = None;
-    let mut compressed_bytes = 0u64;
-    let mut uncompressed_bytes = 0u64;
-    let mut chunk_start = 0usize;
-    while chunk_start < frame_count {
-        let chunk_end = chunk_start
-            .saturating_add(DIRECT_JPEG_PASSTHROUGH_PLAN_CHUNK_FRAMES)
-            .min(frame_count);
-        let planned = (chunk_start..chunk_end)
-            .into_par_iter()
-            .map(|frame_idx| {
-                let raw =
-                    match read_raw_jpeg_passthrough_tile(slide, location, geometry, frame_idx)? {
-                        Some(raw) => raw,
-                        None => return Ok(None),
-                    };
-                let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&raw) else {
-                    return Ok(None);
-                };
-                if !raw_jpeg_profile_can_passthrough(profile, allow_raw_rgb_passthrough) {
-                    return Ok(None);
-                }
-                let compressed_bytes =
-                    u64::try_from(raw.data().len()).map_err(|_| Error::Unsupported {
-                        reason: "JPEG passthrough frame length exceeds u64".into(),
-                    })?;
-                Ok(Some(DirectJpegPassthroughFrame {
-                    profile,
-                    compressed_bytes,
-                    uncompressed_bytes: uncompressed_frame_bytes(&raw)?,
-                }))
-            })
-            .collect::<Result<Vec<_>, Error>>()?;
-        for frame in planned {
-            let Some(frame) = frame else {
-                return Ok(None);
-            };
-            ensure_consistent_pixel_profile(
-                &mut profile,
-                frame.profile,
-                "JPEG passthrough pixel profile changed across frames",
-            )?;
-            compressed_bytes = compressed_bytes.saturating_add(frame.compressed_bytes);
-            uncompressed_bytes = uncompressed_bytes.saturating_add(frame.uncompressed_bytes);
-        }
-        chunk_start = chunk_end;
+    let Some(raw) = read_raw_jpeg_passthrough_tile(slide, location, geometry, 0)? else {
+        return Ok(None);
+    };
+    let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&raw) else {
+        return Ok(None);
+    };
+    if !raw_jpeg_profile_can_passthrough(profile, allow_raw_rgb_passthrough) {
+        return Ok(None);
     }
-    let profile = profile.ok_or_else(|| Error::Unsupported {
-        reason: "slide level produced no frames".into(),
-    })?;
-    Ok(Some(DirectJpegPassthroughPlan {
+    Ok(Some(DirectJpegPassthroughStart {
         profile,
-        compressed_bytes,
-        uncompressed_bytes,
-        frame_count,
+        first_frame: raw.into_data(),
     }))
 }
 
@@ -184,6 +185,7 @@ fn read_direct_jpeg_passthrough_frame(
     slide: &Slide,
     location: JpegBaselineFrameLocation,
     geometry: JpegBaselineFrameGeometry,
+    expected_profile: PixelProfile,
     frame_idx: usize,
 ) -> io::Result<Vec<u8>> {
     let (col, row) =
@@ -195,6 +197,14 @@ fn read_direct_jpeg_passthrough_frame(
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "direct JPEG passthrough frame is no longer passthrough-eligible",
+        ));
+    }
+    let profile = pixel_profile_from_raw_jpeg_tile(&raw)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    if profile != expected_profile {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "direct JPEG passthrough frame pixel profile changed",
         ));
     }
     Ok(raw.into_data())

@@ -75,17 +75,17 @@ pub(super) fn transfer_syntax(transfer_syntax: TransferSyntax) -> bool {
 }
 
 pub(super) fn frame(
-    raw: &RawCompressedTile,
+    raw: RawCompressedTile,
     frame_columns: u32,
     frame_rows: u32,
     transfer_syntax: TransferSyntax,
 ) -> Option<Frame> {
     if !self::transfer_syntax(transfer_syntax)
-        || !raw_jpeg_matches_frame_geometry(raw, frame_columns, frame_rows)
+        || !raw_jpeg_matches_frame_geometry(&raw, frame_columns, frame_rows)
     {
         return None;
     }
-    let profile = htj2k_direct_pixel_profile(pixel_profile_from_raw_jpeg_tile(raw).ok()?);
+    let profile = htj2k_direct_pixel_profile(pixel_profile_from_raw_jpeg_tile(&raw).ok()?);
     if profile.photometric_interpretation == "YBR_FULL" {
         // VL Whole Slide Microscopy does not admit YBR_FULL for HTJ2K
         // transfer syntaxes. Fall back through decoded RGB so the writer emits
@@ -94,7 +94,7 @@ pub(super) fn frame(
         return None;
     }
     Some(Frame {
-        data: raw.data().to_vec(),
+        data: raw.into_data(),
         profile,
     })
 }

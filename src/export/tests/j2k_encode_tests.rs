@@ -610,7 +610,10 @@ fn export_aperio_33003_yuv422_edges_use_one_dicom_j2k_representation() {
                 && component.y_rsiz == 1
         }));
         assert_eq!(j2k_cod_mct(codestream), 1);
-        assert_eq!(decode_j2k_frame_for_test(codestream, 2, 2, 3, 8), expected);
+        assert_eq!(
+            decode_j2k_frame_for_test(codestream, 2, 2, 3, 8).as_slice(),
+            expected.as_slice()
+        );
     }
 }
 
@@ -841,6 +844,31 @@ fn export_htj2k_rpcl_passthrough_does_not_touch_gpu_even_when_device_required() 
     let source =
         write_htj2k_rpcl_dicom_source_for_test(tmp.path(), "1.2.826.0.1.3680043.10.999.43", 2, 2);
     assert_eq!(source.fragments.len(), 1);
+
+    let slide = open_slide(&source.path).unwrap();
+    let planned = plan_lossless_j2k_frames(
+        &slide,
+        LosslessJ2kPlanRequest {
+            location: InstanceCoordinate::first_series_level(0),
+            start_row: 0,
+            row_count: 1,
+            start_col: 0,
+            tile_count: 1,
+            grid: FrameRectGrid {
+                matrix_columns: 2,
+                matrix_rows: 2,
+                frame_columns: 2,
+                frame_rows: 2,
+            },
+            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+            allow_passthrough_probe: true,
+        },
+    )
+    .unwrap();
+    assert!(planned[0].has_passthrough());
+    assert!(planned[0].source_j2k.is_none());
+    assert!(planned[0].source_jpeg.is_none());
+    assert!(planned[0].source_jpeg_retile_rejection.is_none());
 
     let report = export_htj2k_rpcl_dicom_passthrough_for_test(&source, tmp.path().join("out"));
 

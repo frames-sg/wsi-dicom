@@ -4,7 +4,6 @@ use wsi_rs::Slide;
 
 use super::frame_region::FrameRectGrid;
 use super::icc_profile::resolve_icc_profile;
-#[cfg(not(all(feature = "metal", target_os = "macos")))]
 use super::j2k_policy::lossless_j2k_cpu_row_batch_count;
 use super::j2k_policy::{lossless_j2k_use_direct_pixel_data, reject_lossy_j2k_lossless_fallback};
 use super::lossless_j2k_direct_routes::{
@@ -65,6 +64,7 @@ pub(super) struct PendingLosslessJ2kInstance {
     transfer_syntax: TransferSyntax,
     overwrite: bool,
     max_instance_metadata_bytes: u64,
+    per_frame_plan: Option<crate::writer::PerFrameFunctionalGroupsPlan>,
 }
 
 impl PendingLosslessJ2kInstance {
@@ -86,7 +86,9 @@ impl PendingLosslessJ2kInstance {
             icc_profile: self.icc_profile.as_deref(),
             lossy_compression: self.lossy_compression,
         })?;
-        let per_frame_plan = self.context.per_frame_plan(self.frame_count, frame_grid)?;
+        let per_frame_plan =
+            self.context
+                .per_frame_plan(self.frame_count, frame_grid, self.per_frame_plan)?;
         let write_started = Instant::now();
         let streamed = write_dicom_object_with_streamed_pixel_data(
             &self.context.path,
@@ -97,6 +99,7 @@ impl PendingLosslessJ2kInstance {
                 per_frame_plan,
                 max_instance_metadata_bytes: self.max_instance_metadata_bytes,
                 frame_count: self.frame_count as usize,
+                deferred_lossy_compression: None,
             },
             |writer| self.pixel_data.stream_frames_to(writer),
         )?;
@@ -127,6 +130,7 @@ pub(super) fn prepare_lossless_j2k_instance(
         instance_number,
         coordinate,
         level,
+        per_frame_plan,
     } = export;
     let tile_size = j2k_route_tile_size(
         options.semantics.tile_size,
@@ -184,7 +188,12 @@ pub(super) fn prepare_lossless_j2k_instance(
     let mut row = 0;
     while row < tiles_down {
         #[cfg(all(feature = "metal", target_os = "macos"))]
-        let planned_row_count = 1;
+        let planned_row_count = if !metal_input.enabled() && !metal_input.auto_input_probe_pending()
+        {
+            lossless_j2k_cpu_row_batch_count(tiles_across, tiles_down - row)
+        } else {
+            1
+        };
         #[cfg(not(all(feature = "metal", target_os = "macos")))]
         let planned_row_count = lossless_j2k_cpu_row_batch_count(tiles_across, tiles_down - row);
         let planned = plan_lossless_j2k_frames(
@@ -233,7 +242,8 @@ pub(super) fn prepare_lossless_j2k_instance(
         )?;
         let mut cpu_batch_results = encode_lossless_j2k_cpu_fallback_after_routes(
             batch_context,
-            &j2k_encoder,
+            &mut j2k_encoder,
+            &mut metrics,
             &direct_routes,
             |idx| {
                 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -380,5 +390,6 @@ pub(super) fn prepare_lossless_j2k_instance(
         transfer_syntax: options.semantics.transfer_syntax,
         overwrite: options.semantics.overwrite,
         max_instance_metadata_bytes: options.resources.max_instance_metadata_bytes,
+        per_frame_plan,
     })
 }

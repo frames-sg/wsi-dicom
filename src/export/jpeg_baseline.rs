@@ -344,6 +344,7 @@ pub(crate) fn pixel_profile_from_raw_jpeg_tile(
             ),
         });
     }
+    validate_raw_jpeg_color_evidence(raw)?;
     let photometric_interpretation = match raw.photometric_interpretation() {
         EncodedTilePhotometricInterpretation::Monochrome2 => "MONOCHROME2",
         EncodedTilePhotometricInterpretation::Rgb => "RGB",
@@ -366,6 +367,91 @@ pub(crate) fn pixel_profile_from_raw_jpeg_tile(
         bits_allocated: raw.bits_allocated(),
         photometric_interpretation,
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum JpegColorEvidence {
+    Rgb,
+    Ybr,
+    Ambiguous,
+}
+
+fn validate_raw_jpeg_color_evidence(raw: &RawCompressedTile) -> Result<(), Error> {
+    if raw.samples_per_pixel() != 3 {
+        return Ok(());
+    }
+    let evidence = jpeg_color_evidence(raw.data())?;
+    let consistent = matches!(
+        (raw.photometric_interpretation(), evidence),
+        (
+            EncodedTilePhotometricInterpretation::Rgb,
+            JpegColorEvidence::Rgb
+        ) | (
+            EncodedTilePhotometricInterpretation::YbrFull422,
+            JpegColorEvidence::Ybr
+        )
+    );
+    if consistent {
+        Ok(())
+    } else {
+        Err(Error::UnsupportedPixelData {
+            reason: "JPEG passthrough color interpretation is ambiguous or conflicts with the encoded frame; decode and re-encode is required"
+                .into(),
+        })
+    }
+}
+
+pub(super) fn jpeg_color_evidence(data: &[u8]) -> Result<JpegColorEvidence, Error> {
+    let mut jfif = false;
+    let mut sof = None;
+    for segment in j2k_jpeg::iter_segments(data) {
+        let segment = segment.map_err(|error| Error::Unsupported {
+            reason: format!("JPEG passthrough could not inspect color markers: {error}"),
+        })?;
+        match segment.marker {
+            0xE0 if segment.payload.starts_with(b"JFIF\0") => jfif = true,
+            0xEE if segment.payload.len() >= 12 && segment.payload.starts_with(b"Adobe") => {
+                return Ok(match segment.payload[11] {
+                    0 => JpegColorEvidence::Rgb,
+                    1 => JpegColorEvidence::Ybr,
+                    2 => JpegColorEvidence::Ambiguous,
+                    _ => JpegColorEvidence::Ambiguous,
+                });
+            }
+            marker if j2k_jpeg::is_sof_marker(marker) => {
+                sof = Some(
+                    j2k_jpeg::parse_sof_info(marker, segment.payload).map_err(|error| {
+                        Error::Unsupported {
+                            reason: format!(
+                                "JPEG passthrough could not inspect color components: {error}"
+                            ),
+                        }
+                    })?,
+                );
+            }
+            0xDA => break,
+            _ => {}
+        }
+    }
+    let Some(sof) = sof else {
+        return Ok(JpegColorEvidence::Ambiguous);
+    };
+    let factors = sof.sampling.components();
+    if factors.len() == 3
+        && (factors[0].0 > factors[1].0
+            || factors[0].0 > factors[2].0
+            || factors[0].1 > factors[1].1
+            || factors[0].1 > factors[2].1)
+    {
+        return Ok(JpegColorEvidence::Ybr);
+    }
+    if sof.component_ids.as_slice() == b"RGB" {
+        return Ok(JpegColorEvidence::Rgb);
+    }
+    if jfif {
+        return Ok(JpegColorEvidence::Ybr);
+    }
+    Ok(JpegColorEvidence::Ambiguous)
 }
 
 pub(crate) fn raw_jpeg_profile_can_passthrough(
@@ -549,6 +635,19 @@ mod tests {
         ]
     }
 
+    fn color_sof(component_ids: [u8; 3], sampling: [(u8, u8); 3]) -> Vec<u8> {
+        let mut jpeg = vec![
+            0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x01, 0x00, 0x01, 0x03,
+        ];
+        for index in 0..3 {
+            jpeg.push(component_ids[index]);
+            jpeg.push((sampling[index].0 << 4) | sampling[index].1);
+            jpeg.push(0);
+        }
+        jpeg.extend_from_slice(&[0xff, 0xd9]);
+        jpeg
+    }
+
     #[test]
     fn empty_tile_detection_is_limited_to_wsi_rs_unsupported_reason() {
         assert!(raw_compressed_error_is_empty_tile(
@@ -580,5 +679,21 @@ mod tests {
         let error = pixel_profile_from_raw_jpeg_tile(&raw)
             .expect_err("SOF3 must not be emitted under the JPEG Baseline UID");
         assert!(error.to_string().contains("requires SOF0"));
+    }
+
+    #[test]
+    fn jpeg_passthrough_requires_unambiguous_encoded_color_evidence() {
+        assert_eq!(
+            jpeg_color_evidence(&color_sof([1, 2, 3], [(1, 1); 3])).unwrap(),
+            JpegColorEvidence::Ambiguous
+        );
+        assert_eq!(
+            jpeg_color_evidence(&color_sof([1, 2, 3], [(2, 1), (1, 1), (1, 1)])).unwrap(),
+            JpegColorEvidence::Ybr
+        );
+        assert_eq!(
+            jpeg_color_evidence(&color_sof(*b"RGB", [(1, 1); 3])).unwrap(),
+            JpegColorEvidence::Rgb
+        );
     }
 }

@@ -267,6 +267,7 @@ fn streamed_pixel_data_writer_matches_spooled_output_and_patches_offset_tables()
             per_frame_plan: sample_per_frame_plan(frames.len() as u32),
             max_instance_metadata_bytes: u64::MAX,
             frame_count: frames.len(),
+            deferred_lossy_compression: None,
         },
         |writer| {
             for frame in &frames {
@@ -308,6 +309,65 @@ fn streamed_pixel_data_writer_matches_spooled_output_and_patches_offset_tables()
 }
 
 #[test]
+fn streamed_pixel_data_writer_patches_deferred_lossy_ratio() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("deferred-lossy.dcm");
+    let frames = [vec![1; 100], vec![2; 50]];
+
+    let report = super::write_dicom_object_with_streamed_pixel_data(
+        &path,
+        super::StreamedDicomWritePlan {
+            object: sample_object_with_offset_tables(vec![0; 2], vec![0; 2]),
+            meta: sample_file_meta(),
+            overwrite: false,
+            per_frame_plan: sample_per_frame_plan(2),
+            max_instance_metadata_bytes: u64::MAX,
+            frame_count: 2,
+            deferred_lossy_compression: Some(super::DeferredLossyCompression {
+                method: crate::lossy::JPEG_BASELINE_METHOD,
+                uncompressed_bytes: 600,
+            }),
+        },
+        |writer| {
+            for frame in &frames {
+                writer.push_frame(frame)?;
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(report.total_raw_bytes, 150);
+    let object = dicom_object::open_file(path).unwrap();
+    assert_eq!(
+        object
+            .element(tags::LOSSY_IMAGE_COMPRESSION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .trim(),
+        "01"
+    );
+    assert_eq!(
+        object
+            .element(tags::LOSSY_IMAGE_COMPRESSION_METHOD)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .trim(),
+        crate::lossy::JPEG_BASELINE_METHOD
+    );
+    assert_eq!(
+        object
+            .element(tags::LOSSY_IMAGE_COMPRESSION_RATIO)
+            .unwrap()
+            .to_float64()
+            .unwrap(),
+        4.0
+    );
+}
+
+#[test]
 fn streamed_pixel_data_writer_copies_reader_frame_in_chunks() {
     let tmp = tempfile::tempdir().unwrap();
     let frame_len = super::DICOM_FILE_WRITE_BUFFER_BYTES + 17;
@@ -331,6 +391,7 @@ fn streamed_pixel_data_writer_copies_reader_frame_in_chunks() {
             per_frame_plan: sample_per_frame_plan(1),
             max_instance_metadata_bytes: u64::MAX,
             frame_count: 1,
+            deferred_lossy_compression: None,
         },
         |writer| writer.push_frame_from_reader(frame.len() as u64, &mut reader),
     )
@@ -357,6 +418,7 @@ fn single_frame_streamed_writer_uses_the_compatible_basic_offset_table() {
             per_frame_plan: sample_per_frame_plan(1),
             max_instance_metadata_bytes: u64::MAX,
             frame_count: 1,
+            deferred_lossy_compression: None,
         },
         |writer| writer.push_frame(&frame),
     )
@@ -388,6 +450,7 @@ fn streamed_pixel_data_writer_rejects_wrong_frame_count() {
             per_frame_plan: sample_per_frame_plan(2),
             max_instance_metadata_bytes: u64::MAX,
             frame_count: 2,
+            deferred_lossy_compression: None,
         },
         |writer| writer.push_frame(&[1, 2, 3]),
     )
@@ -415,6 +478,7 @@ fn streamed_pixel_data_writer_rejects_declared_frame_length_mismatches() {
                 per_frame_plan: sample_per_frame_plan(1),
                 max_instance_metadata_bytes: u64::MAX,
                 frame_count: 1,
+                deferred_lossy_compression: None,
             },
             |writer| writer.push_frame_with(declared_len, |output| output.write_all(actual_bytes)),
         )

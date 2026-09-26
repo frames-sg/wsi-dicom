@@ -11,7 +11,7 @@ mod pack;
 mod types;
 
 pub(crate) use types::MetalComposeStripsParams;
-pub(super) use types::MetalComposeTileRequest;
+pub(super) use types::{MetalComposeTileRequest, PackedMetalStrips};
 
 type MetalCommandQueue = Retained<ProtocolObject<dyn MTLCommandQueue>>;
 type MetalComputePipeline = Retained<ProtocolObject<dyn MTLComputePipelineState>>;
@@ -75,6 +75,10 @@ impl MetalStripComposer {
             .map_err(|message| Error::Encode {
                 message: message.clone(),
             })
+    }
+
+    pub(in crate::export) fn command_queue(&self) -> &ProtocolObject<dyn MTLCommandQueue> {
+        &self.queue
     }
 }
 

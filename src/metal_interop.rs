@@ -1,13 +1,95 @@
 use crate::Error;
-use j2k_metal_support::{MetalImageLayout, ResidentMetalImage, SubmittedMetalImages};
-use objc2::{rc::Retained, runtime::ProtocolObject};
+use j2k_metal_support::{MetalImageLayout, ResidentMetalImage};
+use objc2::{rc::Retained, runtime::ProtocolObject, Message};
 use objc2_metal::{
-    MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLComputeCommandEncoder, MTLDevice,
+    MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandQueue,
+    MTLComputeCommandEncoder, MTLDevice, MTLResource,
 };
 
 pub(crate) type MetalBuffer = wsi_rs::output::metal::MetalBuffer;
 pub(crate) type MetalDevice = wsi_rs::output::metal::MetalDevice;
-type CommandBuffer = Retained<ProtocolObject<dyn MTLCommandBuffer>>;
+pub(crate) type CommandBuffer = Retained<ProtocolObject<dyn MTLCommandBuffer>>;
+pub(crate) type CommandQueue = Retained<ProtocolObject<dyn MTLCommandQueue>>;
+
+pub(crate) struct FreshMetalImageOutput {
+    buffer: MetalBuffer,
+    layout: MetalImageLayout,
+}
+
+impl FreshMetalImageOutput {
+    pub(crate) fn allocate(
+        device: &ProtocolObject<dyn MTLDevice>,
+        byte_len: usize,
+        layout: MetalImageLayout,
+    ) -> Result<Self, j2k_metal_support::MetalSupportError> {
+        Ok(Self {
+            buffer: j2k_metal_support::checked_shared_buffer_for_len::<u8>(device, byte_len)?,
+            layout,
+        })
+    }
+
+    pub(crate) fn buffer(&self) -> &ProtocolObject<dyn MTLBuffer> {
+        &self.buffer
+    }
+}
+
+pub(crate) struct MetalProducerDependency {
+    queue: CommandQueue,
+    command_buffer: Option<CommandBuffer>,
+    _inputs: Vec<ResidentMetalImage>,
+}
+
+// SAFETY: the dependency owns its command queue, command buffer, and immutable
+// input keepalives. Completion is the only mutation; Metal command queues and
+// command buffers are cross-thread objects.
+unsafe impl Send for MetalProducerDependency {}
+
+impl MetalProducerDependency {
+    pub(crate) fn validate_consumer_session(
+        &self,
+        session: &j2k_metal::MetalBackendSession,
+    ) -> Result<(), Error> {
+        if session
+            .uses_command_queue(&self.queue)
+            .map_err(|source| Error::Encode {
+                message: format!("JPEG 2000 Metal producer queue validation failed: {source}"),
+            })?
+        {
+            return Ok(());
+        }
+        Err(Error::Unsupported {
+            reason:
+                "pending Metal images require the encoder session to use the producer command queue"
+                    .into(),
+        })
+    }
+
+    fn complete(&mut self) -> Result<(), j2k_metal_support::MetalSupportError> {
+        let Some(command_buffer) = self.command_buffer.take() else {
+            return Ok(());
+        };
+        if matches!(
+            command_buffer.status(),
+            MTLCommandBufferStatus::NotEnqueued | MTLCommandBufferStatus::Enqueued
+        ) {
+            command_buffer.commit();
+        }
+        j2k_metal_support::wait_for_completion(&command_buffer)
+    }
+
+    pub(crate) fn wait(mut self) -> Result<(), Error> {
+        self.complete()
+            .map_err(|source| support_error("Metal input producer completion", source))
+    }
+}
+
+impl Drop for MetalProducerDependency {
+    fn drop(&mut self) {
+        if let Err(error) = self.complete() {
+            eprintln!("wsi-dicom: Metal input producer failed while being dropped: {error}");
+        }
+    }
+}
 
 // SAFETY: a Metal-backed encoded frame is constructed only after its writer
 // has completed. Its public operations read immutable codestream bytes or
@@ -32,18 +114,27 @@ pub(crate) fn device_tile_image(
         })
 }
 
-pub(crate) fn bind_resident_compute_input(
-    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
-    index: usize,
-    image: &ResidentMetalImage,
-) {
-    assert!(index < 31, "Metal buffer index exceeds the binding table");
-    // SAFETY: the binding index is part of the fixed shader ABI, the offset
-    // was validated by `ResidentMetalImage`, and support-created command
-    // buffers retain the immutable input through completion.
-    unsafe {
-        encoder.setBuffer_offset_atIndex(Some(image.raw_buffer()), image.byte_offset(), index)
-    };
+pub(crate) fn upload_image(
+    device: &ProtocolObject<dyn MTLDevice>,
+    bytes: &[u8],
+    layout: MetalImageLayout,
+) -> Result<ResidentMetalImage, Error> {
+    let buffer = j2k_metal_support::checked_shared_buffer_with_slice(device, bytes)
+        .map_err(|source| support_error("Metal frame upload", source))?;
+    // SAFETY: the synchronous upload initialized this fresh allocation. The raw
+    // handle is moved into the immutable image; no writable alias survives.
+    unsafe { ResidentMetalImage::from_completed_buffer(buffer, layout) }
+        .map_err(|source| support_error("Metal uploaded frame layout", source))
+}
+
+pub(crate) fn resident_allocation_identity(image: &ResidentMetalImage) -> (usize, usize) {
+    // SAFETY: inspect the immutable allocation identity/length only. The image
+    // retains it; no contents or writable handle escapes this function.
+    let buffer = unsafe { image.raw_buffer() };
+    (
+        std::ptr::from_ref(buffer).cast::<()>() as usize,
+        buffer.length(),
+    )
 }
 
 pub(crate) fn bind_compute_buffer(
@@ -114,7 +205,24 @@ pub(crate) fn copy_resident_rows(
     // preflighted by the pack plan. The input is read only, the destination is
     // fresh, and the submission retains both resources through completion.
     let source = unsafe { image.raw_buffer() };
+    if source_pitch == row_bytes && destination_pitch == row_bytes {
+        let length = row_bytes
+            .checked_mul(height)
+            .expect("validated Metal copy span");
+        // SAFETY: the validated rows form one contiguous span in both allocations.
+        unsafe {
+            encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+                source,
+                source_offset,
+                destination,
+                destination_offset,
+                length,
+            )
+        };
+        return;
+    }
     for row in 0..height {
+        // SAFETY: the preflighted pitched row spans lie within both allocations.
         unsafe {
             encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
                 source,
@@ -127,17 +235,92 @@ pub(crate) fn copy_resident_rows(
     }
 }
 
-pub(crate) fn submit_images(
+/// Couples fresh producer outputs to their completion token for an immediately
+/// submitted consumer on the exact same Metal command queue. The opaque return
+/// value cannot expose its device tiles until the producer has completed.
+pub(crate) fn submit_images_for_same_queue_consumer(
     device: &ProtocolObject<dyn MTLDevice>,
+    producer_queue: &ProtocolObject<dyn MTLCommandQueue>,
+    consumer_queue: &ProtocolObject<dyn MTLCommandQueue>,
     command_buffer: CommandBuffer,
-    outputs: Vec<(MetalBuffer, MetalImageLayout)>,
+    outputs: Vec<FreshMetalImageOutput>,
     inputs: Vec<ResidentMetalImage>,
-) -> Result<SubmittedMetalImages, Error> {
-    // SAFETY: pack/compose callers pass fresh output allocations whose only
-    // writers are encoded in this command buffer, plus every bound resident
-    // input as a keepalive.
-    unsafe { SubmittedMetalImages::from_uncommitted(device, command_buffer, outputs, inputs) }
-        .map_err(|source| support_error("Metal image submission", source))
+) -> Result<crate::encode::PendingDicomJ2kMetalTileBatch, Error> {
+    if outputs.is_empty() {
+        return Err(Error::Encode {
+            message: "Metal image submission requires at least one output".into(),
+        });
+    }
+    let registry_id = device.registryID();
+    for requested_registry_id in [
+        producer_queue.device().registryID(),
+        consumer_queue.device().registryID(),
+    ] {
+        if requested_registry_id != registry_id {
+            return Err(support_error(
+                "Metal pending image queue device",
+                j2k_metal_support::MetalSupportError::MetalImageDeviceMismatch {
+                    image_registry_id: registry_id,
+                    requested_registry_id,
+                },
+            ));
+        }
+    }
+    if !core::ptr::eq(producer_queue, consumer_queue)
+        || !core::ptr::eq(command_buffer.commandQueue().as_ref(), producer_queue)
+    {
+        return Err(Error::Unsupported {
+            reason: "pending Metal images require the producer and consumer to use the exact same command queue"
+                .into(),
+        });
+    }
+    for input in &inputs {
+        input
+            .validate_device(device)
+            .map_err(|source| support_error("Metal pending image input device", source))?;
+    }
+
+    let mut tiles = Vec::new();
+    tiles
+        .try_reserve_exact(outputs.len())
+        .map_err(|_| Error::Unsupported {
+            reason: "pending Metal tile batch exceeds available memory".into(),
+        })?;
+    for FreshMetalImageOutput { buffer, layout } in outputs {
+        if buffer.device().registryID() != registry_id {
+            return Err(support_error(
+                "Metal pending image output device",
+                j2k_metal_support::MetalSupportError::MetalImageDeviceMismatch {
+                    image_registry_id: buffer.device().registryID(),
+                    requested_registry_id: registry_id,
+                },
+            ));
+        }
+        // SAFETY: `FreshMetalImageOutput` owns an allocation created by this
+        // module and exposes only a borrowed handle for command encoding. The
+        // caller has supplied the command buffer on the validated producer
+        // queue; the opaque pending batch retains that command and never
+        // exposes a ready tile before producer completion.
+        let image = unsafe { ResidentMetalImage::from_exclusive_pending_buffer(buffer, layout) }
+            .map_err(|source| support_error("Metal pending image layout", source))?;
+        tiles.push(
+            wsi_rs::output::metal::MetalDeviceTile::from_resident(image).map_err(|source| {
+                Error::Encode {
+                    message: format!("Metal composed resident tile conversion failed: {source}"),
+                }
+            })?,
+        );
+    }
+
+    command_buffer.commit();
+    Ok(crate::encode::PendingDicomJ2kMetalTileBatch::new(
+        tiles,
+        MetalProducerDependency {
+            queue: producer_queue.retain(),
+            command_buffer: Some(command_buffer),
+            _inputs: inputs,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -198,6 +381,14 @@ pub(crate) fn test_tile_bytes(tile: &wsi_rs::output::metal::MetalDeviceTile) -> 
         )
     }
     .expect("test resident Metal readback")
+}
+
+#[cfg(test)]
+pub(crate) fn test_buffer_bytes(buffer: &ProtocolObject<dyn MTLBuffer>, len: usize) -> Vec<u8> {
+    // SAFETY: test callers wait for GPU writes to complete before this read;
+    // the snapshot owns its bytes and retains no pointer into the allocation.
+    unsafe { j2k_metal_support::checked_buffer_read_vec::<u8>(buffer, 0, len) }
+        .expect("test Metal byte readback")
 }
 
 #[cfg(test)]

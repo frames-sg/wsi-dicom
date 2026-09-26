@@ -1,6 +1,9 @@
 use super::*;
 use j2k_core::DeviceSubmission;
+use objc2::Message;
 use rayon::prelude::*;
+
+mod host_input;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[derive(Debug, Clone, Copy, Default)]
@@ -16,7 +19,7 @@ pub(crate) struct DicomJ2kGpuEncodeBatchStats {
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 impl DicomJ2kGpuEncodeBatchStats {
-    fn add_assign(&mut self, other: Self) {
+    pub(crate) fn add_assign(&mut self, other: Self) {
         self.configured_inflight_tiles = self
             .configured_inflight_tiles
             .max(other.configured_inflight_tiles);
@@ -77,7 +80,56 @@ pub(crate) struct EncodedDicomJ2kMetalTileBatch {
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
+pub(crate) struct PendingDicomJ2kMetalTileBatch {
+    tiles: Vec<wsi_rs::output::metal::MetalDeviceTile>,
+    dependency: crate::metal_interop::MetalProducerDependency,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl PendingDicomJ2kMetalTileBatch {
+    pub(crate) fn new(
+        tiles: Vec<wsi_rs::output::metal::MetalDeviceTile>,
+        dependency: crate::metal_interop::MetalProducerDependency,
+    ) -> Self {
+        Self { tiles, dependency }
+    }
+
+    pub(crate) fn wait_ready(self) -> Result<Vec<wsi_rs::output::metal::MetalDeviceTile>, Error> {
+        self.dependency.wait()?;
+        Ok(self.tiles)
+    }
+
+    pub(crate) fn encode_batch_count(&self, output_width: u32, output_height: u32) -> u64 {
+        let mut padded = false;
+        let mut edge = false;
+        for tile in &self.tiles {
+            if metal_tile_is_padded_contiguous(tile, output_width, output_height) {
+                padded = true;
+            } else {
+                edge = true;
+            }
+        }
+        u64::from(padded) + u64::from(edge)
+    }
+
+    pub(crate) fn submit(
+        self,
+        encoder: &mut DicomJ2kEncoder,
+        output_width: u32,
+        output_height: u32,
+    ) -> Result<SubmittedDicomJ2kMetalTileBatch, Error> {
+        encoder.submit_pending_metal_tiles_owned(
+            self.tiles,
+            output_width,
+            output_height,
+            self.dependency,
+        )
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
 pub(crate) struct SubmittedDicomJ2kMetalTileBatch {
+    original_indices: Vec<usize>,
     tiles: Vec<wsi_rs::output::metal::MetalDeviceTile>,
     output_width: u32,
     output_height: u32,
@@ -87,6 +139,7 @@ pub(crate) struct SubmittedDicomJ2kMetalTileBatch {
     used_device_validation: bool,
     configured_inflight_tiles: Option<usize>,
     configured_memory_mib: Option<u64>,
+    input_dependencies: Vec<crate::metal_interop::MetalProducerDependency>,
     groups: Vec<SubmittedDicomJ2kMetalTileGroup>,
 }
 
@@ -107,6 +160,7 @@ enum SubmittedDicomJ2kMetalTileGroup {
 impl SubmittedDicomJ2kMetalTileBatch {
     pub(crate) fn wait(self) -> Result<EncodedDicomJ2kMetalTileBatch, Error> {
         let Self {
+            original_indices,
             tiles,
             output_width,
             output_height,
@@ -116,8 +170,13 @@ impl SubmittedDicomJ2kMetalTileBatch {
             used_device_validation,
             configured_inflight_tiles,
             configured_memory_mib,
+            input_dependencies,
             groups,
         } = self;
+
+        for dependency in input_dependencies {
+            dependency.wait()?;
+        }
 
         if preference == EncodeBackendPreference::CpuOnly {
             let mut frames = Vec::new();
@@ -194,8 +253,17 @@ impl SubmittedDicomJ2kMetalTileBatch {
                 }
             }
         }
+        if encoded.len() != original_indices.len() {
+            return Err(Error::Encode {
+                message: "Metal staging groups returned the wrong frame count".into(),
+            });
+        }
+        let mut ordered: Vec<_> = (0..encoded.len()).map(|_| None).collect();
+        for (index, frame) in original_indices.into_iter().zip(encoded) {
+            ordered[index] = frame;
+        }
         Ok(EncodedDicomJ2kMetalTileBatch {
-            frames: encoded,
+            frames: ordered,
             gpu_encode_stats,
         })
     }
@@ -220,8 +288,39 @@ impl DicomJ2kEncoder {
         output_width: u32,
         output_height: u32,
     ) -> Result<SubmittedDicomJ2kMetalTileBatch, Error> {
+        self.submit_metal_tiles_owned_with_dependencies(
+            tiles,
+            output_width,
+            output_height,
+            Vec::new(),
+        )
+    }
+
+    fn submit_pending_metal_tiles_owned(
+        &mut self,
+        tiles: Vec<wsi_rs::output::metal::MetalDeviceTile>,
+        output_width: u32,
+        output_height: u32,
+        dependency: crate::metal_interop::MetalProducerDependency,
+    ) -> Result<SubmittedDicomJ2kMetalTileBatch, Error> {
+        self.submit_metal_tiles_owned_with_dependencies(
+            tiles,
+            output_width,
+            output_height,
+            vec![dependency],
+        )
+    }
+
+    fn submit_metal_tiles_owned_with_dependencies(
+        &mut self,
+        tiles: Vec<wsi_rs::output::metal::MetalDeviceTile>,
+        output_width: u32,
+        output_height: u32,
+        input_dependencies: Vec<crate::metal_interop::MetalProducerDependency>,
+    ) -> Result<SubmittedDicomJ2kMetalTileBatch, Error> {
         if self.preference == EncodeBackendPreference::CpuOnly {
             return Ok(SubmittedDicomJ2kMetalTileBatch {
+                original_indices: (0..tiles.len()).collect(),
                 tiles,
                 output_width,
                 output_height,
@@ -237,19 +336,35 @@ impl DicomJ2kEncoder {
                 used_device_validation: self.codec_validation == CodecValidation::RoundTrip,
                 configured_inflight_tiles: self.gpu_encode_inflight_tiles,
                 configured_memory_mib: self.gpu_encode_memory_mib,
+                input_dependencies,
                 groups: Vec::new(),
             });
         }
 
         let session = self.ensure_metal_session()?.clone();
+        for dependency in &input_dependencies {
+            dependency.validate_consumer_session(&session)?;
+        }
         let options = lossless_encode_options(
             self.transfer_syntax,
-            EncodeBackendPreference::PreferDevice,
+            if input_dependencies.is_empty() {
+                EncodeBackendPreference::PreferDevice
+            } else {
+                // A pending same-queue input must remain device resident. This
+                // prevents an opaque fallback from reading shared bytes on the
+                // CPU before the producer command has completed.
+                EncodeBackendPreference::RequireDevice
+            },
             self.codec_validation,
             self.j2k_decomposition_levels,
             self.reversible_transform,
         )?;
 
+        let mut indexed: Vec<_> = tiles.into_iter().enumerate().collect();
+        indexed.sort_by_key(|(_, tile)| {
+            !metal_tile_is_padded_contiguous(tile, output_width, output_height)
+        });
+        let (original_indices, tiles): (Vec<_>, Vec<_>) = indexed.into_iter().unzip();
         let mut groups = Vec::new();
         let mut start = 0usize;
         while start < tiles.len() {
@@ -301,6 +416,7 @@ impl DicomJ2kEncoder {
         }
 
         Ok(SubmittedDicomJ2kMetalTileBatch {
+            original_indices,
             tiles,
             output_width,
             output_height,
@@ -310,8 +426,31 @@ impl DicomJ2kEncoder {
             used_device_validation: self.codec_validation == CodecValidation::RoundTrip,
             configured_inflight_tiles: self.gpu_encode_inflight_tiles,
             configured_memory_mib: self.gpu_encode_memory_mib,
+            input_dependencies,
             groups,
         })
+    }
+
+    pub(crate) fn ensure_metal_session_for_command_queue(
+        &mut self,
+        device: crate::metal_interop::MetalDevice,
+        queue: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandQueue>,
+    ) -> Result<bool, Error> {
+        if let Some(session) = &self.metal_session {
+            return session
+                .uses_command_queue(queue)
+                .map_err(|err| Error::Encode {
+                    message: format!("JPEG 2000 Metal command queue validation failed: {err}"),
+                });
+        }
+        self.metal_session = Some(
+            j2k_metal::MetalBackendSession::with_command_queue(device, queue.retain()).map_err(
+                |err| Error::Encode {
+                    message: format!("JPEG 2000 Metal command queue session failed: {err}"),
+                },
+            )?,
+        );
+        Ok(true)
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]

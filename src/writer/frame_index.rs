@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
 use crate::Error;
@@ -15,7 +15,7 @@ pub(crate) struct FrameIndexRecord {
 
 pub(crate) struct FrameIndexSpool {
     path: PathBuf,
-    file: File,
+    file: BufWriter<File>,
     records: u64,
 }
 
@@ -24,7 +24,7 @@ impl FrameIndexSpool {
         let file = OpenOptions::new()
             .create_new(true)
             .read(true)
-            .write(true)
+            .append(true)
             .open(&path)
             .map_err(|source| Error::Io {
                 path: path.clone(),
@@ -32,7 +32,7 @@ impl FrameIndexSpool {
             })?;
         Ok(Self {
             path,
-            file,
+            file: BufWriter::with_capacity(64 * 1024, file),
             records: 0,
         })
     }
@@ -43,15 +43,14 @@ impl FrameIndexSpool {
         extended_offset: u64,
         raw_len: u64,
     ) -> Result<(), Error> {
-        self.file
-            .seek(SeekFrom::End(0))
-            .and_then(|_| self.file.write_all(&source_offset.to_le_bytes()))
-            .and_then(|_| self.file.write_all(&extended_offset.to_le_bytes()))
-            .and_then(|_| self.file.write_all(&raw_len.to_le_bytes()))
-            .map_err(|source| Error::Io {
-                path: self.path.clone(),
-                source,
-            })?;
+        let mut bytes = [0u8; FRAME_INDEX_RECORD_BYTES as usize];
+        bytes[..8].copy_from_slice(&source_offset.to_le_bytes());
+        bytes[8..16].copy_from_slice(&extended_offset.to_le_bytes());
+        bytes[16..].copy_from_slice(&raw_len.to_le_bytes());
+        self.file.write_all(&bytes).map_err(|source| Error::Io {
+            path: self.path.clone(),
+            source,
+        })?;
         self.records = self
             .records
             .checked_add(1)
@@ -73,7 +72,8 @@ impl FrameIndexSpool {
             path: self.path.clone(),
             source,
         })?;
-        self.file
+        let mut reader = BufReader::with_capacity(64 * 1024, self.file.get_mut());
+        reader
             .seek(SeekFrom::Start(0))
             .map_err(|source| Error::Io {
                 path: self.path.clone(),
@@ -82,12 +82,10 @@ impl FrameIndexSpool {
 
         let mut bytes = [0u8; FRAME_INDEX_RECORD_BYTES as usize];
         for _ in 0..self.records {
-            self.file
-                .read_exact(&mut bytes)
-                .map_err(|source| Error::Io {
-                    path: self.path.clone(),
-                    source,
-                })?;
+            reader.read_exact(&mut bytes).map_err(|source| Error::Io {
+                path: self.path.clone(),
+                source,
+            })?;
             visit(FrameIndexRecord {
                 source_offset: u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
                 extended_offset: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
@@ -101,7 +99,7 @@ impl FrameIndexSpool {
             .ok_or_else(|| Error::Unsupported {
                 reason: "frame index byte length overflow".into(),
             })?;
-        let actual_len = self.file.stream_position().map_err(|source| Error::Io {
+        let actual_len = reader.stream_position().map_err(|source| Error::Io {
             path: self.path.clone(),
             source,
         })?;
@@ -140,7 +138,8 @@ mod tests {
         let path = temporary.path().join("frames.index");
         let mut spool = FrameIndexSpool::create(path.clone()).unwrap();
         spool.push(1, 2, 3).unwrap();
-        spool.file.set_len(8).unwrap();
+        spool.file.flush().unwrap();
+        spool.file.get_mut().set_len(8).unwrap();
 
         let error = spool
             .replay(|_| Ok(()))
@@ -148,5 +147,34 @@ mod tests {
         assert!(error.to_string().contains("failed to fill whole buffer"));
         drop(spool);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn append_after_interrupted_replay_preserves_all_records() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut spool = FrameIndexSpool::create(temporary.path().join("frames.index")).unwrap();
+        for index in 0..5000 {
+            spool.push(index, index * 8, index + 1).unwrap();
+        }
+        assert!(spool
+            .replay(|_| Err(Error::Unsupported {
+                reason: "stop replay".into()
+            }))
+            .is_err());
+        spool.push(5000, 40_000, 5001).unwrap();
+        for _ in 0..2 {
+            let mut count = 0;
+            spool
+                .replay(|record| {
+                    assert_eq!(
+                        (record.source_offset, record.extended_offset, record.raw_len),
+                        (count, count * 8, count + 1)
+                    );
+                    count += 1;
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(count, 5001);
+        }
     }
 }

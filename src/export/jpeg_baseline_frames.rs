@@ -18,6 +18,7 @@ use super::jpeg_baseline_pipeline::{
     take_consistent_jpeg_baseline_fallback_frame, EncodedJpegBaselineFrame,
     JpegBaselineCpuEncodeSettings, JpegBaselineFallbackBatchRequest, JpegBaselineRowPlanRequest,
 };
+use super::jpeg_frame_spool::JpegFrameSpool;
 use super::route_plan::{incompatible_frame_route, PlannedFrameRoute, RouteExecutionContext};
 use super::{ensure_consistent_pixel_profile, InstanceExportContext};
 use crate::error::Error;
@@ -25,13 +26,12 @@ use crate::lossy::{LossyCompressionAccumulator, JPEG_BASELINE_METHOD};
 use crate::options::NormalizedExportOptions;
 use crate::report::ExportMetrics;
 use crate::tile::PixelProfile;
-use crate::writer::PixelDataSpool;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use super::metal_input::MetalInputTileReader;
 
 pub(super) struct PreparedJpegFrames {
-    pub(super) spool: PixelDataSpool,
+    pub(super) spool: JpegFrameSpool,
     pub(super) profile: PixelProfile,
     pub(super) metrics: ExportMetrics,
     pub(super) source_lossy: LossyCompressionAccumulator,
@@ -45,7 +45,7 @@ struct JpegFrameEncoder<'a> {
     location: JpegBaselineFrameLocation,
     geometry: JpegBaselineFrameGeometry,
     route_context: RouteExecutionContext,
-    pixel_spool: PixelDataSpool,
+    pixel_spool: JpegFrameSpool,
     pixel_profile: Option<PixelProfile>,
     metrics: ExportMetrics,
     source_lossy_compression: LossyCompressionAccumulator,
@@ -60,9 +60,9 @@ pub(super) fn prepare_jpeg_frames(
     export: InstanceExportContext<'_>,
     geometry: JpegBaselineFrameGeometry,
     spool_path: PathBuf,
-    frame_count: usize,
+    _frame_count: usize,
 ) -> Result<PreparedJpegFrames, Error> {
-    let pixel_spool = PixelDataSpool::create(spool_path, frame_count)?;
+    let pixel_spool = JpegFrameSpool::create(spool_path)?;
     JpegFrameEncoder {
         slide,
         options: export.options,
@@ -114,6 +114,7 @@ impl JpegFrameEncoder<'_> {
         let profile = self.pixel_profile.ok_or_else(|| Error::Unsupported {
             reason: "slide level produced no frames".into(),
         })?;
+        self.pixel_spool.finish_preparation()?;
         Ok(PreparedJpegFrames {
             spool: self.pixel_spool,
             profile,
@@ -187,7 +188,11 @@ impl JpegFrameEncoder<'_> {
             data,
         )?;
         let started = Instant::now();
-        self.pixel_spool.push_frame(data)?;
+        if route == PlannedFrameRoute::JpegPassthrough {
+            self.pixel_spool.push_source_frame(data)?;
+        } else {
+            self.pixel_spool.push_frame(data)?;
+        }
         self.metrics.record_write_duration(started.elapsed());
         if let Some(duration) = retile_duration {
             self.metrics.record_jpeg_retile_baseline_frame(duration);

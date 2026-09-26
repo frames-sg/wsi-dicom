@@ -111,6 +111,11 @@ class ProcessEvidenceTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix", "process-group regression is POSIX-specific")
     def test_timeout_terminates_descendants_before_they_can_publish_output(self):
+        for parent_exits, measure_resources in ((False, False), (True, False), (True, True)):
+            with self.subTest(parent_exits=parent_exits, measured=measure_resources):
+                self.check_descendant_timeout(parent_exits, measure_resources)
+
+    def check_descendant_timeout(self, parent_exits, measure_resources):
         from bench.process_evidence import run_bounded_command
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -123,18 +128,21 @@ class ProcessEvidenceTests(unittest.TestCase):
             )
             parent = (
                 "import subprocess,sys,time; "
-                "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]]); "
-                "time.sleep(10)"
+                "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]])"
             )
+            if not parent_exits:
+                parent += "; time.sleep(10)"
             result = run_bounded_command(
                 [sys.executable, "-c", parent, child, str(sentinel)],
                 stdout_path=root / "stdout.txt",
                 stderr_path=root / "stderr.txt",
                 timeout_secs=1,
+                measure_resources=measure_resources,
             )
             time.sleep(1.5)
 
             self.assertTrue(result["timed_out"])
+            self.assertIsNone(result["returncode"])
             self.assertFalse(sentinel.exists())
 
     def test_resource_measurement_is_portable_and_structured(self):

@@ -13,7 +13,9 @@ use j2k::{
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal;
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub(crate) use metal::{DicomJ2kGpuEncodeBatchStats, SubmittedDicomJ2kMetalTileBatch};
+pub(crate) use metal::{
+    DicomJ2kGpuEncodeBatchStats, PendingDicomJ2kMetalTileBatch, SubmittedDicomJ2kMetalTileBatch,
+};
 
 pub(crate) struct DicomJ2kEncoder {
     preference: EncodeBackendPreference,
@@ -57,6 +59,23 @@ struct DeviceEncodedCodestream {
 }
 
 impl EncodedDicomJ2kFrame {
+    pub(crate) fn materialize_codestream(&mut self) -> Result<&[u8], Error> {
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if let EncodedDicomJ2kCodestream::Metal(encoded) = &self.codestream {
+            let bytes = encoded.codestream_bytes().map_err(|err| Error::Encode {
+                message: format!("JPEG 2000 Metal encoded buffer read failed: {err}"),
+            })?;
+            self.codestream = EncodedDicomJ2kCodestream::Host(bytes);
+        }
+        match &self.codestream {
+            EncodedDicomJ2kCodestream::Host(bytes) => Ok(bytes),
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            EncodedDicomJ2kCodestream::Metal(_) => {
+                unreachable!("Metal codestream was materialized")
+            }
+        }
+    }
+
     pub(crate) fn codestream_bytes(&self) -> Result<Cow<'_, [u8]>, Error> {
         match &self.codestream {
             EncodedDicomJ2kCodestream::Host(bytes) => Ok(Cow::Borrowed(bytes)),
@@ -164,7 +183,7 @@ impl DicomJ2kEncoder {
         }
     }
 
-    #[cfg(all(test, feature = "metal", target_os = "macos"))]
+    #[cfg(all(feature = "metal", target_os = "macos"))]
     pub(crate) fn preference(&self) -> EncodeBackendPreference {
         self.preference
     }

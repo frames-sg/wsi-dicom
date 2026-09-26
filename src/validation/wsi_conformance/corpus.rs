@@ -6,10 +6,11 @@ use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
 use super::super::ValidationCheck;
 use super::fields::{required_positive_u64, required_string, PixelSpacingMm};
-use super::instance::{
-    clinical_identity, is_vl_wsi, slide_coordinate_identity, specimen_identities, ClinicalIdentity,
-    IssuerIdentity, SlideCoordinateIdentity, SpecimenIdentity,
+use super::geometry::{slide_coordinate_identity, SlideCoordinateIdentity};
+use super::identity::{
+    clinical_identity, specimen_identities, ClinicalIdentity, IssuerIdentity, SpecimenIdentity,
 };
+use super::instance::is_vl_wsi;
 use super::rule_check;
 use crate::uid::is_valid_dicom_uid;
 

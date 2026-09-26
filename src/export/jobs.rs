@@ -32,6 +32,7 @@ pub(super) struct DicomExportInstanceJob<'a> {
     pub(super) instance_number: u32,
     pub(super) coordinate: InstanceCoordinate,
     pub(super) level: &'a wsi_rs::Level,
+    pub(super) per_frame_plan: Option<PerFrameFunctionalGroupsPlan>,
 }
 
 #[derive(Clone, Copy)]
@@ -77,6 +78,7 @@ pub(super) fn dicom_export_instance_jobs<'a>(
                                     scene_idx, series_idx, level_idx, z, c, t,
                                 ),
                                 level,
+                                per_frame_plan: None,
                             });
                         }
                     }
@@ -167,7 +169,7 @@ pub(super) fn preflight_output_paths(
 pub(super) fn preflight_metadata_budgets(
     slide: &Slide,
     options: &NormalizedExportOptions,
-    jobs: &[DicomExportInstanceJob<'_>],
+    jobs: &mut [DicomExportInstanceJob<'_>],
 ) -> Result<(), Error> {
     let mut total = 0u64;
     for job in jobs {
@@ -217,8 +219,8 @@ pub(super) fn preflight_metadata_budgets(
                     options.resources.max_total_metadata_bytes,
                 )
             };
-        let per_frame_bytes = match plan.encoded_len_with_limit(per_frame_budget) {
-            Ok(bytes) => bytes,
+        let plan = match plan.preflight(per_frame_budget) {
+            Ok(plan) => plan,
             Err(Error::InvalidOptions { reason }) => {
                 return Err(Error::InvalidOptions {
                     reason: format!(
@@ -229,6 +231,8 @@ pub(super) fn preflight_metadata_budgets(
             }
             Err(error) => return Err(error),
         };
+        let per_frame_bytes = plan.encoded_len_with_limit(per_frame_budget)?;
+        job.per_frame_plan = Some(plan);
         let estimate = per_frame_bytes
             .checked_add(offset_table_bytes)
             .ok_or_else(|| Error::InvalidOptions {
@@ -330,15 +334,11 @@ pub(super) fn export_dicom_instance_jobs(
     let default_workers =
         default_export_instance_worker_count(options, jobs.len(), rayon::current_num_threads());
     if default_workers > 1 {
-        return export_dicom_instance_jobs_parallel(
-            slide,
-            request,
-            options,
-            metadata,
-            identity,
-            jobs,
-            default_workers,
-        );
+        // Limit concurrent instances without shrinking the pool used by their
+        // nested tile decode/encode work to the number of pyramid levels.
+        return super::cpu_batch::map_cpu_frames(jobs, default_workers, |job| {
+            export_dicom_instance_job(slide, request, options, metadata, identity, job)
+        });
     }
 
     export_dicom_instance_jobs_serial(slide, request, options, metadata, identity, jobs)
@@ -414,6 +414,7 @@ pub(super) fn export_dicom_instance_job(
         instance_number: job.instance_number,
         coordinate: job.coordinate,
         level: job.level,
+        per_frame_plan: job.per_frame_plan,
     };
     if options.semantics.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
         export_jpeg_passthrough_instance(slide, request, context)

@@ -64,6 +64,7 @@ pub(crate) struct PerFrameFunctionalGroupsPlan {
     frame_grid: FrameGrid,
     row_spacing_mm: f64,
     column_spacing_mm: f64,
+    encoded_bytes: Option<u64>,
 }
 
 impl PerFrameFunctionalGroupsPlan {
@@ -94,7 +95,20 @@ impl PerFrameFunctionalGroupsPlan {
             frame_grid,
             row_spacing_mm,
             column_spacing_mm,
+            encoded_bytes: None,
         })
+    }
+
+    pub(crate) fn preflight(mut self, max_metadata_bytes: u64) -> Result<Self, Error> {
+        self.encoded_bytes = Some(self.encoded_len_with_limit(max_metadata_bytes)?);
+        Ok(self)
+    }
+
+    pub(crate) fn matches_layout(self, other: Self) -> bool {
+        self.frame_count == other.frame_count
+            && self.frame_grid == other.frame_grid
+            && self.row_spacing_mm == other.row_spacing_mm
+            && self.column_spacing_mm == other.column_spacing_mm
     }
 
     #[cfg(test)]
@@ -112,6 +126,13 @@ impl PerFrameFunctionalGroupsPlan {
     }
 
     pub(crate) fn encoded_len_with_limit(self, max_metadata_bytes: u64) -> Result<u64, Error> {
+        if let Some(bytes) = self.encoded_bytes {
+            return if bytes <= max_metadata_bytes {
+                Ok(bytes)
+            } else {
+                Err(metadata_budget_error(bytes, max_metadata_bytes))
+            };
+        }
         let minimum = self.minimum_encoded_len()?;
         if minimum > max_metadata_bytes {
             return Err(metadata_budget_error(minimum, max_metadata_bytes));
@@ -139,7 +160,7 @@ impl PerFrameFunctionalGroupsPlan {
         output: &mut impl Write,
         max_metadata_bytes: u64,
     ) -> Result<u64, Error> {
-        self.encoded_len_with_limit(max_metadata_bytes)?;
+        let expected_bytes = self.encoded_len_with_limit(max_metadata_bytes)?;
         let mut bounded = MetadataBudgetWriter {
             inner: output,
             written: 0,
@@ -151,6 +172,11 @@ impl PerFrameFunctionalGroupsPlan {
             return Err(metadata_budget_error(required, max_metadata_bytes));
         }
         result.map_err(per_frame_stream_error)?;
+        if bounded.written != expected_bytes {
+            return Err(per_frame_stream_error(io::Error::other(
+                "per-frame metadata length changed after preflight",
+            )));
+        }
         Ok(bounded.written)
     }
 
