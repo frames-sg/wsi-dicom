@@ -1388,9 +1388,9 @@ dependencies = [
 
 [[package]]
 name = "wsi-dicom-annotations"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d52d5a206b252d8d1ad85cd0449c9a69934e8be7b5d347bdab78511515ef929b"
+checksum = "752ff1926e6919a8134c0674c91417976fee6b603a89d835eb0b8f3953e925d2"
 dependencies = [
  "chrono",
  "dicom-core",
