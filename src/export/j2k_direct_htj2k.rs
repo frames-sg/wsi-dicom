@@ -1,7 +1,7 @@
 use std::time::Instant;
 
-use j2k::{J2kProgressionOrder, J2kToHtj2kOptions};
-use j2k_core::CompressedPayloadKind;
+use j2k::{J2kProgressionOrder, J2kToHtj2kOptions, J2kView};
+use j2k_core::{Colorspace, CompressedPayloadKind};
 use rayon::prelude::*;
 
 use wsi_rs::{Compression, RawCompressedTile};
@@ -130,18 +130,43 @@ fn encode_frame_refs_batch(
         .par_iter()
         .map(|frame| {
             let started = Instant::now();
-            j2k::recode_j2k_to_htj2k_lossless(&frame.data, options).map_or_else(
-                |err| Err(to_wsi_error(err)),
-                |recoded| {
-                    Ok(BatchOutcome {
-                        codestream: recoded.bytes,
-                        profile: frame.profile,
-                        transcode_micros: started.elapsed().as_micros(),
-                    })
-                },
-            )
+            let recoded =
+                j2k::recode_j2k_to_htj2k_lossless(&frame.data, options).map_err(to_wsi_error)?;
+            let profile = recoded_profile(&recoded.bytes, frame.profile)?;
+            Ok(BatchOutcome {
+                codestream: recoded.bytes,
+                profile,
+                transcode_micros: started.elapsed().as_micros(),
+            })
         })
         .collect())
+}
+
+/// Describes the recoded codestream rather than the source frame.
+///
+/// j2k may take its pixel-preserving path, which re-encodes an RCT source
+/// without a component transform, so the source photometric interpretation
+/// cannot be reused for the recoded frame.
+fn recoded_profile(codestream: &[u8], source: PixelProfile) -> Result<PixelProfile, Error> {
+    let view = J2kView::parse(codestream).map_err(|err| Error::Encode {
+        message: format!("direct J2K to HTJ2K recode produced an invalid codestream: {err}"),
+    })?;
+    let photometric_interpretation = match (source.components, view.info().colorspace) {
+        (1, Colorspace::Grayscale | Colorspace::SGray) => "MONOCHROME2",
+        (3, Colorspace::Rgb | Colorspace::SRgb) => "RGB",
+        (3, Colorspace::Rct) => "YBR_RCT",
+        (components, colorspace) => {
+            return Err(Error::Encode {
+                message: format!(
+                    "direct J2K to HTJ2K recode produced unsupported {components}-component colorspace {colorspace:?}"
+                ),
+            });
+        }
+    };
+    Ok(PixelProfile {
+        photometric_interpretation,
+        ..source
+    })
 }
 
 fn options(
@@ -257,6 +282,54 @@ mod tests {
         assert_htj2k_rpcl_codestream(payload);
         assert_eq!(
             decode_j2k_frame_for_test(payload, width, height, 3, 8),
+            bytes
+        );
+    }
+
+    #[test]
+    fn rct_source_recode_is_labelled_from_the_recoded_codestream() {
+        let bytes: Vec<u8> = (0..32_u32 * 32)
+            .flat_map(|i| [(i % 251) as u8, (i * 7 % 253) as u8, (i * 13 % 241) as u8])
+            .collect();
+        let samples = j2k::J2kLosslessSamples::new(&bytes, 32, 32, 3, 8, false).unwrap();
+        let source = crate::encode::encode_dicom_lossless(
+            samples,
+            TransferSyntax::Jpeg2000Lossless,
+            crate::options::EncodeBackendPreference::CpuOnly,
+            CodecValidation::RoundTrip,
+        )
+        .unwrap();
+        assert_eq!(
+            J2kView::parse(&source).unwrap().info().colorspace,
+            Colorspace::Rct
+        );
+        let frame = Frame {
+            data: source,
+            profile: PixelProfile {
+                components: 3,
+                bits_allocated: 8,
+                photometric_interpretation: "YBR_RCT",
+            },
+        };
+
+        let outcome = encode_frame_refs_batch(
+            &[&frame],
+            TransferSyntax::Htj2kLosslessRpcl,
+            CodecValidation::RoundTrip,
+        )
+        .unwrap()
+        .pop()
+        .unwrap()
+        .unwrap();
+
+        super::super::j2k_policy::validate_dicom_j2k_frame(
+            &outcome.codestream,
+            outcome.profile,
+            TransferSyntax::Htj2kLosslessRpcl,
+        )
+        .unwrap();
+        assert_eq!(
+            decode_j2k_frame_for_test(&outcome.codestream, 32, 32, 3, 8),
             bytes
         );
     }
