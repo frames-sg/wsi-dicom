@@ -275,6 +275,7 @@ fn ndpi_fixture_exports_full_jpeg_baseline_passthrough_instance() {
             instance_number: 1,
             coordinate: InstanceCoordinate::new(0, 0, level_idx as u32, 0, 0, 0),
             level,
+            per_frame_plan: None,
         },
     )
     .unwrap();
@@ -403,6 +404,7 @@ fn ndpi_fixture_exports_jpeg_baseline_passthrough_pyramid_subset_for_qupath() {
                 instance_number: (instance_idx + 1) as u32,
                 coordinate: InstanceCoordinate::new(0, 0, level_idx as u32, 0, 0, 0),
                 level,
+                per_frame_plan: None,
             },
         )
         .unwrap();
@@ -526,6 +528,65 @@ fn aperio_jp2k_aligned_metal_input_256_htj2k_rpcl_tile_matches_cpu() {
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
+#[ignore = "requires WSI_DICOM_APERIO_JP2K_FIXTURE"]
+fn lossy_jp2k_input_preserves_canonical_cpu_pixels_for_lossless_export() {
+    let source = PathBuf::from(std::env::var_os("WSI_DICOM_APERIO_JP2K_FIXTURE").expect("fixture"));
+    let slide = Slide::open(source).unwrap();
+    let level = &slide.dataset().scenes[0].series[0].levels[2];
+    let mut reader = MetalInputTileReader::new(EncodeBackendPreference::RequireDevice, true);
+    let mut encoder = DicomJ2kEncoder::new(
+        EncodeBackendPreference::RequireDevice,
+        TransferSyntax::Htj2kLosslessRpcl,
+        CodecValidation::RoundTrip,
+    );
+    let run = try_encode_metal_input_tile_run(
+        &slide,
+        &mut reader,
+        &mut encoder,
+        MetalInputTileRunRequest {
+            level,
+            location: JpegBaselineFrameLocation::first_series_level(2),
+            row: 0,
+            start_col: 0,
+            tile_count: 1,
+            matrix_columns: level.dimensions.0,
+            matrix_rows: level.dimensions.1,
+            tile_size: 256,
+        },
+    )
+    .unwrap();
+    assert!(
+        !run.used_gpu_input,
+        "irreversible JP2K uses canonical CPU reconstruction"
+    );
+    let (frame, _) = run.tiles.into_iter().next().unwrap().unwrap();
+    assert!(frame.used_device_encode && frame.used_device_validation);
+    let bytes = frame.into_codestream().unwrap();
+    let actual = decode_j2k_frame_for_test(&bytes, 256, 256, 3, 8);
+    let expected = slide
+        .read_region(&RegionRequest::new(
+            0usize,
+            0usize,
+            2u32,
+            (0, 0),
+            (256, 256),
+        ))
+        .unwrap();
+    let expected = prepare_tile_samples(&expected, 256, 256).unwrap();
+    let max_difference = actual
+        .iter()
+        .zip(expected.bytes.iter())
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap();
+    assert_eq!(
+        max_difference, 0,
+        "lossless export must preserve canonical decoded source samples"
+    );
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
 #[ignore = "requires WSI_DICOM_APERIO_JP2K_FIXTURE and Metal JP2K device decode"]
 fn aperio_jp2k_regular_tiled_metal_input_composes_512_htj2k_rpcl_tile_matches_cpu() {
     assert_aperio_jp2k_metal_input_tile_matches_cpu(512);
@@ -576,7 +637,7 @@ fn real_aperio_jp2k_problem_tile_round_trips() {
     if let Some(parent) = tile_out.parent() {
         fs::create_dir_all(parent).unwrap();
     }
-    fs::write(tile_out, &prepared.bytes).unwrap();
+    fs::write(tile_out, prepared.bytes.as_slice()).unwrap();
     encode_dicom_j2k_lossless(samples, EncodeBackendPreference::CpuOnly).unwrap();
 }
 
@@ -723,7 +784,7 @@ fn ndpi_whole_level_metal_rows_do_not_turn_black_after_reused_encoder_state() {
         profile.bits_allocated,
     );
 
-    if actual != expected.bytes {
+    if actual.as_slice() != expected.bytes.as_slice() {
         let actual_nonzero = actual.iter().filter(|value| **value != 0).count();
         let expected_nonzero = expected.bytes.iter().filter(|value| **value != 0).count();
         panic!(
@@ -804,12 +865,12 @@ fn metal_strip_composer_returns_ordered_tiles_from_batched_compose() {
         .pack_tiles(&[tile_a, tile_b], layout, 0, 0, 2)
         .expect("pack test tiles");
 
-    assert_eq!(packed.image.dimensions(), (4, 8));
-    assert_eq!(packed.image.pitch_bytes(), 4);
+    assert_eq!(packed.byte_len, 32);
+    assert_eq!(packed.slot_stride, 4);
 
     let composed = composer
         .compose_tiles(
-            &packed,
+            packed,
             &[
                 MetalComposeTileRequest {
                     src_origin_x: 0,
@@ -856,6 +917,90 @@ fn metal_strip_composer_returns_ordered_tiles_from_batched_compose() {
 
 #[test]
 #[cfg(all(feature = "metal", target_os = "macos"))]
+fn pending_metal_compose_feeds_same_queue_j2k_encode_without_host_handoff() {
+    let Ok(device) = j2k_metal_support::system_default_device() else {
+        return;
+    };
+    const TILE_SIZE: u32 = 64;
+    let composer = MetalStripComposer::new(device.clone()).unwrap();
+    let layout = WholeLevelStripLayout {
+        width: TILE_SIZE,
+        height: TILE_SIZE,
+    };
+    let source_a = vec![17u8; (TILE_SIZE * TILE_SIZE) as usize];
+    let source_b = vec![231u8; (TILE_SIZE * TILE_SIZE) as usize];
+    let tile_a = metal_test_tile(
+        &device,
+        &source_a,
+        TILE_SIZE,
+        TILE_SIZE,
+        J2kPixelFormat::Gray8,
+    );
+    let tile_b = metal_test_tile(
+        &device,
+        &source_b,
+        TILE_SIZE,
+        TILE_SIZE,
+        J2kPixelFormat::Gray8,
+    );
+    let packed = composer
+        .pack_tiles(&[tile_a, tile_b], layout, 0, 0, 2)
+        .expect("pack pending compose inputs");
+    let requests = [
+        MetalComposeTileRequest {
+            src_origin_x: 0,
+            src_origin_y: 0,
+            valid_width: TILE_SIZE,
+            valid_height: TILE_SIZE,
+            output_width: TILE_SIZE,
+            output_height: TILE_SIZE,
+        },
+        MetalComposeTileRequest {
+            src_origin_x: TILE_SIZE,
+            src_origin_y: 0,
+            valid_width: TILE_SIZE,
+            valid_height: TILE_SIZE,
+            output_width: TILE_SIZE,
+            output_height: TILE_SIZE,
+        },
+    ];
+    let mut encoder = DicomJ2kEncoder::new(
+        EncodeBackendPreference::RequireDevice,
+        TransferSyntax::Htj2kLossless,
+        CodecValidation::Disabled,
+    );
+    assert!(encoder
+        .ensure_metal_session_for_command_queue(device, composer.command_queue())
+        .expect("bind encoder to compose queue"));
+    let pending = composer
+        .submit_compose_tiles(packed, &requests, composer.command_queue())
+        .expect("submit pending compose");
+    let encoded = pending
+        .submit(&mut encoder, TILE_SIZE, TILE_SIZE)
+        .expect("submit same-queue encode")
+        .wait()
+        .expect("complete same-queue compose and encode");
+
+    let actual = encoded
+        .frames
+        .into_iter()
+        .map(|frame| {
+            let frame = frame.expect("device encoded frame");
+            assert!(frame.used_device_encode);
+            decode_j2k_frame_for_test(
+                frame.codestream_bytes().unwrap().as_ref(),
+                TILE_SIZE,
+                TILE_SIZE,
+                1,
+                8,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, vec![source_a, source_b]);
+}
+
+#[test]
+#[cfg(all(feature = "metal", target_os = "macos"))]
 fn metal_strip_composer_accepts_explicit_completed_buffer_tiles() {
     let Ok(device) = j2k_metal_support::system_default_device() else {
         return;
@@ -877,7 +1022,68 @@ fn metal_strip_composer_accepts_explicit_completed_buffer_tiles() {
         )
         .expect("adopted completed buffer must pack");
 
-    assert_eq!(packed.image.dimensions(), (4, 4));
+    assert_eq!(packed.byte_len, 16);
+    let composed = composer
+        .compose_tiles(
+            packed,
+            &[MetalComposeTileRequest {
+                src_origin_x: 0,
+                src_origin_y: 0,
+                valid_width: 4,
+                valid_height: 4,
+                output_width: 4,
+                output_height: 4,
+            }],
+        )
+        .unwrap();
+    assert_eq!(crate::metal_interop::test_tile_bytes(&composed[0]), source);
+}
+
+#[test]
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn metal_strip_composer_preserves_pitched_u16_input_and_zero_padding() {
+    let device = j2k_metal_support::system_default_device().unwrap();
+    let composer = MetalStripComposer::new(device.clone()).unwrap();
+    // A nonzero origin and padding bytes must never enter the output pixels.
+    let bytes = [99u8, 99, 1, 2, 3, 4, 99, 99, 5, 6, 7, 8, 99, 99];
+    let buffer = j2k_metal_support::checked_shared_buffer_with_slice(&device, &bytes).unwrap();
+    let tile = crate::metal_interop::test_tile_from_completed_buffer(
+        buffer,
+        2,
+        2,
+        2,
+        6,
+        wsi_rs::PixelFormat::Gray16,
+    );
+    let packed = composer
+        .pack_tiles(
+            &[tile],
+            WholeLevelStripLayout {
+                width: 3,
+                height: 2,
+            },
+            0,
+            0,
+            1,
+        )
+        .unwrap();
+    let composed = composer
+        .compose_tiles(
+            packed,
+            &[MetalComposeTileRequest {
+                src_origin_x: 0,
+                src_origin_y: 0,
+                valid_width: 2,
+                valid_height: 2,
+                output_width: 3,
+                output_height: 3,
+            }],
+        )
+        .unwrap();
+    assert_eq!(
+        crate::metal_interop::test_tile_bytes(&composed[0]),
+        [1, 2, 3, 4, 0, 0, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0]
+    );
 }
 
 #[test]
@@ -926,7 +1132,7 @@ fn metal_strip_composer_rejects_metadata_mismatch_and_out_of_grid_reads() {
         .expect("pack resident source");
     let error = composer
         .compose_tiles(
-            &packed,
+            packed,
             &[MetalComposeTileRequest {
                 src_origin_x: 4,
                 src_origin_y: 0,

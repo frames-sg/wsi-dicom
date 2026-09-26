@@ -1,4 +1,4 @@
-use j2k_core::{DeviceSubmission as _, PixelFormat as J2kPixelFormat};
+use j2k_core::PixelFormat as J2kPixelFormat;
 
 use super::super::metal_row_batch::WholeLevelStripLayout;
 use super::types::PackedMetalStrips;
@@ -196,38 +196,11 @@ impl MetalStripComposer {
             .into_iter()
             .map(|tile| tile.image.clone())
             .collect();
-        let packed_height = layout
-            .height
-            .checked_mul(u32::try_from(tiles.len()).map_err(|_| Error::Unsupported {
-                reason: "Metal packed WholeLevel tile count exceeds u32".into(),
-            })?)
-            .ok_or_else(|| Error::Unsupported {
-                reason: "Metal packed WholeLevel image height overflow".into(),
-            })?;
-        let packed_layout = j2k_metal_support::MetalImageLayout::new(
-            0,
-            (layout.width, packed_height),
-            slot_stride,
-            j2k_format,
-        )
-        .map_err(|source| {
-            crate::metal_interop::support_error("Metal packed strip layout", source)
-        })?;
-        let submitted = crate::metal_interop::submit_images(
-            &self.device,
-            command_buffer,
-            vec![(packed, packed_layout)],
-            input_keepalives,
-        )?;
-        let mut images = submitted.wait().map_err(|source| {
-            crate::metal_interop::support_error("Metal strip pack completion", source)
-        })?;
-        let image = images.pop().ok_or_else(|| Error::Encode {
-            message: "Metal strip pack returned no resident output".into(),
-        })?;
-
         Ok(PackedMetalStrips {
-            image,
+            buffer: packed,
+            byte_len: total_bytes,
+            command: command_buffer,
+            inputs: input_keepalives,
             first_col,
             first_row,
             tiles_across: tiles_across_u32,

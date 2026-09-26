@@ -34,6 +34,7 @@ pub(super) struct AutoMetalInputRouteCacheKey {
     pub(super) tile_size: u32,
     pub(super) transfer_syntax: TransferSyntax,
     pub(super) route_scope_frames: u64,
+    pub(super) execution_identity: String,
 }
 
 fn insert_bounded_route_cache_entry(
@@ -87,6 +88,8 @@ struct PersistentAutoMetalInputRouteCacheEntry {
     transfer_syntax_uid: String,
     #[serde(default)]
     route_scope_frames: u64,
+    #[serde(default)]
+    execution_identity: String,
     #[serde(default)]
     route: Option<AutoLosslessJ2kRouteDecision>,
 }
@@ -217,6 +220,10 @@ pub(super) fn load_persistent_auto_metal_input_route_cache_from_path(
                         ),
                     }
                 })?;
+            // Entries predating execution identities cannot safely reuse timings.
+            if entry.execution_identity.is_empty() {
+                continue;
+            }
             loaded_entries.insert(
                 AutoMetalInputRouteCacheKey {
                     source_path: entry.source_path,
@@ -229,6 +236,7 @@ pub(super) fn load_persistent_auto_metal_input_route_cache_from_path(
                     tile_size: entry.tile_size,
                     transfer_syntax,
                     route_scope_frames: entry.route_scope_frames,
+                    execution_identity: entry.execution_identity,
                 },
                 route,
             );
@@ -285,6 +293,7 @@ pub(super) fn flush_persistent_auto_metal_input_route_cache_to_path(
             tile_size: key.tile_size,
             transfer_syntax_uid: key.transfer_syntax.uid().to_string(),
             route_scope_frames: key.route_scope_frames,
+            execution_identity: key.execution_identity.clone(),
             route: Some(*route),
         })
         .collect();
@@ -300,6 +309,7 @@ pub(super) fn flush_persistent_auto_metal_input_route_cache_to_path(
             .then(left.tile_size.cmp(&right.tile_size))
             .then(left.transfer_syntax_uid.cmp(&right.transfer_syntax_uid))
             .then(left.route_scope_frames.cmp(&right.route_scope_frames))
+            .then(left.execution_identity.cmp(&right.execution_identity))
     });
     let bytes = serde_json::to_vec_pretty(&entries).map_err(|source| Error::JsonSerialize {
         message: format!("auto route cache serialization failed: {source}"),
@@ -449,6 +459,7 @@ mod tests {
             tile_size: 512,
             transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
             route_scope_frames: 1,
+            execution_identity: "test-execution".into(),
         }
     }
 

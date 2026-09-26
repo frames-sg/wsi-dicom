@@ -32,7 +32,7 @@ pub(super) fn transfer_syntax(transfer_syntax: TransferSyntax) -> bool {
 }
 
 pub(super) fn frame(
-    raw: &RawCompressedTile,
+    raw: RawCompressedTile,
     frame_columns: u32,
     frame_rows: u32,
     transfer_syntax: TransferSyntax,
@@ -49,7 +49,7 @@ pub(super) fn frame(
         return None;
     }
     Some(Frame {
-        data: raw.data().to_vec(),
+        data: raw.into_data(),
         profile: profile?,
     })
 }

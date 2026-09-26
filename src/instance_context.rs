@@ -118,13 +118,21 @@ impl DicomInstanceContext {
         &self,
         frame_count: u32,
         frame_grid: FrameGrid,
+        preflighted: Option<PerFrameFunctionalGroupsPlan>,
     ) -> Result<PerFrameFunctionalGroupsPlan, Error> {
-        PerFrameFunctionalGroupsPlan::new(
+        let plan = PerFrameFunctionalGroupsPlan::new(
             frame_count,
             frame_grid,
             self.pixel_spacing_mm.0,
             self.pixel_spacing_mm.1,
-        )
+        )?;
+        match preflighted {
+            Some(preflighted) if preflighted.matches_layout(plan) => Ok(preflighted),
+            Some(_) => Err(Error::InvalidOptions {
+                reason: "instance geometry changed after metadata preflight".into(),
+            }),
+            None => Ok(plan),
+        }
     }
 
     pub(crate) fn file_meta(&self, transfer_syntax_uid: &'static str) -> FileMetaTableBuilder {

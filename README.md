@@ -388,14 +388,33 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
   output rejects nonconformant color JPEG direct routes and falls back through
   decoded RGB/RCT.
 - JPEG 2000 passthrough preserves eligible native source codestreams.
+- When re-encoding irreversible JPEG 2000 sources, CPU reconstruction preserves
+  the same source pixels across CPU and Metal output routes. Metal encoding can
+  still be required; `source_device_decode` permits device input but does not
+  require it. Route counters report the actual input backend.
+- Mixed JPEG exports retain only encoded/retiled exceptions in the payload
+  spool and reread unchanged source frames when writing. Keep source datasets
+  unchanged during conversion. Length, geometry, profile and file metadata
+  checks detect ordinary changes; they do not provide a source snapshot.
 - Route profile and coverage JSON reports expose available frame counts,
   sampled frame percentages, route counters, pixel profiles, and GPU counters.
+  Profile and automatic-probe lookahead stay within the requested frame budget.
+  Automatic route decisions use elapsed batch time and cache execution settings,
+  CPU pool size and Metal device identity. Short cold probes can still be noisy.
 - Per-frame functional groups use streamed undefined-length sequences and items
   instead of an in-memory item list. Frame offsets and lengths are kept in a
   temporary disk-backed index and replayed when patching Extended Offset Tables.
 - Output names encode scene, series, level, Z, channel, and time coordinates;
   consumers must use report paths rather than assuming the pre-0.7 name shape.
 - Passing validators is release evidence, not formal DICOM certification.
+
+CPU preparation runs in bounded batches and shares unchanged U8 storage. GPU
+source caching accounts for unique retained allocations, with a 128 MiB cache
+limit, and the hybrid writer accepts at most one queued prepared instance.
+These are local bounds: source-reader caches, codec scratch and in-flight GPU
+work also contribute to process memory. The reader owns a separate JP2K CPU
+pool, so `RAYON_NUM_THREADS` is not a process-wide thread limit. See the
+[execution ownership decision](docs/architecture/0007-performance-ownership.md).
 
 > [!IMPORTANT]
 > Regenerate color, MONOCHROME2, previously lossy, or multi-institution

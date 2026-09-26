@@ -2,6 +2,42 @@ use super::*;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
+fn auto_route_cache_separates_execution_settings() {
+    let options = ExportOptions {
+        transfer_syntax: TransferSyntax::Htj2kLossless,
+        encode_backend: EncodeBackendPreference::Auto,
+        ..ExportOptions::default()
+    };
+    let key = |options: &ExportOptions| {
+        auto_metal_input_route_cache_key(
+            std::path::Path::new("slide.svs"),
+            NormalizedExportOptions::from_validated(options),
+            JpegBaselineFrameLocation::first_series_level(0),
+            96,
+        )
+        .unwrap()
+    };
+    let baseline = key(&options);
+    let mut changed = options.clone();
+    changed.codec_validation = CodecValidation::RoundTrip;
+    assert_ne!(baseline, key(&changed));
+    changed = options.clone();
+    changed.gpu_pipeline_depth = Some(1);
+    assert_ne!(baseline, key(&changed));
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
+    let single = pool.install(|| key(&options));
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap();
+    assert_ne!(single, pool.install(|| key(&options)));
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
 fn require_device_lossless_j2k_metal_input_requires_source_device_decode_opt_in() {
     assert_eq!(
         lossless_j2k_metal_input_preference(EncodeBackendPreference::RequireDevice, false),
@@ -290,60 +326,25 @@ fn auto_lossless_j2k_probe_requires_material_speedup() {
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
 fn auto_cpu_input_device_encode_allows_gray_and_rgb_profiles() {
-    let gray_run = CpuEncodedTileRun {
-        tiles: vec![(
-            Err(Error::Unsupported {
-                reason: "not encoded in this selector test".into(),
-            }),
-            PixelProfile {
-                components: 1,
-                bits_allocated: 8,
-                photometric_interpretation: "MONOCHROME2",
-            },
-        )],
-        input_decode_duration: Duration::ZERO,
-        compose_duration: Duration::ZERO,
+    let gray = PixelProfile {
+        components: 1,
+        bits_allocated: 8,
+        photometric_interpretation: "MONOCHROME2",
     };
-    let rgb_run = CpuEncodedTileRun {
-        tiles: vec![(
-            Err(Error::Unsupported {
-                reason: "not encoded in this selector test".into(),
-            }),
-            PixelProfile {
-                components: 3,
-                bits_allocated: 8,
-                photometric_interpretation: "RGB",
-            },
-        )],
-        input_decode_duration: Duration::ZERO,
-        compose_duration: Duration::ZERO,
+    let rgb = PixelProfile {
+        components: 3,
+        bits_allocated: 8,
+        photometric_interpretation: "RGB",
     };
-    let cmyk_run = CpuEncodedTileRun {
-        tiles: vec![(
-            Err(Error::Unsupported {
-                reason: "not encoded in this selector test".into(),
-            }),
-            PixelProfile {
-                components: 4,
-                bits_allocated: 8,
-                photometric_interpretation: "CMYK",
-            },
-        )],
-        input_decode_duration: Duration::ZERO,
-        compose_duration: Duration::ZERO,
+    let cmyk = PixelProfile {
+        components: 4,
+        bits_allocated: 8,
+        photometric_interpretation: "CMYK",
     };
 
-    assert!(cpu_input_device_encode_auto_allowed(&gray_run));
-    assert!(cpu_input_device_encode_auto_allowed(&rgb_run));
-    assert!(!cpu_input_device_encode_auto_allowed(&cmyk_run));
-    assert!(!cpu_input_device_encode_auto_probe_allowed(
-        &rgb_run,
-        LOSSLESS_J2K_AUTO_PARTIAL_GPU_MIN_FRAMES - 1
-    ));
-    assert!(cpu_input_device_encode_auto_probe_allowed(
-        &rgb_run,
-        LOSSLESS_J2K_AUTO_PARTIAL_GPU_MIN_FRAMES
-    ));
+    assert!(cpu_input_device_encode_profile_allowed(gray));
+    assert!(cpu_input_device_encode_profile_allowed(rgb));
+    assert!(!cpu_input_device_encode_profile_allowed(cmyk));
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -363,6 +364,7 @@ fn auto_metal_input_route_cache_reuses_probe_decision() {
         tile_size: 512,
         transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
         route_scope_frames: 1,
+        execution_identity: "test-execution".into(),
     };
     let full_key = AutoMetalInputRouteCacheKey {
         source_path: PathBuf::from("slide.svs"),
@@ -375,6 +377,7 @@ fn auto_metal_input_route_cache_reuses_probe_decision() {
         tile_size: 512,
         transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
         route_scope_frames: 128,
+        execution_identity: "test-execution".into(),
     };
     let partial_key = AutoMetalInputRouteCacheKey {
         source_path: PathBuf::from("partial.svs"),
@@ -387,6 +390,7 @@ fn auto_metal_input_route_cache_reuses_probe_decision() {
         tile_size: 512,
         transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
         route_scope_frames: 16,
+        execution_identity: "test-execution".into(),
     };
 
     let mut reader = MetalInputTileReader::new_with_auto_device_decode_and_cache_key(
@@ -479,6 +483,7 @@ fn auto_metal_input_route_cache_can_persist_when_path_is_configured() {
         tile_size: 512,
         transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
         route_scope_frames: 128,
+        execution_identity: "test-execution".into(),
     };
     store_cached_auto_metal_input_decision(
         &key,

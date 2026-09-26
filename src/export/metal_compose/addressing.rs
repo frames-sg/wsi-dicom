@@ -96,10 +96,9 @@ impl ComposeAddressPlan {
         }
         let max_src = max_source_byte(&params)?;
         if let Some(max_src) = max_src {
-            let packed_len =
-                u64::try_from(packed.image.byte_len()).map_err(|_| Error::Unsupported {
-                    reason: "Metal packed source allocation exceeds u64".into(),
-                })?;
+            let packed_len = u64::try_from(packed.byte_len).map_err(|_| Error::Unsupported {
+                reason: "Metal packed source allocation exceeds u64".into(),
+            })?;
             if max_src >= packed_len {
                 return Err(Error::Unsupported {
                     reason: "Metal composed source shader span exceeds the packed allocation"

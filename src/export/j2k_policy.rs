@@ -418,12 +418,10 @@ pub(super) const LOSSLESS_J2K_AUTO_ROUTE_SPEEDUP_NUMERATOR: u128 = 92;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) const LOSSLESS_J2K_AUTO_ROUTE_SPEEDUP_DENOMINATOR: u128 = 100;
 
-#[cfg(any(test, not(all(feature = "metal", target_os = "macos"))))]
 pub(super) const LOSSLESS_J2K_CPU_ROW_BATCH_TARGET_TILES: u64 = 256;
 pub(super) const LOSSLESS_J2K_DIRECT_PIXELDATA_MAX_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
 pub(super) const LOSSLESS_J2K_DIRECT_PIXELDATA_BYTES_PER_PIXEL: u64 = 6;
 
-#[cfg(any(test, not(all(feature = "metal", target_os = "macos"))))]
 pub(super) fn lossless_j2k_cpu_row_batch_count(tiles_across: u64, remaining_rows: u64) -> u64 {
     if tiles_across == 0 {
         return 1;
@@ -536,5 +534,18 @@ pub(super) fn auto_metal_input_route_cache_key(
         tile_size: options.semantics.tile_size,
         transfer_syntax: options.semantics.transfer_syntax,
         route_scope_frames,
+        execution_identity: {
+            use objc2_metal::MTLDevice as _;
+            let device = j2k_metal_support::system_default_device()
+                .map(|device| device.registryID()).ok();
+            format!(
+                "v2;package={};execution={:?};resources={:?};rayon={};device={:?};row_env={:?};jpeg_decode={:?};jp2k_decode={:?}",
+                env!("CARGO_PKG_VERSION"), options.execution, options.resources,
+                rayon::current_num_threads(), device,
+                std::env::var_os(WSI_DICOM_METAL_ROW_BATCH_ROWS_ENV),
+                std::env::var_os(super::WSI_RS_JPEG_DEVICE_DECODE_ENV),
+                std::env::var_os(super::WSI_RS_JP2K_DEVICE_DECODE_ENV),
+            )
+        },
     })
 }

@@ -25,6 +25,7 @@ pub fn prepare_tile_samples_summary(
     output_height: u32,
 ) -> Result<PreparedTileBenchSummary, Error> {
     let prepared = prepare_tile_samples(tile, output_width, output_height)?;
+    std::hint::black_box(prepared.bytes.as_slice());
     Ok(PreparedTileBenchSummary {
         bytes_len: prepared.bytes.len(),
         components: prepared.profile.components,

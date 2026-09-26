@@ -4,7 +4,7 @@ use super::{
     pixel_data_offsets_from_lengths, synthetic_display_p3_icc_profile, synthetic_srgb_icc_profile,
     write_dicom_object_with_pixel_data, write_dicom_object_with_spooled_pixel_data,
     write_dicom_object_with_streamed_pixel_data, write_encapsulated_pixel_data_from_frames,
-    write_encapsulated_pixel_data_from_spool, FrameGrid, FrameIndexSpool,
+    write_encapsulated_pixel_data_from_spool, DeferredLossyCompression, FrameGrid, FrameIndexSpool,
     PerFrameFunctionalGroupsPlan, PixelDataSpool, SpooledPixelDataFragment, StreamedDicomWritePlan,
     DICOM_FILE_WRITE_BUFFER_BYTES,
 };

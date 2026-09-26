@@ -174,23 +174,7 @@ fn plan_lossless_j2k_row_at(
                         inspection.as_ref().and_then(RawJ2kInspection::profile);
                     let source_lossy_compression =
                         lossy_compression_from_raw(&raw, source_j2k_syntax)?;
-                    let source_j2k = j2k_direct_htj2k::frame(
-                        &raw,
-                        request.grid.frame_columns,
-                        request.grid.frame_rows,
-                        request.transfer_syntax,
-                        source_j2k_profile,
-                    );
-                    let source_jpeg = jpeg_direct_htj2k::frame(
-                        &raw,
-                        request.grid.frame_columns,
-                        request.grid.frame_rows,
-                        request.transfer_syntax,
-                    );
-                    let source_jpeg_direct_rejected =
-                        jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax)
-                            && raw.compression() == Compression::Jpeg
-                            && source_jpeg.is_none();
+                    let raw_is_jpeg = raw.compression() == Compression::Jpeg;
                     let passthrough_profile = request
                         .allow_passthrough_probe
                         .then(|| {
@@ -207,13 +191,49 @@ fn plan_lossless_j2k_row_at(
                     #[cfg(test)]
                     let passthrough_syntax = inspection.as_ref().map(RawJ2kInspection::syntax);
                     drop(inspection);
-                    let passthrough = passthrough_profile.map(|profile| J2kPassthroughFrame {
-                        codestream: raw.into_data(),
-                        profile,
-                        #[cfg(test)]
-                        transfer_syntax: passthrough_syntax
-                            .expect("passthrough profile requires a parsed syntax"),
-                    });
+                    // Passthrough takes priority. Move the payload into its only
+                    // usable route instead of copying it into competing plans.
+                    let (source_j2k, source_jpeg, passthrough) =
+                        if let Some(profile) = passthrough_profile {
+                            (
+                                None,
+                                None,
+                                Some(J2kPassthroughFrame {
+                                    codestream: raw.into_data(),
+                                    profile,
+                                    #[cfg(test)]
+                                    transfer_syntax: passthrough_syntax
+                                        .expect("passthrough profile requires a parsed syntax"),
+                                }),
+                            )
+                        } else if raw_is_jpeg {
+                            (
+                                None,
+                                jpeg_direct_htj2k::frame(
+                                    raw,
+                                    request.grid.frame_columns,
+                                    request.grid.frame_rows,
+                                    request.transfer_syntax,
+                                ),
+                                None,
+                            )
+                        } else {
+                            (
+                                j2k_direct_htj2k::frame(
+                                    raw,
+                                    request.grid.frame_columns,
+                                    request.grid.frame_rows,
+                                    request.transfer_syntax,
+                                    source_j2k_profile,
+                                ),
+                                None,
+                                None,
+                            )
+                        };
+                    let source_jpeg_direct_rejected =
+                        jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax)
+                            && raw_is_jpeg
+                            && source_jpeg.is_none();
                     (
                         source_j2k_dimensions,
                         source_j2k_syntax,
@@ -233,7 +253,11 @@ fn plan_lossless_j2k_row_at(
         let mut source_jpeg_retiled = false;
         let mut source_jpeg_retile_duration = Duration::ZERO;
         let mut source_jpeg_retile_rejection = None;
-        if source_jpeg.is_none() && jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax) {
+        if passthrough.is_none()
+            && source_j2k.is_none()
+            && source_jpeg.is_none()
+            && jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax)
+        {
             match read_raw_jpeg_retile_display_tile(
                 slide,
                 request.location,
@@ -247,7 +271,7 @@ fn plan_lossless_j2k_row_at(
                         source_lossy_compression = lossy_compression_from_raw(&retiled.raw, None)?;
                     }
                     source_jpeg = jpeg_direct_htj2k::frame(
-                        &retiled.raw,
+                        retiled.raw,
                         request.grid.frame_columns,
                         request.grid.frame_rows,
                         request.transfer_syntax,

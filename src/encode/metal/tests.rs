@@ -176,6 +176,43 @@ fn submitted_metal_tile_batch_wait_returns_buffer_backed_codestream() {
 }
 
 #[test]
+fn mixed_metal_staging_batches_preserve_input_order_with_two_groups() {
+    let widths = [8, 7, 8, 7];
+    let inputs: Vec<_> = widths
+        .iter()
+        .enumerate()
+        .map(|(i, &width)| rgb8_pixels_for_test(width, 8, 11 + i as u32))
+        .collect();
+    let tiles = inputs
+        .iter()
+        .zip(widths)
+        .map(|(pixels, width)| metal_rgb8_tile_for_test(pixels, width, 8))
+        .collect();
+    let mut encoder = DicomJ2kEncoder::new(
+        EncodeBackendPreference::RequireDevice,
+        TransferSyntax::Htj2kLosslessRpcl,
+        CodecValidation::RoundTrip,
+    );
+    let submitted = encoder.submit_metal_tiles_owned(tiles, 8, 8).unwrap();
+    assert_eq!(
+        submitted.groups.len(),
+        2,
+        "interior and edge frames each form one staging class"
+    );
+    let encoded = submitted.wait().unwrap();
+    for ((frame, pixels), width) in encoded.frames.into_iter().zip(inputs).zip(widths) {
+        let mut expected = vec![0; 8 * 8 * 3];
+        for (source, dest) in pixels
+            .chunks_exact(width as usize * 3)
+            .zip(expected.chunks_exact_mut(24))
+        {
+            dest[..source.len()].copy_from_slice(source);
+        }
+        assert_rgb8_j2k_frame_matches_pixels_for_test(frame.unwrap(), &expected, 8);
+    }
+}
+
+#[test]
 fn metal_tile_encode_returns_buffer_backed_codestream_for_edge_tiles() {
     let pixels: Vec<u8> = (0..7 * 5 * 3)
         .map(|idx| ((idx * 31) & 0xFF) as u8)

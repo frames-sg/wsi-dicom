@@ -19,12 +19,13 @@ use crate::tile::PixelProfile;
 
 mod auto_route;
 mod cache;
+mod canonical_source;
 mod dispatch;
 
 #[cfg(test)]
 pub(super) use auto_route::{
-    cpu_input_device_encode_auto_allowed, cpu_input_device_encode_auto_probe_allowed,
-    select_auto_lossless_j2k_probe_route, AutoLosslessJ2kRouteCandidate, CpuEncodedTileRun,
+    cpu_input_device_encode_profile_allowed, select_auto_lossless_j2k_probe_route,
+    AutoLosslessJ2kRouteCandidate,
 };
 pub(super) use auto_route::{
     probe_auto_metal_input_tile_run, AutoMetalInputProbeRequest, RoutedLosslessJ2kTile,
@@ -67,6 +68,7 @@ impl MetalInputTileRunRequest<'_> {
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) struct MetalEncodedTileRun {
+    pub(super) used_gpu_input: bool,
     pub(super) tiles: Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>>,
     pub(super) input_decode_duration: Duration,
     pub(super) compose_duration: Duration,
@@ -128,6 +130,7 @@ impl PendingMetalEncodedTileRun {
         }
 
         Ok(MetalEncodedTileRun {
+            used_gpu_input: true,
             tiles: encoded,
             input_decode_duration: self.input_decode_duration,
             compose_duration: self.compose_duration,
@@ -169,6 +172,9 @@ pub(super) struct MetalInputTileReader {
     pub(super) row_batch_rows: Option<usize>,
     pub(super) row_batch_target_tiles: Option<usize>,
     pub(super) pipeline_depth: usize,
+    /// Exclusive row-major output frame limit, including any lookahead work.
+    pub(super) frame_limit: Option<u64>,
+    pub(super) max_prepared_frame_bytes: u64,
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -247,6 +253,8 @@ impl MetalInputTileReader {
             row_batch_rows: None,
             row_batch_target_tiles: None,
             pipeline_depth: DEFAULT_GPU_PIPELINE_DEPTH,
+            frame_limit: None,
+            max_prepared_frame_bytes: 64 * 1024 * 1024,
         }
     }
 
@@ -266,6 +274,11 @@ impl MetalInputTileReader {
 
     pub(super) fn with_pipeline_depth(mut self, pipeline_depth: usize) -> Self {
         self.pipeline_depth = pipeline_depth.max(1);
+        self
+    }
+
+    pub(super) fn with_frame_limit(mut self, frame_limit: u64) -> Self {
+        self.frame_limit = Some(frame_limit);
         self
     }
 

@@ -727,15 +727,7 @@ mod tests {
     }
 
     #[test]
-    fn export_options_validation_rejects_invalid_options() {
-        let options = ExportOptions {
-            jpeg_quality: 0,
-            ..ExportOptions::default()
-        };
-
-        let err = options.validate().expect_err("invalid quality");
-        assert!(err.to_string().contains("jpeg_quality"));
-
+    fn export_options_validation_rejects_zero_metadata_budgets() {
         for options in [
             ExportOptions {
                 max_instance_metadata_bytes: 0,

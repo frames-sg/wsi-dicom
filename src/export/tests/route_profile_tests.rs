@@ -1,4 +1,58 @@
 use super::*;
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
+fn metal_profile_does_not_encode_rows_beyond_requested_frames() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("bounded.svs");
+    let jpeg = encode_test_jpeg(32, 32, [120, 30, 90]);
+    write_tiled_jpeg_tiff(&source, 64, 128, 32, 32, &vec![jpeg; 8]);
+    for max_frames in [2, 3] {
+        let report = profile_dicom_routes(RouteProfileRequest {
+            source_path: source.clone(),
+            options: ExportOptions {
+                tile_size: 32,
+                transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+                encode_backend: EncodeBackendPreference::RequireDevice,
+                source_device_decode: true,
+                ..ExportOptions::default()
+            },
+            source_aware_transfer_syntax: false,
+            level: 0,
+            max_frames,
+        })
+        .unwrap();
+        assert_eq!(report.metrics.routes.total_frames, max_frames);
+        assert_eq!(report.metrics.routes.gpu_encode_frames, max_frames);
+        assert_eq!(report.metrics.gpu_encode.gpu_row_batch_rows_max, 1);
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
+fn cpu_input_device_encode_submits_a_batch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source.dcm");
+    write_source_dicom_with_dimensions(&source, "1.2.3.4.5", 64, 32);
+    let report = profile_dicom_routes(RouteProfileRequest {
+        source_path: source,
+        options: ExportOptions {
+            tile_size: 32,
+            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+            encode_backend: EncodeBackendPreference::RequireDevice,
+            codec_validation: CodecValidation::RoundTrip,
+            ..ExportOptions::default()
+        },
+        source_aware_transfer_syntax: false,
+        level: 0,
+        max_frames: 2,
+    })
+    .unwrap();
+    assert_eq!(report.metrics.routes.cpu_input_frames, 2);
+    assert_eq!(report.metrics.routes.gpu_encode_frames, 2);
+    assert_eq!(report.metrics.routes.gpu_validation_frames, 2);
+    assert_eq!(report.metrics.routes.gpu_encode_batches, 1);
+}
 use crate::routing::{
     reset_slide_open_count_for_current_thread, slide_open_count_for_current_thread,
 };

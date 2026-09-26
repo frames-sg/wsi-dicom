@@ -177,7 +177,10 @@ fn compose_source_address_rejects_packed_span_overflow() {
 fn metal_compose_selected_u32_stays_within_five_percent_of_reference() {
     const DIMENSION: u32 = 2_048;
     const BYTES_PER_PIXEL: u32 = 3;
-    const DISPATCHES_PER_SAMPLE: usize = 12;
+    // Millisecond samples were dominated by command submission/host wakeup
+    // jitter, even for identical kernels. Amortize that cost without changing
+    // the 5% wall-time gate, and rotate each kernel through every order slot.
+    const DISPATCHES_PER_SAMPLE: usize = 128;
     const SAMPLE_COUNT: usize = 3;
 
     let Ok(device) = j2k_metal_support::system_default_device() else {
@@ -202,7 +205,8 @@ fn metal_compose_selected_u32_stays_within_five_percent_of_reference() {
         .expect("pitch fits usize")
         .checked_mul(usize::try_from(DIMENSION).expect("height fits usize"))
         .expect("performance buffer length");
-    let src = j2k_metal_support::checked_shared_buffer_for_len::<u8>(&device, byte_len)
+    let expected: Vec<u8> = (0..byte_len).map(|index| (index % 251) as u8).collect();
+    let src = j2k_metal_support::checked_shared_buffer_with_slice(&device, &expected)
         .expect("allocate performance source");
     let dst = j2k_metal_support::checked_shared_buffer_for_len::<u8>(&device, byte_len)
         .expect("allocate performance destination");
@@ -245,21 +249,24 @@ fn metal_compose_selected_u32_stays_within_five_percent_of_reference() {
         started.elapsed()
     };
 
-    measure(&reference_pipeline, 2);
-    measure(&selected_u32_pipeline, 2);
-    measure(&u64_pipeline, 2);
+    for pipeline in [&reference_pipeline, &selected_u32_pipeline, &u64_pipeline] {
+        measure(pipeline, 2);
+        assert_eq!(
+            crate::metal_interop::test_buffer_bytes(&dst, byte_len),
+            expected
+        );
+    }
     let mut reference_samples = Vec::with_capacity(SAMPLE_COUNT);
     let mut selected_u32_samples = Vec::with_capacity(SAMPLE_COUNT);
     let mut u64_samples = Vec::with_capacity(SAMPLE_COUNT);
     for sample in 0..SAMPLE_COUNT {
-        if sample % 2 == 0 {
-            reference_samples.push(measure(&reference_pipeline, DISPATCHES_PER_SAMPLE));
-            selected_u32_samples.push(measure(&selected_u32_pipeline, DISPATCHES_PER_SAMPLE));
-            u64_samples.push(measure(&u64_pipeline, DISPATCHES_PER_SAMPLE));
-        } else {
-            u64_samples.push(measure(&u64_pipeline, DISPATCHES_PER_SAMPLE));
-            selected_u32_samples.push(measure(&selected_u32_pipeline, DISPATCHES_PER_SAMPLE));
-            reference_samples.push(measure(&reference_pipeline, DISPATCHES_PER_SAMPLE));
+        for slot in 0..3 {
+            match (sample + slot) % 3 {
+                0 => reference_samples.push(measure(&reference_pipeline, DISPATCHES_PER_SAMPLE)),
+                1 => selected_u32_samples
+                    .push(measure(&selected_u32_pipeline, DISPATCHES_PER_SAMPLE)),
+                _ => u64_samples.push(measure(&u64_pipeline, DISPATCHES_PER_SAMPLE)),
+            }
         }
     }
 

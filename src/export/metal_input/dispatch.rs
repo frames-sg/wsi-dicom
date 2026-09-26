@@ -22,7 +22,8 @@ pub(in crate::export) fn try_encode_metal_input_tile_run(
 ) -> Result<MetalEncodedTileRun, Error> {
     // Long NDPI exports create thousands of autoreleased Metal/ObjC temporaries.
     // Drain them per run so later rows do not encode zero-filled composed buffers.
-    objc2::rc::autoreleasepool(|_| {
+    let frame_limit = metal_input.frame_limit;
+    let result = objc2::rc::autoreleasepool(|_| {
         let MetalInputTileRunRequest {
             level,
             location,
@@ -37,6 +38,14 @@ pub(in crate::export) fn try_encode_metal_input_tile_run(
 
         if !metal_input.enabled() {
             return Ok(empty_metal_tile_run(tile_count));
+        }
+        if let Some(run) = super::canonical_source::try_encode_canonical_source(
+            slide,
+            metal_input,
+            j2k_encoder,
+            request,
+        )? {
+            return Ok(run);
         }
         if let Some(cached) = metal_input.encoded_row_runs.remove(&row_run_key) {
             return Ok(cached);
@@ -101,11 +110,14 @@ pub(in crate::export) fn try_encode_metal_input_tile_run(
             });
         }
         Ok(empty_metal_tile_run(tile_count))
-    })
+    });
+    metal_input.frame_limit = frame_limit;
+    result
 }
 
 pub(in crate::export) fn empty_metal_tile_run(tile_count: usize) -> MetalEncodedTileRun {
     MetalEncodedTileRun {
+        used_gpu_input: true,
         tiles: (0..tile_count).map(|_| None).collect(),
         input_decode_duration: Duration::ZERO,
         compose_duration: Duration::ZERO,
@@ -123,20 +135,14 @@ pub(in crate::export) fn metal_j2k_encode_batch_count(
     output_width: u32,
     output_height: u32,
 ) -> u64 {
-    let mut batches = 0u64;
-    let mut start = 0usize;
-    while start < tiles.len() {
-        batches = batches.saturating_add(1);
-        let padded =
-            encode::metal_tile_is_padded_contiguous(&tiles[start], output_width, output_height);
-        let mut end = start + 1;
-        while end < tiles.len()
-            && encode::metal_tile_is_padded_contiguous(&tiles[end], output_width, output_height)
-                == padded
-        {
-            end += 1;
+    let mut padded = false;
+    let mut edge = false;
+    for tile in tiles {
+        if encode::metal_tile_is_padded_contiguous(tile, output_width, output_height) {
+            padded = true;
+        } else {
+            edge = true;
         }
-        start = end;
     }
-    batches
+    u64::from(padded) + u64::from(edge)
 }

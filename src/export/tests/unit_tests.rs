@@ -302,12 +302,14 @@ fn preflight_accepts_same_axes_from_different_scenes_and_series() {
             instance_number: 1,
             coordinate: InstanceCoordinate::new(0, 0, 0, 0, 0, 0),
             level,
+            per_frame_plan: None,
         },
         DicomExportInstanceJob {
             ordinal: 1,
             instance_number: 2,
             coordinate: InstanceCoordinate::new(1, 3, 0, 0, 0, 0),
             level,
+            per_frame_plan: None,
         },
     ];
 
@@ -370,7 +372,7 @@ fn read_and_prepare_region_pads_cpu_region_to_requested_output_geometry() {
         }
     );
     assert_eq!(
-        prepared.bytes,
+        prepared.bytes.as_slice(),
         vec![1, 2, 3, 4, 5, 6, 0, 0, 0, 7, 8, 9, 10, 11, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,]
     );
 }

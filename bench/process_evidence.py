@@ -206,6 +206,7 @@ def run_bounded_command(
         measured_command = _measurement_command(command, resource_path, system_name)
 
     started = time.monotonic()
+    deadline = started + timeout_secs
     timed_out = False
     launch_error: str | None = None
     returncode: int | None = None
@@ -249,19 +250,21 @@ def run_bounded_command(
         for reader in readers:
             reader.start()
         try:
-            process.wait(timeout=timeout_secs)
-            returncode = process.returncode
+            process.wait(timeout=max(0, deadline - time.monotonic()))
+            for reader in readers:
+                reader.join(timeout=max(0, deadline - time.monotonic()))
+            timed_out = any(reader.is_alive() for reader in readers)
         except subprocess.TimeoutExpired:
             timed_out = True
+        if timed_out:
             _terminate_process_tree(process)
-        for reader in readers:
-            reader.join(timeout=2)
-        if any(reader.is_alive() for reader in readers):
-            process.stdout.close()
-            process.stderr.close()
+            cleanup_deadline = time.monotonic() + 2
             for reader in readers:
-                reader.join(timeout=1)
+                reader.join(timeout=max(0, cleanup_deadline - time.monotonic()))
+        else:
+            returncode = process.returncode
         if any(reader.is_alive() for reader in readers):
+            # Closing a buffered pipe here can block on a reader's internal lock.
             raise ProcessEvidenceError("subprocess output pipes did not close")
         capture_errors = [
             str(capture[key])

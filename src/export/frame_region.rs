@@ -65,7 +65,7 @@ pub(super) struct FrameRectOverflowReasons {
 }
 
 pub(super) struct PreparedCpuRegion {
-    pub(super) bytes: Vec<u8>,
+    pub(super) bytes: std::sync::Arc<Vec<u8>>,
     pub(super) profile: crate::tile::PixelProfile,
     pub(super) input_decode_duration: std::time::Duration,
     pub(super) compose_duration: std::time::Duration,

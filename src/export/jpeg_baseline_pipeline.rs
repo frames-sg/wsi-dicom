@@ -1,7 +1,6 @@
 use std::time::{Duration, Instant};
 
 use j2k_jpeg::{EncodedJpeg, JpegBackend, JpegSamples, JpegSubsampling};
-use rayon::prelude::*;
 use wsi_rs::{Compression, LevelIdx, PlaneSelection, RegionRequest, SceneId, SeriesId, Slide};
 
 use super::frame_region::{
@@ -114,7 +113,7 @@ pub(super) struct CpuRegionReadRequest {
 }
 
 struct PreparedJpegBaselineFrame {
-    bytes: Vec<u8>,
+    bytes: std::sync::Arc<Vec<u8>>,
     profile: PixelProfile,
     subsampling: JpegSubsampling,
     input_decode_duration: Duration,
@@ -364,10 +363,12 @@ pub(super) fn encode_jpeg_baseline_cpu_input_tile_batch(
     frames: &[JpegBaselineFallbackFrame],
     settings: JpegBaselineCpuEncodeSettings,
 ) -> Result<Vec<EncodedJpegBaselineFrame>, Error> {
-    frames
-        .par_iter()
-        .map(|frame| encode_jpeg_baseline_cpu_input_tile(slide, location, *frame, settings))
-        .collect()
+    super::cpu_batch::map_cpu_frames(
+        frames,
+        super::cpu_batch::frame_batch_len(settings.frame_columns, settings.frame_rows)
+            .min(rayon::current_num_threads()),
+        |frame| encode_jpeg_baseline_cpu_input_tile(slide, location, *frame, settings),
+    )
 }
 
 pub(super) fn encode_jpeg_baseline_cpu_input_tile(

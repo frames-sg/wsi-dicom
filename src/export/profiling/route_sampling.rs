@@ -127,7 +127,8 @@ pub(super) fn profile_lossless_j2k_routes(
         )?;
         let mut cpu_batch_results = encode_lossless_j2k_cpu_fallback_after_routes(
             batch_context,
-            &j2k_encoder,
+            &mut j2k_encoder,
+            &mut metrics,
             &direct_routes,
             |idx| {
                 #[cfg(all(feature = "metal", target_os = "macos"))]

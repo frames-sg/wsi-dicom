@@ -1,27 +1,50 @@
 use super::addressing::{ComposeAddressPlan, ComposeAddressWidth};
 use super::types::{MetalComposeStripsParams, MetalComposeTileRequest, PackedMetalStrips};
 use super::{metal_profile_stages_enabled, MetalStripComposer};
+use crate::encode::PendingDicomJ2kMetalTileBatch;
 use crate::error::Error;
-use j2k_core::DeviceSubmission as _;
+use objc2::runtime::ProtocolObject;
 use objc2_foundation::NSString;
-use objc2_metal::{MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder};
+use objc2_metal::{
+    MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder, MTLDevice,
+    MTLResource,
+};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) struct MetalComposeTileDispatch {
     pub(super) request: MetalComposeTileRequest,
     pub(super) params: MetalComposeStripsParams,
-    pub(super) dst_buffer: crate::metal_interop::MetalBuffer,
-    pub(super) output_layout: j2k_metal_support::MetalImageLayout,
+    pub(super) output: crate::metal_interop::FreshMetalImageOutput,
 }
 
 impl MetalStripComposer {
     pub(in crate::export) fn compose_tiles(
         &self,
-        packed: &PackedMetalStrips,
+        packed: PackedMetalStrips,
         requests: &[MetalComposeTileRequest],
     ) -> Result<Vec<wsi_rs::output::metal::MetalDeviceTile>, Error> {
         if requests.is_empty() {
             return Ok(Vec::new());
+        }
+        let pending = self.submit_compose_tiles(packed, requests, &self.queue)?;
+        pending.wait_ready()
+    }
+
+    pub(in crate::export) fn submit_compose_tiles(
+        &self,
+        packed: PackedMetalStrips,
+        requests: &[MetalComposeTileRequest],
+        consumer_queue: &ProtocolObject<dyn MTLCommandQueue>,
+    ) -> Result<PendingDicomJ2kMetalTileBatch, Error> {
+        if requests.is_empty() {
+            return Err(Error::Unsupported {
+                reason: "pending Metal composition requires at least one tile".into(),
+            });
+        }
+        if packed.buffer.device().registryID() != self.device.registryID() {
+            return Err(Error::Unsupported {
+                reason: "Metal compose packed input belongs to a different device".into(),
+            });
         }
         let first_col = u32::try_from(packed.first_col).map_err(|_| Error::Unsupported {
             reason: "Metal WholeLevel first source tile column exceeds u32".into(),
@@ -43,7 +66,7 @@ impl MetalStripComposer {
         for request in requests {
             address_plans.push(ComposeAddressPlan::new(
                 *request,
-                packed,
+                &packed,
                 first_col,
                 first_row,
                 bytes_per_pixel_u32,
@@ -64,13 +87,6 @@ impl MetalStripComposer {
                 reason: "Metal compose dispatch batch exceeds available memory".into(),
             })?;
         for plan in address_plans {
-            let dst_buffer = j2k_metal_support::checked_shared_buffer_for_len::<u8>(
-                &self.device,
-                plan.dst_bytes,
-            )
-            .map_err(|source| {
-                crate::metal_interop::support_error("Metal composed tile allocation", source)
-            })?;
             let output_layout = j2k_metal_support::MetalImageLayout::new(
                 0,
                 (plan.request.output_width, plan.request.output_height),
@@ -80,24 +96,24 @@ impl MetalStripComposer {
             .map_err(|source| {
                 crate::metal_interop::support_error("Metal composed tile layout", source)
             })?;
+            let output = crate::metal_interop::FreshMetalImageOutput::allocate(
+                &self.device,
+                plan.dst_bytes,
+                output_layout,
+            )
+            .map_err(|source| {
+                crate::metal_interop::support_error("Metal composed tile allocation", source)
+            })?;
             dispatches.push(MetalComposeTileDispatch {
                 request: plan.request,
                 params: plan.params,
-                dst_buffer,
-                output_layout,
+                output,
             });
         }
 
-        packed
-            .image
-            .validate_device(&self.device)
-            .map_err(|source| {
-                crate::metal_interop::support_error("Metal compose packed input device", source)
-            })?;
-        let command_buffer =
-            j2k_metal_support::checked_command_buffer(&self.queue).map_err(|source| {
-                crate::metal_interop::support_error("Metal compose command", source)
-            })?;
+        // Append compute after the completed blit encoder in the same retaining
+        // command buffer. Metal orders the tracked-buffer dependency on the GPU.
+        let command_buffer = packed.command;
         if metal_profile_stages_enabled() {
             command_buffer.setLabel(Some(&NSString::from_str("wsi-dicom compose tiles")));
         }
@@ -112,9 +128,9 @@ impl MetalStripComposer {
             ComposeAddressWidth::U64 => self.pipeline_u64()?,
         };
         encoder.setComputePipelineState(pipeline);
-        crate::metal_interop::bind_resident_compute_input(&encoder, 0, &packed.image);
+        crate::metal_interop::bind_compute_buffer(&encoder, 0, &packed.buffer);
         for dispatch in &dispatches {
-            crate::metal_interop::bind_compute_buffer(&encoder, 1, &dispatch.dst_buffer);
+            crate::metal_interop::bind_compute_buffer(&encoder, 1, dispatch.output.buffer());
             crate::metal_interop::bind_compose_params(&encoder, 2, &dispatch.params);
             j2k_metal_support::dispatch_2d_pipeline(
                 &encoder,
@@ -128,29 +144,15 @@ impl MetalStripComposer {
         encoder.endEncoding();
         let outputs = dispatches
             .into_iter()
-            .map(|dispatch| (dispatch.dst_buffer, dispatch.output_layout))
+            .map(|dispatch| dispatch.output)
             .collect();
-        let submitted = crate::metal_interop::submit_images(
+        crate::metal_interop::submit_images_for_same_queue_consumer(
             &self.device,
+            &self.queue,
+            consumer_queue,
             command_buffer,
             outputs,
-            vec![packed.image.clone()],
-        )?;
-        submitted
-            .wait()
-            .map_err(|source| {
-                crate::metal_interop::support_error("Metal compose completion", source)
-            })?
-            .into_iter()
-            .map(|image| {
-                wsi_rs::output::metal::MetalDeviceTile::from_resident(image).map_err(|source| {
-                    Error::Encode {
-                        message: format!(
-                            "Metal composed resident tile conversion failed: {source}"
-                        ),
-                    }
-                })
-            })
-            .collect()
+            packed.inputs,
+        )
     }
 }

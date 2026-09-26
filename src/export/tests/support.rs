@@ -433,7 +433,7 @@ pub(super) fn assert_aperio_jp2k_metal_input_tile_matches_cpu(tile_size: u32) {
 
     assert_eq!(encoded.tiles.len(), 1);
     assert!(encoded.input_decode_duration > Duration::ZERO);
-    if tile_size > tile_width || tile_size > tile_height {
+    if !encoded.used_gpu_input || tile_size > tile_width || tile_size > tile_height {
         assert!(encoded.compose_duration > Duration::ZERO);
     } else {
         assert_eq!(encoded.compose_duration, Duration::ZERO);
@@ -464,7 +464,7 @@ pub(super) fn assert_aperio_jp2k_metal_input_tile_matches_cpu(tile_size: u32) {
         profile.components,
         profile.bits_allocated,
     );
-    if actual != expected.bytes {
+    if actual.as_slice() != expected.bytes.as_slice() {
         let max_abs_diff = actual
             .iter()
             .zip(expected.bytes.iter())

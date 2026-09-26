@@ -1,6 +1,8 @@
 mod corpus;
 mod fields;
 mod functional_groups;
+mod geometry;
+mod identity;
 mod instance;
 
 use std::path::Path;
@@ -13,12 +15,15 @@ pub(super) use corpus::{
     WsiConformanceCorpus,
 };
 
+use geometry::{
+    validate_dimension_rule, validate_slide_coordinate_system_rule, validate_tile_geometry_rule,
+};
+use identity::{
+    specimen_identities, validate_file_meta_identity, validate_specimen_container_rule,
+};
 use instance::{
-    is_vl_wsi, specimen_identities, validate_core_image_profile_rule, validate_dimension_rule,
-    validate_file_meta_identity, validate_icc_rule, validate_image_metadata_rule,
+    is_vl_wsi, validate_core_image_profile_rule, validate_icc_rule, validate_image_metadata_rule,
     validate_lossy_rule, validate_monochrome_rule, validate_optical_path_structure_rule,
-    validate_slide_coordinate_system_rule, validate_specimen_container_rule,
-    validate_tile_geometry_rule,
 };
 
 use super::{ValidationCheck, ValidationProfile, ValidationStatus};

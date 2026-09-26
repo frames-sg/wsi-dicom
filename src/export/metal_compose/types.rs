@@ -2,7 +2,12 @@ use j2k_core::PixelFormat as J2kPixelFormat;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(in crate::export) struct PackedMetalStrips {
-    pub(in crate::export) image: j2k_metal_support::ResidentMetalImage,
+    // Uncommitted pack work is consumed by compose; it is never exposed as a
+    // ready image. The command retains its intermediate buffer through execution.
+    pub(in crate::export) buffer: crate::metal_interop::MetalBuffer,
+    pub(in crate::export) byte_len: usize,
+    pub(in crate::export) command: crate::metal_interop::CommandBuffer,
+    pub(in crate::export) inputs: Vec<j2k_metal_support::ResidentMetalImage>,
     pub(in crate::export) first_col: i64,
     pub(in crate::export) first_row: i64,
     pub(in crate::export) tiles_across: u32,

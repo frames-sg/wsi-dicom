@@ -1,15 +1,14 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-#[cfg(test)]
-use dicom_core::{DataElement, PrimitiveValue, VR};
+use dicom_core::{header::Header, DataElement, PrimitiveValue, VR};
 use dicom_dictionary_std::tags;
 use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 
-use super::encoding::{write_item_header, write_tag};
+use super::encoding::{format_ds, write_item_header, write_tag};
 use super::frame_index::FrameIndexSpool;
 use super::functional_groups::PerFrameFunctionalGroupsPlan;
 use super::persistence::{flush_and_sync_dicom_writer, PendingDicomOutput};
@@ -27,8 +26,9 @@ pub(crate) struct SpooledPixelDataFragment {
 
 pub(crate) struct PixelDataSpool {
     path: PathBuf,
-    file: File,
+    file: BufWriter<File>,
     pub(super) index: FrameIndexSpool,
+    next_spool_offset: u64,
     next_extended_offset: u64,
     total_raw_bytes: u64,
 }
@@ -47,8 +47,9 @@ impl PixelDataSpool {
             })?;
         Ok(Self {
             path,
-            file,
+            file: BufWriter::with_capacity(256 * 1024, file),
             index,
+            next_spool_offset: 0,
             next_extended_offset: 0,
             total_raw_bytes: 0,
         })
@@ -60,10 +61,13 @@ impl PixelDataSpool {
         })?;
         let padded_len_u32 = padded_fragment_len(raw_len)?;
         let padded_len = u64::from(padded_len_u32);
-        let spool_offset = self.file.stream_position().map_err(|source| Error::Io {
-            path: self.path.clone(),
-            source,
-        })?;
+        let spool_offset = self.next_spool_offset;
+        let next_spool_offset =
+            spool_offset
+                .checked_add(padded_len)
+                .ok_or_else(|| Error::Unsupported {
+                    reason: "pixel-data spool offset overflow".into(),
+                })?;
         self.file
             .write_all(codestream)
             .map_err(|source| Error::Io {
@@ -78,6 +82,7 @@ impl PixelDataSpool {
         }
         self.index
             .push(spool_offset, self.next_extended_offset, raw_len)?;
+        self.next_spool_offset = next_spool_offset;
         self.total_raw_bytes =
             self.total_raw_bytes
                 .checked_add(raw_len)
@@ -104,12 +109,13 @@ impl PixelDataSpool {
         })?;
         let mut current_offset =
             self.file
+                .get_mut()
                 .seek(SeekFrom::Start(0))
                 .map_err(|source| Error::Io {
                     path: self.path.clone(),
                     source,
                 })?;
-        let file = &mut self.file;
+        let mut file = BufReader::with_capacity(256 * 1024, self.file.get_mut());
         let path = self.path.clone();
         self.index.replay(|record| {
             if record.source_offset < current_offset {
@@ -121,7 +127,7 @@ impl PixelDataSpool {
                         })?;
             } else if record.source_offset > current_offset {
                 let gap = record.source_offset - current_offset;
-                let skipped = io::copy(&mut Read::by_ref(file).take(gap), &mut io::sink())
+                let skipped = io::copy(&mut Read::by_ref(&mut file).take(gap), &mut io::sink())
                     .map_err(|source| Error::Io {
                         path: path.clone(),
                         source,
@@ -134,7 +140,7 @@ impl PixelDataSpool {
                 }
                 current_offset = record.source_offset;
             }
-            writer.push_frame_from_reader(record.raw_len, file)?;
+            writer.push_frame_from_reader(record.raw_len, &mut file)?;
             current_offset =
                 current_offset
                     .checked_add(record.raw_len)
@@ -347,14 +353,15 @@ pub(crate) fn write_dicom_object_with_spooled_pixel_data(
     ));
 
     write_dicom_object_with_pixel_data(path, object, meta, overwrite, |file| {
-        spool.file.seek(SeekFrom::Start(0))?;
-        write_encapsulated_pixel_data_from_spool(file, &mut spool.file, &fragments)
+        spool.file.get_mut().seek(SeekFrom::Start(0))?;
+        write_encapsulated_pixel_data_from_spool(file, spool.file.get_mut(), &fragments)
     })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StreamedPixelDataWriteReport {
     pub(crate) frame_count: usize,
+    pub(crate) total_raw_bytes: u64,
     pub(crate) metadata_bytes: u64,
     pub(crate) streaming_write_duration: Duration,
     pub(crate) pixel_data_patch_duration: Duration,
@@ -368,6 +375,7 @@ pub(crate) struct StreamingPixelDataFrameWriter<'a> {
     frame_index: FrameIndexSpool,
     next_extended_offset: u64,
     streaming_write_duration: Duration,
+    total_raw_bytes: u64,
 }
 
 struct ExactFrameLengthWriter<'a, W: Write + ?Sized> {
@@ -497,6 +505,12 @@ impl StreamingPixelDataFrameWriter<'_> {
             .saturating_add(started.elapsed());
         self.frame_index
             .push(0, self.next_extended_offset, raw_len)?;
+        self.total_raw_bytes =
+            self.total_raw_bytes
+                .checked_add(raw_len)
+                .ok_or_else(|| Error::Unsupported {
+                    reason: "total streamed PixelData length overflow".into(),
+                })?;
         self.next_extended_offset = self
             .next_extended_offset
             .checked_add(8)
@@ -527,6 +541,7 @@ impl StreamingPixelDataFrameWriter<'_> {
         Ok((
             StreamedPixelDataWriteReport {
                 frame_count: self.frames_written,
+                total_raw_bytes: self.total_raw_bytes,
                 metadata_bytes: 0,
                 streaming_write_duration: self.streaming_write_duration,
                 pixel_data_patch_duration: Duration::ZERO,
@@ -543,7 +558,15 @@ pub(crate) struct StreamedDicomWritePlan {
     pub(crate) per_frame_plan: PerFrameFunctionalGroupsPlan,
     pub(crate) max_instance_metadata_bytes: u64,
     pub(crate) frame_count: usize,
+    pub(crate) deferred_lossy_compression: Option<DeferredLossyCompression>,
 }
+
+pub(crate) struct DeferredLossyCompression {
+    pub(crate) method: &'static str,
+    pub(crate) uncompressed_bytes: u64,
+}
+
+const DEFERRED_LOSSY_RATIO_PLACEHOLDER: &str = "1.00000000000000";
 
 pub(crate) fn write_dicom_object_with_streamed_pixel_data(
     path: &Path,
@@ -557,6 +580,7 @@ pub(crate) fn write_dicom_object_with_streamed_pixel_data(
         per_frame_plan,
         max_instance_metadata_bytes,
         frame_count,
+        deferred_lossy_compression,
     } = plan;
     if usize::try_from(per_frame_plan.frame_count()).ok() != Some(frame_count) {
         return Err(Error::DicomWrite {
@@ -601,6 +625,56 @@ pub(crate) fn write_dicom_object_with_streamed_pixel_data(
     object.remove_element(tags::EXTENDED_OFFSET_TABLE);
     object.remove_element(tags::EXTENDED_OFFSET_TABLE_LENGTHS);
     object.remove_element(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE);
+    if let Some(deferred) = deferred_lossy_compression.as_ref() {
+        object.put(DataElement::new(
+            tags::LOSSY_IMAGE_COMPRESSION,
+            VR::CS,
+            PrimitiveValue::from("01"),
+        ));
+        object.put(DataElement::new(
+            tags::LOSSY_IMAGE_COMPRESSION_RATIO,
+            VR::DS,
+            PrimitiveValue::from(DEFERRED_LOSSY_RATIO_PLACEHOLDER),
+        ));
+        object.put(DataElement::new(
+            tags::LOSSY_IMAGE_COMPRESSION_METHOD,
+            VR::CS,
+            PrimitiveValue::from(deferred.method),
+        ));
+    }
+    let deferred_lossy_ratio_offset = if deferred_lossy_compression.is_some() {
+        let mut prefix = object.clone();
+        prefix.retain(|element| element.tag() <= tags::LOSSY_IMAGE_COMPRESSION_RATIO);
+        let prefix_file = prefix
+            .with_meta(meta.clone())
+            .map_err(|err| Error::DicomWrite {
+                path: path.to_path_buf(),
+                message: err.to_string(),
+            })?;
+        let mut sink = io::sink();
+        let mut counter = ExactFrameLengthWriter {
+            inner: &mut sink,
+            expected: u64::MAX,
+            written: 0,
+        };
+        prefix_file
+            .write_all(&mut counter)
+            .map_err(|err| Error::DicomWrite {
+                path: path.to_path_buf(),
+                message: err.to_string(),
+            })?;
+        Some(
+            counter
+                .written
+                .checked_sub(DEFERRED_LOSSY_RATIO_PLACEHOLDER.len() as u64)
+                .ok_or_else(|| Error::DicomWrite {
+                    path: path.to_path_buf(),
+                    message: "deferred lossy compression ratio prefix is truncated".into(),
+                })?,
+        )
+    } else {
+        None
+    };
     object
         .with_meta(meta)
         .map_err(|err| Error::DicomWrite {
@@ -644,6 +718,7 @@ pub(crate) fn write_dicom_object_with_streamed_pixel_data(
         frame_index,
         next_extended_offset: 0,
         streaming_write_duration: Duration::ZERO,
+        total_raw_bytes: 0,
     };
     write_frames(&mut writer)?;
     let (mut report, mut frame_index) = writer.finish()?;
@@ -658,14 +733,36 @@ pub(crate) fn write_dicom_object_with_streamed_pixel_data(
         path: path.to_path_buf(),
         source,
     })?;
-    flush_and_sync_dicom_writer(&mut file, output.path())?;
-    drop(file);
-
+    file.flush().map_err(|source| Error::Io {
+        path: output.path().to_path_buf(),
+        source,
+    })?;
     let patch_started = Instant::now();
     if let Some(locations) = extended_offset_table_locations {
-        patch_extended_offset_tables_from_spool(output.path(), locations, &mut frame_index)?;
+        patch_extended_offset_tables_from_spool(
+            &mut file,
+            output.path(),
+            locations,
+            &mut frame_index,
+        )?;
     }
-    report.pixel_data_patch_duration = patch_started.elapsed();
+    if let (Some(offset), Some(deferred)) = (
+        deferred_lossy_ratio_offset,
+        deferred_lossy_compression.as_ref(),
+    ) {
+        patch_deferred_lossy_ratio(
+            &mut file,
+            output.path(),
+            offset,
+            deferred.uncompressed_bytes,
+            report.total_raw_bytes,
+        )?;
+    }
+    flush_and_sync_dicom_writer(&mut file, output.path())?;
+    if extended_offset_table_locations.is_some() || deferred_lossy_ratio_offset.is_some() {
+        report.pixel_data_patch_duration = patch_started.elapsed();
+    }
+    drop(file);
     output.persist()?;
     Ok(report)
 }
@@ -977,18 +1074,11 @@ fn write_zero_bytes(output: &mut impl Write, mut count: u64) -> io::Result<()> {
 }
 
 fn patch_extended_offset_tables_from_spool(
+    file: &mut BufWriter<File>,
     path: &Path,
     locations: ExtendedOffsetTableLocations,
     frame_index: &mut FrameIndexSpool,
 ) -> Result<(), Error> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .map_err(|source| Error::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
     file.seek(SeekFrom::Start(locations.offset_table_value_offset))
         .map_err(|source| Error::Io {
             path: path.to_path_buf(),
@@ -1013,12 +1103,39 @@ fn patch_extended_offset_tables_from_spool(
                 source,
             })
     })?;
-    file.sync_all().map_err(|source| Error::Io {
-        path: path.to_path_buf(),
-        source,
-    })
+    Ok(())
 }
 
+fn patch_deferred_lossy_ratio(
+    file: &mut BufWriter<File>,
+    path: &Path,
+    value_offset: u64,
+    uncompressed_bytes: u64,
+    compressed_bytes: u64,
+) -> Result<(), Error> {
+    let history = crate::lossy::LossyCompressionHistory::from_byte_counts(
+        crate::lossy::JPEG_BASELINE_METHOD,
+        uncompressed_bytes,
+        compressed_bytes,
+    )?;
+    let ratio = format_ds(history.stages()[0].ratio());
+    if ratio.len() > DEFERRED_LOSSY_RATIO_PLACEHOLDER.len() {
+        return Err(Error::Metadata {
+            reason: "deferred lossy compression ratio exceeds the reserved DICOM DS value length"
+                .into(),
+        });
+    }
+    let mut padded = [b' '; DEFERRED_LOSSY_RATIO_PLACEHOLDER.len()];
+    padded[..ratio.len()].copy_from_slice(ratio.as_bytes());
+    file.seek(SeekFrom::Start(value_offset))
+        .and_then(|_| file.write_all(&padded))
+        .map_err(|source| Error::Io {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+#[derive(Clone, Copy)]
 struct ExtendedOffsetTableLocations {
     offset_table_value_offset: u64,
     length_table_value_offset: u64,

@@ -1,19 +1,20 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use wsi_rs::Slide;
 
+use super::super::cpu_batch::frame_batch_len;
 use super::super::j2k_policy::{
     LOSSLESS_J2K_AUTO_PARTIAL_GPU_MIN_FRAMES, LOSSLESS_J2K_AUTO_ROUTE_SPEEDUP_DENOMINATOR,
     LOSSLESS_J2K_AUTO_ROUTE_SPEEDUP_NUMERATOR,
 };
 use super::super::jpeg_baseline::JpegBaselineFrameLocation;
-use super::super::lossless_j2k_direct_routes::encode_cpu_input_tile;
+use super::super::lossless_j2k_cpu::{
+    encode_prepared_lossless_j2k_cpu_batch, lossless_j2k_samples_from_prepared_region,
+    prepare_cpu_input_batch, LosslessJ2kCpuBatchSettings,
+};
 use super::super::lossless_j2k_plan::LosslessJ2kPlannedFrame;
 use super::super::route_cache::AutoLosslessJ2kRouteDecision;
-use super::{
-    try_encode_metal_input_tile_run, MetalEncodedTileRun, MetalInputTileReader,
-    MetalInputTileRunRequest,
-};
+use super::{try_encode_metal_input_tile_run, MetalInputTileReader, MetalInputTileRunRequest};
 use crate::encode::{self, DicomJ2kEncoder, EncodedDicomJ2kFrame};
 use crate::error::Error;
 use crate::tile::PixelProfile;
@@ -25,6 +26,9 @@ pub(in crate::export) struct RoutedLosslessJ2kTile {
 }
 
 pub(in crate::export) struct CpuEncodedTileRun {
+    pub(in crate::export) wall_duration: Duration,
+    pub(in crate::export) gpu_encode_batches: u64,
+    pub(in crate::export) gpu_encode_stats: encode::DicomJ2kGpuEncodeBatchStats,
     pub(in crate::export) tiles: Vec<(Result<EncodedDicomJ2kFrame, Error>, PixelProfile)>,
     pub(in crate::export) input_decode_duration: Duration,
     pub(in crate::export) compose_duration: Duration,
@@ -75,6 +79,16 @@ pub(in crate::export) fn probe_auto_metal_input_tile_run(
         reason: "auto Metal input route probe requires at least one tile".into(),
     })?;
 
+    let previous_limit = metal_input.frame_limit;
+    let probe_end = row
+        .checked_mul(matrix_columns.div_ceil(u64::from(tile_size)))
+        .and_then(|start| start.checked_add(first.col))
+        .and_then(|start| start.checked_add(planned.len() as u64))
+        .ok_or_else(|| Error::Unsupported {
+            reason: "auto route probe frame limit overflow".into(),
+        })?;
+    metal_input.frame_limit = Some(previous_limit.map_or(probe_end, |limit| limit.min(probe_end)));
+    let gpu_started = Instant::now();
     let metal_run = try_encode_metal_input_tile_run(
         slide,
         metal_input,
@@ -89,32 +103,26 @@ pub(in crate::export) fn probe_auto_metal_input_tile_run(
             matrix_rows,
             tile_size,
         },
-    )?;
-    let mut cpu_probe_encoder = j2k_encoder.cpu_only_peer();
-    let cpu_run = encode_cpu_input_planned_tile_run(
+    );
+    metal_input.frame_limit = previous_limit;
+    let resident_gpu_duration = gpu_started.elapsed();
+    let metal_run = metal_run?;
+    let cpu_probe_encoder = j2k_encoder.cpu_only_peer();
+    let mut partial_probe_encoder = (route_scope_frames
+        >= LOSSLESS_J2K_AUTO_PARTIAL_GPU_MIN_FRAMES)
+        .then(|| j2k_encoder.require_device_peer());
+    let (cpu_run, partial_gpu_run) = encode_shared_cpu_input_probe_runs(
         slide,
-        &mut cpu_probe_encoder,
+        &cpu_probe_encoder,
+        partial_probe_encoder.as_mut(),
         CpuInputPlannedTileRunRequest {
+            level,
+            max_prepared_frame_bytes: metal_input.max_prepared_frame_bytes,
             location,
             planned,
             tile_size,
         },
     )?;
-    let partial_gpu_run =
-        if cpu_input_device_encode_auto_probe_allowed(&cpu_run, route_scope_frames) {
-            let mut partial_probe_encoder = j2k_encoder.require_device_peer();
-            Some(encode_cpu_input_planned_tile_run(
-                slide,
-                &mut partial_probe_encoder,
-                CpuInputPlannedTileRunRequest {
-                    location,
-                    planned,
-                    tile_size,
-                },
-            )?)
-        } else {
-            None
-        };
 
     let resident_gpu_complete = metal_run.tiles.iter().all(Option::is_some);
     let partial_gpu_complete = partial_gpu_run.as_ref().is_some_and(|partial_gpu_run| {
@@ -124,7 +132,6 @@ pub(in crate::export) fn probe_auto_metal_input_tile_run(
             .all(|(encoded, _)| matches!(encoded, Ok(encoded) if encoded.used_device_encode))
     });
     let cpu_complete = cpu_run.tiles.iter().all(|(encoded, _)| encoded.is_ok());
-    let resident_gpu_duration = metal_encoded_tile_run_total_duration(&metal_run);
     let partial_gpu_duration = partial_gpu_run
         .as_ref()
         .map(cpu_encoded_tile_run_total_duration)
@@ -206,8 +213,8 @@ pub(in crate::export) fn probe_auto_metal_input_tile_run(
                 compose_duration: partial_gpu_run.compose_duration,
                 gpu_input_decode_batches: 0,
                 gpu_compose_batches: 0,
-                gpu_encode_batches: 0,
-                gpu_encode_stats: encode::DicomJ2kGpuEncodeBatchStats::default(),
+                gpu_encode_batches: partial_gpu_run.gpu_encode_batches,
+                gpu_encode_stats: partial_gpu_run.gpu_encode_stats,
                 probe_cpu_duration: cpu_duration,
                 probe_gpu_duration: resident_gpu_duration,
                 probe_gpu_batches,
@@ -244,87 +251,148 @@ pub(in crate::export) fn probe_auto_metal_input_tile_run(
 
 #[derive(Clone, Copy)]
 struct CpuInputPlannedTileRunRequest<'a> {
+    level: &'a wsi_rs::Level,
+    max_prepared_frame_bytes: u64,
     location: JpegBaselineFrameLocation,
     planned: &'a [LosslessJ2kPlannedFrame],
     tile_size: u32,
 }
 
-fn encode_cpu_input_planned_tile_run(
+fn encode_shared_cpu_input_probe_runs(
     slide: &Slide,
-    j2k_encoder: &mut DicomJ2kEncoder,
+    cpu_encoder: &DicomJ2kEncoder,
+    mut gpu_encoder: Option<&mut DicomJ2kEncoder>,
     request: CpuInputPlannedTileRunRequest<'_>,
-) -> Result<CpuEncodedTileRun, Error> {
+) -> Result<(CpuEncodedTileRun, Option<CpuEncodedTileRun>), Error> {
     let CpuInputPlannedTileRunRequest {
+        level,
+        max_prepared_frame_bytes,
         location,
         planned,
         tile_size,
     } = request;
-    let mut tiles = Vec::new();
-    tiles
-        .try_reserve_exact(planned.len())
-        .map_err(|_| Error::Unsupported {
-            reason: "CPU fallback tile batch exceeds available memory".into(),
-        })?;
-    let mut input_decode_duration = Duration::ZERO;
-    let mut compose_duration = Duration::ZERO;
-    for planned_frame in planned {
-        let (encoded, profile, frame_input_decode_duration, frame_compose_duration) =
-            encode_cpu_input_tile(
-                slide,
-                j2k_encoder,
-                location,
-                planned_frame.rect(),
-                tile_size,
-            )?;
-        input_decode_duration = input_decode_duration.saturating_add(frame_input_decode_duration);
-        compose_duration = compose_duration.saturating_add(frame_compose_duration);
-        tiles.push((encoded, profile));
+    let frames: Vec<_> = planned.iter().map(LosslessJ2kPlannedFrame::rect).collect();
+    let mut cpu_run = CpuEncodedTileRun {
+        tiles: Vec::with_capacity(frames.len()),
+        input_decode_duration: Duration::ZERO,
+        compose_duration: Duration::ZERO,
+        wall_duration: Duration::ZERO,
+        gpu_encode_batches: 0,
+        gpu_encode_stats: Default::default(),
+    };
+    let mut gpu_run = gpu_encoder.as_ref().map(|_| CpuEncodedTileRun {
+        tiles: Vec::with_capacity(frames.len()),
+        input_decode_duration: Duration::ZERO,
+        compose_duration: Duration::ZERO,
+        wall_duration: Duration::ZERO,
+        gpu_encode_batches: 0,
+        gpu_encode_stats: Default::default(),
+    });
+    let Some((transfer_syntax, codec_validation, j2k_decomposition_levels, reversible_transform)) =
+        cpu_encoder.cpu_batch_settings()
+    else {
+        return Err(Error::Encode {
+            message: "auto route CPU probe is missing CPU encode settings".into(),
+        });
+    };
+    let cpu_settings = LosslessJ2kCpuBatchSettings {
+        transfer_syntax,
+        codec_validation,
+        j2k_decomposition_levels,
+        reversible_transform,
+        max_prepared_frame_bytes,
+    };
+
+    for batch in frames.chunks(frame_batch_len(tile_size, tile_size)) {
+        let prepare_started = Instant::now();
+        let prepared = prepare_cpu_input_batch(
+            slide,
+            level,
+            location,
+            batch,
+            tile_size,
+            max_prepared_frame_bytes,
+        )?;
+        let prepare_wall_duration = prepare_started.elapsed();
+        let input_decode_duration = prepared.iter().fold(Duration::ZERO, |duration, tile| {
+            duration.saturating_add(tile.input_decode_duration)
+        });
+        let compose_duration = prepared.iter().fold(Duration::ZERO, |duration, tile| {
+            duration.saturating_add(tile.compose_duration)
+        });
+
+        let cpu_encode_started = Instant::now();
+        let outcomes = encode_prepared_lossless_j2k_cpu_batch(cpu_settings, &prepared, tile_size)?;
+        cpu_run.wall_duration = cpu_run
+            .wall_duration
+            .saturating_add(prepare_wall_duration)
+            .saturating_add(cpu_encode_started.elapsed());
+        cpu_run.input_decode_duration = cpu_run
+            .input_decode_duration
+            .saturating_add(input_decode_duration);
+        cpu_run.compose_duration = cpu_run.compose_duration.saturating_add(compose_duration);
+        for outcome in outcomes {
+            cpu_run.tiles.push((outcome.encoded, outcome.profile));
+        }
+
+        if prepared
+            .iter()
+            .any(|tile| !cpu_input_device_encode_profile_allowed(tile.profile))
+        {
+            gpu_encoder = None;
+            gpu_run = None;
+        }
+        if let (Some(encoder), Some(run)) = (gpu_encoder.as_deref_mut(), gpu_run.as_mut()) {
+            let samples = prepared
+                .iter()
+                .map(|tile| lossless_j2k_samples_from_prepared_region(tile, tile_size))
+                .collect::<Result<Vec<_>, _>>()?;
+            let gpu_encode_started = Instant::now();
+            let encoded = match encoder.encode_host_samples_batch(&samples, tile_size, tile_size) {
+                Ok(encoded) => {
+                    run.gpu_encode_stats.add_assign(encoded.gpu_encode_stats);
+                    run.gpu_encode_batches += 1;
+                    encoded
+                        .frames
+                        .into_iter()
+                        .map(|frame| {
+                            frame.ok_or_else(|| Error::Encode {
+                                message: "device probe produced no encoded frame".into(),
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                }
+                Err(err) => prepared
+                    .iter()
+                    .map(|_| {
+                        Err(Error::Encode {
+                            message: err.to_string(),
+                        })
+                    })
+                    .collect(),
+            };
+            run.wall_duration = run
+                .wall_duration
+                .saturating_add(prepare_wall_duration)
+                .saturating_add(gpu_encode_started.elapsed());
+            run.input_decode_duration = run
+                .input_decode_duration
+                .saturating_add(input_decode_duration);
+            run.compose_duration = run.compose_duration.saturating_add(compose_duration);
+            for (tile, encoded) in prepared.into_iter().zip(encoded) {
+                run.tiles.push((encoded, tile.profile));
+            }
+        }
     }
-    Ok(CpuEncodedTileRun {
-        tiles,
-        input_decode_duration,
-        compose_duration,
-    })
+    Ok((cpu_run, gpu_run))
 }
 
 fn cpu_encoded_tile_run_total_duration(run: &CpuEncodedTileRun) -> Duration {
-    run.tiles.iter().fold(
-        run.input_decode_duration
-            .saturating_add(run.compose_duration),
-        |duration, (encoded, _)| match encoded {
-            Ok(encoded) => duration
-                .saturating_add(encoded.encode_duration)
-                .saturating_add(encoded.validation_duration),
-            Err(_) => duration,
-        },
-    )
+    run.wall_duration
 }
 
-pub(in crate::export) fn cpu_input_device_encode_auto_allowed(run: &CpuEncodedTileRun) -> bool {
-    run.tiles.iter().all(|(_, profile)| {
-        matches!(profile.components, 1 | 3) && matches!(profile.bits_allocated, 8 | 16)
-    })
-}
-
-pub(in crate::export) fn cpu_input_device_encode_auto_probe_allowed(
-    run: &CpuEncodedTileRun,
-    frame_count: usize,
-) -> bool {
-    frame_count >= LOSSLESS_J2K_AUTO_PARTIAL_GPU_MIN_FRAMES
-        && cpu_input_device_encode_auto_allowed(run)
-}
-
-fn metal_encoded_tile_run_total_duration(run: &MetalEncodedTileRun) -> Duration {
-    run.tiles.iter().fold(
-        run.input_decode_duration
-            .saturating_add(run.compose_duration),
-        |duration, encoded| match encoded {
-            Some((encoded, _)) => duration
-                .saturating_add(encoded.encode_duration)
-                .saturating_add(encoded.validation_duration),
-            None => duration,
-        },
-    )
+pub(in crate::export) fn cpu_input_device_encode_profile_allowed(profile: PixelProfile) -> bool {
+    matches!(profile.components, 1 | 3) && matches!(profile.bits_allocated, 8 | 16)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -384,4 +452,153 @@ fn route_beats_cpu_baseline(route_duration: Duration, cpu_duration: Duration) ->
         < cpu_duration
             .as_nanos()
             .saturating_mul(LOSSLESS_J2K_AUTO_ROUTE_SPEEDUP_NUMERATOR)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::coordinate::InstanceCoordinate;
+    use crate::export::frame_region::FrameRectGrid;
+    use crate::export::lossless_j2k_plan::{plan_lossless_j2k_frames, LosslessJ2kPlanRequest};
+    use crate::options::{CodecValidation, EncodeBackendPreference, TransferSyntax};
+
+    fn decode_rgb8_frame(frame: EncodedDicomJ2kFrame, tile_size: u32) -> Vec<u8> {
+        let codestream = frame.into_codestream().expect("materialize codestream");
+        let mut decoder = j2k::J2kDecoder::new(&codestream).expect("parse encoded frame");
+        let stride = tile_size as usize * 3;
+        let mut decoded = vec![0; stride * tile_size as usize];
+        decoder
+            .decode_into(&mut decoded, stride, j2k::PixelFormat::Rgb8)
+            .expect("decode encoded frame");
+        decoded
+    }
+
+    fn expected_rgb8_tiles(pixels: &[u8], width: usize, tile_size: usize) -> Vec<Vec<u8>> {
+        (0..width / tile_size)
+            .map(|tile_col| {
+                let mut tile = Vec::with_capacity(tile_size * tile_size * 3);
+                for row in 0..tile_size {
+                    let start = (row * width + tile_col * tile_size) * 3;
+                    tile.extend_from_slice(&pixels[start..start + tile_size * 3]);
+                }
+                tile
+            })
+            .collect()
+    }
+
+    #[test]
+    fn shared_cpu_input_probe_prepares_once_for_cpu_and_device_candidates() {
+        if j2k_metal_support::system_default_device().is_err() {
+            return;
+        }
+
+        const TILE_SIZE: u32 = 16;
+        const WIDTH: u32 = TILE_SIZE * 2;
+        const HEIGHT: u32 = TILE_SIZE;
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let source_path = temp.path().join("source.dcm");
+        let source_pixels =
+            crate::synthetic_source::deterministic_rgb_pixels(WIDTH, HEIGHT).expect("pixels");
+        crate::synthetic_source::write_rgb_source_dicom(
+            &source_path,
+            "1.2.826.0.1.3680043.10.999.801",
+            "1.2.826.0.1.3680043.10.999.800",
+            WIDTH,
+            HEIGHT,
+            source_pixels.clone(),
+        )
+        .expect("write source DICOM");
+        let slide = Slide::open(&source_path).expect("open source DICOM");
+        let level = &slide.dataset().scenes[0].series[0].levels[0];
+        let location = InstanceCoordinate::first_series_level(0);
+        let planned = plan_lossless_j2k_frames(
+            &slide,
+            LosslessJ2kPlanRequest {
+                location,
+                start_row: 0,
+                row_count: 1,
+                start_col: 0,
+                tile_count: 2,
+                grid: FrameRectGrid {
+                    matrix_columns: u64::from(WIDTH),
+                    matrix_rows: u64::from(HEIGHT),
+                    frame_columns: TILE_SIZE,
+                    frame_rows: TILE_SIZE,
+                },
+                transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+                allow_passthrough_probe: false,
+            },
+        )
+        .expect("plan probe frames");
+        let request = CpuInputPlannedTileRunRequest {
+            level,
+            max_prepared_frame_bytes: 64 * 1024 * 1024,
+            location,
+            planned: &planned,
+            tile_size: TILE_SIZE,
+        };
+        let cpu_encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::CpuOnly,
+            TransferSyntax::Htj2kLosslessRpcl,
+            CodecValidation::Disabled,
+        );
+        let mut device_encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::RequireDevice,
+            TransferSyntax::Htj2kLosslessRpcl,
+            CodecValidation::Disabled,
+        );
+
+        let (cpu_run, device_run) = encode_shared_cpu_input_probe_runs(
+            &slide,
+            &cpu_encoder,
+            Some(&mut device_encoder),
+            request,
+        )
+        .expect("encode shared probe candidates");
+        let device_run = device_run.expect("device candidate");
+        assert_eq!(cpu_run.tiles.len(), 2);
+        assert_eq!(device_run.tiles.len(), 2);
+        assert_eq!(
+            cpu_run.input_decode_duration,
+            device_run.input_decode_duration
+        );
+        assert_eq!(cpu_run.compose_duration, device_run.compose_duration);
+        assert_eq!(device_run.gpu_encode_batches, 1);
+
+        let expected = expected_rgb8_tiles(&source_pixels, WIDTH as usize, TILE_SIZE as usize);
+        let cpu_pixels: Vec<_> = cpu_run
+            .tiles
+            .into_iter()
+            .map(|(frame, profile)| {
+                assert_eq!(profile.components, 3);
+                let frame = frame.expect("CPU probe frame");
+                assert!(!frame.used_device_encode);
+                decode_rgb8_frame(frame, TILE_SIZE)
+            })
+            .collect();
+        let device_pixels: Vec<_> = device_run
+            .tiles
+            .into_iter()
+            .map(|(frame, profile)| {
+                assert_eq!(profile.components, 3);
+                let frame = frame.expect("device probe frame");
+                assert!(frame.used_device_encode);
+                decode_rgb8_frame(frame, TILE_SIZE)
+            })
+            .collect();
+        assert_eq!(cpu_pixels, expected);
+        assert_eq!(device_pixels, expected);
+
+        let (cpu_only_run, device_run) =
+            encode_shared_cpu_input_probe_runs(&slide, &cpu_encoder, None, request)
+                .expect("encode CPU-only probe candidate");
+        assert!(device_run.is_none());
+        assert_eq!(cpu_only_run.tiles.len(), 2);
+        let cpu_only_pixels: Vec<_> = cpu_only_run
+            .tiles
+            .into_iter()
+            .map(|(frame, _)| decode_rgb8_frame(frame.expect("CPU-only probe frame"), TILE_SIZE))
+            .collect();
+        assert_eq!(cpu_only_pixels, expected);
+    }
 }

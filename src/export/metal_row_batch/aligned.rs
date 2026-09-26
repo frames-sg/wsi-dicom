@@ -330,6 +330,7 @@ pub(in crate::export) fn try_encode_metal_aligned_tile_run(
     )?;
 
     Ok(MetalEncodedTileRun {
+        used_gpu_input: true,
         tiles: encoded_entries.tiles,
         input_decode_duration,
         compose_duration: Duration::ZERO,
@@ -366,6 +367,7 @@ pub(super) fn try_encode_metal_aligned_tile_grid_run(
     )?;
 
     Ok(MetalEncodedTileRun {
+        used_gpu_input: true,
         tiles: encoded_entries.tiles,
         input_decode_duration: read.input_decode_duration,
         compose_duration: Duration::ZERO,

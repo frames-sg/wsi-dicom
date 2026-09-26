@@ -13,7 +13,7 @@ use super::{
     cache_and_store_whole_level_source_tile, empty_pending_metal_tile_run,
     MetalTileGridBatchRequest,
 };
-use crate::encode::DicomJ2kEncoder;
+use crate::encode::{DicomJ2kEncoder, PendingDicomJ2kMetalTileBatch};
 use crate::error::Error;
 use crate::options::EncodeBackendPreference;
 use crate::tile::{pixel_profile_from_device_format, PixelProfile};
@@ -74,9 +74,36 @@ struct WholeLevelGridComposedRun {
     tile_count: usize,
     row_count: usize,
     profile: PixelProfile,
-    composed_tiles: Vec<MetalDeviceTile>,
+    composed_tiles: WholeLevelComposedTiles,
     input_decode_duration: Duration,
     compose_duration: Duration,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+enum WholeLevelComposedTiles {
+    Ready(Vec<MetalDeviceTile>),
+    Pending(PendingDicomJ2kMetalTileBatch),
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl WholeLevelComposedTiles {
+    fn encode_batch_count(&self, tile_size: u32) -> u64 {
+        match self {
+            Self::Ready(tiles) => metal_j2k_encode_batch_count(tiles, tile_size, tile_size),
+            Self::Pending(pending) => pending.encode_batch_count(tile_size, tile_size),
+        }
+    }
+
+    fn submit(
+        self,
+        encoder: &mut DicomJ2kEncoder,
+        tile_size: u32,
+    ) -> Result<crate::encode::SubmittedDicomJ2kMetalTileBatch, Error> {
+        match self {
+            Self::Ready(tiles) => encoder.submit_metal_tiles_owned(tiles, tile_size, tile_size),
+            Self::Pending(pending) => pending.submit(encoder, tile_size, tile_size),
+        }
+    }
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -303,7 +330,7 @@ fn read_whole_level_source_tiles(
                 index,
                 key,
                 tile,
-            );
+            )?;
         }
     }
 
@@ -384,6 +411,25 @@ fn whole_level_grid_compose_requests(
         }
     }
     Ok(compose_requests)
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn compose_whole_level_tiles_for_encoder(
+    composer: &super::super::metal_compose::MetalStripComposer,
+    encoder: &mut DicomJ2kEncoder,
+    packed: super::super::metal_compose::PackedMetalStrips,
+    requests: &[MetalComposeTileRequest],
+) -> Result<WholeLevelComposedTiles, Error> {
+    if encoder
+        .ensure_metal_session_for_command_queue(composer.device.clone(), composer.command_queue())?
+    {
+        return composer
+            .submit_compose_tiles(packed, requests, composer.command_queue())
+            .map(WholeLevelComposedTiles::Pending);
+    }
+    composer
+        .compose_tiles(packed, requests)
+        .map(WholeLevelComposedTiles::Ready)
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -520,7 +566,8 @@ pub(in crate::export) fn try_encode_metal_whole_level_strip_run(
             output_height: tile_size,
         });
     }
-    let composed_tiles = composer.compose_tiles(&packed, &compose_requests)?;
+    let composed_tiles =
+        compose_whole_level_tiles_for_encoder(composer, j2k_encoder, packed, &compose_requests)?;
     let compose_duration = compose_started.elapsed();
 
     let mut encoded = Vec::new();
@@ -529,8 +576,8 @@ pub(in crate::export) fn try_encode_metal_whole_level_strip_run(
         .map_err(|_| Error::Unsupported {
             reason: "Metal whole-level encoded batch exceeds available memory".into(),
         })?;
-    let encode_batches = metal_j2k_encode_batch_count(&composed_tiles, tile_size, tile_size);
-    let batch_encoded = j2k_encoder.encode_metal_tiles(&composed_tiles, tile_size, tile_size)?;
+    let encode_batches = composed_tiles.encode_batch_count(tile_size);
+    let batch_encoded = composed_tiles.submit(j2k_encoder, tile_size)?.wait()?;
     let gpu_encode_stats = batch_encoded.gpu_encode_stats;
     for frame in batch_encoded.frames {
         match frame {
@@ -547,6 +594,7 @@ pub(in crate::export) fn try_encode_metal_whole_level_strip_run(
     }
 
     Ok(MetalEncodedTileRun {
+        used_gpu_input: true,
         tiles: encoded,
         input_decode_duration,
         compose_duration,
@@ -563,6 +611,7 @@ pub(in crate::export) fn try_encode_metal_whole_level_strip_run(
 fn prepare_metal_whole_level_strip_grid_run(
     slide: &Slide,
     metal_input: &mut MetalInputTileReader,
+    j2k_encoder: &mut DicomJ2kEncoder,
     preference: EncodeBackendPreference,
     request: WholeLevelStripGridRunRequest,
 ) -> Result<WholeLevelGridPreparedRun, Error> {
@@ -677,7 +726,8 @@ fn prepare_metal_whole_level_strip_grid_run(
     )?;
     let profile = pixel_profile_from_device_format(packed.format)?;
     let compose_requests = whole_level_grid_compose_requests(batch, tile_count)?;
-    let composed_tiles = composer.compose_tiles(&packed, &compose_requests)?;
+    let composed_tiles =
+        compose_whole_level_tiles_for_encoder(composer, j2k_encoder, packed, &compose_requests)?;
     let compose_duration = compose_started.elapsed();
 
     Ok(WholeLevelGridPreparedRun::Composed(
@@ -701,8 +751,13 @@ pub(super) fn try_encode_metal_whole_level_strip_grid_run(
 ) -> Result<MetalEncodedTileRun, Error> {
     let preference = metal_input.preference;
     let tile_size = request.batch.tile_size;
-    let prepared =
-        prepare_metal_whole_level_strip_grid_run(slide, metal_input, preference, request)?;
+    let prepared = prepare_metal_whole_level_strip_grid_run(
+        slide,
+        metal_input,
+        j2k_encoder,
+        preference,
+        request,
+    )?;
     let composed = match prepared.into_composed() {
         Ok(composed) => composed,
         Err(empty) => return Ok(empty_metal_tile_run(empty.tile_count)),
@@ -714,10 +769,11 @@ pub(super) fn try_encode_metal_whole_level_strip_grid_run(
         .map_err(|_| Error::Unsupported {
             reason: "Metal whole-level grid output exceeds available memory".into(),
         })?;
-    let encode_batches =
-        metal_j2k_encode_batch_count(&composed.composed_tiles, tile_size, tile_size);
-    let batch_encoded =
-        j2k_encoder.encode_metal_tiles(&composed.composed_tiles, tile_size, tile_size)?;
+    let encode_batches = composed.composed_tiles.encode_batch_count(tile_size);
+    let batch_encoded = composed
+        .composed_tiles
+        .submit(j2k_encoder, tile_size)?
+        .wait()?;
     let gpu_encode_stats = batch_encoded.gpu_encode_stats;
     for frame in batch_encoded.frames {
         match frame {
@@ -734,6 +790,7 @@ pub(super) fn try_encode_metal_whole_level_strip_grid_run(
     }
 
     Ok(MetalEncodedTileRun {
+        used_gpu_input: true,
         tiles: encoded,
         input_decode_duration: composed.input_decode_duration,
         compose_duration: composed.compose_duration,
@@ -755,8 +812,13 @@ pub(super) fn try_submit_metal_whole_level_strip_grid_run(
 ) -> Result<PendingMetalEncodedTileRun, Error> {
     let preference = metal_input.preference;
     let tile_size = request.batch.tile_size;
-    let prepared =
-        prepare_metal_whole_level_strip_grid_run(slide, metal_input, preference, request)?;
+    let prepared = prepare_metal_whole_level_strip_grid_run(
+        slide,
+        metal_input,
+        j2k_encoder,
+        preference,
+        request,
+    )?;
     let composed = match prepared.into_composed() {
         Ok(composed) => composed,
         Err(empty) => {
@@ -771,10 +833,8 @@ pub(super) fn try_submit_metal_whole_level_strip_grid_run(
         }
     };
 
-    let encode_batches =
-        metal_j2k_encode_batch_count(&composed.composed_tiles, tile_size, tile_size);
-    let submission =
-        j2k_encoder.submit_metal_tiles_owned(composed.composed_tiles, tile_size, tile_size)?;
+    let encode_batches = composed.composed_tiles.encode_batch_count(tile_size);
+    let submission = composed.composed_tiles.submit(j2k_encoder, tile_size)?;
 
     Ok(PendingMetalEncodedTileRun {
         tile_profiles: (0..composed.tile_count)

@@ -13,7 +13,7 @@ pub(crate) struct PixelProfile {
 
 #[derive(Debug)]
 pub(crate) struct PreparedTile {
-    pub(crate) bytes: Vec<u8>,
+    pub(crate) bytes: std::sync::Arc<Vec<u8>>,
     pub(crate) profile: PixelProfile,
 }
 
@@ -59,7 +59,9 @@ pub(crate) fn prepare_tile_samples_with_limit(
             });
         }
         return Ok(PreparedTile {
-            bytes: bytes.to_vec(),
+            bytes: tile
+                .pixels_arc()
+                .expect("validated exact U8 tile has shared U8 storage"),
             profile,
         });
     }
@@ -92,7 +94,7 @@ pub(crate) fn prepare_tile_samples_with_limit(
         }
     }
     Ok(PreparedTile {
-        bytes: out,
+        bytes: std::sync::Arc::new(out),
         profile,
     })
 }
@@ -287,6 +289,20 @@ fn copy_u8_tile(
             ),
         });
     }
+    if geometry.tile_width == 0 || geometry.tile_height == 0 {
+        return Ok(());
+    }
+    if geometry.src_components == geometry.dst_components {
+        let row_bytes = geometry.tile_width * geometry.dst_components;
+        let stride = geometry.output_width * geometry.dst_components;
+        for (source, destination) in bytes[..geometry.expected_src]
+            .chunks_exact(row_bytes)
+            .zip(out.chunks_exact_mut(stride))
+        {
+            destination[..row_bytes].copy_from_slice(source);
+        }
+        return Ok(());
+    }
     for y in 0..geometry.tile_height {
         for x in 0..geometry.tile_width {
             let src = y
@@ -379,6 +395,41 @@ pub(crate) fn optical_path_groups(channels: u32) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_u8_preparation_retains_source_storage_without_copying() {
+        let tile = cpu_tile(
+            2,
+            1,
+            3,
+            ColorSpace::Rgb,
+            CpuTileLayout::Interleaved,
+            CpuTileData::u8(vec![1, 2, 3, 4, 5, 6]),
+        );
+        let source = tile.as_u8().unwrap().as_ptr();
+        let prepared = prepare_tile_samples(&tile, 2, 1).unwrap();
+        assert_eq!(prepared.bytes.as_ptr(), source);
+        drop(tile);
+        assert_eq!(&prepared.bytes[..], &[1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn empty_u8_source_pads_without_row_chunks() {
+        for (width, height) in [(0, 1), (1, 0)] {
+            let tile = cpu_tile(
+                width,
+                height,
+                3,
+                ColorSpace::Rgb,
+                CpuTileLayout::Interleaved,
+                CpuTileData::u8(Vec::new()),
+            );
+            assert_eq!(
+                prepare_tile_samples(&tile, 2, 2).unwrap().bytes.as_slice(),
+                &[0; 12]
+            );
+        }
+    }
 
     fn cpu_tile(
         width: u32,
@@ -495,7 +546,10 @@ mod tests {
 
         assert_eq!(prepared.profile.components, 3);
         assert_eq!(prepared.profile.bits_allocated, 16);
-        assert_eq!(prepared.bytes, vec![0x02, 0x01, 0x04, 0x03, 0x06, 0x05]);
+        assert_eq!(
+            prepared.bytes.as_slice(),
+            &[0x02, 0x01, 0x04, 0x03, 0x06, 0x05]
+        );
     }
 
     #[test]

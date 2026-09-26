@@ -94,7 +94,7 @@ impl LosslessJ2kRoutePipeline {
             options.execution.source_device_decode,
         );
         #[cfg(all(feature = "metal", target_os = "macos"))]
-        let metal_input = MetalInputTileReader::new_for_lossless_j2k(
+        let mut metal_input = MetalInputTileReader::new_for_lossless_j2k(
             metal_input_backend,
             lossless_j2k_auto_allows_metal_input(
                 metal_input_backend,
@@ -109,7 +109,12 @@ impl LosslessJ2kRoutePipeline {
             options.execution.gpu.row_batch_rows,
             hybrid_lane::effective_lossless_gpu_row_batch_target_tiles(options, route_scope_frames),
         )
-        .with_pipeline_depth(effective_gpu_pipeline_depth(options));
+        .with_pipeline_depth(effective_gpu_pipeline_depth(options))
+        .with_frame_limit(route_scope_frames);
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        {
+            metal_input.max_prepared_frame_bytes = options.resources.max_prepared_frame_bytes;
+        }
         #[cfg(all(feature = "metal", target_os = "macos"))]
         if lossless_j2k_auto_should_start_cpu_only(
             effective_backend,
@@ -153,7 +158,8 @@ impl LosslessJ2kRoutePipeline {
 
 pub(super) fn encode_lossless_j2k_cpu_fallback_batch(
     context: LosslessJ2kBatchContext<'_>,
-    j2k_encoder: &DicomJ2kEncoder,
+    j2k_encoder: &mut DicomJ2kEncoder,
+    _metrics: &mut ExportMetrics,
     mut skip_index: impl FnMut(usize) -> bool,
 ) -> Result<Vec<Option<LosslessJ2kCpuBatchOutcome>>, Error> {
     let LosslessJ2kBatchContext {
@@ -198,16 +204,36 @@ pub(super) fn encode_lossless_j2k_cpu_fallback_batch(
             )?,
         )?;
     }
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if options.semantics.transfer_syntax != TransferSyntax::Jpeg2000
+        && j2k_encoder.cpu_batch_settings().is_none()
+    {
+        let indices = lossless_j2k_cpu_fallback_indices(
+            planned,
+            options.semantics.transfer_syntax,
+            skip_index,
+        );
+        scatter_indexed_results(
+            &mut cpu_batch_results,
+            super::lossless_j2k_host::encode_host_fallback_batch(
+                context,
+                j2k_encoder,
+                &indices,
+                _metrics,
+            )?,
+        )?;
+    }
     Ok(cpu_batch_results)
 }
 
 pub(super) fn encode_lossless_j2k_cpu_fallback_after_routes(
     context: LosslessJ2kBatchContext<'_>,
-    j2k_encoder: &DicomJ2kEncoder,
+    j2k_encoder: &mut DicomJ2kEncoder,
+    metrics: &mut ExportMetrics,
     direct_routes: &LosslessJ2kDirectRouteBatch,
     mut routed_result_is_ready: impl FnMut(usize) -> bool,
 ) -> Result<Vec<Option<LosslessJ2kCpuBatchOutcome>>, Error> {
-    encode_lossless_j2k_cpu_fallback_batch(context, j2k_encoder, |idx| {
+    encode_lossless_j2k_cpu_fallback_batch(context, j2k_encoder, metrics, |idx| {
         routed_result_is_ready(idx) || lossless_j2k_direct_route_succeeded(direct_routes, idx)
     })
 }
@@ -291,9 +317,9 @@ pub(super) fn record_resolved_lossless_j2k_fallback_frame(
 
     let encoded = resolved
         .encoded
-        .and_then(|encoded| {
+        .and_then(|mut encoded| {
             validate_dicom_j2k_frame(
-                encoded.codestream_bytes()?.as_ref(),
+                encoded.materialize_codestream()?,
                 resolved.profile,
                 transfer_syntax,
             )?;
@@ -412,8 +438,13 @@ pub(super) fn route_lossless_j2k_metal_input_runs(
                     tile_size,
                 },
             )?;
-            metrics.record_gpu_input_decode_duration(metal_run.input_decode_duration);
-            metrics.record_gpu_compose_duration(metal_run.compose_duration);
+            if metal_run.used_gpu_input {
+                metrics.record_gpu_input_decode_duration(metal_run.input_decode_duration);
+                metrics.record_gpu_compose_duration(metal_run.compose_duration);
+            } else {
+                metrics.record_input_decode_duration(metal_run.input_decode_duration);
+                metrics.record_compose_duration(metal_run.compose_duration);
+            }
             metrics.record_gpu_batches(
                 metal_run.input_decode_batches,
                 metal_run.compose_batches,
@@ -431,7 +462,7 @@ pub(super) fn route_lossless_j2k_metal_input_runs(
                 *slot = encoded.map(|(encoded, profile)| RoutedLosslessJ2kTile {
                     encoded: Ok(encoded),
                     profile,
-                    used_gpu_input: true,
+                    used_gpu_input: metal_run.used_gpu_input,
                 });
             }
         }
