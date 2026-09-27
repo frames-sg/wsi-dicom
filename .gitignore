@@ -1,8 +1,5 @@
 /target
 .DS_Store
-bench/testdata/
-bench/results/
-bench/outputs/
 __pycache__/
 *.py[cod]
 .venv/
@@ -76,16 +73,9 @@ lcov*.info
 *.pdf
 
 # Publication-only inputs and tooling.
-/bench/uscap-*
-/bench/publication_results.py
-/bench/verify_publication_evidence.py
 /tests/test_manuscript*.py
 /tests/test_uscap*.py
 /tests/fixtures/publication-*/
 
 # Local-only technical and research documentation
 /docs/
-/bench/**/*.md
-/rules/README.md
-/bench/negative_bench/package/CITATION.cff
-/bench/negative_bench/package/.zenodo.json
