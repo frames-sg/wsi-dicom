@@ -14,7 +14,9 @@ use super::lossless_j2k_pipeline::{
     encode_lossless_j2k_cpu_fallback_after_routes, record_resolved_lossless_j2k_fallback_frame,
     resolve_lossless_j2k_fallback_frame, LosslessJ2kBatchContext, LosslessJ2kRoutePipeline,
 };
-use super::lossless_j2k_plan::{plan_lossless_j2k_frames, LosslessJ2kPlanRequest};
+use super::lossless_j2k_plan::{
+    plan_lossless_j2k_frames, LosslessJ2kPlanRequest, LosslessJ2kPlannedFrame,
+};
 use super::route_plan::RouteExecutionContext;
 use super::tile_grid::TileGrid;
 use super::{level_pixel_spacing_mm, require_pixel_spacing_mm, InstanceExportContext};
@@ -36,6 +38,8 @@ use crate::writer::{
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use super::lossless_j2k_pipeline::route_lossless_j2k_metal_input_runs;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::metal_input::MetalInputTileReader;
 
 pub(super) fn export_instance(
     slide: &Slide,
@@ -118,6 +122,43 @@ impl PendingLosslessJ2kInstance {
     }
 }
 
+/// A row batch planned on a scoped thread ahead of its use.
+struct PrefetchedPlan<'scope> {
+    request: LosslessJ2kPlanRequest,
+    handle: std::thread::ScopedJoinHandle<'scope, Result<Vec<LosslessJ2kPlannedFrame>, Error>>,
+}
+
+impl PrefetchedPlan<'_> {
+    fn join(self) -> Result<Vec<LosslessJ2kPlannedFrame>, Error> {
+        self.handle.join().map_err(|_| Error::Encode {
+            message: "lossless J2K frame planning thread panicked".into(),
+        })?
+    }
+}
+
+fn row_batch_count(
+    #[cfg(all(feature = "metal", target_os = "macos"))] metal_input: &MetalInputTileReader,
+    tiles_across: u64,
+    remaining_rows: u64,
+) -> u64 {
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if metal_input.enabled() || metal_input.auto_input_probe_pending() {
+        // Device input keeps its own multi-row lookahead keyed by single rows.
+        return 1;
+    }
+    lossless_j2k_cpu_row_batch_count(tiles_across, remaining_rows)
+}
+
+fn row_batch_shape_settled(
+    #[cfg(all(feature = "metal", target_os = "macos"))] metal_input: &MetalInputTileReader,
+) -> bool {
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if metal_input.auto_input_probe_pending() {
+        return false;
+    }
+    true
+}
+
 pub(super) fn prepare_lossless_j2k_instance(
     slide: &Slide,
     request: &ExportRequest,
@@ -185,105 +226,192 @@ pub(super) fn prepare_lossless_j2k_instance(
         options.execution.encode_backend,
     );
 
+    let plan_request = |start_row, row_count| LosslessJ2kPlanRequest {
+        location: coordinate,
+        start_row,
+        row_count,
+        start_col: 0,
+        tile_count: tiles_across,
+        grid: FrameRectGrid {
+            matrix_columns,
+            matrix_rows,
+            frame_columns: tile_size,
+            frame_rows: tile_size,
+        },
+        transfer_syntax: options.semantics.transfer_syntax,
+        allow_passthrough_probe,
+    };
+
     let mut row = 0;
-    while row < tiles_down {
-        #[cfg(all(feature = "metal", target_os = "macos"))]
-        let planned_row_count = if !metal_input.enabled() && !metal_input.auto_input_probe_pending()
-        {
-            lossless_j2k_cpu_row_batch_count(tiles_across, tiles_down - row)
-        } else {
-            1
-        };
-        #[cfg(not(all(feature = "metal", target_os = "macos")))]
-        let planned_row_count = lossless_j2k_cpu_row_batch_count(tiles_across, tiles_down - row);
-        let planned = plan_lossless_j2k_frames(
-            slide,
-            LosslessJ2kPlanRequest {
-                location: coordinate,
-                start_row: row,
-                row_count: planned_row_count,
-                start_col: 0,
-                tile_count: tiles_across,
-                grid: FrameRectGrid {
-                    matrix_columns,
-                    matrix_rows,
-                    frame_columns: tile_size,
-                    frame_rows: tile_size,
-                },
-                transfer_syntax: options.semantics.transfer_syntax,
-                allow_passthrough_probe,
-            },
-        )?;
-        for source in planned
-            .iter()
-            .filter_map(|frame| frame.source_lossy_compression.as_ref())
-        {
-            source_lossy_compression.observe(source)?;
-        }
-        let batch_context = LosslessJ2kBatchContext {
-            slide,
-            level,
-            planned: &planned,
-            options,
-            location,
-            tile_size,
-        };
-        let mut direct_routes =
-            encode_direct_lossless_j2k_routes(batch_context, &mut jpeg_direct_encoder)?;
-        #[cfg(all(feature = "metal", target_os = "macos"))]
-        let mut routed_tiles = route_lossless_j2k_metal_input_runs(
-            batch_context,
-            &mut metal_input,
-            &mut j2k_encoder,
-            row,
-            &direct_routes,
-            frame_count as usize,
-            &mut metrics,
-        )?;
-        let mut cpu_batch_results = encode_lossless_j2k_cpu_fallback_after_routes(
-            batch_context,
-            &mut j2k_encoder,
-            &mut metrics,
-            &direct_routes,
-            |idx| {
+    std::thread::scope(|scope| -> Result<(), Error> {
+        let mut prefetched: Option<PrefetchedPlan<'_>> = None;
+        while row < tiles_down {
+            let planned_row_count = row_batch_count(
                 #[cfg(all(feature = "metal", target_os = "macos"))]
+                &metal_input,
+                tiles_across,
+                tiles_down - row,
+            );
+            let planned = match prefetched.take() {
+                Some(plan)
+                    if plan.request.start_row == row
+                        && plan.request.row_count == planned_row_count =>
                 {
-                    routed_tiles[idx].is_some()
+                    plan.join()?
                 }
-                #[cfg(not(all(feature = "metal", target_os = "macos")))]
-                {
-                    let _ = idx;
-                    false
+                stale => {
+                    if let Some(plan) = stale {
+                        // The route changed the batch shape; the stale plan is unused.
+                        let _ = plan.join();
+                    }
+                    plan_lossless_j2k_frames(slide, plan_request(row, planned_row_count))?
                 }
-            },
-        )?;
-        for (idx, planned_frame) in planned.iter().enumerate() {
-            let decision = planned_frame.route_decision(route_context);
-            let compressed_bytes_before = pixel_data.total_raw_bytes();
-            if try_write_existing_lossless_j2k_frame(
-                ExistingLosslessJ2kFrameContext {
-                    idx,
-                    planned_frame,
-                    direct_routes: &mut direct_routes,
-                    options,
-                    metrics: &mut metrics,
-                    pixel_profile: &mut pixel_profile,
+            };
+            // Plan the next batch (raw reads and JPEG retile probes) while this one
+            // encodes and writes. The batch shape is fixed once any auto probe ends.
+            let next_row = row.saturating_add(planned_row_count);
+            if next_row < tiles_down
+                && row_batch_shape_settled(
+                    #[cfg(all(feature = "metal", target_os = "macos"))]
+                    &metal_input,
+                )
+            {
+                let next_count = row_batch_count(
+                    #[cfg(all(feature = "metal", target_os = "macos"))]
+                    &metal_input,
+                    tiles_across,
+                    tiles_down - next_row,
+                );
+                let request = plan_request(next_row, next_count);
+                prefetched = Some(PrefetchedPlan {
+                    request,
+                    handle: scope.spawn(move || plan_lossless_j2k_frames(slide, request)),
+                });
+            }
+            for source in planned
+                .iter()
+                .filter_map(|frame| frame.source_lossy_compression.as_ref())
+            {
+                source_lossy_compression.observe(source)?;
+            }
+            let batch_context = LosslessJ2kBatchContext {
+                slide,
+                level,
+                planned: &planned,
+                options,
+                location,
+                tile_size,
+            };
+            let mut direct_routes =
+                encode_direct_lossless_j2k_routes(batch_context, &mut jpeg_direct_encoder)?;
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            let mut routed_tiles = route_lossless_j2k_metal_input_runs(
+                batch_context,
+                &mut metal_input,
+                &mut j2k_encoder,
+                row,
+                &direct_routes,
+                frame_count as usize,
+                &mut metrics,
+            )?;
+            let mut cpu_batch_results = encode_lossless_j2k_cpu_fallback_after_routes(
+                batch_context,
+                &mut j2k_encoder,
+                &mut metrics,
+                &direct_routes,
+                |idx| {
+                    #[cfg(all(feature = "metal", target_os = "macos"))]
+                    {
+                        routed_tiles[idx].is_some()
+                    }
+                    #[cfg(not(all(feature = "metal", target_os = "macos")))]
+                    {
+                        let _ = idx;
+                        false
+                    }
                 },
-                &mut pixel_data,
-            )? {
-                if options.semantics.transfer_syntax == TransferSyntax::Htj2k
-                    && planned_frame.passthrough.is_none()
-                {
-                    let compressed_bytes = pixel_data
-                        .total_raw_bytes()
-                        .checked_sub(compressed_bytes_before)
-                        .ok_or_else(|| Error::Metadata {
-                            reason: "encoded HTJ2K byte count decreased unexpectedly".into(),
+            )?;
+            for (idx, planned_frame) in planned.iter().enumerate() {
+                let decision = planned_frame.route_decision(route_context);
+                let compressed_bytes_before = pixel_data.total_raw_bytes();
+                if try_write_existing_lossless_j2k_frame(
+                    ExistingLosslessJ2kFrameContext {
+                        idx,
+                        planned_frame,
+                        direct_routes: &mut direct_routes,
+                        options,
+                        metrics: &mut metrics,
+                        pixel_profile: &mut pixel_profile,
+                    },
+                    &mut pixel_data,
+                )? {
+                    if options.semantics.transfer_syntax == TransferSyntax::Htj2k
+                        && planned_frame.passthrough.is_none()
+                    {
+                        let compressed_bytes = pixel_data
+                            .total_raw_bytes()
+                            .checked_sub(compressed_bytes_before)
+                            .ok_or_else(|| Error::Metadata {
+                                reason: "encoded HTJ2K byte count decreased unexpectedly".into(),
+                            })?;
+                        let profile = pixel_profile.ok_or_else(|| Error::Metadata {
+                            reason: "encoded HTJ2K frame did not establish a pixel profile".into(),
                         })?;
+                        target_lossy_compression.observe_bytes(
+                            HTJ2K_METHOD,
+                            uncompressed_pixel_bytes(
+                                u64::from(tile_size),
+                                u64::from(tile_size),
+                                u64::from(profile.components),
+                                profile.bits_allocated,
+                            )?,
+                            compressed_bytes,
+                        )?;
+                    }
+                    continue;
+                }
+                if !decision.allows_j2k_encode_fallback() {
+                    return Err(unsupported_j2k_route_error(
+                        options.semantics.transfer_syntax,
+                        planned_frame.row,
+                        planned_frame.col,
+                    ));
+                }
+                reject_lossy_j2k_lossless_fallback(
+                    planned_frame,
+                    options.semantics.transfer_syntax,
+                    planned_frame.row,
+                )?;
+                let resolved = resolve_lossless_j2k_fallback_frame(
+                    batch_context,
+                    &mut j2k_encoder,
+                    planned_frame,
+                    &mut cpu_batch_results[idx],
+                    #[cfg(all(feature = "metal", target_os = "macos"))]
+                    routed_tiles[idx].take(),
+                )?;
+                let encoded = record_resolved_lossless_j2k_fallback_frame(
+                    &mut metrics,
+                    &mut pixel_profile,
+                    resolved,
+                    options.semantics.transfer_syntax,
+                    "pixel profile changed across frames",
+                    |err| match err {
+                        Error::Encode { message } => Error::FrameEncode {
+                            level: coordinate.level_idx,
+                            row: planned_frame.row,
+                            col: planned_frame.col,
+                            message,
+                        },
+                        other => other,
+                    },
+                )?;
+                let codestream = encoded.into_codestream()?;
+                if options.semantics.transfer_syntax == TransferSyntax::Htj2k {
                     let profile = pixel_profile.ok_or_else(|| Error::Metadata {
                         reason: "encoded HTJ2K frame did not establish a pixel profile".into(),
                     })?;
-                    target_lossy_compression.observe_bytes(
+                    target_lossy_compression.observe_encoded_frame(
                         HTJ2K_METHOD,
                         uncompressed_pixel_bytes(
                             u64::from(tile_size),
@@ -291,73 +419,21 @@ pub(super) fn prepare_lossless_j2k_instance(
                             u64::from(profile.components),
                             profile.bits_allocated,
                         )?,
-                        compressed_bytes,
+                        &codestream,
                     )?;
                 }
-                continue;
+                let byte_started = Instant::now();
+                pixel_data.push_owned_frame(codestream)?;
+                metrics.record_write_duration(byte_started.elapsed());
             }
-            if !decision.allows_j2k_encode_fallback() {
-                return Err(unsupported_j2k_route_error(
-                    options.semantics.transfer_syntax,
-                    planned_frame.row,
-                    planned_frame.col,
-                ));
-            }
-            reject_lossy_j2k_lossless_fallback(
-                planned_frame,
-                options.semantics.transfer_syntax,
-                planned_frame.row,
-            )?;
-            let resolved = resolve_lossless_j2k_fallback_frame(
-                batch_context,
-                &mut j2k_encoder,
-                planned_frame,
-                &mut cpu_batch_results[idx],
-                #[cfg(all(feature = "metal", target_os = "macos"))]
-                routed_tiles[idx].take(),
-            )?;
-            let encoded = record_resolved_lossless_j2k_fallback_frame(
-                &mut metrics,
-                &mut pixel_profile,
-                resolved,
-                options.semantics.transfer_syntax,
-                "pixel profile changed across frames",
-                |err| match err {
-                    Error::Encode { message } => Error::FrameEncode {
-                        level: coordinate.level_idx,
-                        row: planned_frame.row,
-                        col: planned_frame.col,
-                        message,
-                    },
-                    other => other,
-                },
-            )?;
-            let codestream = encoded.into_codestream()?;
-            if options.semantics.transfer_syntax == TransferSyntax::Htj2k {
-                let profile = pixel_profile.ok_or_else(|| Error::Metadata {
-                    reason: "encoded HTJ2K frame did not establish a pixel profile".into(),
+            row = row
+                .checked_add(planned_row_count)
+                .ok_or_else(|| Error::Unsupported {
+                    reason: "lossless J2K row batch overflow".into(),
                 })?;
-                target_lossy_compression.observe_encoded_frame(
-                    HTJ2K_METHOD,
-                    uncompressed_pixel_bytes(
-                        u64::from(tile_size),
-                        u64::from(tile_size),
-                        u64::from(profile.components),
-                        profile.bits_allocated,
-                    )?,
-                    &codestream,
-                )?;
-            }
-            let byte_started = Instant::now();
-            pixel_data.push_owned_frame(codestream)?;
-            metrics.record_write_duration(byte_started.elapsed());
         }
-        row = row
-            .checked_add(planned_row_count)
-            .ok_or_else(|| Error::Unsupported {
-                reason: "lossless J2K row batch overflow".into(),
-            })?;
-    }
+        Ok(())
+    })?;
 
     let profile = pixel_profile.ok_or_else(|| Error::Unsupported {
         reason: "slide level produced no frames".into(),

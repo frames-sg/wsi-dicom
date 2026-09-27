@@ -226,6 +226,22 @@ fn auto_metal_input_routing_ignores_device_decode_env_until_explicitly_preferred
 #[test]
 fn auto_lossless_j2k_probe_covers_minimum_decision_scope() {
     assert!(LOSSLESS_J2K_AUTO_ROUTE_PROBE_MAX_FRAMES as u64 >= LOSSLESS_J2K_AUTO_ROUTE_MIN_FRAMES);
+    for threads in [1, 2, 8, 12, 16, 64, 1024] {
+        let frames = lossless_j2k_auto_route_probe_frames(threads);
+        assert!(frames as u64 >= LOSSLESS_J2K_AUTO_ROUTE_MIN_FRAMES);
+        assert!(frames <= LOSSLESS_J2K_AUTO_ROUTE_PROBE_MAX_FRAMES);
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
+fn auto_lossless_j2k_probe_times_several_cpu_waves_in_whole_device_chunks() {
+    // A 16-frame probe on a 12-thread pool timed one device submission against
+    // two CPU waves and chose the CPU route that was 2x slower at level scale.
+    assert_eq!(lossless_j2k_auto_route_probe_frames(12), 64);
+    assert_eq!(lossless_j2k_auto_route_probe_frames(8), 32);
+    assert_eq!(lossless_j2k_auto_route_probe_frames(1), 32);
+    assert_eq!(lossless_j2k_auto_route_probe_frames(64), 128);
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]

@@ -8,6 +8,7 @@ use dicom_core::{header::Header, DataElement, PrimitiveValue, VR};
 use dicom_dictionary_std::tags;
 use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 
+use super::background_spool::BackgroundPixelDataSpool;
 use super::encoding::{format_ds, write_item_header, write_tag};
 use super::frame_index::FrameIndexSpool;
 use super::functional_groups::PerFrameFunctionalGroupsPlan;
@@ -169,7 +170,7 @@ pub(crate) trait PixelDataSink {
 
 pub(crate) enum BufferedPixelDataSink {
     InMemory(InMemoryPixelDataSink),
-    Spool(PixelDataSpool),
+    Spool(BackgroundPixelDataSpool),
 }
 
 impl BufferedPixelDataSink {
@@ -183,7 +184,7 @@ impl BufferedPixelDataSink {
                 frame_count,
             )?))
         } else {
-            Ok(Self::Spool(PixelDataSpool::create(
+            Ok(Self::Spool(BackgroundPixelDataSpool::create(
                 spool_path,
                 frame_count,
             )?))
@@ -195,14 +196,14 @@ impl PixelDataSink for BufferedPixelDataSink {
     fn push_frame(&mut self, codestream: &[u8]) -> Result<(), Error> {
         match self {
             Self::InMemory(buffer) => buffer.push_frame(codestream),
-            Self::Spool(spool) => spool.push_frame(codestream),
+            Self::Spool(spool) => spool.push_owned_frame(codestream.to_vec()),
         }
     }
 
     fn push_owned_frame(&mut self, codestream: Vec<u8>) -> Result<(), Error> {
         match self {
             Self::InMemory(buffer) => buffer.push_owned_frame(codestream),
-            Self::Spool(spool) => spool.push_frame(&codestream),
+            Self::Spool(spool) => spool.push_owned_frame(codestream),
         }
     }
 
@@ -219,7 +220,7 @@ impl PixelDataSink for BufferedPixelDataSink {
     fn total_raw_bytes(&self) -> u64 {
         match self {
             Self::InMemory(buffer) => buffer.total_raw_bytes(),
-            Self::Spool(spool) => spool.total_raw_bytes,
+            Self::Spool(spool) => spool.total_raw_bytes(),
         }
     }
 }
@@ -972,7 +973,7 @@ impl<W: Write + ?Sized> Write for LimitedFragmentWriter<'_, W> {
     }
 }
 
-fn padded_fragment_len(raw_len: u64) -> Result<u32, Error> {
+pub(super) fn padded_fragment_len(raw_len: u64) -> Result<u32, Error> {
     let padded_len = raw_len
         .checked_add(raw_len % 2)
         .ok_or_else(|| Error::Unsupported {
@@ -983,7 +984,7 @@ fn padded_fragment_len(raw_len: u64) -> Result<u32, Error> {
     })
 }
 
-fn checked_frame_len(len: usize) -> Result<u64, Error> {
+pub(super) fn checked_frame_len(len: usize) -> Result<u64, Error> {
     u64::try_from(len).map_err(|_| Error::Unsupported {
         reason: "encoded frame length exceeds u64".into(),
     })

@@ -1,3 +1,4 @@
+mod background_spool;
 mod encoding;
 mod frame_index;
 mod functional_groups;
@@ -8,6 +9,8 @@ mod pixel_data;
 #[cfg(test)]
 use crate::icc::{synthetic_display_p3_icc_profile, synthetic_srgb_icc_profile};
 pub(crate) use crate::lossy::LossyCompressionHistory;
+#[cfg(test)]
+use background_spool::BackgroundPixelDataSpool;
 #[cfg(test)]
 use encoding::format_ds;
 #[cfg(test)]

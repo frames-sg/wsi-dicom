@@ -30,8 +30,8 @@ use super::scatter_indexed_results;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use super::j2k_policy::{
     auto_metal_input_route_cache_key, effective_gpu_pipeline_depth,
-    lossless_j2k_auto_allows_metal_input, lossless_j2k_auto_should_start_cpu_only,
-    lossless_j2k_metal_input_preference, LOSSLESS_J2K_AUTO_ROUTE_PROBE_MAX_FRAMES,
+    lossless_j2k_auto_allows_metal_input, lossless_j2k_auto_route_probe_frames,
+    lossless_j2k_auto_should_start_cpu_only, lossless_j2k_metal_input_preference,
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use super::metal_input::{
@@ -373,7 +373,8 @@ pub(super) fn route_lossless_j2k_metal_input_runs(
             continue;
         }
         if metal_input.auto_input_probe_pending() {
-            let probe_end = (run_start + LOSSLESS_J2K_AUTO_ROUTE_PROBE_MAX_FRAMES).min(run_end);
+            let probe_frames = lossless_j2k_auto_route_probe_frames(rayon::current_num_threads());
+            let probe_end = (run_start + probe_frames).min(run_end);
             let probe_run = probe_auto_metal_input_tile_run(
                 slide,
                 metal_input,

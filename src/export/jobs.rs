@@ -5,7 +5,9 @@ use wsi_rs::Slide;
 
 use super::jpeg_baseline::jpeg_baseline_route_frame_geometry;
 use super::jpeg_baseline_instance::export_jpeg_passthrough_instance;
-use super::lossless_j2k_instance::export_instance;
+use super::lossless_j2k_instance::{
+    export_instance, prepare_lossless_j2k_instance, PendingLosslessJ2kInstance,
+};
 use super::tile_grid::{checked_frame_count_u32, TileGrid};
 use super::{level_pixel_spacing_mm, require_pixel_spacing_mm, InstanceExportContext};
 use crate::coordinate::InstanceCoordinate;
@@ -352,9 +354,41 @@ pub(super) fn export_dicom_instance_jobs_serial(
     identity: &DicomExportIdentity,
     jobs: &[DicomExportInstanceJob<'_>],
 ) -> Result<Vec<InstanceReport>, Error> {
-    jobs.iter()
-        .map(|job| export_dicom_instance_job(slide, request, options, metadata, identity, job))
-        .collect()
+    if jobs.len() <= 1 || options.semantics.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
+        return jobs
+            .iter()
+            .map(|job| export_dicom_instance_job(slide, request, options, metadata, identity, job))
+            .collect();
+    }
+    // Write each prepared instance (spool copy and sync) on a writer thread
+    // while the next instance encodes. At most one prepared instance waits.
+    std::thread::scope(|scope| {
+        let (writer_tx, writer_rx) = std::sync::mpsc::sync_channel::<PendingLosslessJ2kInstance>(1);
+        // Stopping at the first failure drops the receiver, which ends preparation.
+        let writer = scope.spawn(move || {
+            writer_rx
+                .into_iter()
+                .map(PendingLosslessJ2kInstance::finish)
+                .collect::<Result<Vec<_>, _>>()
+        });
+        let prepared = jobs.iter().try_for_each(|job| {
+            let pending = prepare_lossless_j2k_instance(
+                slide,
+                request,
+                instance_export_context(options, metadata, identity, job),
+            )?;
+            // A closed channel means the writer failed; its error is reported below.
+            let _ = writer_tx.send(pending);
+            Ok::<_, Error>(())
+        });
+        drop(writer_tx);
+        let written = writer.join().map_err(|_| Error::DicomWrite {
+            path: request.output_dir.clone(),
+            message: "DICOM writer thread panicked".into(),
+        })?;
+        prepared?;
+        written
+    })
 }
 
 fn export_dicom_instance_jobs_parallel(
@@ -407,7 +441,21 @@ pub(super) fn export_dicom_instance_job(
     identity: &DicomExportIdentity,
     job: &DicomExportInstanceJob<'_>,
 ) -> Result<InstanceReport, Error> {
-    let context = InstanceExportContext {
+    let context = instance_export_context(options, metadata, identity, job);
+    if options.semantics.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
+        export_jpeg_passthrough_instance(slide, request, context)
+    } else {
+        export_instance(slide, request, context)
+    }
+}
+
+fn instance_export_context<'a>(
+    options: &'a NormalizedExportOptions,
+    metadata: &'a DicomMetadata,
+    identity: &'a DicomExportIdentity,
+    job: &DicomExportInstanceJob<'a>,
+) -> InstanceExportContext<'a> {
+    InstanceExportContext {
         options,
         metadata,
         identity,
@@ -415,11 +463,6 @@ pub(super) fn export_dicom_instance_job(
         coordinate: job.coordinate,
         level: job.level,
         per_frame_plan: job.per_frame_plan,
-    };
-    if options.semantics.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
-        export_jpeg_passthrough_instance(slide, request, context)
-    } else {
-        export_instance(slide, request, context)
     }
 }
 

@@ -1,5 +1,7 @@
 //! Bounded decoded-frame storage and CPU execution within the export pool.
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
 use rayon::prelude::*;
 
 use crate::Error;
@@ -24,22 +26,113 @@ pub(super) fn map_cpu_frames<T: Sync, R: Send>(
     workers: usize,
     operation: impl Fn(&T) -> Result<R, Error> + Sync + Send,
 ) -> Result<Vec<R>, Error> {
-    if frames.is_empty() {
-        return Ok(Vec::new());
+    let workers = workers.clamp(1, frames.len().max(1));
+    if workers == 1 {
+        return frames.iter().map(&operation).collect();
     }
-    // At most `workers` chunks exist. Each chunk executes serially, including
-    // when its surrounding Rayon pool has more threads than this batch permits.
-    frames
-        .par_chunks(frames.len().div_ceil(workers.max(1)))
-        .map(|chunk| chunk.iter().map(&operation).collect::<Result<Vec<_>, _>>())
-        .collect::<Result<Vec<_>, _>>()
-        .map(|chunks| chunks.into_iter().flatten().collect())
+    // At most `workers` tasks exist, including when the surrounding Rayon pool
+    // has more threads than this batch permits. Each task claims the next
+    // unprocessed frame, so a costly frame (dense tissue) delays only its own
+    // worker instead of every frame statically assigned behind it.
+    let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let completed = (0..workers)
+        .into_par_iter()
+        .with_max_len(1)
+        .map(|_| {
+            let mut completed = Vec::new();
+            while !failed.load(Ordering::Relaxed) {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(frame) = frames.get(index) else {
+                    break;
+                };
+                let result = operation(frame);
+                if result.is_err() {
+                    failed.store(true, Ordering::Relaxed);
+                }
+                completed.push((index, result));
+            }
+            completed
+        })
+        .collect::<Vec<_>>();
+    let mut slots: Vec<Option<Result<R, Error>>> = (0..frames.len()).map(|_| None).collect();
+    for (index, result) in completed.into_iter().flatten() {
+        slots[index] = Some(result);
+    }
+    // Frames are claimed in order, so every unclaimed frame follows a failure
+    // and the first error in frame order is reported, as with serial mapping.
+    slots
+        .into_iter()
+        .map(|slot| {
+            slot.unwrap_or_else(|| {
+                Err(Error::Encode {
+                    message: "CPU frame batch stopped after an earlier frame failed".into(),
+                })
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn a_slow_frame_does_not_hold_back_frames_queued_behind_it() {
+        // Frame 0 finishes only after every other frame has. With fixed chunks
+        // the frames sharing its chunk could never start, so it would time out.
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        let input: Vec<usize> = (0..8).collect();
+        let finished = AtomicUsize::new(0);
+        let output = pool
+            .install(|| {
+                map_cpu_frames(&input, 2, |&value| {
+                    if value == 0 {
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(10);
+                        while finished.load(Ordering::SeqCst) < input.len() - 1 {
+                            if std::time::Instant::now() > deadline {
+                                return Err(Error::Encode {
+                                    message: "frames behind the slow frame never ran".into(),
+                                });
+                            }
+                            std::thread::yield_now();
+                        }
+                    } else {
+                        finished.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Ok(value * 2)
+                })
+            })
+            .unwrap();
+        assert_eq!(output, (0..8).map(|value| value * 2).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn the_first_failure_in_frame_order_is_reported() {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let input: Vec<usize> = (0..64).collect();
+        let err = pool
+            .install(|| {
+                map_cpu_frames(&input, 4, |&value| {
+                    if value == 5 || value == 40 {
+                        Err(Error::Encode {
+                            message: format!("frame {value} failed"),
+                        })
+                    } else {
+                        Ok(value)
+                    }
+                })
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("frame 5 failed"), "{err}");
+    }
 
     #[test]
     fn execution_obeys_worker_limit_and_preserves_frame_order() {

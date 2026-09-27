@@ -5,6 +5,8 @@ use rayon::prelude::*;
 
 mod host_input;
 
+pub(crate) use host_input::MetalHostSampleUploader;
+
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct DicomJ2kGpuEncodeBatchStats {
