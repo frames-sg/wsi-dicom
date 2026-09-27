@@ -278,7 +278,7 @@ the independently versioned [WSI-DICOM Bench](https://github.com/frames-sg/wsi-d
 
 ```sh
 python -m pip wheel \
-  "git+https://github.com/frames-sg/wsi-dicom-bench@caafcd9bc660fa86a7fc6db09a08bd8538181400" \
+  "git+https://github.com/frames-sg/wsi-dicom-bench@56fd99fafccac7dfbf2a320022abb0c2ccaa8f62" \
   --wheel-dir .benchmark-wheel
 python -m pip install .benchmark-wheel/wsi_dicom_bench-*.whl
 profile="$(python -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("rules/wsi-dicom-core-profile-2026c-v2.json"))')"
@@ -454,25 +454,12 @@ published dependencies and a representative real-slide corpus covering the
 affected routes, metadata modes, color-management policies, validator checks,
 and GPU backends.
 
-Use the GDC benchmark harness only when publishing speed evidence:
-
-```sh
-./.venv/bin/python bench/gdc_benchmark.py \
-  --downloads-root ~/Downloads \
-  --probe-slide-metadata \
-  --tools wsi-dicom-cpu wsi-dicom-device wsidicomizer \
-  --profile htj2k-lossless-rpcl \
-  --scope base \
-  --runs 1 \
-  --system-label macos-metal \
-  --validate
-```
-
-Run the same command on the Metal and CUDA hosts with host-specific release
-binaries and `--system-label` values. Merge result directories with
-`--merge-results`, then publish failures, unsupported slides, transfer syntax,
-frame geometry, tool versions, host details, and machine-readable results with
-any performance claim.
+Speed evidence and source-format coverage come from the GDC benchmark and
+format-coverage harnesses in
+[`wsi-dicom-bench`](https://github.com/frames-sg/wsi-dicom-bench#converter-speed-and-format-coverage).
+Install that package and run its `wsi-dicom-bench-gdc` or
+`wsi-dicom-bench-format-coverage` command from this checkout, so results record
+this source revision and use its `target/release/wsi-dicom`.
 
 ## Stability
 

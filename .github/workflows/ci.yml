@@ -281,10 +281,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
       - name: Fetch locked dependencies for offline package inspection
         run: cargo fetch --locked
-      - run: python -m venv .venv-bench
-      - run: .venv-bench/bin/python -m pip install --upgrade pip
-      - run: .venv-bench/bin/python -m pip install -r bench/requirements.txt
-      - run: .venv-bench/bin/python -m unittest discover -s tests -v
+      - run: python -m unittest discover -s tests -v
 
   controlled-failure-benchmark:
     if: github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -297,7 +294,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: frames-sg/wsi-dicom-bench
-          ref: caafcd9bc660fa86a7fc6db09a08bd8538181400
+          ref: 56fd99fafccac7dfbf2a320022abb0c2ccaa8f62
           path: wsi-dicom-bench
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

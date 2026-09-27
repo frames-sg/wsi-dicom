@@ -12,7 +12,6 @@ documentation = "https://docs.rs/wsi-dicom"
 keywords = ["dicom", "whole-slide", "microscopy", "pathology", "wsi"]
 categories = ["multimedia::images", "science"]
 exclude = [
-    "bench/**",
     "apps/wsi-dicom-gui/**",
     ".github/**",
     ".cargo/**",

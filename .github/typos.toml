@@ -2,8 +2,6 @@
 extend-exclude = [
     ".git",
     "target",
-    "bench/outputs",
-    "bench/results",
 ]
 
 [default.extend-words]

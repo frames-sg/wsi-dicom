@@ -55,15 +55,12 @@ def cargo_package(manifest_path, package_name):
 
 
 class DependencyTopologyTests(unittest.TestCase):
-    def test_python_benchmark_ci_runs_the_full_hermetic_suite_without_manuscript_dependencies(self):
+    def test_python_ci_runs_the_full_hermetic_suite_without_benchmark_or_manuscript_dependencies(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn(
-            "pip install -r bench/requirements.txt",
-            workflow,
-        )
         self.assertIn("python -m unittest discover -s tests -v", workflow)
+        self.assertNotIn("bench/requirements.txt", workflow)
         self.assertNotIn("docs/manuscript/", workflow)
 
     def test_ci_separates_source_topology_from_registry_package_gate(self):
