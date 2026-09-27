@@ -211,6 +211,67 @@ fn direct_pixel_data_writer_matches_spooled_output() {
 }
 
 #[test]
+fn background_spool_output_matches_direct_streaming_under_backpressure() {
+    let tmp = tempfile::tempdir().unwrap();
+    // More frames than the writer queue holds, with odd and even lengths.
+    let frames: Vec<Vec<u8>> = (0..200u32)
+        .map(|idx| (0..(idx % 97 + 1)).map(|byte| (idx + byte) as u8).collect())
+        .collect();
+    let write = |path: &std::path::Path,
+                 push: &mut dyn FnMut(
+        &mut crate::writer::StreamingPixelDataFrameWriter<'_>,
+    ) -> Result<(), Error>| {
+        super::write_dicom_object_with_streamed_pixel_data(
+            path,
+            super::StreamedDicomWritePlan {
+                object: sample_object_with_offset_tables(
+                    vec![0; frames.len()],
+                    vec![0; frames.len()],
+                ),
+                meta: sample_file_meta(),
+                overwrite: false,
+                per_frame_plan: sample_per_frame_plan(frames.len() as u32),
+                max_instance_metadata_bytes: u64::MAX,
+                frame_count: frames.len(),
+                deferred_lossy_compression: None,
+            },
+            push,
+        )
+        .unwrap();
+        std::fs::read(path).unwrap()
+    };
+
+    let direct = write(&tmp.path().join("direct.dcm"), &mut |writer| {
+        frames.iter().try_for_each(|frame| writer.push_frame(frame))
+    });
+    let mut spool =
+        BackgroundPixelDataSpool::create(tmp.path().join("frames.bin"), frames.len()).unwrap();
+    for frame in &frames {
+        spool.push_owned_frame(frame.clone()).unwrap();
+    }
+    let expected_raw_bytes: u64 = frames.iter().map(|frame| frame.len() as u64).sum();
+    assert_eq!(spool.total_raw_bytes(), expected_raw_bytes);
+    let background = write(&tmp.path().join("background.dcm"), &mut |writer| {
+        spool.stream_frames_to(writer)
+    });
+
+    assert_eq!(background, direct);
+}
+
+#[test]
+fn dropping_a_background_spool_removes_its_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut spool = BackgroundPixelDataSpool::create(tmp.path().join("frames.bin"), 4).unwrap();
+    spool.push_owned_frame(vec![1, 2, 3]).unwrap();
+    drop(spool);
+    let leftovers: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().collect();
+    assert!(
+        leftovers.is_empty(),
+        "spool files left behind: {leftovers:?}"
+    );
+}
+
+#[test]
 fn pixel_data_spool_records_padded_extended_offsets_and_raw_lengths() {
     let tmp = tempfile::tempdir().unwrap();
     let mut spool = super::PixelDataSpool::create(tmp.path().join("frames.bin"), 2).unwrap();

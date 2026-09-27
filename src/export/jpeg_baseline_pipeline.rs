@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use j2k_jpeg::{EncodedJpeg, JpegBackend, JpegSamples, JpegSubsampling};
+use rayon::prelude::*;
 use wsi_rs::{Compression, LevelIdx, PlaneSelection, RegionRequest, SceneId, SeriesId, Slide};
 
 use super::frame_region::{
@@ -207,102 +208,120 @@ pub(super) fn plan_jpeg_baseline_row(
         .map_err(|_| Error::Unsupported {
             reason: "JPEG Baseline row frame count exceeds platform addressable memory".into(),
         })?;
+    // Raw reads and lossless JPEG retile probes are independent per frame and
+    // a retile costs milliseconds, so plan the row on the shared pool.
+    let columns = (0..request.tile_count)
+        .into_par_iter()
+        .map(|col| plan_jpeg_baseline_frame_at(slide, request, col))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut retile_rejections = Vec::new();
-
-    for col in 0..request.tile_count {
-        let mut raw_jpeg_retile_candidate = false;
-        let raw = slide.read_raw_compressed_tile(
-            &request
-                .location
-                .tile_request(col as i64, request.row as i64),
-        );
-        let source_lossy_compression = match raw.as_ref() {
-            Ok(raw) if raw.compression() == Compression::Jpeg => {
-                Some(crate::lossy::LossyCompressionByteCounts::from_raw_tile(
-                    crate::lossy::JPEG_BASELINE_METHOD,
-                    raw,
-                )?)
-            }
-            Ok(_) | Err(_) => None,
-        };
-
-        let empty_raw_tile = matches!(&raw, Err(err) if raw_compressed_error_is_empty_tile(err));
-        match raw {
-            Ok(raw)
-                if raw_jpeg_matches_frame_geometry(
-                    &raw,
-                    request.grid.frame_columns,
-                    request.grid.frame_rows,
-                ) =>
-            {
-                if let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&raw) {
-                    if raw_jpeg_profile_can_passthrough(profile, request.allow_raw_rgb_passthrough)
-                    {
-                        planned.push(JpegBaselinePlannedFrame::Passthrough {
-                            uncompressed_bytes: uncompressed_frame_bytes(&raw)?,
-                            data: raw.into_data(),
-                            profile,
-                        });
-                        continue;
-                    }
-                }
-            }
-            Ok(raw) if raw.compression() == Compression::Jpeg => {
-                raw_jpeg_retile_candidate = true;
-            }
-            Ok(_) | Err(_) => {}
-        }
-
-        if empty_raw_tile {
-            planned.push(blank_jpeg_baseline_frame(
-                request.grid.frame_columns,
-                request.grid.frame_rows,
-            )?);
-            continue;
-        }
-
-        if raw_jpeg_retile_candidate {
-            match read_raw_jpeg_retile_display_tile(
-                slide,
-                request.location,
-                col,
-                request.row,
-                request.grid.frame_columns,
-                request.grid.frame_rows,
-            )? {
-                RawJpegRetileProbe::Accepted(retiled) => {
-                    if let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&retiled.raw) {
-                        if raw_jpeg_profile_can_passthrough(
-                            profile,
-                            request.allow_raw_rgb_passthrough,
-                        ) {
-                            planned.push(JpegBaselinePlannedFrame::Retile {
-                                uncompressed_bytes: uncompressed_frame_bytes(&retiled.raw)?,
-                                data: retiled.raw.into_data(),
-                                profile,
-                                retile_duration: retiled.duration,
-                            });
-                            continue;
-                        }
-                    }
-                    retile_rejections.push(JpegRetileRejectionReason::ProfileUnsupported);
-                }
-                RawJpegRetileProbe::Rejected(reason) => {
-                    retile_rejections.push(reason);
-                }
-            }
-        }
-
-        planned.push(JpegBaselinePlannedFrame::Fallback {
-            frame: jpeg_baseline_fallback_frame(col, request.row, request.grid)?,
-            source_lossy_compression,
-        });
+    for (frame, rejection) in columns {
+        planned.push(frame);
+        retile_rejections.extend(rejection);
     }
 
     Ok(JpegBaselineRowPlan {
         frames: planned,
         retile_rejections,
     })
+}
+
+fn plan_jpeg_baseline_frame_at(
+    slide: &Slide,
+    request: JpegBaselineRowPlanRequest,
+    col: u64,
+) -> Result<(JpegBaselinePlannedFrame, Option<JpegRetileRejectionReason>), Error> {
+    let mut raw_jpeg_retile_candidate = false;
+    let mut retile_rejection = None;
+    let raw = slide.read_raw_compressed_tile(
+        &request
+            .location
+            .tile_request(col as i64, request.row as i64),
+    );
+    let source_lossy_compression = match raw.as_ref() {
+        Ok(raw) if raw.compression() == Compression::Jpeg => {
+            Some(crate::lossy::LossyCompressionByteCounts::from_raw_tile(
+                crate::lossy::JPEG_BASELINE_METHOD,
+                raw,
+            )?)
+        }
+        Ok(_) | Err(_) => None,
+    };
+
+    let empty_raw_tile = matches!(&raw, Err(err) if raw_compressed_error_is_empty_tile(err));
+    match raw {
+        Ok(raw)
+            if raw_jpeg_matches_frame_geometry(
+                &raw,
+                request.grid.frame_columns,
+                request.grid.frame_rows,
+            ) =>
+        {
+            if let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&raw) {
+                if raw_jpeg_profile_can_passthrough(profile, request.allow_raw_rgb_passthrough) {
+                    return Ok((
+                        JpegBaselinePlannedFrame::Passthrough {
+                            uncompressed_bytes: uncompressed_frame_bytes(&raw)?,
+                            data: raw.into_data(),
+                            profile,
+                        },
+                        None,
+                    ));
+                }
+            }
+        }
+        Ok(raw) if raw.compression() == Compression::Jpeg => {
+            raw_jpeg_retile_candidate = true;
+        }
+        Ok(_) | Err(_) => {}
+    }
+
+    if empty_raw_tile {
+        return Ok((
+            blank_jpeg_baseline_frame(request.grid.frame_columns, request.grid.frame_rows)?,
+            None,
+        ));
+    }
+
+    if raw_jpeg_retile_candidate {
+        match read_raw_jpeg_retile_display_tile(
+            slide,
+            request.location,
+            col,
+            request.row,
+            request.grid.frame_columns,
+            request.grid.frame_rows,
+        )? {
+            RawJpegRetileProbe::Accepted(retiled) => {
+                if let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&retiled.raw) {
+                    if raw_jpeg_profile_can_passthrough(profile, request.allow_raw_rgb_passthrough)
+                    {
+                        return Ok((
+                            JpegBaselinePlannedFrame::Retile {
+                                uncompressed_bytes: uncompressed_frame_bytes(&retiled.raw)?,
+                                data: retiled.raw.into_data(),
+                                profile,
+                                retile_duration: retiled.duration,
+                            },
+                            None,
+                        ));
+                    }
+                }
+                retile_rejection = Some(JpegRetileRejectionReason::ProfileUnsupported);
+            }
+            RawJpegRetileProbe::Rejected(reason) => {
+                retile_rejection = Some(reason);
+            }
+        }
+    }
+
+    Ok((
+        JpegBaselinePlannedFrame::Fallback {
+            frame: jpeg_baseline_fallback_frame(col, request.row, request.grid)?,
+            source_lossy_compression,
+        },
+        retile_rejection,
+    ))
 }
 
 pub(super) fn record_jpeg_retile_rejections(

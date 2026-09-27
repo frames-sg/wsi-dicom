@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use j2k_core::CompressedTransferSyntax;
+use rayon::prelude::*;
 use wsi_rs::{Compression, Slide};
 
 use super::frame_region::{FrameRectGrid, FrameRectOverflowReasons, OutputFrameRect};
@@ -96,8 +97,8 @@ pub(crate) fn plan_lossless_j2k_frames(
     let frame_capacity = rows.checked_mul(tiles).ok_or_else(|| Error::Unsupported {
         reason: "J2K frame plan count overflow".into(),
     })?;
-    let mut planned = Vec::new();
-    planned
+    let mut positions = Vec::new();
+    positions
         .try_reserve_exact(frame_capacity)
         .map_err(|_| Error::Unsupported {
             reason: "J2K frame plan exceeds available memory".into(),
@@ -109,207 +110,202 @@ pub(crate) fn plan_lossless_j2k_frames(
             .ok_or_else(|| Error::Unsupported {
                 reason: "J2K row planning tile row overflow".into(),
             })?;
-        planned.extend(plan_lossless_j2k_row_at(slide, request, row)?);
+        for tile_offset in 0..tiles {
+            let col = request
+                .start_col
+                .checked_add(u64::try_from(tile_offset).map_err(|_| Error::Unsupported {
+                    reason: "J2K row planning tile offset exceeds u64".into(),
+                })?)
+                .ok_or_else(|| Error::Unsupported {
+                    reason: "J2K row planning tile column overflow".into(),
+                })?;
+            positions.push((row, col));
+        }
     }
-    Ok(planned)
+    // Each frame's raw read and lossless JPEG retile probe is independent and
+    // can cost milliseconds (DCT extraction and entropy re-emission), so plan
+    // frames on the shared pool. Indexed collection keeps row-major order.
+    positions
+        .into_par_iter()
+        .map(|(row, col)| plan_lossless_j2k_frame_at(slide, request, row, col))
+        .collect()
 }
 
-fn plan_lossless_j2k_row_at(
+fn plan_lossless_j2k_frame_at(
     slide: &Slide,
     request: LosslessJ2kPlanRequest,
     row: u64,
-) -> Result<Vec<LosslessJ2kPlannedFrame>, Error> {
-    let tile_count = usize::try_from(request.tile_count).map_err(|_| Error::Unsupported {
-        reason: "J2K row planning tile count exceeds platform addressable memory".into(),
-    })?;
+    col: u64,
+) -> Result<LosslessJ2kPlannedFrame, Error> {
     let row_i64 = i64::try_from(row).map_err(|_| Error::Unsupported {
         reason: "J2K row planning tile row exceeds i64".into(),
     })?;
-    let mut planned = Vec::new();
-    planned
-        .try_reserve_exact(tile_count)
-        .map_err(|_| Error::Unsupported {
-            reason: "J2K row plan exceeds available memory".into(),
-        })?;
-    for offset in 0..tile_count {
-        let col = request
-            .start_col
-            .checked_add(u64::try_from(offset).map_err(|_| Error::Unsupported {
-                reason: "J2K row planning tile offset exceeds u64".into(),
-            })?)
-            .ok_or_else(|| Error::Unsupported {
-                reason: "J2K row planning tile column overflow".into(),
-            })?;
-        let col_i64 = i64::try_from(col).map_err(|_| Error::Unsupported {
-            reason: "J2K row planning tile column exceeds i64".into(),
-        })?;
-        let rect = OutputFrameRect::clamped(
+    let col_i64 = i64::try_from(col).map_err(|_| Error::Unsupported {
+        reason: "J2K row planning tile column exceeds i64".into(),
+    })?;
+    let rect = OutputFrameRect::clamped(
+        col,
+        row,
+        request.grid,
+        FrameRectOverflowReasons {
+            x: "J2K row planning tile x offset overflow",
+            y: "J2K row planning tile y offset overflow",
+        },
+    )?;
+    let allow_raw_probe = request.allow_passthrough_probe
+        || jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax);
+    let (
+        source_j2k_dimensions,
+        source_j2k_syntax,
+        source_j2k_profile,
+        source_j2k,
+        mut source_jpeg,
+        source_jpeg_direct_rejected,
+        mut source_lossy_compression,
+        passthrough,
+    ) = if allow_raw_probe {
+        let tile_request = request.location.tile_request(col_i64, row_i64);
+        match slide.read_raw_compressed_tile(&tile_request) {
+            Ok(raw) => {
+                let source_j2k_dimensions = Some((raw.width(), raw.height()));
+                let inspection = RawJ2kInspection::new(&raw);
+                let source_j2k_syntax = inspection.as_ref().map(RawJ2kInspection::syntax);
+                let source_j2k_profile = inspection.as_ref().and_then(RawJ2kInspection::profile);
+                let source_lossy_compression = lossy_compression_from_raw(&raw, source_j2k_syntax)?;
+                let raw_is_jpeg = raw.compression() == Compression::Jpeg;
+                let passthrough_profile = request
+                    .allow_passthrough_probe
+                    .then(|| {
+                        inspection.as_ref().and_then(|inspection| {
+                            inspection.passthrough_profile(
+                                &raw,
+                                request.grid.frame_columns,
+                                request.grid.frame_rows,
+                                request.transfer_syntax,
+                            )
+                        })
+                    })
+                    .flatten();
+                #[cfg(test)]
+                let passthrough_syntax = inspection.as_ref().map(RawJ2kInspection::syntax);
+                drop(inspection);
+                // Passthrough takes priority. Move the payload into its only
+                // usable route instead of copying it into competing plans.
+                let (source_j2k, source_jpeg, passthrough) =
+                    if let Some(profile) = passthrough_profile {
+                        (
+                            None,
+                            None,
+                            Some(J2kPassthroughFrame {
+                                codestream: raw.into_data(),
+                                profile,
+                                #[cfg(test)]
+                                transfer_syntax: passthrough_syntax
+                                    .expect("passthrough profile requires a parsed syntax"),
+                            }),
+                        )
+                    } else if raw_is_jpeg {
+                        (
+                            None,
+                            jpeg_direct_htj2k::frame(
+                                raw,
+                                request.grid.frame_columns,
+                                request.grid.frame_rows,
+                                request.transfer_syntax,
+                            ),
+                            None,
+                        )
+                    } else {
+                        (
+                            j2k_direct_htj2k::frame(
+                                raw,
+                                request.grid.frame_columns,
+                                request.grid.frame_rows,
+                                request.transfer_syntax,
+                                source_j2k_profile,
+                            ),
+                            None,
+                            None,
+                        )
+                    };
+                let source_jpeg_direct_rejected =
+                    jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax)
+                        && raw_is_jpeg
+                        && source_jpeg.is_none();
+                (
+                    source_j2k_dimensions,
+                    source_j2k_syntax,
+                    source_j2k_profile,
+                    source_j2k,
+                    source_jpeg,
+                    source_jpeg_direct_rejected,
+                    source_lossy_compression,
+                    passthrough,
+                )
+            }
+            Err(_) => (None, None, None, None, None, false, None, None),
+        }
+    } else {
+        (None, None, None, None, None, false, None, None)
+    };
+    let mut source_jpeg_retiled = false;
+    let mut source_jpeg_retile_duration = Duration::ZERO;
+    let mut source_jpeg_retile_rejection = None;
+    if passthrough.is_none()
+        && source_j2k.is_none()
+        && source_jpeg.is_none()
+        && jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax)
+    {
+        match read_raw_jpeg_retile_display_tile(
+            slide,
+            request.location,
             col,
             row,
-            request.grid,
-            FrameRectOverflowReasons {
-                x: "J2K row planning tile x offset overflow",
-                y: "J2K row planning tile y offset overflow",
-            },
-        )?;
-        let allow_raw_probe = request.allow_passthrough_probe
-            || jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax);
-        let (
-            source_j2k_dimensions,
-            source_j2k_syntax,
-            source_j2k_profile,
-            source_j2k,
-            mut source_jpeg,
-            source_jpeg_direct_rejected,
-            mut source_lossy_compression,
-            passthrough,
-        ) = if allow_raw_probe {
-            let tile_request = request.location.tile_request(col_i64, row_i64);
-            match slide.read_raw_compressed_tile(&tile_request) {
-                Ok(raw) => {
-                    let source_j2k_dimensions = Some((raw.width(), raw.height()));
-                    let inspection = RawJ2kInspection::new(&raw);
-                    let source_j2k_syntax = inspection.as_ref().map(RawJ2kInspection::syntax);
-                    let source_j2k_profile =
-                        inspection.as_ref().and_then(RawJ2kInspection::profile);
-                    let source_lossy_compression =
-                        lossy_compression_from_raw(&raw, source_j2k_syntax)?;
-                    let raw_is_jpeg = raw.compression() == Compression::Jpeg;
-                    let passthrough_profile = request
-                        .allow_passthrough_probe
-                        .then(|| {
-                            inspection.as_ref().and_then(|inspection| {
-                                inspection.passthrough_profile(
-                                    &raw,
-                                    request.grid.frame_columns,
-                                    request.grid.frame_rows,
-                                    request.transfer_syntax,
-                                )
-                            })
-                        })
-                        .flatten();
-                    #[cfg(test)]
-                    let passthrough_syntax = inspection.as_ref().map(RawJ2kInspection::syntax);
-                    drop(inspection);
-                    // Passthrough takes priority. Move the payload into its only
-                    // usable route instead of copying it into competing plans.
-                    let (source_j2k, source_jpeg, passthrough) =
-                        if let Some(profile) = passthrough_profile {
-                            (
-                                None,
-                                None,
-                                Some(J2kPassthroughFrame {
-                                    codestream: raw.into_data(),
-                                    profile,
-                                    #[cfg(test)]
-                                    transfer_syntax: passthrough_syntax
-                                        .expect("passthrough profile requires a parsed syntax"),
-                                }),
-                            )
-                        } else if raw_is_jpeg {
-                            (
-                                None,
-                                jpeg_direct_htj2k::frame(
-                                    raw,
-                                    request.grid.frame_columns,
-                                    request.grid.frame_rows,
-                                    request.transfer_syntax,
-                                ),
-                                None,
-                            )
-                        } else {
-                            (
-                                j2k_direct_htj2k::frame(
-                                    raw,
-                                    request.grid.frame_columns,
-                                    request.grid.frame_rows,
-                                    request.transfer_syntax,
-                                    source_j2k_profile,
-                                ),
-                                None,
-                                None,
-                            )
-                        };
-                    let source_jpeg_direct_rejected =
-                        jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax)
-                            && raw_is_jpeg
-                            && source_jpeg.is_none();
-                    (
-                        source_j2k_dimensions,
-                        source_j2k_syntax,
-                        source_j2k_profile,
-                        source_j2k,
-                        source_jpeg,
-                        source_jpeg_direct_rejected,
-                        source_lossy_compression,
-                        passthrough,
-                    )
+            request.grid.frame_columns,
+            request.grid.frame_rows,
+        )? {
+            RawJpegRetileProbe::Accepted(retiled) => {
+                if source_lossy_compression.is_none() {
+                    source_lossy_compression = lossy_compression_from_raw(&retiled.raw, None)?;
                 }
-                Err(_) => (None, None, None, None, None, false, None, None),
+                source_jpeg = jpeg_direct_htj2k::frame(
+                    retiled.raw,
+                    request.grid.frame_columns,
+                    request.grid.frame_rows,
+                    request.transfer_syntax,
+                );
+                if source_jpeg.is_some() {
+                    source_jpeg_retiled = true;
+                    source_jpeg_retile_duration = retiled.duration;
+                } else {
+                    source_jpeg_retile_rejection =
+                        Some(JpegRetileRejectionReason::ProfileUnsupported);
+                }
             }
-        } else {
-            (None, None, None, None, None, false, None, None)
-        };
-        let mut source_jpeg_retiled = false;
-        let mut source_jpeg_retile_duration = Duration::ZERO;
-        let mut source_jpeg_retile_rejection = None;
-        if passthrough.is_none()
-            && source_j2k.is_none()
-            && source_jpeg.is_none()
-            && jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax)
-        {
-            match read_raw_jpeg_retile_display_tile(
-                slide,
-                request.location,
-                col,
-                row,
-                request.grid.frame_columns,
-                request.grid.frame_rows,
-            )? {
-                RawJpegRetileProbe::Accepted(retiled) => {
-                    if source_lossy_compression.is_none() {
-                        source_lossy_compression = lossy_compression_from_raw(&retiled.raw, None)?;
-                    }
-                    source_jpeg = jpeg_direct_htj2k::frame(
-                        retiled.raw,
-                        request.grid.frame_columns,
-                        request.grid.frame_rows,
-                        request.transfer_syntax,
-                    );
-                    if source_jpeg.is_some() {
-                        source_jpeg_retiled = true;
-                        source_jpeg_retile_duration = retiled.duration;
-                    } else {
-                        source_jpeg_retile_rejection =
-                            Some(JpegRetileRejectionReason::ProfileUnsupported);
-                    }
-                }
-                RawJpegRetileProbe::Rejected(reason) => {
-                    source_jpeg_retile_rejection = Some(reason);
-                }
+            RawJpegRetileProbe::Rejected(reason) => {
+                source_jpeg_retile_rejection = Some(reason);
             }
         }
-        planned.push(LosslessJ2kPlannedFrame {
-            row,
-            col,
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-            source_j2k_dimensions,
-            source_j2k_syntax,
-            source_j2k_profile,
-            source_j2k,
-            source_jpeg,
-            source_jpeg_retiled,
-            source_jpeg_retile_duration,
-            source_jpeg_retile_rejection,
-            source_jpeg_direct_rejected,
-            source_lossy_compression,
-            passthrough,
-        });
     }
-    Ok(planned)
+    Ok(LosslessJ2kPlannedFrame {
+        row,
+        col,
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        source_j2k_dimensions,
+        source_j2k_syntax,
+        source_j2k_profile,
+        source_j2k,
+        source_jpeg,
+        source_jpeg_retiled,
+        source_jpeg_retile_duration,
+        source_jpeg_retile_rejection,
+        source_jpeg_direct_rejected,
+        source_lossy_compression,
+        passthrough,
+    })
 }
 
 fn lossy_compression_from_raw(

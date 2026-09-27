@@ -404,7 +404,31 @@ pub(super) fn jpeg_direct_htj2k_supported_for_backend(
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub(super) const LOSSLESS_J2K_AUTO_ROUTE_PROBE_MAX_FRAMES: usize = 16;
+const LOSSLESS_J2K_AUTO_ROUTE_PROBE_CPU_WAVES: usize = 4;
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+const LOSSLESS_J2K_AUTO_ROUTE_PROBE_DEVICE_CHUNK_FRAMES: usize = 32;
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) const LOSSLESS_J2K_AUTO_ROUTE_PROBE_MAX_FRAMES: usize = 128;
+
+/// Frames timed by the automatic lossless route probe.
+///
+/// A probe smaller than a few CPU encode waves times the device's fixed
+/// submission latency against a fully parallel CPU wave, which selects the CPU
+/// even where the device has higher sustained throughput. Probe at least four
+/// waves of the CPU pool, in whole device chunks.
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(super) fn lossless_j2k_auto_route_probe_frames(rayon_threads: usize) -> usize {
+    rayon_threads
+        .max(1)
+        .saturating_mul(LOSSLESS_J2K_AUTO_ROUTE_PROBE_CPU_WAVES)
+        .next_multiple_of(LOSSLESS_J2K_AUTO_ROUTE_PROBE_DEVICE_CHUNK_FRAMES)
+        .clamp(
+            LOSSLESS_J2K_AUTO_ROUTE_MIN_FRAMES as usize,
+            LOSSLESS_J2K_AUTO_ROUTE_PROBE_MAX_FRAMES,
+        )
+}
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) const LOSSLESS_J2K_AUTO_ROUTE_MIN_FRAMES: u64 = 16;

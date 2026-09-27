@@ -14,7 +14,8 @@ use j2k::{
 mod metal;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(crate) use metal::{
-    DicomJ2kGpuEncodeBatchStats, PendingDicomJ2kMetalTileBatch, SubmittedDicomJ2kMetalTileBatch,
+    DicomJ2kGpuEncodeBatchStats, MetalHostSampleUploader, PendingDicomJ2kMetalTileBatch,
+    SubmittedDicomJ2kMetalTileBatch,
 };
 
 pub(crate) struct DicomJ2kEncoder {

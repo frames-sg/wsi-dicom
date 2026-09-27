@@ -410,7 +410,8 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
 
 CPU preparation runs in bounded batches and shares unchanged U8 storage. GPU
 source caching accounts for unique retained allocations, with a 128 MiB cache
-limit, and the hybrid writer accepts at most one queued prepared instance.
+limit, and the instance writer accepts at most one queued prepared instance. The
+pixel-data spool is written on a background thread through a 32-frame queue.
 These are local bounds: source-reader caches, codec scratch and in-flight GPU
 work also contribute to process memory. The reader owns a separate JP2K CPU
 pool, so `RAYON_NUM_THREADS` is not a process-wide thread limit. See the

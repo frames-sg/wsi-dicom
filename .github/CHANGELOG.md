@@ -14,6 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Moved the GDC converter benchmark and the format-coverage runner to
   [`wsi-dicom-bench`](https://github.com/frames-sg/wsi-dicom-bench), which already owned their
   rule catalog, workbench, and shared bounded-process evidence. The published crate is unchanged.
+- Size the automatic lossless route probe to at least four CPU encode waves in whole device
+  chunks. The 16-frame probe timed one device submission against a fully parallel CPU wave and
+  usually chose CPU encoding, about twice as slow as Metal encoding at level scale.
+- Pipeline CPU-decoded Metal encoding: a decode thread prepares and uploads the next chunk while
+  earlier chunks encode, with up to the configured GPU pipeline depth submitted.
+- Plan lossless J2K and JPEG Baseline frames (raw reads and lossless JPEG retile probes) on the
+  shared pool, and plan the next lossless row batch while the current one encodes.
+- Let bounded CPU frame batches claim frames dynamically instead of in fixed chunks, so costly
+  frames no longer idle the remaining workers.
+- Write the pixel-data spool on a background thread, and write each prepared lossless instance
+  while the next one encodes. Output bytes are unchanged.
+
 
 ## [0.7.5] - 2026-08-30
 
