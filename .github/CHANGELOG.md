@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Updates to J2K 0.11.2, wsi-rs 0.7.0, and annotations 0.1.3. CPU and Metal
+  reads use the typed WSI APIs. JPEG sources retain canonical CPU decoding with
+  required-device encoding through the existing host-input pipeline.
+
 - Moved the GDC converter benchmark and the format-coverage runner to
   [`wsi-dicom-bench`](https://github.com/frames-sg/wsi-dicom-bench), which already owned their
   rule catalog, workbench, and shared bounded-process evidence. The published crate is unchanged.
@@ -26,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Write the pixel-data spool on a background thread, and write each prepared lossless instance
   while the next one encodes. Output bytes are unchanged.
 
+### Fixed
+
+- Preserve zero-filled transparent sparse holes as black DICOM padding; other
+  non-opaque pixels still require an explicit composite policy.
 
 ## [0.7.5] - 2026-08-30
 
@@ -454,6 +462,7 @@ API comparison; its changes are carried forward below.
   validation, and JPEG 2000 / HTJ2K frame encoding primitives.
 - Added passthrough-first planning for compatible compressed WSI source frames.
 
-[Unreleased]: https://github.com/frames-sg/wsi-dicom/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/frames-sg/wsi-dicom/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/frames-sg/wsi-dicom/releases/tag/v0.7.5
 [0.7.0]: https://github.com/frames-sg/wsi-dicom/compare/v0.2.0...v0.7.0
 [0.2.0]: https://github.com/frames-sg/wsi-dicom/releases/tag/v0.2.0

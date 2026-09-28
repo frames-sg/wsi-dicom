@@ -21,7 +21,9 @@ conversion.
 
 ## Install
 
-The latest published release is `0.7.4`:
+The latest published release is [0.7.5](https://crates.io/crates/wsi-dicom/0.7.5).
+That registry release uses J2K 0.10, wsi-rs 0.6.0, and annotations 0.1.1.
+The newer dependency and typed WSI API changes in this checkout are unreleased.
 
 ```sh
 cargo install wsi-dicom
@@ -43,23 +45,30 @@ wsi-dicom = { version = "0.7.5", features = ["metal"] } # macOS
 wsi-dicom = { version = "0.7.5", features = ["cuda"] } # CUDA-capable Linux/Windows
 ```
 
-This source tree prepares the `0.7.5` release and requires Rust 1.96.
-The manifest and lockfile resolve registry dependencies, including `wsi-rs`
-0.6.0 and `wsi-dicom-annotations` 0.1.1. No sibling source checkout or local
-Cargo patch is required for the default CPU build:
+This source tree requires Rust 1.96 and targets J2K 0.11.2, `wsi-rs` 0.7.0,
+and `wsi-dicom-annotations` 0.1.3. J2K and annotations are published; wsi-rs
+0.7.0 is not yet on crates.io. Build the current source with a command-local
+wsi-rs override:
 
 ```sh
-cargo build --release --locked
+cargo build --release --config 'patch.crates-io.wsi-rs.path="../wsi-rs"'
 ```
 
-The commands and APIs below describe the 0.7.5 interface.
+Use that override for other development Cargo commands until wsi-rs 0.7.0 is
+published. J2K and JXR resolve from crates.io. Final release packaging requires
+a registry-only locked dependency graph.
+
+The commands and APIs below describe this checkout; the published 0.7.5 API has
+[versioned documentation](https://docs.rs/wsi-dicom/0.7.5). In this source,
+sparse source holes represented by zero-filled transparent pixels become black
+DICOM padding. Other non-opaque pixels require an explicit composite policy.
 
 Feature flags:
 
 | Feature | Effect |
 | --- | --- |
 | `default` | CPU-only DICOM export. |
-| `cuda` | Enables CUDA JPEG 2000 encode acceleration when available. wsi-rs CUDA tile decode and direct JPEG-to-HTJ2K CUDA transcode are not exposed by the 0.7.5 release. |
+| `cuda` | Enables CUDA JPEG 2000 encode acceleration and propagates the wsi-rs CUDA feature. Direct JPEG-to-HTJ2K CUDA transcode is not exposed. |
 | `metal` | Enables Metal JPEG 2000 encode acceleration on macOS, Metal codestream validation decode, and wsi-rs Metal tile decode plumbing. |
 
 CUDA release and hardware-evidence builds should require cuda-oxide PTX
