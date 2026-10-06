@@ -1,4 +1,8 @@
 
 # cargo-vet audits file
 
-[audits]
+[[audits.fearless_simd]]
+who = "Codex-assisted source review"
+criteria = "safe-to-deploy"
+delta = "0.7.0 -> 1.0.0"
+notes = "Reviewed the published registry delta, focusing on SIMD capability tokens, exported dispatch macros, generated operation boundaries, and slice/array conversions. The new unsafe dispatch calls require genuine same-crate proof tokens and derive target features from the same fixed backend mapping; caller expressions are bound outside unsafe blocks. SIMD traits remain sealed. The existing POD cast helpers retain compile-time size/alignment checks, slice conversions remain checked, and all 42 vector/mask lane counts are unchanged. New generated operations use numeric SIMD storage and the existing checked cast boundary; no new raw-pointer operations, build script, dependency, filesystem, network, process, or environment access was introduced. Existing kernel unit tests passed on aarch64 macOS (6) and x86_64 Linux (11); the kernel documentation example and three compile-fail tests passed on both. This is a source security review of the delta, not exhaustive numerical verification or a formal proof."

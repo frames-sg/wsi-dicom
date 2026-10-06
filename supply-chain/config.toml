@@ -4,58 +4,10 @@
 [cargo-vet]
 version = "0.10"
 
-[policy.j2k]
-audit-as-crates-io = true
-
-[policy.j2k-codec-math]
-audit-as-crates-io = true
-
-[policy.j2k-core]
-audit-as-crates-io = true
-
-[policy.j2k-cuda]
-audit-as-crates-io = true
-
-[policy.j2k-cuda-runtime]
-audit-as-crates-io = true
-
-[policy.j2k-jpeg]
-audit-as-crates-io = true
-
-[policy.j2k-jpeg-cuda]
-audit-as-crates-io = true
-
-[policy.j2k-jpeg-metal]
-audit-as-crates-io = true
-
-[policy.j2k-metal]
-audit-as-crates-io = true
-
-[policy.j2k-metal-support]
-audit-as-crates-io = true
-
-[policy.j2k-native]
-audit-as-crates-io = true
-
-[policy.j2k-profile]
-audit-as-crates-io = true
-
-[policy.j2k-tilecodec]
-audit-as-crates-io = true
-
-[policy.j2k-transcode]
-audit-as-crates-io = true
-
-[policy.j2k-transcode-metal]
-audit-as-crates-io = true
-
-[policy.j2k-types]
-audit-as-crates-io = true
+[imports.wsi-rs]
+url = "https://raw.githubusercontent.com/frames-sg/wsi-rs/v0.8.0/supply-chain/audits.toml"
 
 [policy.wsi-dicom]
-audit-as-crates-io = true
-
-[policy.wsi-rs]
 audit-as-crates-io = true
 
 [[exemptions.accesskit]]
@@ -823,79 +775,79 @@ version = "1.0.18"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-codec-math]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-core]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-cuda]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-cuda-build-support]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-cuda-j2k-engine]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-cuda-jpeg-engine]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-cuda-runtime]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-jpeg]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-jpeg-cuda]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-jpeg-metal]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-metal]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-metal-support]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-native]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-profile]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-tilecodec]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-transcode]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-transcode-metal]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.j2k-types]]
-version = "0.10.0"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.jni]]
@@ -1891,15 +1843,15 @@ version = "0.6.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.wsi-dicom]]
-version = "0.7.5"
+version = "0.8.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.wsi-dicom-annotations]]
-version = "0.1.3"
+version = "0.1.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.wsi-rs]]
-version = "0.6.0"
+version = "0.8.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.x11-dl]]

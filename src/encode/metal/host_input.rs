@@ -1,5 +1,3 @@
-use rayon::prelude::*;
-
 use super::*;
 
 /// Uploads host samples into device buffers for [`DicomJ2kEncoder::submit_metal_tiles_owned`].

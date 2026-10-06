@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly BASELINE_VERSION="0.7.1"
-readonly BASELINE_COMMIT="bc98cb1e086aefae80832491d619ab5659d458d2"
-readonly CANDIDATE_VERSION="0.7.5"
-readonly SEMVER_CHECKS_VERSION="cargo-semver-checks 0.48.0"
-readonly ALLOWLIST=".github/semver-0.7.1-to-0.7.5-allowed-breaks.txt"
-readonly ARCHIVED_REPORT=".github/semver-0.7.1-to-0.7.5-report.md"
+readonly BASELINE_VERSION="0.7.5"
+readonly BASELINE_COMMIT="eb5e691152af930810347b8c333884c899b463c4"
+readonly CANDIDATE_VERSION="0.8.0"
+readonly SEMVER_CHECKS_VERSION="cargo-semver-checks 0.50.0"
+readonly ALLOWLIST=".github/semver-0.7.5-to-0.8.0-allowed-breaks.txt"
+readonly ARCHIVED_REPORT=".github/semver-0.7.5-to-0.8.0-report.md"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work_dir="$(mktemp -d)"
@@ -69,14 +69,14 @@ baseline_target="$work_dir/baseline-target"
   cd "$baseline_root"
   RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" \
     CARGO_TARGET_DIR="$baseline_target" \
-    cargo +1.96 rustdoc --lib --locked --no-default-features
+    cargo +1.99.0 rustdoc --lib --locked --no-default-features
 )
 baseline_rustdoc="$baseline_target/doc/wsi_dicom.json"
 
 current_target="$work_dir/current-target"
 RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" \
   CARGO_TARGET_DIR="$current_target" \
-  cargo +1.96 rustdoc --lib --locked --no-default-features
+  cargo +1.99.0 rustdoc --lib --locked --no-default-features
 current_rustdoc="$current_target/doc/wsi_dicom.json"
 
 set +e
@@ -89,11 +89,6 @@ patch_report="$(cargo semver-checks check-release \
 patch_status=$?
 set -e
 printf '%s\n' "$patch_report"
-if [[ "$patch_status" -eq 0 ]]; then
-  echo "expected the reviewed 0.7.5 API transition, but no patch-level breaks were reported" >&2
-  exit 1
-fi
-
 actual_breaks="$work_dir/actual-breaks.txt"
 printf '%s\n' "$patch_report" |
   awk '
@@ -103,12 +98,12 @@ printf '%s\n' "$patch_report" |
   ' |
   sed -E '/, previously in file/! s# in [^ ]+:[0-9]+$##' |
   LC_ALL=C sort -u >"$actual_breaks"
-if [[ ! -s "$actual_breaks" ]]; then
+if [[ "$patch_status" -ne 0 && ! -s "$actual_breaks" ]]; then
   echo "cargo-semver-checks failed without a parseable break set" >&2
   exit 1
 fi
 if ! diff -u "$ALLOWLIST" "$actual_breaks"; then
-  echo "semver break set differs from the reviewed 0.7.1-to-0.7.5 transition" >&2
+  echo "semver break set differs from the reviewed 0.7.5-to-0.8.0 transition" >&2
   exit 1
 fi
 
@@ -130,10 +125,10 @@ report = [
     f"# wsi-dicom {os.environ['REPORT_BASELINE_VERSION']} to {os.environ['REPORT_CANDIDATE_VERSION']} semver report",
     "",
     f"- Baseline: `{os.environ['REPORT_BASELINE_VERSION']}` at immutable commit `{os.environ['REPORT_BASELINE_COMMIT']}`.",
-    "- Baseline publication state: merged, but not tagged or published to crates.io.",
+    "- Baseline publication state: tagged as v0.7.5 and published to crates.io.",
     f"- Candidate: `{os.environ['REPORT_CANDIDATE_VERSION']}`.",
-    f"- Tool: `{os.environ['REPORT_SEMVER_CHECKS_VERSION']}` with Rust `1.96` rustdoc JSON.",
-    "- Policy: the patch-level API breaks below are intentional for this pre-1.0 transition; any different break set fails CI.",
+    f"- Tool: `{os.environ['REPORT_SEMVER_CHECKS_VERSION']}` with Rust `1.99.0` rustdoc JSON.",
+    "- Policy: CI requires the exact reviewed patch-level break set below; an empty set means the public API is compatible.",
     "",
     "## Reviewed breaks",
     "",

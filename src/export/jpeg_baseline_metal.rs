@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use wsi_rs::{DeviceTile, PlaneSelection, TilePixels, TileRequest};
+use wsi_rs::{PlaneSelection, TileRequest};
 
 use super::jpeg_baseline::{
     encode_jpeg_baseline_metal_device_tile_batch, JpegBaselineFallbackFrame,
@@ -99,16 +99,8 @@ pub(super) fn try_encode_jpeg_baseline_metal_input_tile_run(
                 .with_plane(PlaneSelection::new(location.z, location.c, location.t)),
             );
         }
-        let output = match metal_input.source_tile_output_preference() {
-            Ok(output) => output,
-            Err(err) if metal_input.preference == EncodeBackendPreference::RequireDevice => {
-                return Err(err);
-            }
-            Err(_) => return Ok(empty_jpeg_baseline_metal_run(frames.len())),
-        };
-
         let input_decode_started = Instant::now();
-        let pixels = match slide.read_tiles(&requests, output) {
+        let pixels = match metal_input.read_source_tiles(slide, &requests) {
             Ok(pixels) if pixels.len() == frames.len() => pixels,
             Ok(pixels) if metal_input.preference == EncodeBackendPreference::RequireDevice => {
                 return Err(Error::SlideRead {
@@ -233,7 +225,7 @@ pub(super) fn try_encode_jpeg_baseline_metal_input_tile_run(
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) fn jpeg_baseline_metal_tile_entries(
-    pixels: Vec<TilePixels>,
+    pixels: Vec<wsi_rs::output::metal::MetalDeviceTile>,
     frames: &[JpegBaselineFallbackFrame],
     preference: EncodeBackendPreference,
 ) -> Result<Vec<Option<wsi_rs::output::metal::MetalDeviceTile>>, Error> {
@@ -243,18 +235,7 @@ pub(super) fn jpeg_baseline_metal_tile_entries(
         .map_err(|_| Error::Unsupported {
             reason: "JPEG Baseline Metal tile batch exceeds available memory".into(),
         })?;
-    for (pixels, frame) in pixels.into_iter().zip(frames.iter()) {
-        let TilePixels::Device(DeviceTile::Metal(tile)) = pixels else {
-            if preference == EncodeBackendPreference::RequireDevice {
-                return Err(Error::Unsupported {
-                    reason:
-                        "requested JPEG Baseline Metal input decode returned CPU pixels; set WSI_RS_JPEG_DEVICE_DECODE=1 or WSI_RS_JP2K_DEVICE_DECODE=1 for compressed WSI tiles"
-                            .into(),
-                });
-            }
-            entries.push(None);
-            continue;
-        };
+    for (tile, frame) in pixels.into_iter().zip(frames.iter()) {
         if tile.width != frame.width || tile.height != frame.height {
             if preference == EncodeBackendPreference::RequireDevice {
                 return Err(Error::Unsupported {

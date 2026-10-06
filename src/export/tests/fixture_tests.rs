@@ -594,14 +594,27 @@ fn aperio_jp2k_regular_tiled_metal_input_composes_512_htj2k_rpcl_tile_matches_cp
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
-fn require_device_source_tile_preference_rejects_cpu_decode_fallback() {
-    let mut metal_input = MetalInputTileReader::new(EncodeBackendPreference::RequireDevice, true);
-    let Ok(output) = metal_input.source_tile_output_preference() else {
+fn require_device_source_tile_read_rejects_cpu_decode_fallback() {
+    if j2k_metal_support::system_default_device().is_err() {
         return;
-    };
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("raw.dcm");
+    write_source_dicom_with_dimensions(&source, "1.2.826.0.1.3680043.10.999.81", 4, 4);
+    let slide = Slide::open(&source).unwrap();
+    let requests = [wsi_rs::TileRequest::new(0, 0, 0, 0, 0)];
+    assert_eq!(slide.read_tiles(&requests).unwrap().len(), 1);
 
-    assert!(output.requires_device());
-    assert!(output.compressed_device_decode_enabled());
+    let mut metal_input = MetalInputTileReader::new(EncodeBackendPreference::RequireDevice, true);
+    assert!(matches!(
+        metal_input.read_source_tiles(&slide, &requests),
+        Err(Error::SlideRead { .. })
+    ));
+    let mut disabled = MetalInputTileReader::new(EncodeBackendPreference::PreferDevice, false);
+    assert!(matches!(
+        disabled.read_source_tiles(&slide, &requests),
+        Err(Error::Unsupported { .. })
+    ));
 }
 
 #[test]
@@ -1178,11 +1191,7 @@ fn jpeg_baseline_metal_tile_entries_keep_full_tiles_when_edge_geometry_falls_bac
     ];
 
     let entries = jpeg_baseline_metal_tile_entries(
-        vec![
-            TilePixels::Device(DeviceTile::Metal(full_a)),
-            TilePixels::Device(DeviceTile::Metal(edge)),
-            TilePixels::Device(DeviceTile::Metal(full_b)),
-        ],
+        vec![full_a, edge, full_b],
         &frames,
         EncodeBackendPreference::PreferDevice,
     )

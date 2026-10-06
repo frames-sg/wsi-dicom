@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use wsi_rs::{DeviceTile, Slide, TilePixels, TileRequest};
+use wsi_rs::{Slide, TileRequest};
 
 use super::super::jpeg_baseline::JpegBaselineFrameLocation;
 use super::super::metal_input::{
@@ -114,7 +114,7 @@ fn read_aligned_tile_grid_entries(
     let tile_count = requests.len();
 
     let input_decode_started = Instant::now();
-    let pixels = match slide.read_tiles(&requests, metal_input.source_tile_output_preference()?) {
+    let pixels = match metal_input.read_source_tiles(slide, &requests) {
         Ok(pixels) => pixels,
         Err(err) if metal_input.preference == EncodeBackendPreference::RequireDevice => {
             return Err(Error::SlideRead {
@@ -153,7 +153,7 @@ fn read_aligned_tile_grid_entries(
         .map_err(|_| Error::Unsupported {
             reason: "Metal aligned grid tile batch exceeds available memory".into(),
         })?;
-    for (idx, pixels) in pixels.into_iter().enumerate() {
+    for (idx, tile) in pixels.into_iter().enumerate() {
         let row_offset = idx / tiles_across;
         let col = idx % tiles_across;
         let x = u64::try_from(col)
@@ -172,18 +172,6 @@ fn read_aligned_tile_grid_entries(
             })?;
         let width = (matrix_columns - x).min(u64::from(tile_size)) as u32;
         let height = (matrix_rows - y).min(u64::from(tile_size)) as u32;
-
-        let TilePixels::Device(DeviceTile::Metal(tile)) = pixels else {
-            if metal_input.preference == EncodeBackendPreference::RequireDevice {
-                return Err(Error::Unsupported {
-                    reason:
-                        "requested Metal input tile grid decode returned CPU pixels; set WSI_RS_JPEG_DEVICE_DECODE=1 or WSI_RS_JP2K_DEVICE_DECODE=1 for compressed WSI tiles"
-                            .into(),
-                });
-            }
-            tile_entries.push(None);
-            continue;
-        };
 
         if tile.width != width || tile.height != height {
             if metal_input.preference == EncodeBackendPreference::RequireDevice {
@@ -240,7 +228,7 @@ pub(in crate::export) fn try_encode_metal_aligned_tile_run(
     let requests = aligned_tile_row_requests(location, row, start_col, tile_count)?;
 
     let input_decode_started = Instant::now();
-    let pixels = match slide.read_tiles(&requests, metal_input.source_tile_output_preference()?) {
+    let pixels = match metal_input.read_source_tiles(slide, &requests) {
         Ok(pixels) => pixels,
         Err(err) if metal_input.preference == EncodeBackendPreference::RequireDevice => {
             return Err(Error::SlideRead {
@@ -270,7 +258,7 @@ pub(in crate::export) fn try_encode_metal_aligned_tile_run(
         .map_err(|_| Error::Unsupported {
             reason: "Metal aligned row tile batch exceeds available memory".into(),
         })?;
-    for (offset, pixels) in pixels.into_iter().enumerate() {
+    for (offset, tile) in pixels.into_iter().enumerate() {
         let col = start_col
             .checked_add(u64::try_from(offset).map_err(|_| Error::Unsupported {
                 reason: "tile batch offset exceeds u64".into(),
@@ -290,18 +278,6 @@ pub(in crate::export) fn try_encode_metal_aligned_tile_run(
             })?;
         let width = (matrix_columns - x).min(u64::from(tile_size)) as u32;
         let height = (matrix_rows - y).min(u64::from(tile_size)) as u32;
-
-        let TilePixels::Device(DeviceTile::Metal(tile)) = pixels else {
-            if metal_input.preference == EncodeBackendPreference::RequireDevice {
-                return Err(Error::Unsupported {
-                    reason:
-                        "requested Metal input tile decode returned CPU pixels; set WSI_RS_JPEG_DEVICE_DECODE=1 or WSI_RS_JP2K_DEVICE_DECODE=1 for compressed WSI tiles"
-                            .into(),
-                });
-            }
-            tile_entries.push(None);
-            continue;
-        };
 
         if tile.width != width || tile.height != height {
             if metal_input.preference == EncodeBackendPreference::RequireDevice {

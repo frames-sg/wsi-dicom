@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use wsi_rs::output::metal::MetalDeviceTile;
-use wsi_rs::{DeviceTile, PlaneSelection, Slide, TilePixels, TileRequest};
+use wsi_rs::{PlaneSelection, Slide, TileRequest};
 
 use super::super::jpeg_baseline::JpegBaselineFrameLocation;
 use super::super::metal_compose::MetalComposeTileRequest;
@@ -120,7 +120,6 @@ impl WholeLevelGridPreparedRun {
 struct WholeLevelSourceReadMessages {
     decode_subject: &'static str,
     returned_unit: &'static str,
-    cpu_pixels_reason: &'static str,
     geometry_subject: &'static str,
     incomplete_cache_reason: &'static str,
 }
@@ -130,10 +129,9 @@ const WHOLE_LEVEL_ROW_SOURCE_READ_MESSAGES: WholeLevelSourceReadMessages =
     WholeLevelSourceReadMessages {
         decode_subject: "Metal WholeLevel tile batch",
         returned_unit: "tile(s)",
-        cpu_pixels_reason:
-            "requested Metal WholeLevel tile decode returned CPU pixels; set WSI_RS_JPEG_DEVICE_DECODE=1 or WSI_RS_JP2K_DEVICE_DECODE=1 for compressed WSI tiles",
         geometry_subject: "Metal WholeLevel tile",
-        incomplete_cache_reason: "Metal WholeLevel source tile cache returned incomplete row window",
+        incomplete_cache_reason:
+            "Metal WholeLevel source tile cache returned incomplete row window",
     };
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -141,10 +139,9 @@ const WHOLE_LEVEL_GRID_SOURCE_READ_MESSAGES: WholeLevelSourceReadMessages =
     WholeLevelSourceReadMessages {
         decode_subject: "Metal WholeLevel tile grid",
         returned_unit: "source tile(s)",
-        cpu_pixels_reason:
-            "requested Metal WholeLevel tile grid decode returned CPU pixels; set WSI_RS_JPEG_DEVICE_DECODE=1 or WSI_RS_JP2K_DEVICE_DECODE=1 for compressed WSI tiles",
         geometry_subject: "Metal WholeLevel tile grid",
-        incomplete_cache_reason: "Metal WholeLevel tile grid cache returned incomplete source window",
+        incomplete_cache_reason:
+            "Metal WholeLevel tile grid cache returned incomplete source window",
     };
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -255,10 +252,7 @@ fn read_whole_level_source_tiles(
     let mut input_decode_duration = Duration::ZERO;
     if !missing_requests.is_empty() {
         let input_decode_started = Instant::now();
-        let pixels = match slide.read_tiles(
-            &missing_requests,
-            metal_input.source_tile_output_preference()?,
-        ) {
+        let pixels = match metal_input.read_source_tiles(slide, &missing_requests) {
             Ok(pixels) => pixels,
             Err(err) if preference == EncodeBackendPreference::RequireDevice => {
                 return Err(Error::SlideRead {
@@ -290,18 +284,7 @@ fn read_whole_level_source_tiles(
                 input_decode_duration: Duration::ZERO,
             });
         }
-        for ((index, key), pixels) in missing_indices.into_iter().zip(missing_keys).zip(pixels) {
-            let TilePixels::Device(DeviceTile::Metal(tile)) = pixels else {
-                if preference == EncodeBackendPreference::RequireDevice {
-                    return Err(Error::Unsupported {
-                        reason: messages.cpu_pixels_reason.into(),
-                    });
-                }
-                return Ok(WholeLevelSourceRead {
-                    tiles: None,
-                    input_decode_duration: Duration::ZERO,
-                });
-            };
+        for ((index, key), tile) in missing_indices.into_iter().zip(missing_keys).zip(pixels) {
             if tile.width == 0
                 || tile.height == 0
                 || tile.width > strip_layout.width

@@ -204,7 +204,7 @@ fn mixed_metal_staging_batches_preserve_input_order_with_two_groups() {
         let mut expected = vec![0; 8 * 8 * 3];
         for (source, dest) in pixels
             .chunks_exact(width as usize * 3)
-            .zip(expected.chunks_exact_mut(24))
+            .zip(expected.as_chunks_mut::<24>().0)
         {
             dest[..source.len()].copy_from_slice(source);
         }

@@ -12,8 +12,6 @@ use j2k_core::CompressedTransferSyntax;
 use j2k_core::PixelFormat as J2kPixelFormat;
 #[cfg(test)]
 use j2k_jpeg::JpegBackend;
-#[cfg(all(test, feature = "metal", target_os = "macos"))]
-use wsi_rs::DeviceTile;
 #[cfg(test)]
 use wsi_rs::EncodedTilePhotometricInterpretation;
 #[cfg(test)]
@@ -21,8 +19,6 @@ use wsi_rs::LevelSourceKind;
 use wsi_rs::Slide;
 #[cfg(test)]
 use wsi_rs::TileLayout;
-#[cfg(all(test, feature = "metal", target_os = "macos"))]
-use wsi_rs::TilePixels;
 #[cfg(test)]
 use wsi_rs::{Compression, RawCompressedTile, RegionRequest};
 

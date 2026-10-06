@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use j2k::{J2kLosslessSamples, ReversibleTransform};
-use wsi_rs::{Slide, TileLayout, TileOutputPreference, TilePixels, TileRequest};
+use wsi_rs::{Slide, TileLayout, TileRequest};
 
 use crate::encode::{self, EncodedDicomJ2kFrame};
 use crate::error::Error;
@@ -184,7 +184,7 @@ fn prepare_native_cpu_input_lossless_j2k_tile_batch(
 ) -> Result<Vec<PreparedCpuRegion>, Error> {
     let input_decode_started = Instant::now();
     let tiles = slide
-        .read_tiles(requests, TileOutputPreference::cpu())
+        .read_tiles(requests)
         .map_err(|source| Error::SlideRead {
             message: source.to_string(),
         })?;
@@ -203,11 +203,6 @@ fn prepare_native_cpu_input_lossless_j2k_tile_batch(
         .into_iter()
         .enumerate()
         .map(|(idx, tile)| {
-            let TilePixels::Cpu(tile) = tile else {
-                return Err(Error::SlideRead {
-                    message: "CPU tile batch returned device-resident tile".into(),
-                });
-            };
             let compose_started = Instant::now();
             let max_prepared_frame_bytes =
                 usize::try_from(max_prepared_frame_bytes).map_err(|_| {

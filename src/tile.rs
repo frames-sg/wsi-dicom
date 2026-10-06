@@ -320,6 +320,12 @@ fn copy_u8_tile(
                     reason: "prepared tile index overflow".into(),
                 })?;
             if geometry.src_components == 4 {
+                // wsi-rs represents sparse holes as zero-filled RGBA pixels.
+                // DICOM has no alpha channel; retain the zero background used
+                // for missing tiles and output padding.
+                if bytes[src..src + 4] == [0; 4] {
+                    continue;
+                }
                 if bytes[src + 3] != u8::MAX {
                     return Err(Error::UnsupportedPixelData {
                         reason: "non-opaque alpha requires an explicit composite policy".into(),
@@ -369,6 +375,9 @@ fn copy_u16_tile(
                 .ok_or_else(|| Error::UnsupportedPixelData {
                     reason: "prepared tile byte index overflow".into(),
                 })?;
+            if geometry.src_components == 4 && samples[src..src + 4] == [0; 4] {
+                continue;
+            }
             if geometry.src_components == 4 && samples[src + 3] != u16::MAX {
                 return Err(Error::UnsupportedPixelData {
                     reason: "non-opaque alpha requires an explicit composite policy".into(),
@@ -550,6 +559,26 @@ mod tests {
             prepared.bytes.as_slice(),
             &[0x02, 0x01, 0x04, 0x03, 0x06, 0x05]
         );
+    }
+
+    #[test]
+    fn prepare_tile_samples_preserves_sparse_holes_as_black_padding() {
+        for (data, expected) in [
+            (
+                CpuTileData::u8(vec![0, 0, 0, 0, 7, 8, 9, 255]),
+                vec![0, 0, 0, 7, 8, 9],
+            ),
+            (
+                CpuTileData::u16(vec![0, 0, 0, 0, 7, 8, 9, 65535]),
+                vec![0, 0, 0, 0, 0, 0, 7, 0, 8, 0, 9, 0],
+            ),
+        ] {
+            let tile = cpu_tile(2, 1, 4, ColorSpace::Rgba, CpuTileLayout::Interleaved, data);
+            assert_eq!(
+                prepare_tile_samples(&tile, 2, 1).unwrap().bytes.as_slice(),
+                expected
+            );
+        }
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Preserve CPU-reference reconstruction of irreversible JPEG 2000 sources.
+//! Preserve canonical JPEG and irreversible JPEG 2000 source reconstruction.
 
 use super::super::cpu_batch::frame_batch_len;
 use super::super::frame_region::OutputFrameRect;
@@ -71,7 +71,7 @@ pub(super) fn try_encode_canonical_source(
             };
             if !matches!(
                 raw.compression(),
-                Compression::Jp2kRgb | Compression::Jp2kYcbcr
+                Compression::Jpeg | Compression::Jp2kRgb | Compression::Jp2kYcbcr
             ) {
                 return Ok(None);
             }
@@ -83,13 +83,17 @@ pub(super) fn try_encode_canonical_source(
                     .div_ceil(u64::from(request.tile_size)),
             );
             reader.frame_limit = Some(reader.frame_limit.map_or(end, |limit| limit.min(end)));
-            let lossless = j2k::J2kView::parse(raw.data())
-                .ok()
-                .and_then(|view| {
-                    view.passthrough_candidate()
-                        .map(|candidate| candidate.transfer_syntax().is_lossless())
-                })
-                .unwrap_or(false);
+            // wsi-rs provides strict resident reads only for JP2K. Keep
+            // JPEG on the canonical CPU source path and require the requested
+            // device encoder below, including for partial final rows.
+            let lossless = raw.compression() != Compression::Jpeg
+                && j2k::J2kView::parse(raw.data())
+                    .ok()
+                    .and_then(|view| {
+                        view.passthrough_candidate()
+                            .map(|candidate| candidate.transfer_syntax().is_lossless())
+                    })
+                    .unwrap_or(false);
             canonical |= !lossless;
         }
     }

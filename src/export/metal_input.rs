@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use wsi_rs::TileOutputPreference;
+use wsi_rs::{Slide, TileRequest};
 
 use super::j2k_policy::DEFAULT_GPU_PIPELINE_DEPTH;
 use super::jpeg_baseline::JpegBaselineFrameLocation;
@@ -335,18 +335,21 @@ impl MetalInputTileReader {
             })
     }
 
-    pub(super) fn source_tile_output_preference(&mut self) -> Result<TileOutputPreference, Error> {
-        let sessions = self.sessions()?;
-        let compressed_device_decode = self.source_device_decode || self.auto_device_decode_allowed;
-        Ok(match (self.preference, compressed_device_decode) {
-            (EncodeBackendPreference::RequireDevice, true) => {
-                TileOutputPreference::require_device_auto_with_metal_and_compressed_decode(sessions)
-            }
-            (_, true) => {
-                TileOutputPreference::prefer_device_auto_with_metal_and_compressed_decode(sessions)
-            }
-            _ => TileOutputPreference::prefer_device_auto_with_metal(sessions),
-        })
+    pub(super) fn read_source_tiles(
+        &mut self,
+        slide: &Slide,
+        requests: &[TileRequest],
+    ) -> Result<Vec<wsi_rs::output::metal::MetalDeviceTile>, Error> {
+        if !self.source_device_decode && !self.auto_device_decode_allowed {
+            return Err(Error::Unsupported {
+                reason: "compressed source device decoding is not enabled".into(),
+            });
+        }
+        slide
+            .read_tiles_metal(requests, &self.sessions()?)
+            .map_err(|source| Error::SlideRead {
+                message: source.to_string(),
+            })
     }
 
     pub(super) fn strip_composer(&mut self) -> Result<&MetalStripComposer, Error> {

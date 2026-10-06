@@ -9,9 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-06
+
 ### Changed
 
-- Updates to J2K 0.11.2, wsi-rs 0.7.0, and annotations 0.1.3. CPU and Metal
+- Raises the minimum supported Rust version and build toolchain to 1.99.0.
+
+- Updates to J2K 0.12.0, wsi-rs 0.8.0, and annotations 0.1.4. CPU and Metal
   reads use the typed WSI APIs. JPEG sources retain canonical CPU decoding with
   required-device encoding through the existing host-input pipeline.
 

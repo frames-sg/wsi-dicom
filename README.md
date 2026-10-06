@@ -21,9 +21,7 @@ conversion.
 
 ## Install
 
-The latest published release is [0.7.5](https://crates.io/crates/wsi-dicom/0.7.5).
-That registry release uses J2K 0.10, wsi-rs 0.6.0, and annotations 0.1.1.
-The newer dependency and typed WSI API changes in this checkout are unreleased.
+Install the [latest published release](https://crates.io/crates/wsi-dicom) with:
 
 ```sh
 cargo install wsi-dicom
@@ -33,33 +31,28 @@ Use the Rust API:
 
 ```toml
 [dependencies]
-wsi-dicom = "0.7.5"
+wsi-dicom = "0.8.0"
 ```
 
 GPU support is opt-in:
 
 ```toml
 [dependencies]
-wsi-dicom = { version = "0.7.5", features = ["metal"] } # macOS
+wsi-dicom = { version = "0.8.0", features = ["metal"] } # macOS
 # or
-wsi-dicom = { version = "0.7.5", features = ["cuda"] } # CUDA-capable Linux/Windows
+wsi-dicom = { version = "0.8.0", features = ["cuda"] } # CUDA-capable Linux
 ```
 
-This source tree requires Rust 1.96 and targets J2K 0.11.2, `wsi-rs` 0.7.0,
-and `wsi-dicom-annotations` 0.1.3. J2K and annotations are published; wsi-rs
-0.7.0 is not yet on crates.io. Build the current source with a command-local
-wsi-rs override:
+This source tree requires Rust 1.99.0 and targets J2K 0.12.0, `wsi-rs` 0.8.0,
+and `wsi-dicom-annotations` 0.1.4. Release builds resolve these dependencies
+from crates.io:
 
 ```sh
-cargo build --release --config 'patch.crates-io.wsi-rs.path="../wsi-rs"'
+cargo build --release --locked
 ```
 
-Use that override for other development Cargo commands until wsi-rs 0.7.0 is
-published. J2K and JXR resolve from crates.io. Final release packaging requires
-a registry-only locked dependency graph.
-
-The commands and APIs below describe this checkout; the published 0.7.5 API has
-[versioned documentation](https://docs.rs/wsi-dicom/0.7.5). In this source,
+The commands and APIs below describe 0.8.0; the 0.7.5 API has
+[versioned documentation](https://docs.rs/wsi-dicom/0.7.5). In 0.8.0,
 sparse source holes represented by zero-filled transparent pixels become black
 DICOM padding. Other non-opaque pixels require an explicit composite policy.
 
