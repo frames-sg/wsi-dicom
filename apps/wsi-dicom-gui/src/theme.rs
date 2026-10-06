@@ -167,7 +167,7 @@ fn install_visuals(ctx: &egui::Context) {
 
     visuals.panel_fill = PAPER;
     visuals.window_fill = PAPER_SOFT;
-    visuals.window_stroke = Stroke::new(1.0, RULE);
+    visuals.window_stroke = Stroke::new(1.0_f32, RULE);
     visuals.window_corner_radius = CornerRadius::same(12);
     visuals.menu_corner_radius = CornerRadius::same(8);
     visuals.faint_bg_color = PAPER_RAISED;
@@ -180,7 +180,7 @@ fn install_visuals(ctx: &egui::Context) {
     visuals.error_fg_color = MAUVE_INK;
 
     visuals.selection.bg_fill = SAND.linear_multiply(1.2);
-    visuals.selection.stroke = Stroke::new(1.0, SAND_INK);
+    visuals.selection.stroke = Stroke::new(1.0_f32, SAND_INK);
 
     visuals.handle_shape = HandleShape::Rect { aspect_ratio: 0.4 };
     visuals.slider_trailing_fill = true;
@@ -209,35 +209,35 @@ fn install_visuals(ctx: &egui::Context) {
     visuals.widgets.noninteractive.bg_fill = PAPER_SOFT;
     visuals.widgets.noninteractive.weak_bg_fill = PAPER_SOFT;
     visuals.widgets.noninteractive.bg_stroke = Stroke::NONE;
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, INK);
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, INK);
     visuals.widgets.noninteractive.corner_radius = radius;
     visuals.widgets.noninteractive.expansion = 0.0;
 
     visuals.widgets.inactive.bg_fill = PAPER_SUNKEN;
     visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
     visuals.widgets.inactive.bg_stroke = Stroke::NONE;
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, INK);
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, INK);
     visuals.widgets.inactive.corner_radius = radius;
     visuals.widgets.inactive.expansion = 0.0;
 
     visuals.widgets.hovered.bg_fill = PAPER_SUNKEN;
     visuals.widgets.hovered.weak_bg_fill = PAPER_SUNKEN;
     visuals.widgets.hovered.bg_stroke = Stroke::NONE;
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, INK);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, INK);
     visuals.widgets.hovered.corner_radius = radius;
     visuals.widgets.hovered.expansion = 0.0;
 
     visuals.widgets.active.bg_fill = STEEL.linear_multiply(0.9);
     visuals.widgets.active.weak_bg_fill = STEEL.linear_multiply(0.9);
     visuals.widgets.active.bg_stroke = Stroke::NONE;
-    visuals.widgets.active.fg_stroke = Stroke::new(1.0, INK);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, INK);
     visuals.widgets.active.corner_radius = radius;
     visuals.widgets.active.expansion = 0.0;
 
     visuals.widgets.open.bg_fill = PAPER_SUNKEN;
     visuals.widgets.open.weak_bg_fill = PAPER_SUNKEN;
     visuals.widgets.open.bg_stroke = Stroke::NONE;
-    visuals.widgets.open.fg_stroke = Stroke::new(1.0, INK);
+    visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, INK);
     visuals.widgets.open.corner_radius = radius;
     visuals.widgets.open.expansion = 0.0;
 
@@ -302,7 +302,7 @@ pub fn status_pill(ui: &mut Ui, label: &str, color: Color32, deep: Color32) {
             painter.circle_stroke(
                 rect.center(),
                 5.0,
-                Stroke::new(0.8, deep.gamma_multiply(0.55)),
+                Stroke::new(0.8_f32, deep.gamma_multiply(0.55)),
             );
             ui.label(
                 RichText::new(label)
@@ -406,9 +406,9 @@ pub fn path_value(ui: &mut Ui, text: &str, placeholder: bool) {
 /// so it still has weight). One per screen.
 pub fn primary_button(ui: &mut Ui, label: &str, enabled: bool) -> Response {
     let (fill, stroke, text_color) = if enabled {
-        (PRIMARY, Stroke::new(1.0, PRIMARY), PRIMARY_TEXT_ON)
+        (PRIMARY, Stroke::new(1.0_f32, PRIMARY), PRIMARY_TEXT_ON)
     } else {
-        (PAPER_SUNKEN, Stroke::new(1.0, RULE), INK_MUTED)
+        (PAPER_SUNKEN, Stroke::new(1.0_f32, RULE), INK_MUTED)
     };
     let text = WidgetText::from(
         RichText::new(label)
