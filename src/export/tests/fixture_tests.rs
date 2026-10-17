@@ -133,7 +133,10 @@ fn ndpi_default_htj2k_export_preserves_canonical_pixels_and_padding() {
     let source = std::env::var_os("WSI_DICOM_NDPI_FIXTURE")
         .map(PathBuf::from)
         .expect("set WSI_DICOM_NDPI_FIXTURE to the required fixture file");
-    assert!(source.is_file(), "the NDPI fixture must be an existing file");
+    assert!(
+        source.is_file(),
+        "the NDPI fixture must be an existing file"
+    );
     j2k_metal_support::system_default_device()
         .expect("the explicit NDPI export test requires Metal");
     let tmp = tempfile::tempdir().unwrap();
