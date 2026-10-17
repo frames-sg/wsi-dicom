@@ -185,6 +185,14 @@ impl DicomJ2kEncoder {
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub(crate) fn adopt_auto_probe_encoder(&mut self, mut probe: Self) {
+        if self.preference == EncodeBackendPreference::Auto {
+            probe.preference = EncodeBackendPreference::Auto;
+            *self = probe;
+        }
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
     pub(crate) fn preference(&self) -> EncodeBackendPreference {
         self.preference
     }

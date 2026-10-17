@@ -119,7 +119,8 @@ use self::metal_compose::{MetalComposeTileRequest, MetalStripComposer};
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 use self::metal_input::{
     cpu_input_device_encode_profile_allowed, select_auto_lossless_j2k_probe_route,
-    wsi_rs_device_decode_opted_in, AutoLosslessJ2kRouteCandidate,
+    wsi_rs_device_decode_opted_in, AutoLosslessJ2kProbeTotals, AutoLosslessJ2kRouteCandidate,
+    AutoLosslessJ2kSteadyObservation,
 };
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 use self::metal_input::{

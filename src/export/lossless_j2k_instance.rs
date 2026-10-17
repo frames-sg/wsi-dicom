@@ -15,7 +15,8 @@ use super::lossless_j2k_pipeline::{
     resolve_lossless_j2k_fallback_frame, LosslessJ2kBatchContext, LosslessJ2kRoutePipeline,
 };
 use super::lossless_j2k_plan::{
-    plan_lossless_j2k_frames, LosslessJ2kPlanRequest, LosslessJ2kPlannedFrame,
+    plan_lossless_j2k_frames_with_preflight, LosslessJ2kPlanRequest, LosslessJ2kPlannedFrame,
+    WholeLevelJpegExportPreflight, WholeLevelJpegPreflight,
 };
 use super::route_plan::RouteExecutionContext;
 use super::tile_grid::TileGrid;
@@ -217,6 +218,15 @@ pub(super) fn prepare_lossless_j2k_instance(
     )?;
     let mut source_lossy_compression = LossyCompressionAccumulator::default();
     let mut target_lossy_compression = LossyCompressionAccumulator::default();
+    let jpeg_preflight = WholeLevelJpegExportPreflight::new(
+        slide,
+        level,
+        coordinate,
+        options.semantics.transfer_syntax,
+    );
+    if let Some(preflight) = jpeg_preflight.as_ref() {
+        source_lossy_compression.observe(preflight.source_lossy_compression())?;
+    }
     let allow_passthrough_probe = j2k_family_passthrough_probe_allowed(
         &request.source_path,
         options.semantics.transfer_syntax,
@@ -264,7 +274,13 @@ pub(super) fn prepare_lossless_j2k_instance(
                         // The route changed the batch shape; the stale plan is unused.
                         let _ = plan.join();
                     }
-                    plan_lossless_j2k_frames(slide, plan_request(row, planned_row_count))?
+                    plan_lossless_j2k_frames_with_preflight(
+                        slide,
+                        plan_request(row, planned_row_count),
+                        jpeg_preflight
+                            .as_ref()
+                            .map(|_| WholeLevelJpegPreflight::VerifiedExport),
+                    )?
                 }
             };
             // Plan the next batch (raw reads and JPEG retile probes) while this one
@@ -283,9 +299,14 @@ pub(super) fn prepare_lossless_j2k_instance(
                     tiles_down - next_row,
                 );
                 let request = plan_request(next_row, next_count);
+                let jpeg_preflight = jpeg_preflight
+                    .as_ref()
+                    .map(|_| WholeLevelJpegPreflight::VerifiedExport);
                 prefetched = Some(PrefetchedPlan {
                     request,
-                    handle: scope.spawn(move || plan_lossless_j2k_frames(slide, request)),
+                    handle: scope.spawn(move || {
+                        plan_lossless_j2k_frames_with_preflight(slide, request, jpeg_preflight)
+                    }),
                 });
             }
             for source in planned

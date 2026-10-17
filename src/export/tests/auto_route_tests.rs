@@ -239,9 +239,117 @@ fn auto_lossless_j2k_probe_times_several_cpu_waves_in_whole_device_chunks() {
     // A 16-frame probe on a 12-thread pool timed one device submission against
     // two CPU waves and chose the CPU route that was 2x slower at level scale.
     assert_eq!(lossless_j2k_auto_route_probe_frames(12), 64);
+    assert_eq!(lossless_j2k_auto_route_probe_frames(18), 96);
     assert_eq!(lossless_j2k_auto_route_probe_frames(8), 32);
     assert_eq!(lossless_j2k_auto_route_probe_frames(1), 32);
     assert_eq!(lossless_j2k_auto_route_probe_frames(64), 128);
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
+fn auto_lossless_j2k_probe_accumulates_narrow_rows_before_deciding() {
+    let mut totals = AutoLosslessJ2kProbeTotals::new(96);
+    assert_eq!(
+        totals.observe(
+            57,
+            auto_route_candidate(true, 1_000),
+            auto_route_candidate(true, 5_000),
+            auto_route_candidate(false, 1),
+            AutoLosslessJ2kSteadyObservation {
+                frames: 25,
+                cpu_duration: Duration::from_micros(500),
+                partial_gpu_duration: Duration::from_micros(600),
+            },
+        ),
+        None
+    );
+    assert_eq!(totals.remaining_frames(), 39);
+    assert_eq!(
+        totals.observe(
+            39,
+            auto_route_candidate(true, 700),
+            auto_route_candidate(true, 400),
+            auto_route_candidate(false, 1),
+            AutoLosslessJ2kSteadyObservation {
+                frames: 39,
+                cpu_duration: Duration::from_micros(700),
+                partial_gpu_duration: Duration::from_micros(400),
+            },
+        ),
+        Some(AutoLosslessJ2kRouteDecision::CpuInputDeviceEncode)
+    );
+    assert_eq!(totals.remaining_frames(), 0);
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
+fn auto_lossless_j2k_probe_respects_a_smaller_profile_budget() {
+    let mut totals = AutoLosslessJ2kProbeTotals::new(64);
+    assert_eq!(
+        totals.observe(
+            57,
+            auto_route_candidate(true, 1_000),
+            auto_route_candidate(true, 900),
+            auto_route_candidate(false, 1),
+            AutoLosslessJ2kSteadyObservation {
+                frames: 25,
+                cpu_duration: Duration::from_micros(500),
+                partial_gpu_duration: Duration::from_micros(400),
+            },
+        ),
+        None
+    );
+    assert_eq!(totals.remaining_frames(), 7);
+    assert!(totals
+        .observe(
+            7,
+            auto_route_candidate(true, 200),
+            auto_route_candidate(true, 100),
+            auto_route_candidate(false, 1),
+            AutoLosslessJ2kSteadyObservation {
+                frames: 7,
+                cpu_duration: Duration::from_micros(200),
+                partial_gpu_duration: Duration::from_micros(100),
+            },
+        )
+        .is_some());
+    assert_eq!(totals.remaining_frames(), 0);
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
+fn auto_lossless_j2k_profile_accumulates_narrow_rows_within_budget() {
+    if j2k_metal_support::system_default_device().is_err() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("narrow-rows.dcm");
+    write_source_dicom_with_dimensions(&source, "1.2.826.0.1.3680043.10.999.802", 57 * 32, 2 * 32);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(18)
+        .build()
+        .unwrap();
+
+    for max_frames in [96, 64] {
+        let report = pool
+            .install(|| {
+                profile_dicom_routes(RouteProfileRequest {
+                    source_path: source.clone(),
+                    options: ExportOptions {
+                        tile_size: 32,
+                        transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+                        encode_backend: EncodeBackendPreference::Auto,
+                        ..ExportOptions::default()
+                    },
+                    source_aware_transfer_syntax: false,
+                    level: 0,
+                    max_frames,
+                })
+            })
+            .unwrap();
+        assert_eq!(report.metrics.routes.total_frames, max_frames);
+        assert_eq!(report.metrics.routes.auto_route_probe_frames, max_frames);
+    }
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -432,14 +540,18 @@ fn auto_metal_input_route_cache_reuses_probe_decision() {
         AutoLosslessJ2kRouteDecision::CpuOnly
     );
 
-    let uncached_full_reader = MetalInputTileReader::new_with_auto_device_decode_and_cache_key(
+    let mut uncached_full_reader = MetalInputTileReader::new_with_auto_device_decode_and_cache_key(
         EncodeBackendPreference::Auto,
         true,
-        Some(full_key),
+        Some(full_key.clone()),
         false,
     );
     assert!(uncached_full_reader.enabled());
     assert!(uncached_full_reader.auto_input_probe_pending());
+    uncached_full_reader
+        .record_auto_route_probe_decision_uncached(AutoLosslessJ2kRouteDecision::CpuOnly);
+    assert_eq!(cached_auto_metal_input_decision(&full_key), None);
+    assert!(!uncached_full_reader.auto_input_probe_pending());
 
     store_cached_auto_metal_input_decision(
         &key,

@@ -25,10 +25,11 @@ mod dispatch;
 #[cfg(test)]
 pub(super) use auto_route::{
     cpu_input_device_encode_profile_allowed, select_auto_lossless_j2k_probe_route,
-    AutoLosslessJ2kRouteCandidate,
+    AutoLosslessJ2kProbeTotals, AutoLosslessJ2kRouteCandidate, AutoLosslessJ2kSteadyObservation,
 };
 pub(super) use auto_route::{
-    probe_auto_metal_input_tile_run, AutoMetalInputProbeRequest, RoutedLosslessJ2kTile,
+    finalize_auto_metal_input_probe_scope, probe_auto_metal_input_tile_run,
+    AutoMetalInputProbeRequest, AutoMetalInputProbeState, RoutedLosslessJ2kTile,
 };
 pub(super) use cache::{MetalEncodedRowRunKey, MetalSourceTileCache, MetalSourceTileKey};
 pub(super) use dispatch::{
@@ -159,6 +160,7 @@ pub(super) struct MetalInputTileReader {
     pub(super) auto_device_decode_allowed: bool,
     pub(super) auto_decision: AutoLosslessJ2kRouteDecision,
     pub(super) auto_cache_key: Option<AutoMetalInputRouteCacheKey>,
+    pub(super) auto_probe_state: Option<AutoMetalInputProbeState>,
     pub(super) device: Option<crate::metal_interop::MetalDevice>,
     pub(super) sessions: Option<wsi_rs::output::metal::MetalBackendSessions>,
     pub(super) jpeg_encode_session: Option<j2k_jpeg_metal::MetalBackendSession>,
@@ -241,6 +243,7 @@ impl MetalInputTileReader {
             auto_device_decode_allowed,
             auto_decision,
             auto_cache_key,
+            auto_probe_state: None,
             device: None,
             sessions: None,
             jpeg_encode_session: None,
@@ -303,6 +306,13 @@ impl MetalInputTileReader {
             && self.auto_decision == AutoLosslessJ2kRouteDecision::Undecided
     }
 
+    pub(super) fn auto_input_probe_remaining_frames(&self, target_frames: usize) -> usize {
+        self.auto_probe_state
+            .as_ref()
+            .map(AutoMetalInputProbeState::remaining_frames)
+            .unwrap_or(target_frames)
+    }
+
     pub(super) fn auto_route_decision(&self) -> AutoLosslessJ2kRouteDecision {
         self.auto_decision
     }
@@ -317,6 +327,18 @@ impl MetalInputTileReader {
         if let Some(key) = &self.auto_cache_key {
             store_cached_auto_metal_input_decision(key, route);
         }
+    }
+
+    pub(super) fn record_auto_route_probe_decision_uncached(
+        &mut self,
+        route: AutoLosslessJ2kRouteDecision,
+    ) {
+        if self.preference != EncodeBackendPreference::Auto {
+            return;
+        }
+        self.auto_decision = route;
+        self.auto_device_decode_allowed =
+            route == AutoLosslessJ2kRouteDecision::GpuInputDeviceEncode;
     }
 
     fn sessions(&mut self) -> Result<wsi_rs::output::metal::MetalBackendSessions, Error> {

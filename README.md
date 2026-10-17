@@ -401,14 +401,25 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
 - Route profile and coverage JSON reports expose available frame counts,
   sampled frame percentages, route counters, pixel profiles, and GPU counters.
   Profile and automatic-probe lookahead stay within the requested frame budget.
-  Automatic route decisions use elapsed batch time and cache execution settings,
-  CPU pool size and Metal device identity. Short cold probes can still be noisy.
+  Automatic route probes continue across short rows within the frame budget.
+  CPU-input candidates share a warm-up batch; when enough later frames are
+  available, selection uses their steady batch time and retains the warmed
+  encoder. Cached decisions include execution settings, CPU pool size, Metal
+  device identity and the probe revision. Short probes can still be noisy.
 - Per-frame functional groups use streamed undefined-length sequences and items
   instead of an in-memory item list. Frame offsets and lengths are kept in a
   temporary disk-backed index and replayed when patching Extended Offset Tables.
 - Output names encode scene, series, level, Z, channel, and time coordinates;
   consumers must use report paths rather than assuming the pre-0.7 name shape.
 - Passing validators is release evidence, not formal DICOM certification.
+
+Lossless HTJ2K export preflights WholeLevel JPEG input with at most four native
+readers. When every native JPEG has a color profile that cannot be transcoded
+directly, export skips compressed-domain retiling and reconstructs RGB as before.
+Prior JPEG compression ratios then use each native source frame once, independent
+of output tile size. If any native frame cannot be verified, export keeps the
+ordinary planning path for the entire instance. Bounded route profiles inspect
+source headers only for their sampled output frames.
 
 CPU preparation runs in bounded batches and shares unchanged U8 storage. GPU
 source caching accounts for unique retained allocations, with a 128 MiB cache

@@ -407,7 +407,7 @@ pub(super) fn jpeg_direct_htj2k_supported_for_backend(
 const LOSSLESS_J2K_AUTO_ROUTE_PROBE_CPU_WAVES: usize = 4;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-const LOSSLESS_J2K_AUTO_ROUTE_PROBE_DEVICE_CHUNK_FRAMES: usize = 32;
+pub(super) const LOSSLESS_J2K_AUTO_ROUTE_PROBE_DEVICE_CHUNK_FRAMES: usize = 32;
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) const LOSSLESS_J2K_AUTO_ROUTE_PROBE_MAX_FRAMES: usize = 128;
@@ -563,7 +563,7 @@ pub(super) fn auto_metal_input_route_cache_key(
             let device = j2k_metal_support::system_default_device()
                 .map(|device| device.registryID()).ok();
             format!(
-                "v2;package={};execution={:?};resources={:?};rayon={};device={:?};row_env={:?};jpeg_decode={:?};jp2k_decode={:?}",
+                "v3;package={};execution={:?};resources={:?};rayon={};device={:?};row_env={:?};jpeg_decode={:?};jp2k_decode={:?}",
                 env!("CARGO_PKG_VERSION"), options.execution, options.resources,
                 rayon::current_num_threads(), device,
                 std::env::var_os(WSI_DICOM_METAL_ROW_BATCH_ROWS_ENV),

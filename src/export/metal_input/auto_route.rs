@@ -4,7 +4,8 @@ use wsi_rs::Slide;
 
 use super::super::cpu_batch::frame_batch_len;
 use super::super::j2k_policy::{
-    LOSSLESS_J2K_AUTO_PARTIAL_GPU_MIN_FRAMES, LOSSLESS_J2K_AUTO_ROUTE_SPEEDUP_DENOMINATOR,
+    lossless_j2k_auto_route_probe_frames, LOSSLESS_J2K_AUTO_PARTIAL_GPU_MIN_FRAMES,
+    LOSSLESS_J2K_AUTO_ROUTE_PROBE_DEVICE_CHUNK_FRAMES, LOSSLESS_J2K_AUTO_ROUTE_SPEEDUP_DENOMINATOR,
     LOSSLESS_J2K_AUTO_ROUTE_SPEEDUP_NUMERATOR,
 };
 use super::super::jpeg_baseline::JpegBaselineFrameLocation;
@@ -27,6 +28,8 @@ pub(in crate::export) struct RoutedLosslessJ2kTile {
 
 pub(in crate::export) struct CpuEncodedTileRun {
     pub(in crate::export) wall_duration: Duration,
+    pub(in crate::export) decision_wall_duration: Duration,
+    pub(in crate::export) decision_frames: usize,
     pub(in crate::export) gpu_encode_batches: u64,
     pub(in crate::export) gpu_encode_stats: encode::DicomJ2kGpuEncodeBatchStats,
     pub(in crate::export) tiles: Vec<(Result<EncodedDicomJ2kFrame, Error>, PixelProfile)>,
@@ -53,10 +56,178 @@ pub(in crate::export) struct AutoMetalInputProbeRequest<'a> {
     pub(in crate::export) location: JpegBaselineFrameLocation,
     pub(in crate::export) row: u64,
     pub(in crate::export) planned: &'a [LosslessJ2kPlannedFrame],
+    pub(in crate::export) probe_start_frame: usize,
     pub(in crate::export) route_scope_frames: usize,
     pub(in crate::export) matrix_columns: u64,
     pub(in crate::export) matrix_rows: u64,
     pub(in crate::export) tile_size: u32,
+}
+
+pub(in crate::export) struct AutoMetalInputProbeState {
+    probe_start_frame: usize,
+    totals: AutoLosslessJ2kProbeTotals,
+    partial_gpu_encoder: Option<DicomJ2kEncoder>,
+    warmup_batch_pending: bool,
+}
+
+impl AutoMetalInputProbeState {
+    pub(super) fn new(
+        probe_start_frame: usize,
+        route_scope_frames: usize,
+        encoder: &DicomJ2kEncoder,
+    ) -> Self {
+        let target_frames = lossless_j2k_auto_route_probe_frames(rayon::current_num_threads())
+            .min(route_scope_frames.saturating_sub(probe_start_frame));
+        Self {
+            probe_start_frame,
+            totals: AutoLosslessJ2kProbeTotals::new(target_frames),
+            partial_gpu_encoder: (route_scope_frames.saturating_sub(probe_start_frame)
+                >= LOSSLESS_J2K_AUTO_PARTIAL_GPU_MIN_FRAMES)
+                .then(|| encoder.require_device_peer()),
+            warmup_batch_pending: true,
+        }
+    }
+
+    pub(super) fn remaining_frames(&self) -> usize {
+        self.totals.remaining_frames()
+    }
+
+    fn scope_target_reached(&self, examined_frames: usize) -> bool {
+        examined_frames.saturating_sub(self.probe_start_frame) >= self.totals.target_frames
+    }
+
+    fn selected_route(&self) -> AutoLosslessJ2kRouteDecision {
+        self.totals.selected_route()
+    }
+
+    fn take_partial_gpu_encoder(&mut self) -> Option<DicomJ2kEncoder> {
+        self.partial_gpu_encoder.take()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::export) struct AutoLosslessJ2kSteadyObservation {
+    pub(in crate::export) frames: usize,
+    pub(in crate::export) cpu_duration: Duration,
+    pub(in crate::export) partial_gpu_duration: Duration,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::export) struct AutoLosslessJ2kProbeTotals {
+    target_frames: usize,
+    sampled_frames: usize,
+    cpu_only: AutoLosslessJ2kRouteCandidate,
+    cpu_input_device_encode: AutoLosslessJ2kRouteCandidate,
+    gpu_input_device_encode: AutoLosslessJ2kRouteCandidate,
+    steady_frames: usize,
+    steady_cpu_duration: Duration,
+    steady_partial_gpu_duration: Duration,
+}
+
+impl AutoLosslessJ2kProbeTotals {
+    pub(in crate::export) fn new(target_frames: usize) -> Self {
+        Self {
+            target_frames: target_frames.max(1),
+            sampled_frames: 0,
+            cpu_only: AutoLosslessJ2kRouteCandidate {
+                complete: true,
+                duration: Duration::ZERO,
+            },
+            cpu_input_device_encode: AutoLosslessJ2kRouteCandidate {
+                complete: true,
+                duration: Duration::ZERO,
+            },
+            gpu_input_device_encode: AutoLosslessJ2kRouteCandidate {
+                complete: true,
+                duration: Duration::ZERO,
+            },
+            steady_frames: 0,
+            steady_cpu_duration: Duration::ZERO,
+            steady_partial_gpu_duration: Duration::ZERO,
+        }
+    }
+
+    pub(in crate::export) fn observe(
+        &mut self,
+        frame_count: usize,
+        cpu_only: AutoLosslessJ2kRouteCandidate,
+        cpu_input_device_encode: AutoLosslessJ2kRouteCandidate,
+        gpu_input_device_encode: AutoLosslessJ2kRouteCandidate,
+        steady: AutoLosslessJ2kSteadyObservation,
+    ) -> Option<AutoLosslessJ2kRouteDecision> {
+        self.sampled_frames = self.sampled_frames.saturating_add(frame_count);
+        accumulate_probe_candidate(&mut self.cpu_only, cpu_only);
+        accumulate_probe_candidate(&mut self.cpu_input_device_encode, cpu_input_device_encode);
+        accumulate_probe_candidate(&mut self.gpu_input_device_encode, gpu_input_device_encode);
+        self.steady_frames = self.steady_frames.saturating_add(steady.frames);
+        self.steady_cpu_duration = self.steady_cpu_duration.saturating_add(steady.cpu_duration);
+        self.steady_partial_gpu_duration = self
+            .steady_partial_gpu_duration
+            .saturating_add(steady.partial_gpu_duration);
+        (self.sampled_frames >= self.target_frames).then(|| self.selected_route())
+    }
+
+    pub(in crate::export) fn remaining_frames(&self) -> usize {
+        self.target_frames.saturating_sub(self.sampled_frames)
+    }
+
+    fn selected_route(&self) -> AutoLosslessJ2kRouteDecision {
+        let total_route = select_auto_lossless_j2k_probe_route(
+            self.cpu_only,
+            self.cpu_input_device_encode,
+            self.gpu_input_device_encode,
+        );
+        if total_route == AutoLosslessJ2kRouteDecision::GpuInputDeviceEncode
+            || self.steady_frames < LOSSLESS_J2K_AUTO_ROUTE_PROBE_DEVICE_CHUNK_FRAMES
+        {
+            return total_route;
+        }
+        select_auto_lossless_j2k_probe_route(
+            AutoLosslessJ2kRouteCandidate {
+                complete: self.cpu_only.complete,
+                duration: self.steady_cpu_duration,
+            },
+            AutoLosslessJ2kRouteCandidate {
+                complete: self.cpu_input_device_encode.complete,
+                duration: self.steady_partial_gpu_duration,
+            },
+            AutoLosslessJ2kRouteCandidate {
+                complete: false,
+                duration: Duration::ZERO,
+            },
+        )
+    }
+}
+
+fn accumulate_probe_candidate(
+    accumulated: &mut AutoLosslessJ2kRouteCandidate,
+    observed: AutoLosslessJ2kRouteCandidate,
+) {
+    accumulated.complete &= observed.complete;
+    accumulated.duration = accumulated.duration.saturating_add(observed.duration);
+}
+
+pub(in crate::export) fn finalize_auto_metal_input_probe_scope(
+    metal_input: &mut MetalInputTileReader,
+    j2k_encoder: &mut DicomJ2kEncoder,
+    examined_frames: usize,
+) {
+    let Some(mut probe_state) = metal_input.auto_probe_state.take() else {
+        return;
+    };
+    if !probe_state.scope_target_reached(examined_frames) {
+        metal_input.auto_probe_state = Some(probe_state);
+        return;
+    }
+    let route = probe_state.selected_route();
+    if route == AutoLosslessJ2kRouteDecision::CpuInputDeviceEncode {
+        if let Some(probe_encoder) = probe_state.take_partial_gpu_encoder() {
+            j2k_encoder.adopt_auto_probe_encoder(probe_encoder);
+        }
+    } else if route == AutoLosslessJ2kRouteDecision::CpuOnly {
+        j2k_encoder.force_cpu_only_for_auto();
+    }
+    metal_input.record_auto_route_probe_decision_uncached(route);
 }
 
 pub(in crate::export) fn probe_auto_metal_input_tile_run(
@@ -70,6 +241,7 @@ pub(in crate::export) fn probe_auto_metal_input_tile_run(
         location,
         row,
         planned,
+        probe_start_frame,
         route_scope_frames,
         matrix_columns,
         matrix_rows,
@@ -108,13 +280,14 @@ pub(in crate::export) fn probe_auto_metal_input_tile_run(
     let resident_gpu_duration = gpu_started.elapsed();
     let metal_run = metal_run?;
     let cpu_probe_encoder = j2k_encoder.cpu_only_peer();
-    let mut partial_probe_encoder = (route_scope_frames
-        >= LOSSLESS_J2K_AUTO_PARTIAL_GPU_MIN_FRAMES)
-        .then(|| j2k_encoder.require_device_peer());
+    let mut probe_state = metal_input.auto_probe_state.take().unwrap_or_else(|| {
+        AutoMetalInputProbeState::new(probe_start_frame, route_scope_frames, j2k_encoder)
+    });
     let (cpu_run, partial_gpu_run) = encode_shared_cpu_input_probe_runs(
         slide,
         &cpu_probe_encoder,
-        partial_probe_encoder.as_mut(),
+        probe_state.partial_gpu_encoder.as_mut(),
+        &mut probe_state.warmup_batch_pending,
         CpuInputPlannedTileRunRequest {
             level,
             max_prepared_frame_bytes: metal_input.max_prepared_frame_bytes,
@@ -137,23 +310,56 @@ pub(in crate::export) fn probe_auto_metal_input_tile_run(
         .map(cpu_encoded_tile_run_total_duration)
         .unwrap_or(Duration::ZERO);
     let cpu_duration = cpu_encoded_tile_run_total_duration(&cpu_run);
-    let route = select_auto_lossless_j2k_probe_route(
-        AutoLosslessJ2kRouteCandidate {
-            complete: cpu_complete,
-            duration: cpu_duration,
-        },
-        AutoLosslessJ2kRouteCandidate {
-            complete: partial_gpu_complete,
-            duration: partial_gpu_duration,
-        },
-        AutoLosslessJ2kRouteCandidate {
-            complete: resident_gpu_complete,
-            duration: resident_gpu_duration,
+    let steady_frames = partial_gpu_run
+        .as_ref()
+        .map(|run| run.decision_frames)
+        .unwrap_or(cpu_run.decision_frames);
+    let steady_partial_gpu_duration = partial_gpu_run
+        .as_ref()
+        .map(|run| run.decision_wall_duration)
+        .unwrap_or(Duration::ZERO);
+    let cpu_candidate = AutoLosslessJ2kRouteCandidate {
+        complete: cpu_complete,
+        duration: cpu_duration,
+    };
+    let partial_gpu_candidate = AutoLosslessJ2kRouteCandidate {
+        complete: partial_gpu_complete,
+        duration: partial_gpu_duration,
+    };
+    let resident_gpu_candidate = AutoLosslessJ2kRouteCandidate {
+        complete: resident_gpu_complete,
+        duration: resident_gpu_duration,
+    };
+    let finalized_route = probe_state.totals.observe(
+        planned.len(),
+        cpu_candidate,
+        partial_gpu_candidate,
+        resident_gpu_candidate,
+        AutoLosslessJ2kSteadyObservation {
+            frames: steady_frames,
+            cpu_duration: cpu_run.decision_wall_duration,
+            partial_gpu_duration: steady_partial_gpu_duration,
         },
     );
-    metal_input.record_auto_route_probe_decision(route);
-    if route == AutoLosslessJ2kRouteDecision::CpuOnly {
-        j2k_encoder.force_cpu_only_for_auto();
+    let route = finalized_route.unwrap_or_else(|| {
+        select_auto_lossless_j2k_probe_route(
+            cpu_candidate,
+            partial_gpu_candidate,
+            resident_gpu_candidate,
+        )
+    });
+    if let Some(finalized_route) = finalized_route {
+        if finalized_route == AutoLosslessJ2kRouteDecision::CpuInputDeviceEncode {
+            if let Some(probe_encoder) = probe_state.take_partial_gpu_encoder() {
+                j2k_encoder.adopt_auto_probe_encoder(probe_encoder);
+            }
+        }
+        metal_input.record_auto_route_probe_decision(finalized_route);
+        if finalized_route == AutoLosslessJ2kRouteDecision::CpuOnly {
+            j2k_encoder.force_cpu_only_for_auto();
+        }
+    } else {
+        metal_input.auto_probe_state = Some(probe_state);
     }
 
     let probe_gpu_batches = metal_run
@@ -262,6 +468,7 @@ fn encode_shared_cpu_input_probe_runs(
     slide: &Slide,
     cpu_encoder: &DicomJ2kEncoder,
     mut gpu_encoder: Option<&mut DicomJ2kEncoder>,
+    warmup_batch_pending: &mut bool,
     request: CpuInputPlannedTileRunRequest<'_>,
 ) -> Result<(CpuEncodedTileRun, Option<CpuEncodedTileRun>), Error> {
     let CpuInputPlannedTileRunRequest {
@@ -277,6 +484,8 @@ fn encode_shared_cpu_input_probe_runs(
         input_decode_duration: Duration::ZERO,
         compose_duration: Duration::ZERO,
         wall_duration: Duration::ZERO,
+        decision_wall_duration: Duration::ZERO,
+        decision_frames: 0,
         gpu_encode_batches: 0,
         gpu_encode_stats: Default::default(),
     };
@@ -285,6 +494,8 @@ fn encode_shared_cpu_input_probe_runs(
         input_decode_duration: Duration::ZERO,
         compose_duration: Duration::ZERO,
         wall_duration: Duration::ZERO,
+        decision_wall_duration: Duration::ZERO,
+        decision_frames: 0,
         gpu_encode_batches: 0,
         gpu_encode_stats: Default::default(),
     });
@@ -304,6 +515,7 @@ fn encode_shared_cpu_input_probe_runs(
     };
 
     for batch in frames.chunks(frame_batch_len(tile_size, tile_size)) {
+        let decision_batch = !*warmup_batch_pending;
         let prepare_started = Instant::now();
         let prepared = prepare_cpu_input_batch(
             slide,
@@ -323,10 +535,14 @@ fn encode_shared_cpu_input_probe_runs(
 
         let cpu_encode_started = Instant::now();
         let outcomes = encode_prepared_lossless_j2k_cpu_batch(cpu_settings, &prepared, tile_size)?;
-        cpu_run.wall_duration = cpu_run
-            .wall_duration
-            .saturating_add(prepare_wall_duration)
-            .saturating_add(cpu_encode_started.elapsed());
+        let cpu_batch_duration = prepare_wall_duration.saturating_add(cpu_encode_started.elapsed());
+        cpu_run.wall_duration = cpu_run.wall_duration.saturating_add(cpu_batch_duration);
+        if decision_batch {
+            cpu_run.decision_wall_duration = cpu_run
+                .decision_wall_duration
+                .saturating_add(cpu_batch_duration);
+            cpu_run.decision_frames = cpu_run.decision_frames.saturating_add(batch.len());
+        }
         cpu_run.input_decode_duration = cpu_run
             .input_decode_duration
             .saturating_add(input_decode_duration);
@@ -371,10 +587,15 @@ fn encode_shared_cpu_input_probe_runs(
                     })
                     .collect(),
             };
-            run.wall_duration = run
-                .wall_duration
-                .saturating_add(prepare_wall_duration)
-                .saturating_add(gpu_encode_started.elapsed());
+            let gpu_batch_duration =
+                prepare_wall_duration.saturating_add(gpu_encode_started.elapsed());
+            run.wall_duration = run.wall_duration.saturating_add(gpu_batch_duration);
+            if decision_batch {
+                run.decision_wall_duration = run
+                    .decision_wall_duration
+                    .saturating_add(gpu_batch_duration);
+                run.decision_frames = run.decision_frames.saturating_add(batch.len());
+            }
             run.input_decode_duration = run
                 .input_decode_duration
                 .saturating_add(input_decode_duration);
@@ -383,6 +604,7 @@ fn encode_shared_cpu_input_probe_runs(
                 run.tiles.push((encoded, tile.profile));
             }
         }
+        *warmup_batch_pending = false;
     }
     Ok((cpu_run, gpu_run))
 }
@@ -461,6 +683,37 @@ mod tests {
     use crate::export::frame_region::FrameRectGrid;
     use crate::export::lossless_j2k_plan::{plan_lossless_j2k_frames, LosslessJ2kPlanRequest};
     use crate::options::{CodecValidation, EncodeBackendPreference, TransferSyntax};
+
+    #[test]
+    fn auto_probe_encoder_handoff_restores_auto_fallback_semantics() {
+        let mut encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::Auto,
+            TransferSyntax::Htj2kLosslessRpcl,
+            CodecValidation::Disabled,
+        );
+        let probe = encoder.require_device_peer();
+        assert_eq!(probe.preference(), EncodeBackendPreference::RequireDevice);
+        encoder.adopt_auto_probe_encoder(probe);
+        assert_eq!(encoder.preference(), EncodeBackendPreference::Auto);
+    }
+
+    #[test]
+    fn auto_probe_scope_counts_from_the_first_fallback_frame() {
+        let encoder = DicomJ2kEncoder::new(
+            EncodeBackendPreference::Auto,
+            TransferSyntax::Htj2kLosslessRpcl,
+            CodecValidation::Disabled,
+        );
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(18)
+            .build()
+            .unwrap();
+        let state = pool.install(|| AutoMetalInputProbeState::new(100, 196, &encoder));
+
+        assert_eq!(state.totals.target_frames, 96);
+        assert!(!state.scope_target_reached(101));
+        assert!(state.scope_target_reached(196));
+    }
 
     fn decode_rgb8_frame(frame: EncodedDicomJ2kFrame, tile_size: u32) -> Vec<u8> {
         let codestream = frame.into_codestream().expect("materialize codestream");
@@ -548,10 +801,12 @@ mod tests {
             CodecValidation::Disabled,
         );
 
+        let mut warmup_batch_pending = true;
         let (cpu_run, device_run) = encode_shared_cpu_input_probe_runs(
             &slide,
             &cpu_encoder,
             Some(&mut device_encoder),
+            &mut warmup_batch_pending,
             request,
         )
         .expect("encode shared probe candidates");
@@ -589,9 +844,15 @@ mod tests {
         assert_eq!(cpu_pixels, expected);
         assert_eq!(device_pixels, expected);
 
-        let (cpu_only_run, device_run) =
-            encode_shared_cpu_input_probe_runs(&slide, &cpu_encoder, None, request)
-                .expect("encode CPU-only probe candidate");
+        let mut warmup_batch_pending = true;
+        let (cpu_only_run, device_run) = encode_shared_cpu_input_probe_runs(
+            &slide,
+            &cpu_encoder,
+            None,
+            &mut warmup_batch_pending,
+            request,
+        )
+        .expect("encode CPU-only probe candidate");
         assert!(device_run.is_none());
         assert_eq!(cpu_only_run.tiles.len(), 2);
         let cpu_only_pixels: Vec<_> = cpu_only_run
