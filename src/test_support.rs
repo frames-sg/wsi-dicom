@@ -54,9 +54,11 @@ pub(crate) fn read_binary_ppm_for_test(path: &Path) -> (u32, u32, Vec<u8>) {
         .parse::<u32>()
         .expect("PPM max value");
     assert_eq!(max_value, 255);
-    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-        cursor += 1;
-    }
+    assert!(
+        bytes.get(cursor).is_some_and(u8::is_ascii_whitespace),
+        "PPM raster must follow a whitespace separator"
+    );
+    cursor += 1;
     let expected_len = (width as usize) * (height as usize) * 3;
     assert_eq!(bytes.len() - cursor, expected_len);
     (width, height, bytes[cursor..].to_vec())
@@ -357,6 +359,17 @@ mod tests {
 
         assert_eq!((width, height), (2, 1));
         assert_eq!(pixels, vec![1, 2, 3, 4, 5, 6]);
+
+        for first_sample in [b' ', b'\t', b'\n', b'\r', 0x0b, 0x0c] {
+            let expected = [first_sample, 1, 2];
+            let mut ppm = b"P6\n1 1\n255\n".to_vec();
+            ppm.extend_from_slice(&expected);
+            std::fs::write(&path, ppm).expect("write whitespace-valued pixels");
+
+            let (width, height, pixels) = read_binary_ppm_for_test(&path);
+            assert_eq!((width, height), (1, 1));
+            assert_eq!(pixels, expected);
+        }
     }
 
     #[test]

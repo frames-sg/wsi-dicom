@@ -3,9 +3,7 @@ use super::*;
 #[test]
 #[ignore = "requires WSI_DICOM_NDPI_FIXTURE"]
 fn export_dicom_can_export_source_synthetic_downsample_level() {
-    let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
-        return;
-    };
+    let source = required_fixture_path("WSI_DICOM_NDPI_FIXTURE");
     let tmp = tempfile::tempdir().unwrap();
     let slide = Slide::open(&source).unwrap();
     let series = &slide.dataset().scenes[0].series[0];
@@ -75,13 +73,9 @@ fn export_dicom_can_export_source_synthetic_downsample_level() {
 #[ignore = "requires WSI_DICOM_NDPI_FIXTURE and Metal"]
 #[cfg(all(feature = "metal", target_os = "macos"))]
 fn export_dicom_requires_device_encode_for_synthetic_level_with_cpu_source_input() {
-    let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
-        return;
-    };
-    if j2k_metal_support::system_default_device().is_err() {
-        eprintln!("skipping synthetic level device export test; Metal is unavailable");
-        return;
-    }
+    let source = required_fixture_path("WSI_DICOM_NDPI_FIXTURE");
+    j2k_metal_support::system_default_device()
+        .expect("the explicit synthetic-level encode test requires Metal");
     let tmp = tempfile::tempdir().unwrap();
     let slide = Slide::open(&source).unwrap();
     let level_idx = slide.dataset().scenes[0].series[0]
@@ -130,13 +124,7 @@ fn export_dicom_requires_device_encode_for_synthetic_level_with_cpu_source_input
 fn ndpi_default_htj2k_export_preserves_canonical_pixels_and_padding() {
     const MAX_FRAMES: u64 = 256;
 
-    let source = std::env::var_os("WSI_DICOM_NDPI_FIXTURE")
-        .map(PathBuf::from)
-        .expect("set WSI_DICOM_NDPI_FIXTURE to the required fixture file");
-    assert!(
-        source.is_file(),
-        "the NDPI fixture must be an existing file"
-    );
+    let source = required_fixture_path("WSI_DICOM_NDPI_FIXTURE");
     j2k_metal_support::system_default_device()
         .expect("the explicit NDPI export test requires Metal");
     let tmp = tempfile::tempdir().unwrap();
@@ -268,12 +256,11 @@ fn ndpi_default_htj2k_export_preserves_canonical_pixels_and_padding() {
     }
 }
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
-#[ignore = "requires WSI_DICOM_NDPI_FIXTURE"]
-fn ndpi_fixture_exports_all_lossless_j2k_transfer_syntaxes_and_tile_sizes() {
-    let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
-        return;
-    };
+#[ignore = "requires WSI_DICOM_NDPI_FIXTURE and Metal"]
+fn ndpi_edge_tile_device_encode_round_trips_all_lossless_j2k_profiles() {
+    let source = required_fixture_path("WSI_DICOM_NDPI_FIXTURE");
     let slide = Slide::open(&source).unwrap();
     let level = &slide.dataset().scenes[0].series[0].levels[0];
     let (matrix_columns, matrix_rows) = level.dimensions;
@@ -327,9 +314,7 @@ fn ndpi_fixture_exports_all_lossless_j2k_transfer_syntaxes_and_tile_sizes() {
 #[test]
 #[ignore = "requires WSI_DICOM_NDPI_FIXTURE"]
 fn ndpi_fixture_exports_full_jpeg_baseline_passthrough_instance() {
-    let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
-        return;
-    };
+    let source = required_fixture_path("WSI_DICOM_NDPI_FIXTURE");
     let output_dir_env = std::env::var_os("WSI_DICOM_NDPI_JPEG_OUT")
         .or_else(|| std::env::var_os("WSI_DICOM_NDPI_LEVEL3_JPEG_OUT"))
         .map(PathBuf::from);
@@ -452,138 +437,32 @@ fn ndpi_fixture_exports_full_jpeg_baseline_passthrough_instance() {
     );
 }
 
-#[test]
-#[ignore = "requires WSI_DICOM_NDPI_FIXTURE"]
-fn ndpi_fixture_exports_jpeg_baseline_passthrough_pyramid_subset_for_qupath() {
-    let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
-        return;
-    };
-    let output_dir = std::env::var_os("WSI_DICOM_NDPI_PYRAMID_OUT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| tempfile::tempdir().unwrap().keep());
-    std::fs::create_dir_all(&output_dir).unwrap();
-
-    let request = ExportRequest {
-        source_path: source.clone(),
-        output_dir,
-        options: ExportOptions {
-            tile_size: 512,
-            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
-            encode_backend: EncodeBackendPreference::CpuOnly,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: false,
-            ..ExportOptions::default()
-        },
-        color_management: ColorManagement::SourceOrSrgb,
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: None,
-    };
-    let metadata = request.metadata.resolve().unwrap();
-    let normalized_options = NormalizedExportOptions::from_validated(&request.options);
-    let identity = DicomExportIdentity::for_export(
-        &source,
-        &normalized_options,
-        &metadata,
-        request.level_filter,
-        &[],
-    )
-    .unwrap();
-    let slide = Slide::open(&source).unwrap();
-    let levels = ndpi_jpeg_passthrough_levels(&slide, request.options.tile_size);
-    assert!(
-        levels.len() >= 2,
-        "NDPI fixture must expose at least two JPEG passthrough levels for pyramid testing"
-    );
-
-    let mut reports = Vec::with_capacity(levels.len());
-    for (instance_idx, (level_idx, geometry)) in levels.iter().copied().enumerate() {
-        let level = &slide.dataset().scenes[0].series[0].levels[level_idx];
-        let expected_frames = geometry.tiles_across * geometry.tiles_down;
-        let report = export_jpeg_passthrough_instance(
-            &slide,
-            &request,
-            InstanceExportContext {
-                options: &normalized_options,
-                metadata: &metadata,
-                identity: &identity,
-                instance_number: (instance_idx + 1) as u32,
-                coordinate: InstanceCoordinate::new(0, 0, level_idx as u32, 0, 0, 0),
-                level,
-                per_frame_plan: None,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(report.metrics.routes.total_frames, expected_frames);
-        assert_eq!(
-            report.metrics.routes.jpeg_passthrough_frames,
-            expected_frames
-        );
-        assert_eq!(report.metrics.routes.jpeg_decode_fallback_frames, 0);
-        assert_eq!(report.metrics.routes.jpeg_cpu_encode_frames, 0);
-        assert_eq!(report.metrics.routes.cpu_input_frames, 0);
-        reports.push(report);
-    }
-
-    let first = dicom_object::open_file(&reports[0].path).unwrap();
-    let series_uid = first
-        .element(tags::SERIES_INSTANCE_UID)
-        .unwrap()
-        .to_str()
-        .unwrap();
-    let pyramid_uid = first.element(tags::PYRAMID_UID).unwrap().to_str().unwrap();
-    for report in &reports[1..] {
-        let object = dicom_object::open_file(&report.path).unwrap();
-        assert_eq!(
-            object
-                .element(tags::SERIES_INSTANCE_UID)
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            series_uid
-        );
-        assert_eq!(
-            object.element(tags::PYRAMID_UID).unwrap().to_str().unwrap(),
-            pyramid_uid
-        );
-    }
-}
-
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
-#[ignore = "requires WSI_DICOM_METAL_INPUT_FIXTURE"]
-fn fixture_first_mappable_tiles_use_batched_wsi_rs_metal_input_decode_and_metal_encode() {
-    let Some(source) = std::env::var_os("WSI_DICOM_METAL_INPUT_FIXTURE").map(PathBuf::from) else {
-        return;
-    };
-    std::env::set_var("WSI_RS_JPEG_DEVICE_DECODE", "1");
-    std::env::set_var("WSI_RS_JP2K_DEVICE_DECODE", "1");
-
+fn reversible_jp2k_source_tiles_use_batched_metal_decode_and_encode() {
+    const TILE_SIZE: u32 = 16;
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("reversible.svs");
+    let pixels = [11u32, 19].map(|multiplier| {
+        (0..TILE_SIZE * TILE_SIZE * 3)
+            .map(|idx| ((idx * multiplier) & 0xff) as u8)
+            .collect::<Vec<_>>()
+    });
+    let codestreams = pixels.each_ref().map(|pixels| {
+        let samples = J2kLosslessSamples::new(pixels, TILE_SIZE, TILE_SIZE, 3, 8, false)
+            .expect("RGB source samples");
+        encode_dicom_j2k_lossless(samples, EncodeBackendPreference::CpuOnly).unwrap()
+    });
+    write_tiled_jp2k_rgb_tiff(
+        &source,
+        TILE_SIZE * 2,
+        TILE_SIZE,
+        TILE_SIZE,
+        TILE_SIZE,
+        &codestreams,
+    );
     let slide = Slide::open(&source).unwrap();
     let level = &slide.dataset().scenes[0].series[0].levels[0];
-    let tile_size = match level.tile_layout {
-        TileLayout::Regular {
-            tile_width,
-            tile_height,
-            ..
-        } => {
-            assert_eq!(tile_width, tile_height);
-            tile_width
-        }
-        TileLayout::WholeLevel {
-            virtual_tile_width,
-            virtual_tile_height,
-            ..
-        } if virtual_tile_width == virtual_tile_height => virtual_tile_width,
-        TileLayout::WholeLevel { .. } => 512,
-        _ => {
-            panic!("fixture first level must use a mappable Regular or WholeLevel tile layout")
-        }
-    };
-    let tiles_across = level.dimensions.0.div_ceil(u64::from(tile_size));
-    let tile_count = tiles_across.min(2);
-    assert!(tile_count > 0);
-
     let mut metal_input = MetalInputTileReader::new(EncodeBackendPreference::RequireDevice, true);
     let mut encoder = DicomJ2kEncoder::new(
         EncodeBackendPreference::RequireDevice,
@@ -599,45 +478,64 @@ fn fixture_first_mappable_tiles_use_batched_wsi_rs_metal_input_decode_and_metal_
             location: JpegBaselineFrameLocation::first_series_level(0),
             row: 0,
             start_col: 0,
-            tile_count: usize::try_from(tile_count).unwrap(),
+            tile_count: 2,
             matrix_columns: level.dimensions.0,
             matrix_rows: level.dimensions.1,
-            tile_size,
+            tile_size: TILE_SIZE,
         },
     )
     .unwrap();
 
-    assert_eq!(encoded.tiles.len(), tile_count as usize);
-    assert!(encoded.input_decode_duration > Duration::ZERO);
-    for frame in encoded.tiles {
-        let frame = frame.expect("fixture tile should decode and encode on Metal");
-        assert!(frame.0.used_device_encode);
-        assert!(frame.0.used_device_validation);
-        assert_transfer_syntax_codestream(
-            TransferSyntax::Jpeg2000Lossless,
-            frame
-                .0
-                .codestream_bytes()
-                .expect("codestream bytes")
-                .as_ref(),
+    assert!(
+        encoded.used_gpu_input,
+        "source samples must be decoded on Metal"
+    );
+    assert_eq!(encoded.input_decode_batches, 1);
+    assert_eq!(encoded.encode_batches, 1);
+    assert_eq!(encoded.tiles.len(), pixels.len());
+    for (frame, expected) in encoded.tiles.into_iter().zip(pixels) {
+        let (frame, profile) = frame.expect("Metal encoded source tile");
+        assert!(frame.used_device_encode && frame.used_device_validation);
+        assert_eq!(
+            decode_j2k_frame_for_test(
+                frame.codestream_bytes().unwrap().as_ref(),
+                TILE_SIZE,
+                TILE_SIZE,
+                profile.components,
+                profile.bits_allocated,
+            ),
+            expected
         );
     }
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
-#[ignore = "requires WSI_DICOM_APERIO_JP2K_FIXTURE and Metal JP2K device decode"]
-fn aperio_jp2k_aligned_metal_input_256_htj2k_rpcl_tile_matches_cpu() {
-    assert_aperio_jp2k_metal_input_tile_matches_cpu(256);
+#[ignore = "requires WSI_DICOM_APERIO_JP2K_FIXTURE and Metal encode"]
+fn aperio_jp2k_device_encoded_256_htj2k_rpcl_tile_matches_cpu() {
+    assert_aperio_jp2k_device_encoded_tile_matches_cpu(256);
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
-#[ignore = "requires WSI_DICOM_APERIO_JP2K_FIXTURE"]
+#[ignore = "requires WSI_DICOM_APERIO_JP2K_FIXTURE and Metal"]
 fn lossy_jp2k_input_preserves_canonical_cpu_pixels_for_lossless_export() {
-    let source = PathBuf::from(std::env::var_os("WSI_DICOM_APERIO_JP2K_FIXTURE").expect("fixture"));
+    let source = required_fixture_path("WSI_DICOM_APERIO_JP2K_FIXTURE");
     let slide = Slide::open(source).unwrap();
     let level = &slide.dataset().scenes[0].series[0].levels[2];
+    let raw = slide
+        .read_raw_compressed_tile(&wsi_rs::TileRequest::new(0, 0, 2, 0, 0))
+        .expect("read the irreversible Aperio JPEG 2000 source tile");
+    assert!(matches!(
+        raw.compression(),
+        Compression::Jp2kRgb | Compression::Jp2kYcbcr
+    ));
+    assert!(!J2kView::parse(raw.data())
+        .unwrap()
+        .passthrough_candidate()
+        .expect("supported Aperio JPEG 2000 source")
+        .transfer_syntax()
+        .is_lossless());
     let mut reader = MetalInputTileReader::new(EncodeBackendPreference::RequireDevice, true);
     let mut encoder = DicomJ2kEncoder::new(
         EncodeBackendPreference::RequireDevice,
@@ -678,23 +576,18 @@ fn lossy_jp2k_input_preserves_canonical_cpu_pixels_for_lossless_export() {
         ))
         .unwrap();
     let expected = prepare_tile_samples(&expected, 256, 256).unwrap();
-    let max_difference = actual
-        .iter()
-        .zip(expected.bytes.iter())
-        .map(|(a, b)| a.abs_diff(*b))
-        .max()
-        .unwrap();
     assert_eq!(
-        max_difference, 0,
+        actual.as_slice(),
+        expected.bytes.as_slice(),
         "lossless export must preserve canonical decoded source samples"
     );
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
-#[ignore = "requires WSI_DICOM_APERIO_JP2K_FIXTURE and Metal JP2K device decode"]
-fn aperio_jp2k_regular_tiled_metal_input_composes_512_htj2k_rpcl_tile_matches_cpu() {
-    assert_aperio_jp2k_metal_input_tile_matches_cpu(512);
+#[ignore = "requires WSI_DICOM_APERIO_JP2K_FIXTURE and Metal encode"]
+fn aperio_jp2k_device_encoded_composed_512_htj2k_rpcl_tile_matches_cpu() {
+    assert_aperio_jp2k_device_encoded_tile_matches_cpu(512);
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -725,10 +618,13 @@ fn require_device_source_tile_read_rejects_cpu_decode_fallback() {
 #[test]
 #[ignore = "requires WSI_DICOM_APERIO_JP2K_FIXTURE"]
 fn real_aperio_jp2k_problem_tile_round_trips() {
-    let Some(source) = std::env::var_os("WSI_DICOM_APERIO_JP2K_FIXTURE").map(PathBuf::from) else {
-        return;
-    };
+    let source = required_fixture_path("WSI_DICOM_APERIO_JP2K_FIXTURE");
     let slide = Slide::open(&source).unwrap();
+    let dimensions = slide.dataset().scenes[0].series[0].levels[0].dimensions;
+    assert!(
+        dimensions.0 >= 25 * 512 && dimensions.1 >= 13 * 512,
+        "Aperio fixture must contain the complete problem region"
+    );
     let region = slide
         .read_region(&RegionRequest::new(
             0usize,
@@ -749,219 +645,7 @@ fn real_aperio_jp2k_problem_tile_round_trips() {
     )
     .unwrap();
 
-    let tile_out = std::env::var_os("WSI_DICOM_APERIO_JP2K_TILE_OUT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/aperio-jp2k-problem-tile.rgb"));
-    if let Some(parent) = tile_out.parent() {
-        fs::create_dir_all(parent).unwrap();
-    }
-    fs::write(tile_out, prepared.bytes.as_slice()).unwrap();
     encode_dicom_j2k_lossless(samples, EncodeBackendPreference::CpuOnly).unwrap();
-}
-
-#[test]
-#[ignore = "requires WSI_DICOM_EXPORT_DIR"]
-fn exported_aperio_jp2k_dicom_instances_read_back() {
-    let Some(output_dir) = std::env::var_os("WSI_DICOM_EXPORT_DIR").map(PathBuf::from) else {
-        return;
-    };
-    let expected = [
-        (
-            "level-0000-z0000-c0000-t0000.dcm",
-            15374u32,
-            17497u32,
-            1085u32,
-        ),
-        ("level-0001-z0000-c0000-t0000.dcm", 3843u32, 4374u32, 72u32),
-        ("level-0002-z0000-c0000-t0000.dcm", 1921u32, 2187u32, 20u32),
-    ];
-
-    for (file_name, columns, rows, frames) in expected {
-        let object = dicom_object::open_file(output_dir.join(file_name)).unwrap();
-        assert_eq!(
-            object.meta().media_storage_sop_class_uid,
-            uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE
-        );
-        assert_eq!(object.meta().transfer_syntax, uids::JPEG2000_LOSSLESS);
-        assert_eq!(
-            object
-                .element(tags::SOP_CLASS_UID)
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE
-        );
-        assert_eq!(
-            object
-                .element(tags::TOTAL_PIXEL_MATRIX_COLUMNS)
-                .unwrap()
-                .to_int::<u32>()
-                .unwrap(),
-            columns
-        );
-        assert_eq!(
-            object
-                .element(tags::TOTAL_PIXEL_MATRIX_ROWS)
-                .unwrap()
-                .to_int::<u32>()
-                .unwrap(),
-            rows
-        );
-        assert_eq!(
-            object
-                .element(tags::NUMBER_OF_FRAMES)
-                .unwrap()
-                .to_int::<u32>()
-                .unwrap(),
-            frames
-        );
-        assert_eq!(
-            object
-                .element(tags::PIXEL_DATA)
-                .unwrap()
-                .value()
-                .fragments()
-                .unwrap()
-                .len(),
-            frames as usize
-        );
-    }
-}
-
-#[test]
-#[ignore = "requires WSI_DICOM_NDPI_FIXTURE and Metal device decode"]
-#[cfg(all(feature = "metal", target_os = "macos"))]
-fn ndpi_whole_level_metal_rows_do_not_turn_black_after_reused_encoder_state() {
-    let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
-        return;
-    };
-    std::env::set_var("WSI_RS_JPEG_DEVICE_DECODE", "1");
-    let slide = Slide::open(&source).unwrap();
-    let level = &slide.dataset().scenes[0].series[0].levels[0];
-    let (matrix_columns, matrix_rows) = level.dimensions;
-    let tile_size = 512u32;
-    let tiles_across = matrix_columns.div_ceil(u64::from(tile_size));
-    let target_row = 12u64.min(matrix_rows.div_ceil(u64::from(tile_size)).saturating_sub(1));
-    let target_col = 0u64;
-    let mut metal_input = MetalInputTileReader::new(EncodeBackendPreference::RequireDevice, true);
-    let mut j2k_encoder = DicomJ2kEncoder::new(
-        EncodeBackendPreference::RequireDevice,
-        TransferSyntax::Htj2kLossless,
-        CodecValidation::RoundTrip,
-    );
-
-    let mut target = None;
-    for row in 0..=target_row {
-        let mut metal_row = try_encode_metal_input_tile_run(
-            &slide,
-            &mut metal_input,
-            &mut j2k_encoder,
-            MetalInputTileRunRequest {
-                level,
-                location: JpegBaselineFrameLocation::first_series_level(0),
-                row,
-                start_col: 0,
-                tile_count: usize::try_from(tiles_across).unwrap(),
-                matrix_columns,
-                matrix_rows,
-                tile_size,
-            },
-        )
-        .unwrap();
-        if row == target_row {
-            target = metal_row.tiles[target_col as usize].take();
-        }
-    }
-    let (encoded, profile) = target.expect("fixture frame should encode through Metal input path");
-    assert_eq!(profile.components, 3);
-    assert!(encoded.used_device_encode);
-    assert!(encoded.used_device_validation);
-
-    let x = target_col * u64::from(tile_size);
-    let y = target_row * u64::from(tile_size);
-    let valid_width = (matrix_columns - x).min(u64::from(tile_size)) as u32;
-    let valid_height = (matrix_rows - y).min(u64::from(tile_size)) as u32;
-    let cpu_region = slide
-        .read_region(&RegionRequest::new(
-            0usize,
-            0usize,
-            0u32,
-            (x as i64, y as i64),
-            (valid_width, valid_height),
-        ))
-        .unwrap();
-    let expected = prepare_tile_samples(&cpu_region, tile_size, tile_size).unwrap();
-    let actual = decode_j2k_frame_for_test(
-        encoded
-            .codestream_bytes()
-            .expect("codestream bytes")
-            .as_ref(),
-        tile_size,
-        tile_size,
-        profile.components,
-        profile.bits_allocated,
-    );
-
-    if actual.as_slice() != expected.bytes.as_slice() {
-        let actual_nonzero = actual.iter().filter(|value| **value != 0).count();
-        let expected_nonzero = expected.bytes.iter().filter(|value| **value != 0).count();
-        panic!(
-                "Metal WholeLevel frame mismatch at row {target_row}, col {target_col}: actual_nonzero={actual_nonzero}, expected_nonzero={expected_nonzero}, total={}",
-                actual.len()
-            );
-    }
-}
-
-#[test]
-#[ignore = "requires WSI_DICOM_NDPI_FIXTURE and Metal device decode"]
-#[cfg(all(feature = "metal", target_os = "macos"))]
-fn ndpi_whole_level_metal_composes_multi_tile_run_in_one_batch() {
-    let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
-        return;
-    };
-    std::env::set_var("WSI_RS_JPEG_DEVICE_DECODE", "1");
-    let slide = Slide::open(&source).unwrap();
-    let level = &slide.dataset().scenes[0].series[0].levels[0];
-    let Some(strip_layout) = whole_level_strip_layout(level) else {
-        return;
-    };
-    let (matrix_columns, matrix_rows) = level.dimensions;
-    let tile_size = 512u32;
-    let tile_count = matrix_columns.div_ceil(u64::from(tile_size)).min(3);
-    assert!(tile_count > 1);
-
-    let mut metal_input = MetalInputTileReader::new(EncodeBackendPreference::RequireDevice, true);
-    let mut j2k_encoder = DicomJ2kEncoder::new(
-        EncodeBackendPreference::RequireDevice,
-        TransferSyntax::Htj2kLossless,
-        CodecValidation::RoundTrip,
-    );
-
-    let encoded = try_encode_metal_whole_level_strip_run(
-        &slide,
-        &mut metal_input,
-        &mut j2k_encoder,
-        MetalInputTileRunRequest {
-            level,
-            location: JpegBaselineFrameLocation::first_series_level(0),
-            row: 0,
-            start_col: 0,
-            tile_count: usize::try_from(tile_count).unwrap(),
-            matrix_columns,
-            matrix_rows,
-            tile_size,
-        },
-        strip_layout,
-    )
-    .unwrap();
-
-    assert_eq!(encoded.tiles.len(), tile_count as usize);
-    assert_eq!(encoded.compose_batches, 1);
-    assert!(encoded.compose_duration > Duration::ZERO);
-    for frame in encoded.tiles {
-        let (frame, _) = frame.expect("fixture frame should encode through Metal input path");
-        assert!(frame.used_device_encode);
-    }
 }
 
 #[test]

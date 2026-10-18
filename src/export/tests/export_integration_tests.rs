@@ -148,6 +148,13 @@ fn export_dicom_writes_jpeg2000_lossless_vl_wsi_instances() {
     );
     assert_eq!(
         object
+            .meta()
+            .media_storage_sop_class_uid
+            .trim_end_matches('\0'),
+        uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE
+    );
+    assert_eq!(
+        object
             .element(tags::LOSSY_IMAGE_COMPRESSION)
             .unwrap()
             .to_str()
