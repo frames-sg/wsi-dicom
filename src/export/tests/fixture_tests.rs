@@ -124,43 +124,148 @@ fn export_dicom_requires_device_encode_for_synthetic_level_with_cpu_source_input
     assert_eq!(report.metrics.routes.cpu_fallback_frames, 0);
 }
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
-#[ignore = "requires WSI_DICOM_NDPI_FIXTURE"]
-fn ndpi_fixture_htj2k_profile_uses_retile_direct_53_not_rgb_fallback() {
-    let Some(source) = std::env::var_os("WSI_DICOM_NDPI_FIXTURE").map(PathBuf::from) else {
-        return;
-    };
+#[ignore = "requires WSI_DICOM_NDPI_FIXTURE and Metal"]
+fn ndpi_default_htj2k_export_preserves_canonical_pixels_and_padding() {
+    const MAX_FRAMES: u64 = 256;
 
-    let report = profile_dicom_routes(RouteProfileRequest {
+    let source = std::env::var_os("WSI_DICOM_NDPI_FIXTURE")
+        .map(PathBuf::from)
+        .expect("set WSI_DICOM_NDPI_FIXTURE to the required fixture file");
+    assert!(
+        source.is_file(),
+        "the NDPI fixture must be an existing file"
+    );
+    j2k_metal_support::system_default_device()
+        .expect("the explicit NDPI export test requires Metal");
+    let tmp = tempfile::tempdir().unwrap();
+    let slide = Slide::open(&source).unwrap();
+    let options = ExportOptions {
+        encode_backend: EncodeBackendPreference::RequireDevice,
+        source_device_decode: false,
+        ..ExportOptions::default()
+    };
+    assert_eq!(options.transfer_syntax, TransferSyntax::Htj2kLosslessRpcl);
+    let tile_size = options.tile_size;
+    let series = &slide.dataset().scenes[0].series[0];
+    let (level_idx, level, tiles_across, tiles_down, frame_count) = series
+        .levels
+        .iter()
+        .enumerate()
+        .filter_map(|(level_idx, level)| {
+            if slide.level_source_kind(0, 0, level_idx as u32).ok()
+                != Some(LevelSourceKind::Physical)
+            {
+                return None;
+            }
+            let TileLayout::WholeLevel { width, height, .. } = level.tile_layout else {
+                return None;
+            };
+            if (width, height) != level.dimensions {
+                return None;
+            }
+            let tiles_across = width.div_ceil(u64::from(tile_size));
+            let tiles_down = height.div_ceil(u64::from(tile_size));
+            let frame_count = tiles_across.checked_mul(tiles_down)?;
+            (tiles_across >= 3
+                && tiles_down >= 3
+                && frame_count <= MAX_FRAMES
+                && (width % u64::from(tile_size) != 0 || height % u64::from(tile_size) != 0))
+                .then_some((level_idx, level, tiles_across, tiles_down, frame_count))
+        })
+        .min_by_key(|(level_idx, _, _, _, frame_count)| (*level_idx != 4, *frame_count))
+        .expect("NDPI fixture should expose a modest physical whole-level pyramid level");
+    let level_idx = level_idx as u32;
+    assert!(
+        super::super::lossless_j2k_plan::WholeLevelJpegExportPreflight::new(
+            &slide,
+            level,
+            InstanceCoordinate::new(0, 0, level_idx, 0, 0, 0),
+            options.transfer_syntax,
+        )
+        .is_some(),
+        "the selected NDPI level must exercise export-wide JPEG source preflight"
+    );
+
+    let report = export_dicom(ExportRequest {
         source_path: source,
-        options: ExportOptions {
-            tile_size: 1024,
-            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
-            encode_backend: EncodeBackendPreference::CpuOnly,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: false,
-            ..ExportOptions::default()
-        },
-        source_aware_transfer_syntax: false,
-        level: 0,
-        max_frames: 2,
+        output_dir: tmp.path().join("out"),
+        options,
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: Some(level_idx),
     })
     .unwrap();
 
-    assert_eq!(report.metrics.routes.total_frames, 2);
-    assert_eq!(report.metrics.route_passthrough_frames(), 0);
-    assert_eq!(report.metrics.routes.j2k_passthrough_frames, 0);
-    assert_eq!(report.metrics.routes.jpeg_retile_frames, 2);
-    assert_eq!(report.metrics.routes.jpeg_retile_to_htj2k_53_frames, 2);
+    assert_eq!(report.instances.len(), 1);
+    assert_eq!(report.instances[0].level, level_idx);
+    assert_eq!(u64::from(report.instances[0].frame_count), frame_count);
+    assert_eq!(report.metrics.routes.total_frames, frame_count);
+    assert_eq!(report.metrics.routes.cpu_input_frames, frame_count);
+    assert_eq!(report.metrics.routes.gpu_encode_frames, frame_count);
+    assert_eq!(
+        report.metrics.routes.partial_gpu_transcode_frames,
+        frame_count
+    );
+    assert_eq!(report.metrics.routes.resident_gpu_transcode_frames, 0);
+    assert_eq!(report.metrics.routes.jpeg_retile_frames, 0);
     assert_eq!(
         report.metrics.jpeg_direct_htj2k.jpeg_direct_htj2k_53_frames,
-        2
+        0
     );
-    assert_eq!(report.metrics.routes.jpeg_decode_fallback_frames, 0);
-    assert_eq!(report.metrics.routes.jpeg_cpu_encode_frames, 0);
-    assert_eq!(report.metrics.routes.cpu_input_frames, 0);
-    assert_eq!(report.metrics.routes.cpu_fallback_frames, 0);
-    assert_eq!(report.metrics.route_unclassified_frames(), 0);
+
+    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+    assert_eq!(
+        object.meta().transfer_syntax.trim_end_matches('\0'),
+        TransferSyntax::Htj2kLosslessRpcl.uid()
+    );
+    let fragments = object
+        .element(tags::PIXEL_DATA)
+        .unwrap()
+        .value()
+        .fragments()
+        .unwrap();
+    assert_eq!(fragments.len(), frame_count as usize);
+
+    let mut representative_frames = vec![
+        tiles_across + 1,
+        2 * tiles_across - 1,
+        (tiles_down - 1) * tiles_across + 1,
+        frame_count - 1,
+    ];
+    representative_frames.sort_unstable();
+    representative_frames.dedup();
+    for index in representative_frames {
+        let col = index % tiles_across;
+        let row = index / tiles_across;
+        let x = col * u64::from(tile_size);
+        let y = row * u64::from(tile_size);
+        let valid_width = (level.dimensions.0 - x).min(u64::from(tile_size)) as u32;
+        let valid_height = (level.dimensions.1 - y).min(u64::from(tile_size)) as u32;
+        let region = slide
+            .read_region(&RegionRequest::new(
+                0,
+                0,
+                level_idx,
+                (x as i64, y as i64),
+                (valid_width, valid_height),
+            ))
+            .unwrap();
+        let expected = prepare_tile_samples(&region, tile_size, tile_size).unwrap();
+        let actual = decode_j2k_frame_for_test(
+            dicom_fragment_payload_without_padding(&fragments[index as usize]),
+            tile_size,
+            tile_size,
+            expected.profile.components,
+            expected.profile.bits_allocated,
+        );
+        assert_eq!(
+            actual.as_slice(),
+            expected.bytes.as_slice(),
+            "canonical pixels and zero padding for NDPI level {level_idx}, frame {index}"
+        );
+    }
 }
 
 #[test]

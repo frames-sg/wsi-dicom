@@ -36,42 +36,7 @@ impl DicomJ2kGpuEncodeBatchStats {
         self.encode_wall_duration = self
             .encode_wall_duration
             .saturating_add(other.encode_wall_duration);
-        self.stage_stats.plan_duration = self
-            .stage_stats
-            .plan_duration
-            .saturating_add(other.stage_stats.plan_duration);
-        self.stage_stats.prepare_submit_duration = self
-            .stage_stats
-            .prepare_submit_duration
-            .saturating_add(other.stage_stats.prepare_submit_duration);
-        self.stage_stats.ht_table_build_duration = self
-            .stage_stats
-            .ht_table_build_duration
-            .saturating_add(other.stage_stats.ht_table_build_duration);
-        self.stage_stats.ht_buffer_allocation_duration = self
-            .stage_stats
-            .ht_buffer_allocation_duration
-            .saturating_add(other.stage_stats.ht_buffer_allocation_duration);
-        self.stage_stats.ht_command_encode_duration = self
-            .stage_stats
-            .ht_command_encode_duration
-            .saturating_add(other.stage_stats.ht_command_encode_duration);
-        self.stage_stats.codestream_wait_duration = self
-            .stage_stats
-            .codestream_wait_duration
-            .saturating_add(other.stage_stats.codestream_wait_duration);
-        self.stage_stats.chunk_count = self
-            .stage_stats
-            .chunk_count
-            .saturating_add(other.stage_stats.chunk_count);
-        self.stage_stats.tile_count = self
-            .stage_stats
-            .tile_count
-            .saturating_add(other.stage_stats.tile_count);
-        self.stage_stats.code_block_count = self
-            .stage_stats
-            .code_block_count
-            .saturating_add(other.stage_stats.code_block_count);
+        self.stage_stats.add_assign(other.stage_stats);
     }
 }
 

@@ -588,60 +588,214 @@ fn export_ndpi_jpeg_baseline_retiles_restart_strips_without_decode_encode() {
 }
 
 #[test]
-fn export_ndpi_htj2k_rpcl_retiles_jpeg_then_direct_53() {
+fn export_ndpi_htj2k_rpcl_reconstructs_rgb_and_encodes_ybr_rct() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source.ndpi");
-    let out = tmp.path().join("out");
     write_ndpi_restart_jpeg(&source, 128, 128);
 
-    let report = export_dicom(ExportRequest {
+    let slide = Slide::open(&source).unwrap();
+    let level = &slide.dataset().scenes[0].series[0].levels[0];
+    let TileLayout::WholeLevel {
+        virtual_tile_width,
+        virtual_tile_height,
+        ..
+    } = level.tile_layout
+    else {
+        panic!("generated NDPI should expose a virtual source grid");
+    };
+    let mut original_compressed_bytes = 0_usize;
+    let mut original_pixel_bytes = 0_u64;
+    for row in 0..128_u32.div_ceil(virtual_tile_height) {
+        for col in 0..128_u32.div_ceil(virtual_tile_width) {
+            let raw = slide
+                .read_raw_compressed_tile(&wsi_rs::TileRequest::new(
+                    0,
+                    0,
+                    0,
+                    i64::from(col),
+                    i64::from(row),
+                ))
+                .unwrap();
+            original_compressed_bytes += raw.data().len();
+            original_pixel_bytes += u64::from(raw.width()) * u64::from(raw.height()) * 3;
+        }
+    }
+    let original_ratio = original_pixel_bytes as f64 / original_compressed_bytes as f64;
+    // A later unavailable native tile must abandon the whole optimization,
+    // before any per-frame source history can be suppressed.
+    let unavailable_height = level.dimensions.1 + u64::from(virtual_tile_height);
+    let unavailable_tail = wsi_rs::Level::new(
+        (level.dimensions.0, unavailable_height),
+        level.downsample,
+        TileLayout::WholeLevel {
+            width: level.dimensions.0,
+            height: unavailable_height,
+            virtual_tile_width,
+            virtual_tile_height,
+        },
+    );
+    assert!(
+        super::super::lossless_j2k_plan::WholeLevelJpegExportPreflight::new(
+            &slide,
+            &unavailable_tail,
+            InstanceCoordinate::new(0, 0, 0, 0, 0, 0),
+            TransferSyntax::Htj2kLosslessRpcl,
+        )
+        .is_none()
+    );
+    for tile_size in [64_u32, 96, 128] {
+        let tiles_across = 128_u32.div_ceil(tile_size);
+        let expected_frames = tiles_across * tiles_across;
+        let report = export_dicom(ExportRequest {
+            source_path: source.clone(),
+            output_dir: tmp.path().join(format!("out-{tile_size}")),
+            options: ExportOptions {
+                tile_size,
+                transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                codec_validation: CodecValidation::Disabled,
+                source_device_decode: false,
+                ..ExportOptions::default()
+            },
+            color_management: ColorManagement::SourceOrSrgb,
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: Some(0),
+        })
+        .unwrap();
+
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].frame_count, expected_frames);
+        assert_eq!(
+            report.metrics.routes.total_frames,
+            u64::from(expected_frames)
+        );
+        assert_eq!(report.metrics.routes.jpeg_retile_frames, 0);
+        assert_eq!(report.metrics.routes.jpeg_retile_to_htj2k_53_frames, 0);
+        assert_eq!(
+            report.metrics.jpeg_direct_htj2k.jpeg_direct_htj2k_53_frames,
+            0
+        );
+        assert_eq!(report.metrics.routes.jpeg_decode_fallback_frames, 0);
+        assert_eq!(report.metrics.routes.jpeg_cpu_encode_frames, 0);
+        assert_eq!(
+            report.metrics.routes.cpu_input_frames,
+            u64::from(expected_frames)
+        );
+        assert_eq!(
+            report.metrics.routes.cpu_fallback_frames,
+            u64::from(expected_frames)
+        );
+        assert_eq!(report.metrics.route_passthrough_frames(), 0);
+        assert_eq!(report.metrics.route_unclassified_frames(), 0);
+
+        let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+        assert_eq!(
+            object.meta().transfer_syntax.trim_end_matches('\0'),
+            TransferSyntax::Htj2kLosslessRpcl.uid()
+        );
+        assert_eq!(
+            object
+                .element(tags::PHOTOMETRIC_INTERPRETATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "YBR_RCT"
+        );
+        assert_eq!(
+            object
+                .element(tags::LOSSY_IMAGE_COMPRESSION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "01"
+        );
+        assert_eq!(
+            object
+                .element(tags::LOSSY_IMAGE_COMPRESSION_METHOD)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "ISO_10918_1"
+        );
+        let ratio = object
+            .element(tags::LOSSY_IMAGE_COMPRESSION_RATIO)
+            .unwrap()
+            .to_multi_float64()
+            .unwrap();
+        assert_eq!(ratio.len(), 1);
+        assert!(
+            (ratio[0] - original_ratio).abs() < 1e-6,
+            "source compression history must count each native JPEG once for tile size {tile_size}: {} versus {original_ratio}",
+            ratio[0]
+        );
+        let fragments = object
+            .element(tags::PIXEL_DATA)
+            .unwrap()
+            .value()
+            .fragments()
+            .unwrap();
+        assert_eq!(fragments.len(), expected_frames as usize);
+        for (index, fragment) in fragments.iter().enumerate() {
+            let x = index as u32 % tiles_across * tile_size;
+            let y = index as u32 / tiles_across * tile_size;
+            let region = slide
+                .read_region(&RegionRequest::new(
+                    0,
+                    0,
+                    0,
+                    (i64::from(x), i64::from(y)),
+                    ((128 - x).min(tile_size), (128 - y).min(tile_size)),
+                ))
+                .unwrap();
+            let expected = prepare_tile_samples(&region, tile_size, tile_size).unwrap();
+            assert_eq!(
+                decode_j2k_frame_for_test(
+                    dicom_fragment_payload_without_padding(fragment),
+                    tile_size,
+                    tile_size,
+                    3,
+                    8,
+                ),
+                expected.bytes.as_slice(),
+                "lossless NDPI pixels and padding for tile size {tile_size}, frame {index}"
+            );
+        }
+    }
+}
+
+#[test]
+fn profile_ndpi_htj2k_rpcl_uses_bounded_rgb_reconstruction() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source.ndpi");
+    write_ndpi_restart_jpeg(&source, 128, 128);
+
+    let report = profile_dicom_routes(RouteProfileRequest {
         source_path: source,
-        output_dir: out,
         options: ExportOptions {
-            tile_size: 128,
+            tile_size: 64,
             transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
             encode_backend: EncodeBackendPreference::CpuOnly,
             codec_validation: CodecValidation::Disabled,
             source_device_decode: false,
             ..ExportOptions::default()
         },
-        color_management: ColorManagement::SourceOrSrgb,
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: Some(0),
+        source_aware_transfer_syntax: false,
+        level: 0,
+        max_frames: 2,
     })
     .unwrap();
 
-    assert_eq!(report.instances.len(), 1);
-    assert_eq!(report.instances[0].frame_count, 1);
-    assert_eq!(report.metrics.routes.total_frames, 1);
+    assert_eq!(report.available_frames, 4);
+    assert_eq!(report.metrics.routes.total_frames, 2);
+    assert_eq!(report.metrics.routes.cpu_input_frames, 2);
+    assert_eq!(report.metrics.routes.cpu_fallback_frames, 2);
     assert_eq!(report.metrics.routes.jpeg_retile_frames, 0);
     assert_eq!(report.metrics.routes.jpeg_retile_to_htj2k_53_frames, 0);
     assert_eq!(
         report.metrics.jpeg_direct_htj2k.jpeg_direct_htj2k_53_frames,
         0
     );
-    assert_eq!(report.metrics.routes.jpeg_decode_fallback_frames, 0);
-    assert_eq!(report.metrics.routes.jpeg_cpu_encode_frames, 0);
-    assert_eq!(report.metrics.routes.cpu_input_frames, 1);
-    assert_eq!(report.metrics.routes.cpu_fallback_frames, 1);
-    assert_eq!(report.metrics.route_passthrough_frames(), 0);
     assert_eq!(report.metrics.route_unclassified_frames(), 0);
-
-    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-    assert_eq!(
-        object.meta().transfer_syntax.trim_end_matches('\0'),
-        TransferSyntax::Htj2kLosslessRpcl.uid()
-    );
-    assert_eq!(
-        object
-            .element(tags::PIXEL_DATA)
-            .unwrap()
-            .value()
-            .fragments()
-            .unwrap()
-            .len(),
-        1
-    );
 }
 
 #[test]

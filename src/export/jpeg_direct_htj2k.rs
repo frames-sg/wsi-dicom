@@ -74,6 +74,24 @@ pub(super) fn transfer_syntax(transfer_syntax: TransferSyntax) -> bool {
     )
 }
 
+pub(super) fn raw_profile_is_unsupported_for_htj2k(raw: &RawCompressedTile) -> bool {
+    raw.compression() == wsi_rs::Compression::Jpeg
+        && pixel_profile_from_raw_jpeg_tile(raw)
+            .map(htj2k_direct_pixel_profile)
+            .is_ok_and(|profile| profile.photometric_interpretation == "YBR_FULL")
+}
+
+pub(super) fn frame_profile_is_unsupported(
+    raw: &RawCompressedTile,
+    frame_columns: u32,
+    frame_rows: u32,
+    transfer_syntax: TransferSyntax,
+) -> bool {
+    self::transfer_syntax(transfer_syntax)
+        && raw_jpeg_matches_frame_geometry(raw, frame_columns, frame_rows)
+        && raw_profile_is_unsupported_for_htj2k(raw)
+}
+
 pub(super) fn frame(
     raw: RawCompressedTile,
     frame_columns: u32,

@@ -35,8 +35,9 @@ use super::j2k_policy::{
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use super::metal_input::{
-    probe_auto_metal_input_tile_run, try_encode_metal_input_tile_run, AutoMetalInputProbeRequest,
-    MetalInputTileReader, MetalInputTileRunRequest, RoutedLosslessJ2kTile,
+    finalize_auto_metal_input_probe_scope, probe_auto_metal_input_tile_run,
+    try_encode_metal_input_tile_run, AutoMetalInputProbeRequest, MetalInputTileReader,
+    MetalInputTileRunRequest, RoutedLosslessJ2kTile,
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use super::route_cache::AutoLosslessJ2kRouteDecision;
@@ -351,6 +352,7 @@ pub(super) fn route_lossless_j2k_metal_input_runs(
     } = context;
     let transfer_syntax = options.semantics.transfer_syntax;
     let (matrix_columns, matrix_rows) = level.dimensions;
+    let tiles_across = matrix_columns.div_ceil(u64::from(tile_size));
     let mut routed_tiles: Vec<Option<RoutedLosslessJ2kTile>> =
         (0..planned.len()).map(|_| None).collect();
     let mut run_start = 0usize;
@@ -373,7 +375,16 @@ pub(super) fn route_lossless_j2k_metal_input_runs(
             continue;
         }
         if metal_input.auto_input_probe_pending() {
-            let probe_frames = lossless_j2k_auto_route_probe_frames(rayon::current_num_threads());
+            let probe_start_frame = row
+                .checked_mul(tiles_across)
+                .and_then(|start| start.checked_add(planned[run_start].col))
+                .and_then(|index| usize::try_from(index).ok())
+                .ok_or_else(|| Error::Unsupported {
+                    reason: "auto route probe start frame exceeds usize".into(),
+                })?;
+            let probe_target = lossless_j2k_auto_route_probe_frames(rayon::current_num_threads())
+                .min(auto_probe_frame_count.saturating_sub(probe_start_frame));
+            let probe_frames = metal_input.auto_input_probe_remaining_frames(probe_target);
             let probe_end = (run_start + probe_frames).min(run_end);
             let probe_run = probe_auto_metal_input_tile_run(
                 slide,
@@ -384,6 +395,7 @@ pub(super) fn route_lossless_j2k_metal_input_runs(
                     location,
                     row,
                     planned: &planned[run_start..probe_end],
+                    probe_start_frame,
                     route_scope_frames: auto_probe_frame_count,
                     matrix_columns,
                     matrix_rows,
@@ -468,6 +480,18 @@ pub(super) fn route_lossless_j2k_metal_input_runs(
             }
         }
         run_start = run_end;
+    }
+    if metal_input.auto_input_probe_pending() {
+        if let Some(last) = planned.last() {
+            let examined_frames = last
+                .row
+                .checked_mul(tiles_across)
+                .and_then(|start| start.checked_add(last.col))
+                .and_then(|index| index.checked_add(1))
+                .and_then(|count| usize::try_from(count).ok())
+                .unwrap_or(usize::MAX);
+            finalize_auto_metal_input_probe_scope(metal_input, j2k_encoder, examined_frames);
+        }
     }
     Ok(routed_tiles)
 }

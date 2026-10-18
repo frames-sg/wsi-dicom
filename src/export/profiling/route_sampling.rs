@@ -25,7 +25,9 @@ use super::super::lossless_j2k_pipeline::{
     encode_lossless_j2k_cpu_fallback_after_routes, record_resolved_lossless_j2k_fallback_frame,
     resolve_lossless_j2k_fallback_frame, LosslessJ2kBatchContext, LosslessJ2kRoutePipeline,
 };
-use super::super::lossless_j2k_plan::{plan_lossless_j2k_frames, LosslessJ2kPlanRequest};
+use super::super::lossless_j2k_plan::{
+    plan_lossless_j2k_frames_with_preflight, LosslessJ2kPlanRequest, WholeLevelJpegPreflight,
+};
 use super::super::route_plan::{
     incompatible_frame_route, PlannedFrameRoute, RouteExecutionContext,
 };
@@ -80,6 +82,7 @@ pub(super) fn profile_lossless_j2k_routes(
         options.semantics.transfer_syntax,
         options.execution.encode_backend,
     );
+    let jpeg_preflight = WholeLevelJpegPreflight::profile(level, options.semantics.transfer_syntax);
 
     for row in 0..tiles_down {
         if remaining == 0 {
@@ -87,7 +90,7 @@ pub(super) fn profile_lossless_j2k_routes(
         }
         check_route_level_deadline(deadline, level_idx)?;
         let row_tile_count = grid.row_tile_count(row)?.min(remaining);
-        let planned = plan_lossless_j2k_frames(
+        let planned = plan_lossless_j2k_frames_with_preflight(
             slide,
             LosslessJ2kPlanRequest {
                 location,
@@ -104,6 +107,7 @@ pub(super) fn profile_lossless_j2k_routes(
                 transfer_syntax: options.semantics.transfer_syntax,
                 allow_passthrough_probe,
             },
+            jpeg_preflight,
         )?;
         let batch_context = LosslessJ2kBatchContext {
             slide,
