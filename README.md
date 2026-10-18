@@ -453,6 +453,61 @@ cargo test --workspace --no-default-features --all-targets --locked
 cargo check -p wsi-dicom-gui --locked
 ```
 
+The ignored fixture checks are explicit real-slide runs. Set
+`WSI_DICOM_NDPI_FIXTURE` to the HE.ndpi fixture with a synthetic overview,
+a full JPEG passthrough level, and a physical WholeLevel pyramid level with
+partial edge tiles, at least three tile rows and columns, and at most 256
+512-pixel frames. Set `WSI_DICOM_APERIO_JP2K_FIXTURE` to the
+Aperio JPEG 2000 fixture with a 256-pixel source grid, the problem region at
+level-zero `(12288, 6144)`, and an irreversible level 2. Missing fixture files,
+incompatible layouts, and missing required Metal hardware fail the tests.
+These runs keep raw inputs unchanged and use temporary output unless an
+explicit output directory is supplied.
+
+Run the three CPU fixture checks after changes to real-slide export or
+reconstruction:
+
+```sh
+WSI_DICOM_NDPI_FIXTURE=/absolute/path/HE.ndpi \
+WSI_DICOM_APERIO_JP2K_FIXTURE=/absolute/path/aperio-jp2k.svs \
+  cargo test -p wsi-dicom --lib --no-default-features --locked \
+  export::tests::fixture_tests -- --ignored --nocapture
+```
+
+Run all nine retained fixture checks on a Mac with Metal after changes to
+source reconstruction, device encoding, or composition:
+
+```sh
+WSI_DICOM_NDPI_FIXTURE=/absolute/path/HE.ndpi \
+WSI_DICOM_APERIO_JP2K_FIXTURE=/absolute/path/aperio-jp2k.svs \
+  cargo test -p wsi-dicom --lib --features metal --locked \
+  export::tests::fixture_tests -- --ignored --nocapture
+```
+
+| Explicit fixture check | Backend |
+| --- | --- |
+| `export_dicom_can_export_source_synthetic_downsample_level` | CPU or Metal build, CPU encode |
+| `export_dicom_requires_device_encode_for_synthetic_level_with_cpu_source_input` | Metal |
+| `ndpi_default_htj2k_export_preserves_canonical_pixels_and_padding` | CPU reconstruction, Metal encode |
+| `ndpi_edge_tile_device_encode_round_trips_all_lossless_j2k_profiles` | Metal |
+| `ndpi_fixture_exports_full_jpeg_baseline_passthrough_instance` | CPU or Metal build, passthrough |
+| `aperio_jp2k_device_encoded_256_htj2k_rpcl_tile_matches_cpu` | Metal encode, policy-selected input |
+| `lossy_jp2k_input_preserves_canonical_cpu_pixels_for_lossless_export` | CPU reconstruction, Metal encode |
+| `aperio_jp2k_device_encoded_composed_512_htj2k_rpcl_tile_matches_cpu` | Metal encode, policy-selected input |
+| `real_aperio_jp2k_problem_tile_round_trips` | CPU or Metal build, CPU encode |
+
+The generated NDPI route and reversible JPEG 2000 Metal-input regressions run
+in the normal CPU and Metal suites respectively. The Metal address-width
+performance gate remains an explicit release-mode run. Run it on an otherwise
+idle Mac with Metal after changes to the composition kernels; it compares
+three rotated samples against the reference kernel and enforces the 5% limit:
+
+```sh
+cargo test -p wsi-dicom --lib --features metal --release --locked \
+  metal_compose_selected_u32_stays_within_five_percent_of_reference \
+  -- --ignored --nocapture
+```
+
 Pre-1.0 release gates:
 
 ```sh

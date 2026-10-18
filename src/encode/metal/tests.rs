@@ -200,6 +200,7 @@ fn mixed_metal_staging_batches_preserve_input_order_with_two_groups() {
         "interior and edge frames each form one staging class"
     );
     let encoded = submitted.wait().unwrap();
+    assert_eq!(encoded.frames.len(), inputs.len());
     for ((frame, pixels), width) in encoded.frames.into_iter().zip(inputs).zip(widths) {
         let mut expected = vec![0; 8 * 8 * 3];
         for (source, dest) in pixels

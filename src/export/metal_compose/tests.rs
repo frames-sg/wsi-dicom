@@ -175,6 +175,9 @@ fn compose_source_address_rejects_packed_span_overflow() {
 #[test]
 #[ignore = "run explicitly in release mode for the three-run Metal address-width gate"]
 fn metal_compose_selected_u32_stays_within_five_percent_of_reference() {
+    if cfg!(debug_assertions) {
+        panic!("run the explicit Metal address-width gate with --release");
+    }
     const DIMENSION: u32 = 2_048;
     const BYTES_PER_PIXEL: u32 = 3;
     // Millisecond samples were dominated by command submission/host wakeup
@@ -183,9 +186,8 @@ fn metal_compose_selected_u32_stays_within_five_percent_of_reference() {
     const DISPATCHES_PER_SAMPLE: usize = 128;
     const SAMPLE_COUNT: usize = 3;
 
-    let Ok(device) = j2k_metal_support::system_default_device() else {
-        return;
-    };
+    let device = j2k_metal_support::system_default_device()
+        .expect("the explicit Metal address-width gate requires a Metal device");
     let source = format!(
         "{WSI_COMPOSE_STRIPS_METAL}\n{}",
         include_str!("address_perf.metal")

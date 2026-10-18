@@ -366,7 +366,21 @@ fn streamed_pixel_data_writer_matches_spooled_output_and_patches_offset_tables()
             .len(),
         frames.len()
     );
-    assert!(spooled_path.exists());
+    let spooled = dicom_object::open_file(spooled_path).unwrap();
+    let spooled_fragments = spooled
+        .element(tags::PIXEL_DATA)
+        .unwrap()
+        .value()
+        .fragments()
+        .unwrap();
+    let streamed_fragments = streamed
+        .element(tags::PIXEL_DATA)
+        .unwrap()
+        .value()
+        .fragments()
+        .unwrap();
+    assert_eq!(spooled_fragments, &[vec![1, 2, 3, 0], vec![4, 5]]);
+    assert_eq!(streamed_fragments, spooled_fragments);
 }
 
 #[test]

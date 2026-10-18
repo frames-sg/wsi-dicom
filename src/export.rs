@@ -127,9 +127,7 @@ use self::metal_input::{
     try_encode_metal_input_tile_run, MetalInputTileReader, MetalInputTileRunRequest,
 };
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
-use metal_route::whole_level_strip_layout;
-#[cfg(all(test, feature = "metal", target_os = "macos"))]
-use metal_row_batch::{try_encode_metal_whole_level_strip_run, WholeLevelStripLayout};
+use metal_row_batch::WholeLevelStripLayout;
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 use route_cache::{
     cached_auto_metal_input_decision, clear_auto_metal_input_route_cache_for_tests,

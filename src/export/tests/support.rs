@@ -5,6 +5,17 @@ use wsi_rs::TileRequest;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) static DEVICE_DECODE_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+pub(super) fn required_fixture_path(variable: &str) -> PathBuf {
+    let path = std::env::var_os(variable)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("set {variable} to the required fixture file"));
+    assert!(
+        path.is_file(),
+        "{variable} must identify an existing fixture file"
+    );
+    path
+}
+
 pub(super) fn test_jpeg_baseline_fallback_frame(col: u64) -> JpegBaselineFallbackFrame {
     JpegBaselineFallbackFrame {
         x: col * 4,
@@ -349,50 +360,9 @@ pub(super) fn ndpi_jpeg_passthrough_level(
         .expect("NDPI fixture did not expose any full JPEG Baseline passthrough level")
 }
 
-pub(super) fn ndpi_jpeg_passthrough_levels(
-    slide: &Slide,
-    tile_size: u32,
-) -> Vec<(usize, JpegBaselineFrameGeometry)> {
-    let mut levels = Vec::new();
-    for (level_idx, level) in slide.dataset().scenes[0].series[0]
-        .levels
-        .iter()
-        .enumerate()
-    {
-        let Ok(geometry) = jpeg_baseline_frame_geometry(level, tile_size) else {
-            continue;
-        };
-        let Ok(raw) = slide.read_raw_compressed_tile(&TileRequest::new(
-            0usize,
-            0usize,
-            level_idx as u32,
-            0,
-            0,
-        )) else {
-            continue;
-        };
-        if !raw_jpeg_matches_frame_geometry(&raw, geometry.frame_columns, geometry.frame_rows) {
-            continue;
-        }
-        let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&raw) else {
-            continue;
-        };
-        if raw_jpeg_profile_can_passthrough(
-            profile,
-            raw_rgb_passthrough_has_no_geometry_fallback(level, geometry),
-        ) {
-            levels.push((level_idx, geometry));
-        }
-    }
-    levels
-}
-
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub(super) fn assert_aperio_jp2k_metal_input_tile_matches_cpu(tile_size: u32) {
-    let Some(source) = std::env::var_os("WSI_DICOM_APERIO_JP2K_FIXTURE").map(PathBuf::from) else {
-        return;
-    };
-    std::env::set_var("WSI_RS_JP2K_DEVICE_DECODE", "1");
+pub(super) fn assert_aperio_jp2k_device_encoded_tile_matches_cpu(tile_size: u32) {
+    let source = required_fixture_path("WSI_DICOM_APERIO_JP2K_FIXTURE");
 
     let slide = Slide::open(&source).unwrap();
     let level = &slide.dataset().scenes[0].series[0].levels[0];
@@ -404,9 +374,18 @@ pub(super) fn assert_aperio_jp2k_metal_input_tile_matches_cpu(tile_size: u32) {
     else {
         panic!("fixture first level must use a regular tiled source layout");
     };
-    if tile_size > tile_width || tile_size > tile_height {
-        assert!(tile_width < tile_size || tile_height < tile_size);
-    }
+    assert_eq!(
+        (tile_width, tile_height),
+        (256, 256),
+        "Aperio fixture must expose the 256-pixel source grid"
+    );
+    let raw = slide
+        .read_raw_compressed_tile(&TileRequest::new(0, 0, 0, 0, 0))
+        .expect("read the Aperio JPEG 2000 source tile");
+    assert!(matches!(
+        raw.compression(),
+        Compression::Jp2kRgb | Compression::Jp2kYcbcr
+    ));
     let mut metal_input = MetalInputTileReader::new(EncodeBackendPreference::RequireDevice, true);
     let mut encoder = DicomJ2kEncoder::new(
         EncodeBackendPreference::RequireDevice,
