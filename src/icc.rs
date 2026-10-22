@@ -1,4 +1,4 @@
-use moxcms::{ColorProfile, DataColorSpace, ProfileClass};
+use moxcms::{ColorProfile, DataColorSpace, ParsingOptions, ProfileClass};
 
 use crate::Error;
 
@@ -26,9 +26,10 @@ pub(crate) fn validate_dicom_icc_profile(bytes: &[u8]) -> Result<(), Error> {
         return Err(invalid_icc("PCS must be XYZ or Lab"));
     }
 
-    let parsed = ColorProfile::new_from_slice(profile).map_err(|err| Error::Metadata {
-        reason: format!("DICOM ICC Profile is malformed: {err}"),
-    })?;
+    let parsed = ColorProfile::new_from_slice_with_options(profile, parsing_options(profile))
+        .map_err(|err| Error::Metadata {
+            reason: format!("DICOM ICC Profile is malformed: {err}"),
+        })?;
     if parsed.profile_class != ProfileClass::InputDevice
         || parsed.color_space != DataColorSpace::Rgb
         || !matches!(parsed.pcs, DataColorSpace::Xyz | DataColorSpace::Lab)
@@ -59,6 +60,21 @@ fn encode_synthetic_input_profile(
     stabilize_synthetic_icc_profile(&mut bytes);
     validate_dicom_icc_profile(&bytes)?;
     Ok(bytes)
+}
+
+// moxcms rejects profiles of 10 MB or more by default. Conformant scanner
+// input profiles exceed that (the Leica GT450 CLUT profile is 13 MB), so the
+// limits are bounded by the encoded bytes instead: a CLUT cannot have more
+// grid nodes than the profile has bytes.
+fn parsing_options(profile: &[u8]) -> ParsingOptions {
+    let defaults = ParsingOptions::default();
+    ParsingOptions {
+        max_profile_size: defaults
+            .max_profile_size
+            .max(profile.len().saturating_add(1)),
+        max_allowed_clut_size: defaults.max_allowed_clut_size.max(profile.len()),
+        ..defaults
+    }
 }
 
 fn encoded_profile_bytes(bytes: &[u8]) -> Result<&[u8], Error> {
@@ -124,6 +140,15 @@ mod tests {
                 b"XYZ " | b"Lab "
             ));
         }
+    }
+
+    #[test]
+    fn profiles_larger_than_ten_megabytes_are_accepted() {
+        let mut profile = synthetic_srgb_icc_profile().unwrap();
+        profile.resize(13 * 1024 * 1024, 0);
+        let declared = u32::try_from(profile.len()).unwrap().to_be_bytes();
+        profile[..4].copy_from_slice(&declared);
+        validate_dicom_icc_profile(&profile).unwrap();
     }
 
     #[test]
