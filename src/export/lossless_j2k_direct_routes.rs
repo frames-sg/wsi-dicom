@@ -126,7 +126,8 @@ pub(super) fn try_record_existing_lossless_j2k_frame(
         return Ok(true);
     }
 
-    if let Some(Ok(direct)) = direct_routes.direct_j2k_results[idx].take() {
+    if let Some(direct) = direct_routes.direct_j2k_results[idx].take() {
+        let direct = direct?;
         j2k_direct_htj2k::record_success(metrics, pixel_profile, &direct, mismatch_reason)?;
         validate_dicom_j2k_frame(
             &direct.codestream,
@@ -157,7 +158,10 @@ pub(super) fn try_record_existing_lossless_j2k_frame(
                 codestream_sink(metrics, &direct.codestream)?;
                 return Ok(true);
             }
-            Err(_) => metrics.record_jpeg_direct_htj2k_rejected_frame(),
+            Err(error) => {
+                metrics.record_jpeg_direct_htj2k_rejected_frame();
+                return Err(error);
+            }
         }
     } else if planned_frame.source_jpeg_direct_rejected {
         metrics.record_jpeg_direct_htj2k_rejected_frame();
@@ -212,4 +216,64 @@ pub(super) fn encode_cpu_input_tile(
         prepared.input_decode_duration,
         prepared.compose_duration,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::options::ExportOptions;
+
+    #[test]
+    fn selected_direct_route_errors_are_returned_without_pixel_fallback() {
+        let planned_frame = LosslessJ2kPlannedFrame {
+            row: 0,
+            col: 0,
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+            source_j2k_syntax: None,
+            source_j2k: None,
+            source_jpeg: None,
+            source_jpeg_retiled: false,
+            source_jpeg_retile_duration: Duration::ZERO,
+            source_jpeg_retile_rejection: None,
+            source_jpeg_direct_rejected: false,
+            source_lossy_compression: None,
+            passthrough: None,
+        };
+        let options = NormalizedExportOptions::new(&ExportOptions::default()).unwrap();
+        for jpeg in [false, true] {
+            let mut direct_routes = LosslessJ2kDirectRouteBatch {
+                direct_jpeg_results: vec![None],
+                direct_j2k_results: vec![None],
+            };
+            let error = Error::Encode {
+                message: "selected codec route failed".into(),
+            };
+            if jpeg {
+                direct_routes.direct_jpeg_results[0] = Some(Err(error));
+            } else {
+                direct_routes.direct_j2k_results[0] = Some(Err(error));
+            }
+            let mut metrics = ExportMetrics::default();
+            let mut pixel_profile = None;
+            let error = try_record_existing_lossless_j2k_frame(
+                ExistingLosslessJ2kFrameContext {
+                    idx: 0,
+                    planned_frame: &planned_frame,
+                    direct_routes: &mut direct_routes,
+                    options: &options,
+                    metrics: &mut metrics,
+                    pixel_profile: &mut pixel_profile,
+                },
+                "pixel profile changed",
+                |_, _| panic!("failed direct route must not write a codestream"),
+            )
+            .expect_err("selected route failure must not request pixel fallback");
+            assert!(error.to_string().contains("selected codec route failed"));
+            assert_eq!(metrics.routes.cpu_fallback_frames, 0);
+            assert!(pixel_profile.is_none());
+        }
+    }
 }

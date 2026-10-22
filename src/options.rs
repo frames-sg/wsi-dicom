@@ -155,6 +155,9 @@ pub enum TransferSyntax {
     Htj2kLossless = 3,
     /// High-Throughput JPEG 2000 with RPCL Options Image Compression Lossless Only transfer syntax.
     Htj2kLosslessRpcl = 4,
+    /// JPEG Lossless, Non-Hierarchical, First-Order Prediction (Process 14,
+    /// Selection Value 1) transfer syntax.
+    JpegLosslessSv1 = 7,
     /// Explicit VR Little Endian transfer syntax for uncompressed input fixtures.
     #[value(skip)]
     ExplicitVrLittleEndian = 5,
@@ -187,13 +190,14 @@ impl ExportPreset {
 
 impl TransferSyntax {
     /// All transfer syntax variants supported by this crate.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::JpegBaseline8Bit,
         Self::Jpeg2000,
         Self::Jpeg2000Lossless,
         Self::Htj2k,
         Self::Htj2kLossless,
         Self::Htj2kLosslessRpcl,
+        Self::JpegLosslessSv1,
         Self::ExplicitVrLittleEndian,
     ];
 
@@ -206,6 +210,7 @@ impl TransferSyntax {
             Self::Htj2k => "1.2.840.10008.1.2.4.203",
             Self::Htj2kLossless => "1.2.840.10008.1.2.4.201",
             Self::Htj2kLosslessRpcl => "1.2.840.10008.1.2.4.202",
+            Self::JpegLosslessSv1 => "1.2.840.10008.1.2.4.70",
             Self::ExplicitVrLittleEndian => "1.2.840.10008.1.2.1",
         }
     }
@@ -317,6 +322,14 @@ pub struct ExportOptions {
     pub jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile,
     /// JPEG quality used for JPEG Baseline fallback encoding.
     pub jpeg_quality: u8,
+    /// Whether re-encoded JPEG Baseline frames use per-frame optimal Huffman
+    /// tables (T.81 Annex K.2) instead of the Annex K standard tables.
+    ///
+    /// Pixels are identical either way; only the entropy-coded size changes.
+    /// Source JPEG frames copied by passthrough or retile keep their original
+    /// bytes. Optimized tables are a CPU encode: `PreferDevice` encodes these
+    /// frames on the CPU, and `RequireDevice` rejects the combination.
+    pub jpeg_optimize_huffman: bool,
     /// Policy for generated Study, Series, SOP, and related DICOM UIDs.
     pub uid_policy: UidPolicy,
     /// Optional governed level-zero source spacing when the reader lacks calibration metadata.
@@ -349,6 +362,7 @@ pub(crate) struct NormalizedExportSemantics {
     pub(crate) transfer_syntax: TransferSyntax,
     pub(crate) jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile,
     pub(crate) jpeg_quality: u8,
+    pub(crate) jpeg_optimize_huffman: bool,
     pub(crate) uid_policy: UidPolicy,
     pub(crate) source_pixel_spacing_mm: Option<SourcePixelSpacingMm>,
 }
@@ -403,6 +417,7 @@ impl NormalizedExportOptions {
                 transfer_syntax: options.transfer_syntax,
                 jpeg_direct_htj2k_profile: options.jpeg_direct_htj2k_profile,
                 jpeg_quality: options.jpeg_quality,
+                jpeg_optimize_huffman: options.jpeg_optimize_huffman,
                 uid_policy: options.uid_policy,
                 source_pixel_spacing_mm: options.source_pixel_spacing_mm,
             },
@@ -439,6 +454,7 @@ impl Default for ExportOptions {
             transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
             jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossless53,
             jpeg_quality: 90,
+            jpeg_optimize_huffman: false,
             uid_policy: UidPolicy::Fresh,
             source_pixel_spacing_mm: None,
             encode_backend: EncodeBackendPreference::Auto,
@@ -497,6 +513,21 @@ impl ExportOptions {
         if !(1..=100).contains(&self.jpeg_quality) {
             return Err(Error::InvalidOptions {
                 reason: "jpeg_quality must be in the range 1..=100".into(),
+            });
+        }
+        if self.jpeg_optimize_huffman
+            && self.transfer_syntax == TransferSyntax::JpegBaseline8Bit
+            && self.encode_backend == EncodeBackendPreference::RequireDevice
+        {
+            return Err(Error::InvalidOptions {
+                reason: "jpeg_optimize_huffman is a CPU encode and cannot be combined with encode_backend=RequireDevice".into(),
+            });
+        }
+        if self.transfer_syntax == TransferSyntax::JpegLosslessSv1
+            && self.encode_backend == EncodeBackendPreference::RequireDevice
+        {
+            return Err(Error::InvalidOptions {
+                reason: "JPEG Lossless SV1 export encodes on the CPU and cannot be combined with encode_backend=RequireDevice".into(),
             });
         }
         if let Some(spacing) = self.source_pixel_spacing_mm {
@@ -744,6 +775,55 @@ mod tests {
     }
 
     #[test]
+    fn jpeg_optimize_huffman_requires_a_cpu_capable_backend_for_jpeg_baseline() {
+        let optimized = ExportOptions {
+            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+            jpeg_optimize_huffman: true,
+            ..ExportOptions::default()
+        };
+        for backend in [
+            EncodeBackendPreference::Auto,
+            EncodeBackendPreference::CpuOnly,
+            EncodeBackendPreference::PreferDevice,
+        ] {
+            ExportOptions {
+                encode_backend: backend,
+                ..optimized.clone()
+            }
+            .validate()
+            .expect("CPU-capable backend accepts optimized Huffman tables");
+        }
+        let error = ExportOptions {
+            encode_backend: EncodeBackendPreference::RequireDevice,
+            ..optimized
+        }
+        .validate()
+        .expect_err("RequireDevice cannot produce optimized Huffman tables");
+        assert!(error.to_string().contains("jpeg_optimize_huffman"));
+        assert!(!ExportOptions::default().jpeg_optimize_huffman);
+    }
+
+    #[test]
+    fn jpeg_lossless_sv1_rejects_require_device_backend() {
+        let options = ExportOptions {
+            transfer_syntax: TransferSyntax::JpegLosslessSv1,
+            ..ExportOptions::default()
+        };
+        options.validate().expect("CPU-capable backend is accepted");
+        let error = ExportOptions {
+            encode_backend: EncodeBackendPreference::RequireDevice,
+            ..options
+        }
+        .validate()
+        .expect_err("RequireDevice has no JPEG Lossless device encoder");
+        assert!(error.to_string().contains("JPEG Lossless SV1"));
+        assert_eq!(
+            TransferSyntax::JpegLosslessSv1.uid(),
+            "1.2.840.10008.1.2.4.70"
+        );
+    }
+
+    #[test]
     fn export_options_default_to_bounded_metadata_budgets() {
         let options = ExportOptions::default();
         assert_eq!(options.max_instance_metadata_bytes, 256 * 1024 * 1024);
@@ -761,6 +841,7 @@ mod tests {
             transfer_syntax: TransferSyntax::Htj2k,
             jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossy97Aggressive,
             jpeg_quality: 77,
+            jpeg_optimize_huffman: true,
             uid_policy: UidPolicy::Deterministic,
             source_pixel_spacing_mm: Some(SourcePixelSpacingMm::new(0.0005, 0.00025).unwrap()),
             encode_backend: EncodeBackendPreference::PreferDevice,
@@ -833,7 +914,7 @@ mod tests {
                 transfer_syntax.uid()
             );
         }
-        assert_eq!(uids.len(), 7);
+        assert_eq!(uids.len(), 8);
     }
 
     #[test]

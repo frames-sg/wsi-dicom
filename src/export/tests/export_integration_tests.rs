@@ -592,31 +592,6 @@ fn export_dicom_refuses_existing_output_unless_overwrite_is_enabled() {
 }
 
 #[test]
-fn external_openjpeg_decodes_jpeg2000_exported_frame_when_available() {
-    let Some(opj_decompress) = find_command_for_test("opj_decompress") else {
-        eprintln!("skipping external OpenJPEG parity smoke: opj_decompress not found");
-        return;
-    };
-    let tmp = tempfile::tempdir().unwrap();
-    let frame = write_external_j2k_decoder_frame_for_test(
-        tmp.path(),
-        "1.2.826.0.1.3680043.10.999.91",
-        TransferSyntax::Jpeg2000Lossless,
-    );
-
-    let status = std::process::Command::new(opj_decompress)
-        .args(["-i"])
-        .arg(&frame.codestream_path)
-        .args(["-o"])
-        .arg(&frame.ppm_path)
-        .status()
-        .unwrap();
-    assert!(status.success(), "opj_decompress failed with {status}");
-
-    assert_external_decoder_ppm_matches_source_for_test(&frame.ppm_path, &frame.expected_pixels);
-}
-
-#[test]
 fn external_dicom_validators_accept_jpeg_baseline_passthrough_when_available() {
     let tmp = tempfile::tempdir().unwrap();
     let jpeg = encode_test_jpeg(8, 8, [160, 20, 40]);
@@ -988,11 +963,7 @@ fn export_dicom_jpeg_baseline_reencodes_non_passthrough_source() {
 }
 
 #[test]
-fn external_djpeg_decodes_jpeg_baseline_fallback_when_available() {
-    let Some(djpeg) = find_command_for_test("djpeg") else {
-        eprintln!("skipping external JPEG parity smoke: djpeg not found");
-        return;
-    };
+fn jpeg_baseline_fallback_frame_decodes_to_source_pixels() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source.dcm");
     let out = tmp.path().join("out");
@@ -1035,23 +1006,13 @@ fn external_djpeg_decodes_jpeg_baseline_fallback_when_available() {
         .unwrap();
     assert_eq!(fragments.len(), 1);
 
-    let jpeg_path = tmp.path().join("frame.jpg");
-    let ppm_path = tmp.path().join("frame.ppm");
-    std::fs::write(&jpeg_path, dicom_fragment_jpeg_payload(&fragments[0])).unwrap();
-    let status = std::process::Command::new(djpeg)
-        .args(["-outfile"])
-        .arg(&ppm_path)
-        .arg(&jpeg_path)
-        .status()
+    let (decoded, _) = j2k_jpeg::Decoder::new(dicom_fragment_jpeg_payload(&fragments[0]))
+        .unwrap()
+        .decode_request(j2k_jpeg::DecodeRequest::full(j2k_jpeg::PixelFormat::Rgb8))
         .unwrap();
-    assert!(status.success(), "djpeg failed with {status}");
 
-    let decoded = read_binary_ppm_for_test(&ppm_path);
-
-    assert_eq!(decoded.0, 2);
-    assert_eq!(decoded.1, 2);
-    assert_eq!(decoded.2.len(), expected.len());
-    for (actual, expected) in decoded.2.iter().zip(expected.iter()) {
+    assert_eq!(decoded.as_slice().len(), expected.len());
+    for (actual, expected) in decoded.as_slice().iter().zip(expected.iter()) {
         assert!(actual.abs_diff(*expected) <= 12);
     }
 }

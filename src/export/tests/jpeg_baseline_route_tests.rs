@@ -5,7 +5,7 @@ use j2k_jpeg::{JpegBackend, JpegSamples, JpegSubsampling};
 use super::*;
 
 #[test]
-fn mixed_jpeg_preparation_spools_only_encoded_exceptions() {
+fn jpeg_preparation_rejects_an_edge_that_requires_reencoding() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source.svs");
     let tiles = [
@@ -27,7 +27,7 @@ fn mixed_jpeg_preparation_spools_only_encoded_exceptions() {
     let location = InstanceCoordinate::new(0, 0, 0, 0, 0, 0);
     let geometry = jpeg_baseline_route_frame_geometry(&slide, level, location, 32).unwrap();
     let spool_path = tmp.path().join("frames.spool");
-    let prepared = super::super::jpeg_baseline_frames::prepare_jpeg_frames(
+    let error = super::super::jpeg_baseline_frames::prepare_jpeg_frames(
         &slide,
         InstanceExportContext {
             options: &options,
@@ -42,57 +42,12 @@ fn mixed_jpeg_preparation_spools_only_encoded_exceptions() {
         spool_path.clone(),
         2,
     )
-    .unwrap();
-    assert_eq!(prepared.metrics.routes.jpeg_passthrough_frames, 1);
-    assert_eq!(prepared.metrics.routes.jpeg_cpu_encode_frames, 1);
-    let boundary = encode_jpeg_baseline_cpu_input_tile(
-        &slide,
-        location,
-        JpegBaselineFallbackFrame {
-            x: 32,
-            y: 0,
-            width: 1,
-            height: 32,
-        },
-        JpegBaselineCpuEncodeSettings {
-            frame_columns: 32,
-            frame_rows: 32,
-            jpeg_quality: options.semantics.jpeg_quality,
-            max_prepared_frame_bytes: options.resources.max_prepared_frame_bytes,
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        std::fs::metadata(spool_path).unwrap().len(),
-        boundary.encoded.data.len() as u64,
-        "unchanged JPEG bytes should not be copied to the payload spool"
-    );
-    let report = export_dicom(ExportRequest {
-        source_path: source,
-        output_dir: tmp.path().join("out"),
-        options: ExportOptions {
-            tile_size: 32,
-            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
-            encode_backend: EncodeBackendPreference::CpuOnly,
-            ..ExportOptions::default()
-        },
-        color_management: ColorManagement::SourceOrSrgb,
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: Some(0),
-    })
-    .unwrap();
-    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-    let fragments = object
-        .element(tags::PIXEL_DATA)
-        .unwrap()
-        .value()
-        .fragments()
-        .unwrap();
-    assert_eq!(fragments.len(), 2);
-    for (actual, expected) in fragments.iter().zip([&tiles[0], &boundary.encoded.data]) {
-        assert_eq!(&actual[..expected.len()], expected.as_slice());
-        assert_eq!(actual.len(), expected.len().next_multiple_of(2));
-    }
+    .err()
+    .expect("incompatible JPEG edge must not be re-encoded");
+    assert!(error
+        .to_string()
+        .contains("pixel re-encoding fallback is disabled"));
+    assert!(error.to_string().contains("row=0 col=1"));
 }
 
 #[test]
@@ -282,7 +237,7 @@ fn export_dicom_passthrough_writes_jpeg_baseline_vl_wsi_instance() {
 }
 
 #[test]
-fn ambiguous_rgb_tiff_jpeg_decodes_and_reencodes_with_matching_color() {
+fn ambiguous_rgb_tiff_jpeg_rejects_implicit_reencoding() {
     let tmp = tempfile::tempdir().unwrap();
     let pixels = [80u8, 140, 220].repeat(8 * 8);
     let jpeg = j2k_jpeg::encode_jpeg_baseline(
@@ -316,22 +271,7 @@ fn ambiguous_rgb_tiff_jpeg_decodes_and_reencodes_with_matching_color() {
         3,
         std::slice::from_ref(&jpeg),
     );
-    let slide = Slide::open(&source).unwrap();
-    let source_tile = slide
-        .read_region(&wsi_rs::RegionRequest::new(
-            0usize,
-            0usize,
-            0u32,
-            (0, 0),
-            (8, 8),
-        ))
-        .unwrap();
-    let wsi_rs::CpuTileData::U8(expected) = source_tile.data() else {
-        panic!("expected 8-bit RGB source tile")
-    };
-    let expected = expected[..3].to_vec();
-
-    let report = export_dicom(ExportRequest {
+    let error = export_dicom(ExportRequest {
         source_path: source,
         output_dir: tmp.path().join("out"),
         options: ExportOptions {
@@ -346,29 +286,16 @@ fn ambiguous_rgb_tiff_jpeg_decodes_and_reencodes_with_matching_color() {
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: Some(0),
     })
-    .unwrap();
-    assert_eq!(report.metrics.routes.jpeg_passthrough_frames, 0);
-    assert_eq!(report.metrics.routes.jpeg_cpu_encode_frames, 1);
-    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-    let fragment = dicom_fragment_jpeg_payload(
-        &object
-            .element(tags::PIXEL_DATA)
-            .unwrap()
-            .value()
-            .fragments()
-            .unwrap()[0],
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("pixel re-encoding fallback is disabled"),
+        "unexpected error: {error}"
     );
-    let (decoded, _) = j2k_jpeg::Decoder::new(fragment)
-        .unwrap()
-        .decode_request(j2k_jpeg::DecodeRequest::full(j2k_jpeg::PixelFormat::Rgb8))
-        .unwrap();
-    for (actual, expected) in decoded.as_slice()[..3].iter().zip(expected) {
-        assert!(i16::from(*actual).abs_diff(i16::from(expected)) <= 4);
-    }
 }
 
 #[test]
-fn export_htj2k_from_jpeg_strips_writes_regular_generated_frames() {
+fn export_htj2k_rejects_jpeg_strips_requiring_pixel_reencoding() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source.svs");
     let out = tmp.path().join("out");
@@ -380,7 +307,7 @@ fn export_htj2k_from_jpeg_strips_writes_regular_generated_frames() {
     ];
     write_tiled_jpeg_tiff(&source, 32, 4, 16, 2, &tiles);
 
-    let report = export_dicom(ExportRequest {
+    let error = export_dicom(ExportRequest {
         source_path: source,
         output_dir: out,
         options: ExportOptions {
@@ -395,89 +322,11 @@ fn export_htj2k_from_jpeg_strips_writes_regular_generated_frames() {
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
-    .unwrap();
-
-    assert_eq!(report.instances.len(), 1);
-    assert_eq!(report.instances[0].frame_count, 4);
-    assert_eq!(report.metrics.routes.total_frames, 4);
-    assert_eq!(report.metrics.routes.cpu_input_frames, 4);
-    assert_eq!(report.metrics.routes.gpu_encode_frames, 0);
-    assert_eq!(report.metrics.route_passthrough_frames(), 0);
-    assert_eq!(report.metrics.routes.j2k_passthrough_frames, 0);
-    assert_eq!(
-        report.metrics.jpeg_direct_htj2k.jpeg_direct_htj2k_53_frames,
-        0
-    );
-    assert_eq!(
-        report
-            .metrics
-            .jpeg_direct_htj2k
-            .jpeg_direct_htj2k_rejected_frames,
-        2
-    );
-    assert_eq!(report.metrics.routes.cpu_fallback_frames, 4);
-    assert_eq!(report.metrics.route_unclassified_frames(), 0);
-
-    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-    assert_eq!(
-        object.meta().transfer_syntax.trim_end_matches('\0'),
-        TransferSyntax::Htj2kLosslessRpcl.uid()
-    );
-    assert_eq!(
-        object.element(tags::ROWS).unwrap().to_int::<u32>().unwrap(),
-        8
-    );
-    assert_eq!(
-        object
-            .element(tags::COLUMNS)
-            .unwrap()
-            .to_int::<u32>()
-            .unwrap(),
-        8
-    );
-    assert_eq!(
-        object
-            .element(tags::NUMBER_OF_FRAMES)
-            .unwrap()
-            .to_int::<u32>()
-            .unwrap(),
-        4
-    );
-    assert_eq!(
-        object
-            .element(tags::LOSSY_IMAGE_COMPRESSION)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .as_ref(),
-        "01"
-    );
-    assert_eq!(
-        object
-            .element(tags::LOSSY_IMAGE_COMPRESSION_METHOD)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .as_ref(),
-        "ISO_10918_1"
-    );
+    .unwrap_err()
+    .to_string();
     assert!(
-        object
-            .element(tags::LOSSY_IMAGE_COMPRESSION_RATIO)
-            .unwrap()
-            .to_float64()
-            .unwrap()
-            > 0.0
-    );
-    assert_eq!(
-        object
-            .element(tags::PIXEL_DATA)
-            .unwrap()
-            .value()
-            .fragments()
-            .unwrap()
-            .len(),
-        4
+        error.contains("pixel re-encoding fallback is disabled"),
+        "{error}"
     );
 }
 
@@ -527,126 +376,131 @@ fn export_lossy_htj2k_from_lossy_grayscale_jpeg_preserves_two_ordered_stages() {
 
 #[test]
 fn export_ndpi_jpeg_baseline_retiles_restart_strips_without_decode_encode() {
-    let tmp = tempfile::tempdir().unwrap();
-    let source = tmp.path().join("source.ndpi");
-    let out = tmp.path().join("out");
-    write_ndpi_restart_jpeg(&source, 128, 128);
+    use j2k_jpeg::transcode::{extract_dct_blocks, DctExtractOptions};
 
-    let report = export_dicom(ExportRequest {
-        source_path: source,
-        output_dir: out,
-        options: ExportOptions {
-            tile_size: 128,
-            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
-            encode_backend: EncodeBackendPreference::CpuOnly,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: false,
-            ..ExportOptions::default()
-        },
-        color_management: ColorManagement::SourceOrSrgb,
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: Some(0),
-    })
-    .unwrap();
-
-    assert_eq!(report.instances.len(), 1);
-    assert_eq!(report.instances[0].frame_count, 1);
-    assert_eq!(report.metrics.routes.total_frames, 1);
-    assert_eq!(report.metrics.routes.jpeg_passthrough_frames, 0);
-    assert_eq!(report.metrics.routes.jpeg_retile_frames, 1);
-    assert_eq!(report.metrics.routes.jpeg_retile_rejected_frames, 0);
-    assert_eq!(report.metrics.routes.jpeg_decode_fallback_frames, 0);
-    assert_eq!(report.metrics.routes.jpeg_cpu_encode_frames, 0);
-    assert_eq!(report.metrics.routes.cpu_input_frames, 0);
-    assert_eq!(report.metrics.route_unclassified_frames(), 0);
-
-    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-    assert_eq!(
-        object.meta().transfer_syntax.trim_end_matches('\0'),
-        TransferSyntax::JpegBaseline8Bit.uid()
-    );
-    assert_eq!(
-        object.element(tags::ROWS).unwrap().to_int::<u32>().unwrap(),
-        128
-    );
-    assert_eq!(
-        object
-            .element(tags::COLUMNS)
+    for subsampling in [JpegSubsampling::Ybr444, JpegSubsampling::Ybr422] {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.ndpi");
+        let out = tmp.path().join("out");
+        let source_jpeg = write_ndpi_restart_jpeg(&source, 128, 128, subsampling);
+        let source_dct = extract_dct_blocks(&source_jpeg, DctExtractOptions::default()).unwrap();
+        let (source_pixels, _) = j2k_jpeg::Decoder::new(&source_jpeg)
             .unwrap()
-            .to_int::<u32>()
-            .unwrap(),
-        128
-    );
-    let fragments = object
-        .element(tags::PIXEL_DATA)
-        .unwrap()
-        .value()
-        .fragments()
+            .decode_request(j2k_jpeg::DecodeRequest::full(j2k_jpeg::PixelFormat::Rgb8))
+            .unwrap();
+
+        let report = export_dicom(ExportRequest {
+            source_path: source,
+            output_dir: out,
+            options: ExportOptions {
+                tile_size: 32,
+                transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                codec_validation: CodecValidation::Disabled,
+                source_device_decode: false,
+                ..ExportOptions::default()
+            },
+            color_management: ColorManagement::SourceOrSrgb,
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: Some(0),
+        })
         .unwrap();
-    assert_eq!(fragments.len(), 1);
-    assert!(dicom_fragment_jpeg_payload(&fragments[0]).starts_with(&[0xFF, 0xD8]));
+
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].frame_count, 16);
+        assert_eq!(report.metrics.routes.total_frames, 16);
+        assert_eq!(report.metrics.routes.jpeg_passthrough_frames, 0);
+        assert_eq!(report.metrics.routes.jpeg_retile_frames, 16);
+        assert_eq!(report.metrics.routes.jpeg_retile_rejected_frames, 0);
+        assert_eq!(report.metrics.routes.jpeg_decode_fallback_frames, 0);
+        assert_eq!(report.metrics.routes.jpeg_cpu_encode_frames, 0);
+        assert_eq!(report.metrics.routes.cpu_input_frames, 0);
+        assert_eq!(report.metrics.route_unclassified_frames(), 0);
+
+        let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+        assert_eq!(
+            object.meta().transfer_syntax.trim_end_matches('\0'),
+            TransferSyntax::JpegBaseline8Bit.uid()
+        );
+        assert_eq!(
+            object.element(tags::ROWS).unwrap().to_int::<u32>().unwrap(),
+            32
+        );
+        assert_eq!(
+            object
+                .element(tags::COLUMNS)
+                .unwrap()
+                .to_int::<u32>()
+                .unwrap(),
+            32
+        );
+        let fragments = object
+            .element(tags::PIXEL_DATA)
+            .unwrap()
+            .value()
+            .fragments()
+            .unwrap();
+        assert_eq!(fragments.len(), 16);
+        for (index, fragment) in fragments.iter().enumerate() {
+            let retiled = extract_dct_blocks(
+                dicom_fragment_jpeg_payload(fragment),
+                DctExtractOptions::default(),
+            )
+            .unwrap();
+            assert_eq!((retiled.width, retiled.height), (32, 32));
+            assert_eq!(retiled.components.len(), source_dct.components.len());
+            // New JPEG edges change chroma interpolation neighbors. Exact
+            // coefficients and quantization tables verify lossless image content
+            // across the native-grid boundary without assuming identical RGB edges.
+            for (actual, original) in retiled.components.iter().zip(&source_dct.components) {
+                assert_eq!(
+                    (actual.h_samp, actual.v_samp),
+                    (original.h_samp, original.v_samp)
+                );
+                assert_eq!(actual.quant_table, original.quant_table);
+                assert_eq!(actual.block_cols * 4, original.block_cols);
+                assert_eq!(actual.block_rows * 4, original.block_rows);
+                let source_col = index % 4 * actual.block_cols as usize;
+                let source_row = index / 4 * actual.block_rows as usize;
+                for row in 0..actual.block_rows as usize {
+                    let start = row * actual.block_cols as usize;
+                    let source_start =
+                        (source_row + row) * original.block_cols as usize + source_col;
+                    assert_eq!(
+                        actual.quantized_blocks[start..start + actual.block_cols as usize],
+                        original.quantized_blocks
+                            [source_start..source_start + actual.block_cols as usize],
+                        "retiled NDPI frame {index}, component {}, block row {row}",
+                        actual.component_index
+                    );
+                }
+            }
+            if subsampling == JpegSubsampling::Ybr444 {
+                let (decoded, _) = j2k_jpeg::Decoder::new(dicom_fragment_jpeg_payload(fragment))
+                    .unwrap()
+                    .decode_request(j2k_jpeg::DecodeRequest::full(j2k_jpeg::PixelFormat::Rgb8))
+                    .unwrap();
+                for row in 0..32 {
+                    let source_offset = ((index / 4 * 32 + row) * 128 + index % 4 * 32) * 3;
+                    assert_eq!(
+                        &decoded.as_slice()[row * 32 * 3..(row + 1) * 32 * 3],
+                        &source_pixels.as_slice()[source_offset..source_offset + 32 * 3],
+                        "4:4:4 NDPI pixels at output frame {index}, row {row}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
-fn export_ndpi_htj2k_rpcl_reconstructs_rgb_and_encodes_ybr_rct() {
+fn export_ndpi_htj2k_rejects_color_reconstruction_for_each_frame_grid() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source.ndpi");
-    write_ndpi_restart_jpeg(&source, 128, 128);
+    write_ndpi_restart_jpeg(&source, 128, 128, JpegSubsampling::Ybr422);
 
-    let slide = Slide::open(&source).unwrap();
-    let level = &slide.dataset().scenes[0].series[0].levels[0];
-    let TileLayout::WholeLevel {
-        virtual_tile_width,
-        virtual_tile_height,
-        ..
-    } = level.tile_layout
-    else {
-        panic!("generated NDPI should expose a virtual source grid");
-    };
-    let mut original_compressed_bytes = 0_usize;
-    let mut original_pixel_bytes = 0_u64;
-    for row in 0..128_u32.div_ceil(virtual_tile_height) {
-        for col in 0..128_u32.div_ceil(virtual_tile_width) {
-            let raw = slide
-                .read_raw_compressed_tile(&wsi_rs::TileRequest::new(
-                    0,
-                    0,
-                    0,
-                    i64::from(col),
-                    i64::from(row),
-                ))
-                .unwrap();
-            original_compressed_bytes += raw.data().len();
-            original_pixel_bytes += u64::from(raw.width()) * u64::from(raw.height()) * 3;
-        }
-    }
-    let original_ratio = original_pixel_bytes as f64 / original_compressed_bytes as f64;
-    // A later unavailable native tile must abandon the whole optimization,
-    // before any per-frame source history can be suppressed.
-    let unavailable_height = level.dimensions.1 + u64::from(virtual_tile_height);
-    let unavailable_tail = wsi_rs::Level::new(
-        (level.dimensions.0, unavailable_height),
-        level.downsample,
-        TileLayout::WholeLevel {
-            width: level.dimensions.0,
-            height: unavailable_height,
-            virtual_tile_width,
-            virtual_tile_height,
-        },
-    );
-    assert!(
-        super::super::lossless_j2k_plan::WholeLevelJpegExportPreflight::new(
-            &slide,
-            &unavailable_tail,
-            InstanceCoordinate::new(0, 0, 0, 0, 0, 0),
-            TransferSyntax::Htj2kLosslessRpcl,
-        )
-        .is_none()
-    );
     for tile_size in [64_u32, 96, 128] {
-        let tiles_across = 128_u32.div_ceil(tile_size);
-        let expected_frames = tiles_across * tiles_across;
-        let report = export_dicom(ExportRequest {
+        let error = export_dicom(ExportRequest {
             source_path: source.clone(),
             output_dir: tmp.path().join(format!("out-{tile_size}")),
             options: ExportOptions {
@@ -661,115 +515,32 @@ fn export_ndpi_htj2k_rpcl_reconstructs_rgb_and_encodes_ybr_rct() {
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: Some(0),
         })
-        .unwrap();
-
-        assert_eq!(report.instances.len(), 1);
-        assert_eq!(report.instances[0].frame_count, expected_frames);
-        assert_eq!(
-            report.metrics.routes.total_frames,
-            u64::from(expected_frames)
-        );
-        assert_eq!(report.metrics.routes.jpeg_retile_frames, 0);
-        assert_eq!(report.metrics.routes.jpeg_retile_to_htj2k_53_frames, 0);
-        assert_eq!(
-            report.metrics.jpeg_direct_htj2k.jpeg_direct_htj2k_53_frames,
-            0
-        );
-        assert_eq!(report.metrics.routes.jpeg_decode_fallback_frames, 0);
-        assert_eq!(report.metrics.routes.jpeg_cpu_encode_frames, 0);
-        assert_eq!(
-            report.metrics.routes.cpu_input_frames,
-            u64::from(expected_frames)
-        );
-        assert_eq!(
-            report.metrics.routes.cpu_fallback_frames,
-            u64::from(expected_frames)
-        );
-        assert_eq!(report.metrics.route_passthrough_frames(), 0);
-        assert_eq!(report.metrics.route_unclassified_frames(), 0);
-
-        let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-        assert_eq!(
-            object.meta().transfer_syntax.trim_end_matches('\0'),
-            TransferSyntax::Htj2kLosslessRpcl.uid()
-        );
-        assert_eq!(
-            object
-                .element(tags::PHOTOMETRIC_INTERPRETATION)
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            "YBR_RCT"
-        );
-        assert_eq!(
-            object
-                .element(tags::LOSSY_IMAGE_COMPRESSION)
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            "01"
-        );
-        assert_eq!(
-            object
-                .element(tags::LOSSY_IMAGE_COMPRESSION_METHOD)
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            "ISO_10918_1"
-        );
-        let ratio = object
-            .element(tags::LOSSY_IMAGE_COMPRESSION_RATIO)
-            .unwrap()
-            .to_multi_float64()
-            .unwrap();
-        assert_eq!(ratio.len(), 1);
+        .unwrap_err()
+        .to_string();
         assert!(
-            (ratio[0] - original_ratio).abs() < 1e-6,
-            "source compression history must count each native JPEG once for tile size {tile_size}: {} versus {original_ratio}",
-            ratio[0]
+            error.contains("pixel re-encoding fallback is disabled"),
+            "tile size {tile_size}: {error}"
         );
-        let fragments = object
-            .element(tags::PIXEL_DATA)
-            .unwrap()
-            .value()
-            .fragments()
-            .unwrap();
-        assert_eq!(fragments.len(), expected_frames as usize);
-        for (index, fragment) in fragments.iter().enumerate() {
-            let x = index as u32 % tiles_across * tile_size;
-            let y = index as u32 / tiles_across * tile_size;
-            let region = slide
-                .read_region(&RegionRequest::new(
-                    0,
-                    0,
-                    0,
-                    (i64::from(x), i64::from(y)),
-                    ((128 - x).min(tile_size), (128 - y).min(tile_size)),
-                ))
-                .unwrap();
-            let expected = prepare_tile_samples(&region, tile_size, tile_size).unwrap();
-            assert_eq!(
-                decode_j2k_frame_for_test(
-                    dicom_fragment_payload_without_padding(fragment),
-                    tile_size,
-                    tile_size,
-                    3,
-                    8,
-                ),
-                expected.bytes.as_slice(),
-                "lossless NDPI pixels and padding for tile size {tile_size}, frame {index}"
-            );
-        }
+        assert!(error.contains("ProfileUnsupported"), "{error}");
+        assert!(
+            std::fs::read_dir(tmp.path().join(format!("out-{tile_size}")))
+                .unwrap()
+                .all(|entry| entry
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_none_or(|ext| ext != "dcm"))
+        );
     }
 }
 
 #[test]
-fn profile_ndpi_htj2k_rpcl_uses_bounded_rgb_reconstruction() {
+fn profile_ndpi_htj2k_rejects_implicit_rgb_reconstruction() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source.ndpi");
-    write_ndpi_restart_jpeg(&source, 128, 128);
+    write_ndpi_restart_jpeg(&source, 128, 128, JpegSubsampling::Ybr422);
 
-    let report = profile_dicom_routes(RouteProfileRequest {
+    let error = profile_dicom_routes(RouteProfileRequest {
         source_path: source,
         options: ExportOptions {
             tile_size: 64,
@@ -783,19 +554,13 @@ fn profile_ndpi_htj2k_rpcl_uses_bounded_rgb_reconstruction() {
         level: 0,
         max_frames: 2,
     })
-    .unwrap();
-
-    assert_eq!(report.available_frames, 4);
-    assert_eq!(report.metrics.routes.total_frames, 2);
-    assert_eq!(report.metrics.routes.cpu_input_frames, 2);
-    assert_eq!(report.metrics.routes.cpu_fallback_frames, 2);
-    assert_eq!(report.metrics.routes.jpeg_retile_frames, 0);
-    assert_eq!(report.metrics.routes.jpeg_retile_to_htj2k_53_frames, 0);
-    assert_eq!(
-        report.metrics.jpeg_direct_htj2k.jpeg_direct_htj2k_53_frames,
-        0
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("pixel re-encoding fallback is disabled"),
+        "{error}"
     );
-    assert_eq!(report.metrics.route_unclassified_frames(), 0);
+    assert!(error.contains("ProfileUnsupported"), "{error}");
 }
 
 #[test]
@@ -914,23 +679,79 @@ fn export_jpeg_baseline_preserves_native_geometry_when_first_tile_is_empty() {
 }
 
 #[test]
-fn export_jpeg_baseline_retiles_oversized_native_regular_geometry() {
+fn export_jpeg_baseline_empty_native_tile_does_not_hide_unreadable_neighbors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source.tiff");
+    write_tiled_jpeg_tiff(
+        &source,
+        16,
+        16,
+        8,
+        8,
+        &[
+            Vec::new(),
+            b"invalid JPEG".to_vec(),
+            encode_test_jpeg(8, 8, [20, 160, 40]),
+            encode_test_jpeg(8, 8, [20, 40, 160]),
+        ],
+    );
+    let error = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 32,
+            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: Some(0),
+    })
+    .unwrap_err();
+    assert!(
+        matches!(error, Error::SlideRead { .. }),
+        "unreadable contributors must fail export instead of becoming a blank frame: {error}"
+    );
+}
+
+#[test]
+fn export_jpeg_baseline_rejects_unsupported_regular_tiff_retiling() {
     let tmp = tempfile::tempdir().unwrap();
     let jpeg = encode_test_jpeg(1024, 1024, [160, 20, 40]);
     let source = tmp.path().join("source.tiff");
     write_tiled_jpeg_tiff(&source, 1024, 1024, 1024, 1024, &[jpeg]);
 
-    let report = export_jpeg_baseline_native_geometry_for_test(source, tmp.path().join("out"));
-
-    assert_eq!(report.instances[0].frame_count, 4);
-    assert_eq!(report.metrics.routes.jpeg_passthrough_frames, 0);
-    assert_eq!(report.metrics.routes.cpu_fallback_frames, 4);
-
-    assert_dicom_instance_geometry_for_test(&report.instances[0].path, 512, 512, 4);
+    let error = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 512,
+            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: Some(0),
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("pixel re-encoding fallback is disabled"),
+        "{error}"
+    );
+    assert!(std::fs::read_dir(tmp.path().join("out"))
+        .unwrap()
+        .all(|entry| entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_none_or(|ext| ext != "dcm")));
 }
 
 #[test]
-fn profile_jpeg_baseline_retiles_pathological_native_regular_source_tiles() {
+fn profile_jpeg_baseline_rejects_unsupported_regular_tiff_retiling() {
     let tmp = tempfile::tempdir().unwrap();
     let tiles = [
         encode_test_jpeg(16, 2, [160, 20, 40]),
@@ -941,7 +762,7 @@ fn profile_jpeg_baseline_retiles_pathological_native_regular_source_tiles() {
     let source = tmp.path().join("source.svs");
     write_tiled_jpeg_tiff(&source, 32, 4, 16, 2, &tiles);
 
-    let report = profile_dicom_routes(RouteProfileRequest {
+    let error = profile_dicom_routes(RouteProfileRequest {
         source_path: source,
         options: ExportOptions {
             tile_size: 8,
@@ -955,17 +776,15 @@ fn profile_jpeg_baseline_retiles_pathological_native_regular_source_tiles() {
         level: 0,
         max_frames: 2,
     })
-    .unwrap();
-
-    assert_eq!(report.available_frames, 4);
-    assert_eq!(report.metrics.routes.total_frames, 2);
-    assert_eq!(report.metrics.routes.jpeg_passthrough_frames, 0);
-    assert_eq!(report.metrics.routes.jpeg_decode_fallback_frames, 2);
-    assert_eq!(report.metrics.route_passthrough_frames(), 0);
-    assert_eq!(report.metrics.routes.cpu_fallback_frames, 2);
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("pixel re-encoding fallback is disabled"),
+        "{error}"
+    );
 }
 
-fn encode_restart_test_jpeg(width: u32, height: u32) -> Vec<u8> {
+fn encode_restart_test_jpeg(width: u32, height: u32, subsampling: JpegSubsampling) -> Vec<u8> {
     let mut pixels = vec![0u8; width as usize * height as usize * 3];
     for y in 0..height {
         for x in 0..width {
@@ -983,7 +802,7 @@ fn encode_restart_test_jpeg(width: u32, height: u32) -> Vec<u8> {
         },
         j2k_jpeg::JpegEncodeOptions {
             quality: 90,
-            subsampling: JpegSubsampling::Ybr422,
+            subsampling,
             restart_interval: Some(8),
             backend: JpegBackend::Cpu,
         },
@@ -992,8 +811,13 @@ fn encode_restart_test_jpeg(width: u32, height: u32) -> Vec<u8> {
     .data
 }
 
-fn write_ndpi_restart_jpeg(path: &std::path::Path, width: u32, height: u32) {
-    let encoded = encode_restart_test_jpeg(width, height);
+fn write_ndpi_restart_jpeg(
+    path: &std::path::Path,
+    width: u32,
+    height: u32,
+    subsampling: JpegSubsampling,
+) -> Vec<u8> {
+    let encoded = encode_restart_test_jpeg(width, height, subsampling);
     let entropy_start = find_test_jpeg_bitstream_start(&encoded).unwrap();
     let mcu_starts = test_jpeg_restart_segment_starts(&encoded);
     assert!(!mcu_starts.is_empty());
@@ -1058,6 +882,7 @@ fn write_ndpi_restart_jpeg(path: &std::path::Path, width: u32, height: u32) {
     file.flush().unwrap();
 
     assert!(jpeg_header.starts_with(&[0xFF, 0xD8]));
+    encoded
 }
 
 fn find_test_jpeg_bitstream_start(data: &[u8]) -> Option<usize> {

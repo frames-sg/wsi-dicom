@@ -30,7 +30,6 @@ fn intrinsic_wsi_icc_rule_fails_even_when_external_validators_pass() {
         &path,
         &ValidationOptions {
             profile: ValidationProfile::Core2026c,
-            max_pixel_frames: 0,
             ..ValidationOptions::default()
         },
         &runner,
@@ -57,7 +56,6 @@ fn corrected_producer_output_passes_all_versioned_intrinsic_wsi_rules() {
         &path,
         &ValidationOptions {
             profile: ValidationProfile::Core2026c,
-            max_pixel_frames: 0,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -212,7 +210,6 @@ fn clinical_identity_set_rule_rejects_patient_conflict_within_study() {
         &set_dir,
         &ValidationOptions {
             profile: ValidationProfile::Core2026c,
-            max_pixel_frames: 0,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -364,7 +361,6 @@ fn specimen_uid_set_rule_rejects_conflicting_identifier_scope() {
         &set_dir,
         &ValidationOptions {
             profile: ValidationProfile::Core2026c,
-            max_pixel_frames: 0,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -407,7 +403,6 @@ fn pyramid_geometry_rule_rejects_inconsistent_physical_extent() {
         &set_dir,
         &ValidationOptions {
             profile: ValidationProfile::Core2026c,
-            max_pixel_frames: 0,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -500,7 +495,6 @@ fn source_relationship_rule_rejects_present_target_with_wrong_class() {
         &set_dir,
         &ValidationOptions {
             profile: ValidationProfile::Core2026c,
-            max_pixel_frames: 0,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -560,7 +554,6 @@ fn applicable_source_relationship_is_reported_after_other_corpus_checks() {
         &set_dir,
         &ValidationOptions {
             profile: ValidationProfile::Core2026c,
-            max_pixel_frames: 0,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -616,7 +609,6 @@ fn native_transfer_syntax_with_defined_length_encapsulated_bytes_is_intrinsicall
         &file,
         &ValidationOptions {
             profile: ValidationProfile::Core2026c,
-            max_pixel_frames: 0,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -653,7 +645,6 @@ fn valid_native_pixels_may_match_an_encapsulated_item_stream_byte_pattern() {
         &file,
         &ValidationOptions {
             profile: ValidationProfile::Core2026c,
-            max_pixel_frames: 0,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -682,7 +673,6 @@ fn compressed_primitive_and_empty_encapsulated_pixel_data_fail_without_decoding(
             &file,
             &ValidationOptions {
                 profile: ValidationProfile::Core2026c,
-                max_pixel_frames: 0,
                 ..ValidationOptions::default()
             },
             &FakeRunner::default(),
@@ -693,4 +683,61 @@ fn compressed_primitive_and_empty_encapsulated_pixel_data_fail_without_decoding(
         }));
         assert!(report.has_failures());
     }
+}
+
+#[test]
+fn fragment_payload_ending_in_zero_is_preserved_for_validation() {
+    assert_eq!(
+        super::fragment_payload_without_padding(&[0xFF, 0x4F, 0x00]),
+        &[0xFF, 0x4F, 0x00]
+    );
+    assert_eq!(
+        super::fragment_payload_without_padding(&[0xFF, 0x4F, 0x00, 0x00]),
+        &[0xFF, 0x4F, 0x00, 0x00]
+    );
+}
+
+#[test]
+fn encapsulated_frame_assembly_uses_offsets_and_extended_lengths() {
+    let sequence = dicom_core::value::PixelFragmentSequence::new_fragments(vec![
+        vec![1, 2],
+        vec![3, 0],
+        vec![4, 5],
+    ]);
+    let frames =
+        super::assemble_encapsulated_frames(&sequence, 2, Some(&[0, 20]), Some(&[3, 2]), 2, 64)
+            .unwrap();
+
+    assert_eq!(frames, vec![vec![1, 2, 3], vec![4, 5]]);
+}
+
+#[test]
+fn encapsulated_frame_assembly_rejects_extended_length_including_item_header() {
+    const PRESERVED_FRAME_PAYLOAD_BYTES: usize = 116_106;
+    const ITEM_HEADER_BYTES: u64 = 8;
+
+    let sequence = dicom_core::value::PixelFragmentSequence::new_fragments(vec![
+        vec![0xA5; PRESERVED_FRAME_PAYLOAD_BYTES],
+        vec![0x5A; 2],
+    ]);
+    let error = super::assemble_encapsulated_frames(
+        &sequence,
+        2,
+        Some(&[0, 116_114]),
+        Some(&[116_106 + ITEM_HEADER_BYTES, 2]),
+        2,
+        200_000,
+    )
+    .expect_err("an Extended Offset Table Length must exclude the Item header");
+
+    assert!(error.contains("includes the 8-byte Item header"), "{error}");
+}
+
+#[test]
+fn encapsulated_frame_assembly_rejects_ambiguous_fragment_mapping() {
+    let sequence =
+        dicom_core::value::PixelFragmentSequence::new_fragments(vec![vec![1], vec![2], vec![3]]);
+    let error = super::assemble_encapsulated_frames(&sequence, 2, None, None, 2, 64)
+        .expect_err("multiple frames without offsets must be unambiguous");
+    assert!(error.contains("without an offset table"));
 }

@@ -38,15 +38,6 @@ pub fn validation_fragment_payload_len_for_bench(fragment: &[u8]) -> usize {
     crate::validation::fragment_payload_without_padding(fragment).len()
 }
 
-pub fn htj2k_decoder_template_summary_for_bench(template: &str) -> Result<(String, usize), String> {
-    crate::validation::htj2k_decoder_command(
-        template,
-        Path::new("input.jhc"),
-        Path::new("output.ppm"),
-    )
-    .map(|(command, args)| (command, args.len()))
-}
-
 pub fn pixel_data_offsets_for_bench(lengths: &[u64]) -> Result<Vec<u64>, Error> {
     pixel_data_offsets_from_lengths(lengths)
 }

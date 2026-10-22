@@ -92,7 +92,6 @@ pub(super) struct PendingMetalEncodedTileRun {
     pub(super) encode_batches: u64,
     pub(super) row_batch_rows: usize,
     pub(super) row_batch_target_tiles: Option<usize>,
-    pub(super) preference: EncodeBackendPreference,
     pub(super) missing_encode_message: &'static str,
 }
 
@@ -121,12 +120,11 @@ impl PendingMetalEncodedTileRun {
             };
             match encoded_frame {
                 Some(codestream) => encoded.push(Some((codestream, profile))),
-                None if self.preference == EncodeBackendPreference::RequireDevice => {
+                None => {
                     return Err(Error::Unsupported {
                         reason: self.missing_encode_message.into(),
                     });
                 }
-                None => encoded.push(None),
             }
         }
 

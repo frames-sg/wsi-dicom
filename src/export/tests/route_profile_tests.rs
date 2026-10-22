@@ -4,9 +4,8 @@ use super::*;
 #[test]
 fn metal_profile_does_not_encode_rows_beyond_requested_frames() {
     let tmp = tempfile::tempdir().unwrap();
-    let source = tmp.path().join("bounded.svs");
-    let jpeg = encode_test_jpeg(32, 32, [120, 30, 90]);
-    write_tiled_jpeg_tiff(&source, 64, 128, 32, 32, &vec![jpeg; 8]);
+    let source = tmp.path().join("bounded.dcm");
+    write_source_dicom_with_dimensions(&source, "1.2.3.4.6", 64, 128);
     for max_frames in [2, 3] {
         let report = profile_dicom_routes(RouteProfileRequest {
             source_path: source.clone(),

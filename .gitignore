@@ -11,7 +11,6 @@ fuzz/corpus/*
 fuzz/corpus/*/*
 !fuzz/corpus/dicom_validation_fragment/markers
 !fuzz/corpus/fhir_bundle/linked.json
-!fuzz/corpus/htj2k_decoder_template/placeholders
 !fuzz/corpus/metadata_json/nested.json
 !fuzz/corpus/metadata_json/valid.json
 !fuzz/corpus/tile_preparation/rgb-ish

@@ -131,6 +131,7 @@ fn deterministic_generation_seed(
         transfer_syntax: options.semantics.transfer_syntax,
         jpeg_direct_htj2k_profile: options.semantics.jpeg_direct_htj2k_profile,
         jpeg_quality: options.semantics.jpeg_quality,
+        jpeg_optimize_huffman: options.semantics.jpeg_optimize_huffman,
         source_pixel_spacing_mm: options.semantics.source_pixel_spacing_mm,
         effective_icc_sha256,
         encode_backend: options.execution.encode_backend,
@@ -157,6 +158,10 @@ struct DeterministicUidInputs<'a> {
     transfer_syntax: crate::options::TransferSyntax,
     jpeg_direct_htj2k_profile: crate::options::JpegDirectHtj2kProfile,
     jpeg_quality: u8,
+    // Omitted when false so identities derived before this option existed
+    // stay stable.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    jpeg_optimize_huffman: bool,
     source_pixel_spacing_mm: Option<crate::options::SourcePixelSpacingMm>,
     effective_icc_sha256: &'a [Option<String>],
     encode_backend: crate::options::EncodeBackendPreference,
@@ -282,6 +287,42 @@ mod tests {
         assert_ne!(first.uid("instance:0"), level_change.uid("instance:0"));
         assert_ne!(first.uid("instance:0"), changed.uid("instance:0"));
         assert_ne!(changed.uid("instance:0"), profile_change.uid("instance:0"));
+    }
+
+    #[test]
+    fn deterministic_identity_is_stable_until_jpeg_optimize_huffman_is_enabled() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.bin");
+        std::fs::write(&source, b"pixels-a").unwrap();
+        let options = ExportOptions {
+            uid_policy: UidPolicy::Deterministic,
+            ..ExportOptions::default()
+        };
+        let metadata = DicomMetadata::research_placeholder();
+        let optimized_options = ExportOptions {
+            jpeg_optimize_huffman: true,
+            ..options.clone()
+        };
+
+        let standard =
+            DicomExportIdentity::for_export(&source, &normalized(&options), &metadata, None, &[])
+                .unwrap();
+        let optimized = DicomExportIdentity::for_export(
+            &source,
+            &normalized(&optimized_options),
+            &metadata,
+            None,
+            &[],
+        )
+        .unwrap();
+
+        // Pinned from the seed format before `jpeg_optimize_huffman` existed:
+        // adding the option must not move identities of existing exports.
+        assert_eq!(
+            standard.uid("instance:0"),
+            "2.25.102012248039574861832277877180747874433"
+        );
+        assert_ne!(standard.uid("instance:0"), optimized.uid("instance:0"));
     }
 
     #[test]

@@ -126,8 +126,6 @@ pub(crate) enum Command {
         #[arg(long)]
         dcmvalidate_iod: Option<PathBuf>,
         #[arg(long)]
-        htj2k_decoder: Option<String>,
-        #[arg(long)]
         json: bool,
     },
     SelfTest(SelfTestArgs),
@@ -232,8 +230,6 @@ pub(crate) struct SelfTestArgs {
     pub(crate) strict: bool,
     #[arg(long)]
     pub(crate) dcmvalidate_iod: Option<PathBuf>,
-    #[arg(long)]
-    pub(crate) htj2k_decoder: Option<String>,
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
     pub(crate) command_timeout_secs: u64,
     #[arg(long)]
@@ -248,6 +244,9 @@ pub(crate) struct EncodeArgs {
     pub(crate) tile_size: u32,
     #[arg(long, default_value_t = 90)]
     pub(crate) jpeg_quality: u8,
+    /// Use optimal per-frame Huffman tables for re-encoded JPEG Baseline frames.
+    #[arg(long)]
+    pub(crate) jpeg_optimize_huffman: bool,
     #[arg(long, value_enum)]
     pub(crate) transfer_syntax: Option<TransferSyntax>,
     #[arg(long, value_enum)]
@@ -289,6 +288,7 @@ impl EncodeArgs {
             JpegDirectHtj2kProfile::default_for_transfer_syntax(transfer_syntax)
         });
         options.j2k_decomposition_levels = self.j2k_decomposition_levels;
+        options.jpeg_optimize_huffman = self.jpeg_optimize_huffman;
         options.encode_backend = self.backend;
         options.codec_validation = self.codec_validation;
         options.source_device_decode = self.source_device_decode;
@@ -395,10 +395,6 @@ pub(crate) struct ValidateArgs {
     pub(crate) strict: bool,
     #[arg(long)]
     pub(crate) dcmvalidate_iod: Option<PathBuf>,
-    #[arg(long)]
-    pub(crate) htj2k_decoder: Option<String>,
-    #[arg(long, default_value_t = 1)]
-    pub(crate) max_pixel_frames: usize,
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
     pub(crate) command_timeout_secs: u64,
     #[arg(long, value_enum, default_value = "general")]

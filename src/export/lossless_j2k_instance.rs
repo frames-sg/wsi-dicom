@@ -16,7 +16,7 @@ use super::lossless_j2k_pipeline::{
 };
 use super::lossless_j2k_plan::{
     plan_lossless_j2k_frames_with_preflight, LosslessJ2kPlanRequest, LosslessJ2kPlannedFrame,
-    WholeLevelJpegExportPreflight, WholeLevelJpegPreflight,
+    WholeLevelJpegPreflight,
 };
 use super::route_plan::RouteExecutionContext;
 use super::tile_grid::TileGrid;
@@ -50,29 +50,31 @@ pub(super) fn export_instance(
     prepare_lossless_j2k_instance(slide, request, export)?.finish()
 }
 
-pub(super) struct PendingLosslessJ2kInstance {
-    context: DicomInstanceContext,
-    metadata: DicomMetadata,
-    study_uid: String,
-    specimen_uid: String,
-    instance_number: u32,
-    tile_size: u32,
-    matrix_columns: u64,
-    matrix_rows: u64,
-    frame_count: u32,
-    profile: PixelProfile,
-    pixel_data: BufferedPixelDataSink,
-    icc_profile: Option<Vec<u8>>,
-    icc_profile_report: IccProfileReport,
-    lossy_compression: LossyCompressionHistory,
-    metrics: ExportMetrics,
-    transfer_syntax: TransferSyntax,
-    overwrite: bool,
-    max_instance_metadata_bytes: u64,
-    per_frame_plan: Option<crate::writer::PerFrameFunctionalGroupsPlan>,
+/// An encoded lossless instance waiting to be written. Shared by the JPEG 2000
+/// family and JPEG Lossless exporters.
+pub(super) struct PendingLosslessInstance {
+    pub(super) context: DicomInstanceContext,
+    pub(super) metadata: DicomMetadata,
+    pub(super) study_uid: String,
+    pub(super) specimen_uid: String,
+    pub(super) instance_number: u32,
+    pub(super) tile_size: u32,
+    pub(super) matrix_columns: u64,
+    pub(super) matrix_rows: u64,
+    pub(super) frame_count: u32,
+    pub(super) profile: PixelProfile,
+    pub(super) pixel_data: BufferedPixelDataSink,
+    pub(super) icc_profile: Option<Vec<u8>>,
+    pub(super) icc_profile_report: IccProfileReport,
+    pub(super) lossy_compression: LossyCompressionHistory,
+    pub(super) metrics: ExportMetrics,
+    pub(super) transfer_syntax: TransferSyntax,
+    pub(super) overwrite: bool,
+    pub(super) max_instance_metadata_bytes: u64,
+    pub(super) per_frame_plan: Option<crate::writer::PerFrameFunctionalGroupsPlan>,
 }
 
-impl PendingLosslessJ2kInstance {
+impl PendingLosslessInstance {
     pub(super) fn finish(mut self) -> Result<InstanceReport, Error> {
         let frame_grid = FrameGrid {
             frame_columns: self.tile_size,
@@ -164,7 +166,7 @@ pub(super) fn prepare_lossless_j2k_instance(
     slide: &Slide,
     request: &ExportRequest,
     export: InstanceExportContext<'_>,
-) -> Result<PendingLosslessJ2kInstance, Error> {
+) -> Result<PendingLosslessInstance, Error> {
     let InstanceExportContext {
         options,
         metadata,
@@ -218,15 +220,7 @@ pub(super) fn prepare_lossless_j2k_instance(
     )?;
     let mut source_lossy_compression = LossyCompressionAccumulator::default();
     let mut target_lossy_compression = LossyCompressionAccumulator::default();
-    let jpeg_preflight = WholeLevelJpegExportPreflight::new(
-        slide,
-        level,
-        coordinate,
-        options.semantics.transfer_syntax,
-    );
-    if let Some(preflight) = jpeg_preflight.as_ref() {
-        source_lossy_compression.observe(preflight.source_lossy_compression())?;
-    }
+    let jpeg_preflight = WholeLevelJpegPreflight::profile(level, options.semantics.transfer_syntax);
     let allow_passthrough_probe = j2k_family_passthrough_probe_allowed(
         &request.source_path,
         options.semantics.transfer_syntax,
@@ -277,9 +271,7 @@ pub(super) fn prepare_lossless_j2k_instance(
                     plan_lossless_j2k_frames_with_preflight(
                         slide,
                         plan_request(row, planned_row_count),
-                        jpeg_preflight
-                            .as_ref()
-                            .map(|_| WholeLevelJpegPreflight::VerifiedExport),
+                        jpeg_preflight,
                     )?
                 }
             };
@@ -299,9 +291,6 @@ pub(super) fn prepare_lossless_j2k_instance(
                     tiles_down - next_row,
                 );
                 let request = plan_request(next_row, next_count);
-                let jpeg_preflight = jpeg_preflight
-                    .as_ref()
-                    .map(|_| WholeLevelJpegPreflight::VerifiedExport);
                 prefetched = Some(PrefetchedPlan {
                     request,
                     handle: scope.spawn(move || {
@@ -391,7 +380,7 @@ pub(super) fn prepare_lossless_j2k_instance(
                     }
                     continue;
                 }
-                if !decision.allows_j2k_encode_fallback() {
+                if !decision.allows_j2k_encode() {
                     return Err(unsupported_j2k_route_error(
                         options.semantics.transfer_syntax,
                         planned_frame.row,
@@ -468,7 +457,7 @@ pub(super) fn prepare_lossless_j2k_instance(
     };
     lossy_compression.append(target_lossy_compression.into_history()?);
 
-    Ok(PendingLosslessJ2kInstance {
+    Ok(PendingLosslessInstance {
         context,
         metadata: metadata.clone(),
         study_uid: identity.study_uid().to_string(),

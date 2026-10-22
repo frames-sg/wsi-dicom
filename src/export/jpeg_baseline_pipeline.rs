@@ -2,7 +2,9 @@ use std::time::{Duration, Instant};
 
 use j2k_jpeg::{EncodedJpeg, JpegBackend, JpegSamples, JpegSubsampling};
 use rayon::prelude::*;
-use wsi_rs::{Compression, LevelIdx, PlaneSelection, RegionRequest, SceneId, SeriesId, Slide};
+use wsi_rs::{
+    Compression, LevelIdx, PlaneSelection, RegionRequest, SceneId, SeriesId, Slide, TileLayout,
+};
 
 use super::frame_region::{
     FrameRectGrid, FrameRectOverflowReasons, OutputFrameRect, PreparedCpuRegion,
@@ -74,6 +76,7 @@ pub(super) struct JpegBaselineCpuEncodeSettings {
     pub(super) frame_columns: u32,
     pub(super) frame_rows: u32,
     pub(super) jpeg_quality: u8,
+    pub(super) optimize_huffman: bool,
     pub(super) max_prepared_frame_bytes: u64,
 }
 
@@ -96,7 +99,8 @@ pub(super) struct JpegBaselineFallbackBatchRequest<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct JpegBaselineRowPlanRequest {
+pub(super) struct JpegBaselineRowPlanRequest<'a> {
+    pub(super) level: &'a wsi_rs::Level,
     pub(super) location: JpegBaselineFrameLocation,
     pub(super) row: u64,
     pub(super) tile_count: u64,
@@ -196,7 +200,7 @@ pub(super) fn take_consistent_jpeg_baseline_fallback_frame(
 
 pub(super) fn plan_jpeg_baseline_row(
     slide: &Slide,
-    request: JpegBaselineRowPlanRequest,
+    request: JpegBaselineRowPlanRequest<'_>,
 ) -> Result<JpegBaselineRowPlan, Error> {
     let row_frame_capacity =
         usize::try_from(request.tile_count).map_err(|_| Error::Unsupported {
@@ -228,34 +232,72 @@ pub(super) fn plan_jpeg_baseline_row(
 
 fn plan_jpeg_baseline_frame_at(
     slide: &Slide,
-    request: JpegBaselineRowPlanRequest,
+    request: JpegBaselineRowPlanRequest<'_>,
     col: u64,
 ) -> Result<(JpegBaselinePlannedFrame, Option<JpegRetileRejectionReason>), Error> {
-    let mut raw_jpeg_retile_candidate = false;
+    let frame = jpeg_baseline_fallback_frame(col, request.row, request.grid)?;
+    let native_dimensions = match request.level.tile_layout {
+        TileLayout::Regular {
+            tile_width,
+            tile_height,
+            ..
+        }
+        | TileLayout::WholeLevel {
+            virtual_tile_width: tile_width,
+            virtual_tile_height: tile_height,
+            ..
+        } if tile_width > 0 && tile_height > 0 => Some((tile_width, tile_height)),
+        _ => None,
+    };
+    let native_grid_matches =
+        native_dimensions == Some((request.grid.frame_columns, request.grid.frame_rows));
+    // Native tile indices and output frame indices are interchangeable only
+    // when their grids match. Probe the native tile at the output pixel origin.
+    let native_position = native_dimensions.and_then(|(width, height)| {
+        Some((
+            i64::try_from(frame.x / u64::from(width)).ok()?,
+            i64::try_from(frame.y / u64::from(height)).ok()?,
+        ))
+    });
+    let raw = native_position
+        .map(|(col, row)| slide.read_raw_compressed_tile(&request.location.tile_request(col, row)));
+    // The display-tile reader owns retiling eligibility. An unavailable native
+    // probe must not prevent it from resolving a valid output rectangle.
+    let raw_jpeg_retile_candidate =
+        !matches!(&raw, Some(Ok(raw)) if raw.compression() != Compression::Jpeg);
+    let mut source_is_jpeg =
+        matches!(&raw, Some(Ok(raw)) if raw.compression() == Compression::Jpeg);
     let mut retile_rejection = None;
-    let raw = slide.read_raw_compressed_tile(
-        &request
-            .location
-            .tile_request(col as i64, request.row as i64),
-    );
     let source_lossy_compression = match raw.as_ref() {
-        Ok(raw) if raw.compression() == Compression::Jpeg => {
+        Some(Ok(raw)) if raw.compression() == Compression::Jpeg => {
             Some(crate::lossy::LossyCompressionByteCounts::from_raw_tile(
                 crate::lossy::JPEG_BASELINE_METHOD,
                 raw,
             )?)
         }
-        Ok(_) | Err(_) => None,
+        _ => None,
     };
 
-    let empty_raw_tile = matches!(&raw, Err(err) if raw_compressed_error_is_empty_tile(err));
+    let empty_raw_tile = native_grid_matches
+        && matches!(&raw, Some(Err(err)) if raw_compressed_error_is_empty_tile(err));
+    if let Some(Err(error)) = &raw {
+        if !matches!(error, wsi_rs::WsiError::Unsupported { .. }) {
+            return Err(Error::SlideRead {
+                message: format!(
+                    "raw JPEG source read failed at row={} col={col}: {error}",
+                    request.row,
+                ),
+            });
+        }
+    }
     match raw {
-        Ok(raw)
-            if raw_jpeg_matches_frame_geometry(
-                &raw,
-                request.grid.frame_columns,
-                request.grid.frame_rows,
-            ) =>
+        Some(Ok(raw))
+            if native_grid_matches
+                && raw_jpeg_matches_frame_geometry(
+                    &raw,
+                    request.grid.frame_columns,
+                    request.grid.frame_rows,
+                ) =>
         {
             if let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&raw) {
                 if raw_jpeg_profile_can_passthrough(profile, request.allow_raw_rgb_passthrough) {
@@ -270,10 +312,7 @@ fn plan_jpeg_baseline_frame_at(
                 }
             }
         }
-        Ok(raw) if raw.compression() == Compression::Jpeg => {
-            raw_jpeg_retile_candidate = true;
-        }
-        Ok(_) | Err(_) => {}
+        _ => {}
     }
 
     if empty_raw_tile {
@@ -293,6 +332,7 @@ fn plan_jpeg_baseline_frame_at(
             request.grid.frame_rows,
         )? {
             RawJpegRetileProbe::Accepted(retiled) => {
+                source_is_jpeg = true;
                 if let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&retiled.raw) {
                     if raw_jpeg_profile_can_passthrough(profile, request.allow_raw_rgb_passthrough)
                     {
@@ -315,9 +355,18 @@ fn plan_jpeg_baseline_frame_at(
         }
     }
 
+    if source_is_jpeg {
+        return Err(Error::Unsupported {
+            reason: format!(
+                "JPEG frame row={} col={col} cannot be preserved by passthrough or retiling ({retile_rejection:?}); pixel re-encoding fallback is disabled",
+                request.row,
+            ),
+        });
+    }
+
     Ok((
         JpegBaselinePlannedFrame::Fallback {
-            frame: jpeg_baseline_fallback_frame(col, request.row, request.grid)?,
+            frame,
             source_lossy_compression,
         },
         retile_rejection,
@@ -418,6 +467,7 @@ pub(super) fn encode_jpeg_baseline_cpu_input_tile(
     let encoded = encode_jpeg_baseline_cpu_fragment(
         samples,
         settings.jpeg_quality,
+        settings.optimize_huffman,
         prepared.subsampling,
         jpeg_baseline_cpu_restart_interval(
             settings.frame_columns,

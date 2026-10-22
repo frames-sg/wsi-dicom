@@ -79,6 +79,7 @@ mod jpeg_baseline_metal;
 mod jpeg_baseline_pipeline;
 mod jpeg_direct_htj2k;
 mod jpeg_frame_spool;
+mod jpeg_lossless_instance;
 mod jpeg_passthrough;
 mod jpeg_retile;
 mod lossless_j2k_cpu;
@@ -306,11 +307,13 @@ pub(crate) fn validate_export_request(
 ) -> Result<NormalizedExportOptions, Error> {
     request.validate()?;
     let options = NormalizedExportOptions::from_validated(&request.options);
-    if options.semantics.transfer_syntax != TransferSyntax::JpegBaseline8Bit
-        && !options.semantics.transfer_syntax.is_j2k_family()
+    if !matches!(
+        options.semantics.transfer_syntax,
+        TransferSyntax::JpegBaseline8Bit | TransferSyntax::JpegLosslessSv1
+    ) && !options.semantics.transfer_syntax.is_j2k_family()
     {
         return Err(Error::Unsupported {
-            reason: "only JPEG Baseline passthrough, JPEG 2000, JPEG 2000 Lossless, and HTJ2K transfer syntaxes are implemented"
+            reason: "only JPEG Baseline, JPEG Lossless SV1, JPEG 2000, JPEG 2000 Lossless, and HTJ2K transfer syntaxes are implemented"
                 .into(),
         });
     }
@@ -444,9 +447,9 @@ mod tests {
     };
     use crate::test_support::{
         dicom_fragment_payload_without_padding, encode_test_gray_jpeg, encode_test_jpeg,
-        find_command_for_test, read_binary_ppm_for_test, tiff_short_value, tiff_tag,
-        write_tiled_aperio_jp2k_ycbcr_tiff, write_tiled_grayscale_jpeg_tiff,
-        write_tiled_jp2k_rgb_tiff, write_tiled_jp2k_ycbcr_tiff, write_tiled_jpeg_tiff,
+        find_command_for_test, tiff_short_value, tiff_tag, write_tiled_aperio_jp2k_ycbcr_tiff,
+        write_tiled_grayscale_jpeg_tiff, write_tiled_jp2k_rgb_tiff, write_tiled_jp2k_ycbcr_tiff,
+        write_tiled_jpeg_tiff,
     };
     use dicom_core::VR;
     use dicom_dictionary_std::{tags, uids};
@@ -462,11 +465,11 @@ mod tests {
     #[cfg(all(feature = "metal", target_os = "macos"))]
     mod auto_route_tests;
     mod export_integration_tests;
-    mod external_htj2k_tests;
     mod fixture_tests;
     mod icc_profile_tests;
     mod j2k_encode_tests;
     mod jpeg_baseline_route_tests;
+    mod jpeg_lossless_tests;
     mod options_builder_tests;
     mod route_profile_tests;
     mod support;

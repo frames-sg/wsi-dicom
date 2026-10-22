@@ -1,11 +1,9 @@
 use super::{
     assemble_encapsulated_frames, doctor_dicom_environment_with_runner,
-    fragment_payload_without_padding, htj2k_decoder_command, inspect_pnm_output,
-    run_named_command_check, staged_dicom3tools_probe_enabled_from,
-    validate_dicom_path_with_runner, write_private_validation_file, CommandCheckRequest,
-    CommandOutcome, DecodedFrameExpectation, DoctorOptions, DoctorStatus, SystemCommandRunner,
-    ValidationCommandRunner, ValidationOptions, ValidationProfile, ValidationStatus,
-    ValidationTempDir, AUTO_HTJ2K_DECODER_COMMAND, VALIDATOR_SET_FILE_CHUNK_SIZE,
+    fragment_payload_without_padding, run_named_command_check,
+    staged_dicom3tools_probe_enabled_from, validate_dicom_path_with_runner, CommandCheckRequest,
+    CommandOutcome, DoctorOptions, DoctorStatus, SystemCommandRunner, ValidationCommandRunner,
+    ValidationOptions, ValidationProfile, ValidationStatus, VALIDATOR_SET_FILE_CHUNK_SIZE,
 };
 use crate::TransferSyntax;
 use dicom_core::value::DataSetSequence;
@@ -19,32 +17,15 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-#[cfg(not(windows))]
-const ABSOLUTE_HTJ2K_DECODER: &str = "/usr/local/bin/ojph_expand";
-#[cfg(windows)]
-const ABSOLUTE_HTJ2K_DECODER: &str = "C:/Tools/ojph_expand.exe";
-#[cfg(not(windows))]
-const ABSOLUTE_GROK_DECODER: &str = "/usr/local/bin/grk_decompress";
-#[cfg(windows)]
-const ABSOLUTE_GROK_DECODER: &str = "C:/Tools/grk_decompress.exe";
-
 #[derive(Default)]
 struct FakeRunner {
     commands: BTreeSet<String>,
-    command_paths: BTreeMap<String, PathBuf>,
     outcomes: BTreeMap<String, CommandOutcome>,
 }
 
 impl FakeRunner {
     fn with_command(mut self, name: &str) -> Self {
         self.commands.insert(name.to_string());
-        self
-    }
-
-    fn with_command_path(mut self, name: &str, path: &str) -> Self {
-        self.command_paths
-            .insert(name.to_string(), PathBuf::from(path));
-        self.commands.insert(path.to_string());
         self
     }
 
@@ -56,9 +37,6 @@ impl FakeRunner {
 
 impl ValidationCommandRunner for FakeRunner {
     fn find_command(&self, name: &str) -> Option<PathBuf> {
-        if let Some(path) = self.command_paths.get(name) {
-            return Some(path.clone());
-        }
         self.commands.contains(name).then(|| PathBuf::from(name))
     }
 
@@ -98,7 +76,6 @@ impl ValidationCommandRunner for FakeRunner {
 mod conformance;
 mod doctor;
 mod orchestration;
-mod pixel_decode;
 mod profile_contract;
 mod runner;
 
@@ -262,7 +239,6 @@ fn assert_intrinsic_rule_fails(path: &Path, name: &str) {
         path,
         &ValidationOptions {
             profile: ValidationProfile::Core2026c,
-            max_pixel_frames: 0,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),

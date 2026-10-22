@@ -13,7 +13,6 @@ use super::metal_route::{
 };
 use crate::encode::{self, DicomJ2kEncoder, EncodedDicomJ2kFrame};
 use crate::error::Error;
-use crate::options::EncodeBackendPreference;
 use crate::tile::PixelProfile;
 
 mod aligned;
@@ -465,7 +464,6 @@ fn empty_pending_metal_tile_run(
         encode_batches: 0,
         row_batch_rows,
         row_batch_target_tiles: metal_input.row_batch_target_tiles,
-        preference: metal_input.preference,
         missing_encode_message:
             "requested JPEG 2000 Metal tile encode did not dispatch all required stages",
     })
@@ -477,19 +475,14 @@ fn encode_metal_tile_entries(
     tile_entries: Vec<MetalTileEntry>,
     tile_width: u32,
     tile_height: u32,
-    preference: EncodeBackendPreference,
     missing_encode_message: &'static str,
 ) -> Result<EncodedMetalTileEntries, Error> {
     let (batch_tiles, tile_profiles) = split_metal_tile_entries(tile_entries)?;
     let encode_batches = metal_j2k_encode_batch_count(&batch_tiles, tile_width, tile_height);
     let batch_encoded = j2k_encoder.encode_metal_tiles(&batch_tiles, tile_width, tile_height)?;
     let gpu_encode_stats = batch_encoded.gpu_encode_stats;
-    let tiles = merge_metal_tile_batch_frames(
-        tile_profiles,
-        batch_encoded.frames,
-        preference,
-        missing_encode_message,
-    )?;
+    let tiles =
+        merge_metal_tile_batch_frames(tile_profiles, batch_encoded.frames, missing_encode_message)?;
     Ok(EncodedMetalTileEntries {
         tiles,
         encode_batches,
@@ -528,7 +521,6 @@ fn split_metal_tile_entries(
 fn merge_metal_tile_batch_frames(
     tile_profiles: Vec<Option<PixelProfile>>,
     frames: Vec<Option<EncodedDicomJ2kFrame>>,
-    preference: EncodeBackendPreference,
     missing_encode_message: &'static str,
 ) -> Result<Vec<Option<(EncodedDicomJ2kFrame, PixelProfile)>>, Error> {
     let mut frames = frames.into_iter();
@@ -550,12 +542,11 @@ fn merge_metal_tile_batch_frames(
         };
         match encoded_frame {
             Some(codestream) => encoded.push(Some((codestream, profile))),
-            None if preference == EncodeBackendPreference::RequireDevice => {
+            None => {
                 return Err(Error::Unsupported {
                     reason: missing_encode_message.into(),
                 });
             }
-            None => encoded.push(None),
         }
     }
     Ok(encoded)

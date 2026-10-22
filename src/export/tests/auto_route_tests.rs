@@ -349,6 +349,7 @@ fn auto_lossless_j2k_profile_accumulates_narrow_rows_within_budget() {
             .unwrap();
         assert_eq!(report.metrics.routes.total_frames, max_frames);
         assert_eq!(report.metrics.routes.auto_route_probe_frames, max_frames);
+        assert_eq!(report.metrics.routes.gpu_input_decode_frames, 0);
     }
 }
 

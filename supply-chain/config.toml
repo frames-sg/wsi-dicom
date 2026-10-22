@@ -5,10 +5,64 @@
 version = "0.10"
 
 [imports.wsi-rs]
-url = "https://raw.githubusercontent.com/frames-sg/wsi-rs/v0.8.0/supply-chain/audits.toml"
+url = "https://raw.githubusercontent.com/frames-sg/wsi-rs/6431c246040b5b732eda461fc7f35bd4a93185cb/supply-chain/audits.toml"
+
+[policy.j2k]
+audit-as-crates-io = false
+
+[policy.j2k-codec-math]
+audit-as-crates-io = false
+
+[policy.j2k-core]
+audit-as-crates-io = false
+
+[policy.j2k-cuda]
+audit-as-crates-io = false
+
+[policy.j2k-cuda-build-support]
+audit-as-crates-io = false
+
+[policy.j2k-cuda-j2k-engine]
+audit-as-crates-io = false
+
+[policy.j2k-cuda-runtime]
+audit-as-crates-io = false
+
+[policy.j2k-jpeg]
+audit-as-crates-io = false
+
+[policy.j2k-jpeg-metal]
+audit-as-crates-io = false
+
+[policy.j2k-metal]
+audit-as-crates-io = false
+
+[policy.j2k-metal-support]
+audit-as-crates-io = false
+
+[policy.j2k-native]
+audit-as-crates-io = false
+
+[policy.j2k-profile]
+audit-as-crates-io = false
+
+[policy.j2k-tilecodec]
+audit-as-crates-io = false
+
+[policy.j2k-transcode]
+audit-as-crates-io = false
+
+[policy.j2k-transcode-metal]
+audit-as-crates-io = false
+
+[policy.j2k-types]
+audit-as-crates-io = false
 
 [policy.wsi-dicom]
 audit-as-crates-io = true
+
+[policy.wsi-rs]
+audit-as-crates-io = false
 
 [[exemptions.accesskit]]
 version = "0.24.1"

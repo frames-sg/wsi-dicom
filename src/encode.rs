@@ -149,10 +149,6 @@ impl DicomJ2kEncoder {
         self
     }
 
-    pub(crate) fn set_reversible_transform(&mut self, reversible_transform: ReversibleTransform) {
-        self.reversible_transform = reversible_transform;
-    }
-
     #[cfg(all(feature = "metal", target_os = "macos"))]
     pub(crate) fn cpu_only_peer(&self) -> Self {
         self.peer_with_preference(EncodeBackendPreference::CpuOnly)
@@ -430,10 +426,9 @@ fn encode_j2k_lossless_with_device_accelerator(
     j2k_decomposition_levels: Option<u8>,
     reversible_transform: ReversibleTransform,
 ) -> Result<Option<DeviceEncodedCodestream>, Error> {
-    let before_dispatch = accelerator.dispatch_report();
     let options = lossless_encode_options(
         transfer_syntax,
-        EncodeBackendPreference::PreferDevice,
+        EncodeBackendPreference::RequireDevice,
         CodecValidation::RoundTrip,
         j2k_decomposition_levels,
         reversible_transform,
@@ -450,10 +445,7 @@ fn encode_j2k_lossless_with_device_accelerator(
         .map_err(|err| Error::Encode {
             message: format!("JPEG 2000 device encode failed: {err}"),
         })?;
-    let dispatch = accelerator
-        .dispatch_report()
-        .saturating_delta(before_dispatch);
-    let used_device_encode = encoded.backend == backend || dispatch.any();
+    let used_device_encode = encoded.backend == backend;
     Ok(used_device_encode.then_some(DeviceEncodedCodestream {
         codestream: encoded.codestream,
         used_device_encode,
@@ -482,6 +474,7 @@ fn lossless_encode_options(
         TransferSyntax::JpegBaseline8Bit
         | TransferSyntax::Jpeg2000
         | TransferSyntax::Htj2k
+        | TransferSyntax::JpegLosslessSv1
         | TransferSyntax::ExplicitVrLittleEndian => {
             return Err(Error::Unsupported {
                 reason: "transfer syntax is not implemented for lossless JPEG 2000 export".into(),
@@ -571,13 +564,13 @@ mod cpu_tests {
     }
 
     #[test]
-    fn partial_device_dispatch_counts_as_device_used_lossless_encode() {
+    fn partial_device_dispatch_cannot_satisfy_device_encode() {
         let pixels = vec![7u8; 128 * 128];
         let samples =
             J2kLosslessSamples::new(&pixels, 128, 128, 1, 8, false).expect("valid samples");
         let mut accelerator = DwtOnlyAccelerator::default();
 
-        let encoded = encode_j2k_lossless_with_device_accelerator(
+        let result = encode_j2k_lossless_with_device_accelerator(
             samples,
             TransferSyntax::Htj2kLosslessRpcl,
             BackendKind::Cuda,
@@ -585,12 +578,16 @@ mod cpu_tests {
             J2kEncodeValidation::CpuRoundTrip,
             None,
             ReversibleTransform::Rct53,
-        )
-        .expect("partial device encode should still produce a codestream")
-        .expect("DWT dispatch should count as device-used encode");
-
-        assert!(encoded.used_device_encode);
-        assert!(!encoded.codestream.is_empty());
+        );
+        match result {
+            Err(error) => assert!(error.to_string().contains("device encode failed")),
+            Ok(Some(encoded)) => panic!(
+                "partial dispatch was accepted: device={}, bytes={}",
+                encoded.used_device_encode,
+                encoded.codestream.len(),
+            ),
+            Ok(None) => panic!("partial dispatch must fail instead of selecting CPU encoding"),
+        }
         assert!(accelerator.dispatch_report().forward_dwt53 > 0);
     }
 }

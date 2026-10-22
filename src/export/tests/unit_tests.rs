@@ -571,9 +571,7 @@ fn lossless_j2k_cpu_fallback_indices_skip_ineligible_and_already_encoded_frames(
         transfer_syntax: CompressedTransferSyntax::Jpeg2000Lossless,
     });
     planned[4].width = 3;
-    planned[4].source_j2k_dimensions = Some((3, 4));
     planned[4].source_j2k_syntax = Some(CompressedTransferSyntax::Jpeg2000Lossless);
-    planned[3].source_j2k_dimensions = Some((4, 4));
     planned[3].source_j2k_syntax = Some(CompressedTransferSyntax::Jpeg2000Lossless);
     let already_encoded = [false, true, false, false, false];
 
@@ -581,11 +579,11 @@ fn lossless_j2k_cpu_fallback_indices_skip_ineligible_and_already_encoded_frames(
         lossless_j2k_cpu_fallback_indices(&planned, TransferSyntax::Htj2kLosslessRpcl, |idx| {
             already_encoded[idx]
         },),
-        vec![2, 3, 4]
+        vec![2]
     );
     assert_eq!(
         lossless_j2k_cpu_fallback_indices(&planned, TransferSyntax::Jpeg2000, |_| false),
-        vec![3, 4]
+        Vec::<usize>::new()
     );
     assert!(
         lossless_j2k_cpu_fallback_indices(&planned, TransferSyntax::Htj2k, |_| false).is_empty()
@@ -601,7 +599,7 @@ fn lossy_htj2k_rejection_does_not_advertise_an_intermediate_jpeg_fallback() {
 
     assert_eq!(
         reason,
-        "HTJ2K 9/7 export requires direct source JPEG-to-HTJ2K transcoding; frame row=3 col=7 was not eligible"
+        "HTJ2K export requires compatible compressed-frame passthrough or direct source JPEG-to-HTJ2K transcoding; frame row=3 col=7 was not eligible"
     );
 }
 
@@ -694,7 +692,6 @@ fn shared_route_planner_uses_codec_specific_precedence() {
             passthrough: false,
             direct_j2k: true,
             direct_jpeg: true,
-            j2k_reencode: true,
         })
         .route,
         PlannedFrameRoute::DirectJ2kToHtj2k
@@ -715,7 +712,6 @@ fn shared_route_planner_rejects_non_passthrough_jpeg2000_frames() {
         passthrough: false,
         direct_j2k: false,
         direct_jpeg: false,
-        j2k_reencode: false,
     });
 
     assert_eq!(
@@ -747,7 +743,6 @@ fn shared_route_planner_marks_device_fallback_as_candidate_only() {
             passthrough: false,
             direct_j2k: false,
             direct_jpeg: false,
-            j2k_reencode: false,
         });
         assert_eq!(decision.route, PlannedFrameRoute::J2kDeviceEncodeCandidate);
     }
@@ -760,7 +755,6 @@ fn shared_route_planner_marks_device_fallback_as_candidate_only() {
         passthrough: false,
         direct_j2k: false,
         direct_jpeg: false,
-        j2k_reencode: false,
     });
     assert_eq!(cpu.route, PlannedFrameRoute::J2kCpuEncode);
 }

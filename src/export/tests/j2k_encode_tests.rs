@@ -432,7 +432,7 @@ fn export_general_j2k_passthrough_accepts_ycbcr_source_without_gpu_work() {
 }
 
 #[test]
-fn export_general_j2k_edge_fallback_preserves_interior_passthrough() {
+fn export_general_j2k_rejects_edge_reencoding_without_publishing() {
     let tmp = tempfile::tempdir().unwrap();
     let codestreams = j2k_edge_fallback_codestreams_for_test();
     let source = tmp.path().join("source.svs");
@@ -445,7 +445,7 @@ fn export_general_j2k_edge_fallback_preserves_interior_passthrough() {
         &[codestreams.interior.clone(), codestreams.edge.clone()],
     );
 
-    let report = export_dicom(ExportRequest {
+    let error = export_dicom(ExportRequest {
         source_path: source,
         output_dir: tmp.path().join("out"),
         options: ExportOptions {
@@ -460,38 +460,21 @@ fn export_general_j2k_edge_fallback_preserves_interior_passthrough() {
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
-    .unwrap();
+    .unwrap_err()
+    .to_string();
 
-    assert_eq!(report.metrics.routes.total_frames, 2);
-    assert_eq!(report.metrics.routes.j2k_passthrough_frames, 1);
-    assert_eq!(report.metrics.routes.cpu_input_frames, 1);
-    assert_eq!(report.metrics.routes.cpu_fallback_frames, 1);
-    assert_eq!(report.metrics.routes.gpu_encode_frames, 0);
-
-    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-    assert_eq!(
-        object.meta().transfer_syntax.as_str(),
-        TransferSyntax::Jpeg2000.uid()
-    );
-    let fragments = object
-        .element(tags::PIXEL_DATA)
+    assert!(error.contains("passthrough"), "unexpected error: {error}");
+    assert!(std::fs::read_dir(tmp.path().join("out"))
         .unwrap()
-        .value()
-        .fragments()
-        .unwrap();
-    assert_eq!(fragments.len(), 2);
-    assert_eq!(
-        dicom_fragment_payload_without_padding(&fragments[0]),
-        codestreams.interior
-    );
-    let edge_payload = dicom_fragment_payload_without_padding(&fragments[1]);
-    assert_ne!(edge_payload, codestreams.edge);
-    assert_eq!(j2k_view_dimensions(edge_payload), (2, 2));
-    assert_eq!(j2k_cod_decomposition_levels(edge_payload), 0);
+        .all(|entry| entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_none_or(|ext| ext != "dcm")));
 }
 
 #[test]
-fn export_aperio_33003_yuv422_edges_use_one_dicom_j2k_representation() {
+fn export_aperio_33003_yuv422_rejects_implicit_component_resampling() {
     let tmp = tempfile::tempdir().unwrap();
     let encode_yuv422 = |width: u32, height: u32, values: [u8; 3]| {
         let luma = vec![values[0]; (width * height) as usize];
@@ -548,17 +531,7 @@ fn export_aperio_33003_yuv422_edges_use_one_dicom_j2k_representation() {
 
     let source = tmp.path().join("source.svs");
     write_tiled_aperio_jp2k_ycbcr_tiff(&source, 3, 3, 2, 2, &source_tiles);
-    let slide = Slide::open(&source).expect("open Aperio 33003 fixture");
-    let expected_frames = [(0, 0), (2, 0), (0, 2), (2, 2)].map(|origin| {
-        let region = slide
-            .read_region(&RegionRequest::new(0usize, 0usize, 0u32, origin, (2, 2)))
-            .expect("decode source frame region");
-        prepare_tile_samples(&region, 2, 2)
-            .expect("prepare source frame")
-            .bytes
-    });
-
-    let report = export_dicom(ExportRequest {
+    let error = export_dicom(ExportRequest {
         source_path: source,
         output_dir: tmp.path().join("out"),
         options: ExportOptions {
@@ -573,52 +546,13 @@ fn export_aperio_33003_yuv422_edges_use_one_dicom_j2k_representation() {
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
-    .expect("export Aperio 33003 fixture");
-
-    assert_eq!(report.metrics.routes.total_frames, 4);
-    assert_eq!(report.metrics.routes.j2k_passthrough_frames, 0);
-    assert_eq!(report.metrics.routes.cpu_fallback_frames, 4);
-
-    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-    assert_eq!(
-        object
-            .element(tags::PHOTOMETRIC_INTERPRETATION)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .as_ref(),
-        "YBR_RCT"
-    );
-    let fragments = object
-        .element(tags::PIXEL_DATA)
-        .unwrap()
-        .value()
-        .fragments()
-        .unwrap();
-    assert_eq!(fragments.len(), 4);
-    for (fragment, expected) in fragments.iter().zip(expected_frames) {
-        let codestream = dicom_fragment_payload_without_padding(fragment);
-        let view = J2kView::parse(codestream).expect("parse exported frame");
-        let support = view
-            .support_info()
-            .expect("exported frame support metadata");
-        assert_eq!(view.info().colorspace, j2k_core::Colorspace::Rct);
-        assert!(support.components.iter().all(|component| {
-            !component.signed
-                && component.bit_depth == 8
-                && component.x_rsiz == 1
-                && component.y_rsiz == 1
-        }));
-        assert_eq!(j2k_cod_mct(codestream), 1);
-        assert_eq!(
-            decode_j2k_frame_for_test(codestream, 2, 2, 3, 8).as_slice(),
-            expected.as_slice()
-        );
-    }
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("passthrough"), "unexpected error: {error}");
 }
 
 #[test]
-fn export_general_j2k_rct_edge_fallback_matches_passthrough_profile() {
+fn export_general_j2k_rejects_rct_edge_reencoding() {
     let tmp = tempfile::tempdir().unwrap();
     let codestreams = j2k_edge_fallback_codestreams_for_test();
     let source = tmp.path().join("source.svs");
@@ -631,7 +565,7 @@ fn export_general_j2k_rct_edge_fallback_matches_passthrough_profile() {
         &[codestreams.interior.clone(), codestreams.edge],
     );
 
-    let report = export_dicom(ExportRequest {
+    let error = export_dicom(ExportRequest {
         source_path: source,
         output_dir: tmp.path().join("out"),
         options: ExportOptions {
@@ -645,34 +579,9 @@ fn export_general_j2k_rct_edge_fallback_matches_passthrough_profile() {
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: None,
     })
-    .unwrap();
-
-    assert_eq!(report.metrics.routes.total_frames, 2);
-    assert_eq!(report.metrics.routes.j2k_passthrough_frames, 1);
-    assert_eq!(report.metrics.routes.cpu_input_frames, 1);
-
-    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-    assert_eq!(
-        object
-            .element(tags::PHOTOMETRIC_INTERPRETATION)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .as_ref(),
-        "YBR_RCT"
-    );
-    let fragments = object
-        .element(tags::PIXEL_DATA)
-        .unwrap()
-        .value()
-        .fragments()
-        .unwrap();
-    assert_eq!(
-        dicom_fragment_payload_without_padding(&fragments[0]),
-        codestreams.interior
-    );
-    let edge_payload = dicom_fragment_payload_without_padding(&fragments[1]);
-    assert_eq!(j2k_cod_mct(edge_payload), 1);
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("passthrough"), "unexpected error: {error}");
 }
 
 #[test]
@@ -732,7 +641,7 @@ fn dicom_roundtrip_lossless_pixel_identical() {
 }
 
 #[test]
-fn export_general_j2k_lossy_source_writes_compression_ratio() {
+fn export_general_j2k_preserves_ict_codestream_and_compression_history() {
     let tmp = tempfile::tempdir().unwrap();
     let mut codestreams = j2k_edge_fallback_codestreams_for_test();
     patch_j2k_cod_wavelet_transform(&mut codestreams.interior, 0);
@@ -744,11 +653,11 @@ fn export_general_j2k_lossy_source_writes_compression_ratio() {
     let source = tmp.path().join("source.svs");
     write_tiled_jp2k_rgb_tiff(
         &source,
-        3,
+        4,
         2,
         2,
         2,
-        &[codestreams.interior, codestreams.edge],
+        &[codestreams.interior.clone(), codestreams.interior.clone()],
     );
 
     let report = export_dicom(ExportRequest {
@@ -767,10 +676,31 @@ fn export_general_j2k_lossy_source_writes_compression_ratio() {
     })
     .unwrap();
 
-    assert_eq!(report.metrics.routes.j2k_passthrough_frames, 0);
-    assert_eq!(report.metrics.routes.cpu_fallback_frames, 2);
+    assert_eq!(report.metrics.routes.j2k_passthrough_frames, 2);
+    assert_eq!(report.metrics.routes.cpu_fallback_frames, 0);
 
     let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+    assert_eq!(
+        object
+            .element(tags::PHOTOMETRIC_INTERPRETATION)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "YBR_ICT"
+    );
+    let fragments = object
+        .element(tags::PIXEL_DATA)
+        .unwrap()
+        .value()
+        .fragments()
+        .unwrap();
+    assert_eq!(fragments.len(), 2);
+    for fragment in fragments {
+        assert_eq!(
+            dicom_fragment_payload_without_padding(fragment),
+            codestreams.interior
+        );
+    }
     assert_eq!(
         object
             .element(tags::LOSSY_IMAGE_COMPRESSION)
@@ -797,6 +727,106 @@ fn export_general_j2k_lossy_source_writes_compression_ratio() {
             .unwrap()
             > 0.0
     );
+}
+
+#[test]
+fn export_general_j2k_rejects_mixed_ict_and_rct_before_publishing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rct = j2k_edge_fallback_codestreams_for_test().interior;
+    let mut ict = rct.clone();
+    patch_j2k_cod_wavelet_transform(&mut ict, 0);
+    let source = tmp.path().join("mixed.svs");
+    write_tiled_jp2k_rgb_tiff(&source, 4, 2, 2, 2, &[ict, rct]);
+    let error = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 2,
+            transfer_syntax: TransferSyntax::Jpeg2000,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            codec_validation: CodecValidation::Disabled,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: None,
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("pixel profile changed"),
+        "unexpected error: {error}"
+    );
+    assert!(std::fs::read_dir(tmp.path().join("out"))
+        .unwrap()
+        .all(|entry| entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_none_or(|ext| ext != "dcm")));
+}
+
+#[test]
+fn export_htj2k_tiff_preserves_lossless_and_ict_codestreams() {
+    let tmp = tempfile::tempdir().unwrap();
+    let fixture =
+        write_htj2k_rpcl_dicom_source_for_test(tmp.path(), "1.2.826.0.1.3680043.10.999.63", 2, 2);
+    for (name, syntax, photometric) in [
+        ("lossless", TransferSyntax::Htj2kLosslessRpcl, "YBR_RCT"),
+        ("ict", TransferSyntax::Htj2k, "YBR_ICT"),
+    ] {
+        let mut codestream = fixture.fragments[0].clone();
+        if syntax == TransferSyntax::Htj2k {
+            patch_j2k_cod_wavelet_transform(&mut codestream, 0);
+        }
+        let source = tmp.path().join(format!("{name}.tiff"));
+        write_tiled_jp2k_rgb_tiff(&source, 2, 2, 2, 2, std::slice::from_ref(&codestream));
+        let report = export_dicom(ExportRequest {
+            source_path: source,
+            output_dir: tmp.path().join(name),
+            options: ExportOptions {
+                tile_size: if syntax == TransferSyntax::Htj2k {
+                    512
+                } else {
+                    2
+                },
+                transfer_syntax: syntax,
+                jpeg_direct_htj2k_profile: if syntax == TransferSyntax::Htj2k {
+                    JpegDirectHtj2kProfile::Lossy97
+                } else {
+                    JpegDirectHtj2kProfile::Lossless53
+                },
+                encode_backend: EncodeBackendPreference::RequireDevice,
+                codec_validation: CodecValidation::Disabled,
+                ..ExportOptions::default()
+            },
+            color_management: ColorManagement::SourceOrSrgb,
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: None,
+        })
+        .unwrap();
+        assert_single_j2k_passthrough_avoids_gpu_for_test(&report);
+        let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+        assert_eq!(
+            object
+                .element(tags::PHOTOMETRIC_INTERPRETATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            photometric
+        );
+        let fragments = object
+            .element(tags::PIXEL_DATA)
+            .unwrap()
+            .value()
+            .fragments()
+            .unwrap();
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(
+            dicom_fragment_payload_without_padding(&fragments[0]),
+            codestream
+        );
+    }
 }
 
 #[test]
@@ -1116,6 +1146,7 @@ fn jpeg_baseline_cpu_batch_matches_serial_ordered_frames() {
         frame_columns: 2,
         frame_rows: 2,
         jpeg_quality: 90,
+        optimize_huffman: false,
         max_prepared_frame_bytes: u64::MAX,
     };
 
@@ -1182,6 +1213,105 @@ fn jpeg_quality_option_changes_fallback_frame_size() {
         high_len > low_len,
         "quality 95 payload ({high_len}) should be larger than quality 40 payload ({low_len})"
     );
+}
+
+#[test]
+fn jpeg_optimize_huffman_shrinks_fallback_frame_without_changing_pixels() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source.dcm");
+    write_source_dicom_with_dimensions(&source, "1.2.826.0.1.3680043.10.999.77", 64, 64);
+    let export = |name: &str, jpeg_optimize_huffman: bool| {
+        export_dicom(ExportRequest {
+            source_path: source.clone(),
+            output_dir: tmp.path().join(name),
+            options: ExportOptions {
+                tile_size: 64,
+                transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                codec_validation: CodecValidation::Disabled,
+                jpeg_optimize_huffman,
+                ..ExportOptions::default()
+            },
+            color_management: ColorManagement::SourceOrSrgb,
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: None,
+        })
+        .unwrap()
+    };
+    let decode_first_frame = |path: &std::path::Path| {
+        let object = dicom_object::open_file(path).unwrap();
+        let fragments = object
+            .element(tags::PIXEL_DATA)
+            .unwrap()
+            .value()
+            .fragments()
+            .unwrap();
+        let payload = dicom_fragment_jpeg_payload(&fragments[0]).to_vec();
+        let (decoded, _) = j2k_jpeg::Decoder::new(&payload)
+            .unwrap()
+            .decode_request(j2k_jpeg::DecodeRequest::full(j2k_jpeg::PixelFormat::Rgb8))
+            .unwrap();
+        (payload, decoded.as_slice().to_vec())
+    };
+
+    let standard = export("standard", false);
+    let optimized = export("optimized", true);
+
+    assert_eq!(standard.metrics.routes.jpeg_cpu_encode_frames, 1);
+    assert_eq!(optimized.metrics.routes.jpeg_cpu_encode_frames, 1);
+    let (standard_payload, standard_pixels) = decode_first_frame(&standard.instances[0].path);
+    let (optimized_payload, optimized_pixels) = decode_first_frame(&optimized.instances[0].path);
+    assert_ne!(standard_payload, optimized_payload);
+    assert!(
+        optimized_payload.len() < standard_payload.len(),
+        "optimized payload ({}) should be smaller than standard payload ({})",
+        optimized_payload.len(),
+        standard_payload.len()
+    );
+    assert_eq!(optimized_pixels, standard_pixels);
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
+fn jpeg_optimize_huffman_keeps_prefer_device_fallback_frames_on_cpu() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pixels = crate::synthetic_source::deterministic_rgb_pixels(64, 64).unwrap();
+    let samples = J2kLosslessSamples::new(&pixels, 64, 64, 3, 8, false).expect("valid samples");
+    let codestream = encode_dicom_lossless(
+        samples,
+        TransferSyntax::Jpeg2000Lossless,
+        EncodeBackendPreference::CpuOnly,
+        CodecValidation::Disabled,
+    )
+    .unwrap();
+    let source = tmp.path().join("source.svs");
+    write_tiled_jp2k_rgb_tiff(&source, 128, 128, 64, 64, &vec![codestream; 4]);
+    let export = |name: &str, jpeg_optimize_huffman: bool| {
+        export_dicom(ExportRequest {
+            source_path: source.clone(),
+            output_dir: tmp.path().join(name),
+            options: ExportOptions {
+                tile_size: 64,
+                transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+                encode_backend: EncodeBackendPreference::PreferDevice,
+                codec_validation: CodecValidation::Disabled,
+                source_device_decode: true,
+                jpeg_optimize_huffman,
+                ..ExportOptions::default()
+            },
+            color_management: ColorManagement::SourceOrSrgb,
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: Some(0),
+        })
+        .unwrap()
+    };
+
+    let standard = export("standard", false);
+    let optimized = export("optimized", true);
+
+    assert_eq!(standard.metrics.routes.jpeg_metal_encode_frames, 4);
+    assert_eq!(optimized.metrics.routes.jpeg_metal_encode_frames, 0);
+    assert_eq!(optimized.metrics.routes.jpeg_cpu_encode_frames, 4);
 }
 
 #[test]

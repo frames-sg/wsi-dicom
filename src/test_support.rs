@@ -39,31 +39,6 @@ fn external_tool_list_contains(required: &str, name: &str) -> bool {
         .any(|required_name| required_name == name)
 }
 
-pub(crate) fn read_binary_ppm_for_test(path: &Path) -> (u32, u32, Vec<u8>) {
-    let bytes = std::fs::read(path).expect("read PPM");
-    let mut cursor = 0usize;
-    let magic = read_netpbm_token_for_test(&bytes, &mut cursor);
-    assert_eq!(magic, "P6");
-    let width = read_netpbm_token_for_test(&bytes, &mut cursor)
-        .parse::<u32>()
-        .expect("PPM width");
-    let height = read_netpbm_token_for_test(&bytes, &mut cursor)
-        .parse::<u32>()
-        .expect("PPM height");
-    let max_value = read_netpbm_token_for_test(&bytes, &mut cursor)
-        .parse::<u32>()
-        .expect("PPM max value");
-    assert_eq!(max_value, 255);
-    assert!(
-        bytes.get(cursor).is_some_and(u8::is_ascii_whitespace),
-        "PPM raster must follow a whitespace separator"
-    );
-    cursor += 1;
-    let expected_len = (width as usize) * (height as usize) * 3;
-    assert_eq!(bytes.len() - cursor, expected_len);
-    (width, height, bytes[cursor..].to_vec())
-}
-
 pub(crate) fn encode_test_jpeg(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
     encode_test_jpeg_with_subsampling(width, height, rgb, JpegSubsampling::Ybr422)
 }
@@ -233,6 +208,46 @@ pub(crate) fn write_tiled_compressed_tiff(
     samples_per_pixel: u16,
     tiles: &[Vec<u8>],
 ) {
+    write_tiled_tiff_with_bits(
+        path,
+        (width, height, tile_width, tile_height),
+        compression,
+        photometric,
+        samples_per_pixel,
+        8,
+        tiles,
+    );
+}
+
+/// Uncompressed tiled 16-bit grayscale TIFF; each tile holds little-endian samples.
+pub(crate) fn write_tiled_uncompressed_gray16_tiff(
+    path: &Path,
+    width: u32,
+    height: u32,
+    tile_width: u32,
+    tile_height: u32,
+    tiles: &[Vec<u8>],
+) {
+    write_tiled_tiff_with_bits(
+        path,
+        (width, height, tile_width, tile_height),
+        1,
+        1,
+        1,
+        16,
+        tiles,
+    );
+}
+
+fn write_tiled_tiff_with_bits(
+    path: &Path,
+    (width, height, tile_width, tile_height): (u32, u32, u32, u32),
+    compression: u16,
+    photometric: u16,
+    samples_per_pixel: u16,
+    bits_per_sample: u16,
+    tiles: &[Vec<u8>],
+) {
     let mut buf = Vec::new();
     buf.extend_from_slice(b"II");
     buf.extend_from_slice(&42u16.to_le_bytes());
@@ -267,7 +282,7 @@ pub(crate) fn write_tiled_compressed_tiff(
     let mut tags = vec![
         tiff_tag(256, 4, 1, width.to_le_bytes()),
         tiff_tag(257, 4, 1, height.to_le_bytes()),
-        tiff_tag(258, 3, 1, tiff_short_value(8)),
+        tiff_tag(258, 3, 1, tiff_short_value(bits_per_sample)),
         tiff_tag(259, 3, 1, tiff_short_value(compression)),
         tiff_tag(262, 3, 1, tiff_short_value(photometric)),
         tiff_tag(277, 3, 1, tiff_short_value(samples_per_pixel)),
@@ -323,54 +338,9 @@ pub(crate) fn tiff_tag(tag: u16, typ: u16, count: u32, value: [u8; 4]) -> (u16, 
     (tag, typ, count, value)
 }
 
-fn read_netpbm_token_for_test(bytes: &[u8], cursor: &mut usize) -> String {
-    loop {
-        while *cursor < bytes.len() && bytes[*cursor].is_ascii_whitespace() {
-            *cursor += 1;
-        }
-        if *cursor >= bytes.len() || bytes[*cursor] != b'#' {
-            break;
-        }
-        while *cursor < bytes.len() && bytes[*cursor] != b'\n' {
-            *cursor += 1;
-        }
-    }
-    let start = *cursor;
-    while *cursor < bytes.len() && !bytes[*cursor].is_ascii_whitespace() {
-        *cursor += 1;
-    }
-    std::str::from_utf8(&bytes[start..*cursor])
-        .expect("PPM token is UTF-8")
-        .to_string()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{find_command_for_test, read_binary_ppm_for_test};
-
-    #[test]
-    fn read_binary_ppm_for_test_skips_comments_and_reads_pixels() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("sample.ppm");
-        std::fs::write(&path, b"P6\n# comment\n2 1\n255\n\x01\x02\x03\x04\x05\x06")
-            .expect("write PPM");
-
-        let (width, height, pixels) = read_binary_ppm_for_test(&path);
-
-        assert_eq!((width, height), (2, 1));
-        assert_eq!(pixels, vec![1, 2, 3, 4, 5, 6]);
-
-        for first_sample in [b' ', b'\t', b'\n', b'\r', 0x0b, 0x0c] {
-            let expected = [first_sample, 1, 2];
-            let mut ppm = b"P6\n1 1\n255\n".to_vec();
-            ppm.extend_from_slice(&expected);
-            std::fs::write(&path, ppm).expect("write whitespace-valued pixels");
-
-            let (width, height, pixels) = read_binary_ppm_for_test(&path);
-            assert_eq!((width, height), (1, 1));
-            assert_eq!(pixels, expected);
-        }
-    }
+    use super::find_command_for_test;
 
     #[test]
     fn find_command_for_test_returns_none_for_missing_command() {
@@ -379,12 +349,9 @@ mod tests {
 
     #[test]
     fn external_tool_requirement_parser_matches_complete_names_only() {
-        let required = "dciodvfy, opj_decompress";
+        let required = "dciodvfy, dcentvfy";
         assert!(super::external_tool_list_contains(required, "dciodvfy"));
-        assert!(super::external_tool_list_contains(
-            required,
-            "opj_decompress"
-        ));
+        assert!(super::external_tool_list_contains(required, "dcentvfy"));
         assert!(!super::external_tool_list_contains(required, "dciod"));
     }
 

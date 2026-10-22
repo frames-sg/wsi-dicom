@@ -338,6 +338,29 @@ fn cli_convert_accepts_jpeg_quality_and_j2k_decomposition_levels() {
 }
 
 #[test]
+fn cli_convert_jpeg_optimize_huffman_flag_reaches_export_options() {
+    let parse = |extra: &[&str]| {
+        let args = ["wsi-dicom", "convert", "source.svs", "--out", "out"]
+            .into_iter()
+            .chain(extra.iter().copied());
+        let Command::Convert { export, .. } = Cli::try_parse_from(args).unwrap().command else {
+            panic!("expected convert command");
+        };
+        export.options().unwrap()
+    };
+
+    assert!(!parse(&[]).jpeg_optimize_huffman);
+    assert!(
+        parse(&[
+            "--transfer-syntax",
+            "jpeg-baseline8-bit",
+            "--jpeg-optimize-huffman"
+        ])
+        .jpeg_optimize_huffman
+    );
+}
+
+#[test]
 fn cli_convert_accepts_explicit_anisotropic_source_pixel_spacing() {
     let cli = Cli::try_parse_from([
         "wsi-dicom",

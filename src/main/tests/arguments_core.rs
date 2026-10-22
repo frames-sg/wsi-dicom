@@ -265,6 +265,33 @@ fn cli_convert_metadata_budgets_are_checked_and_converted_to_bytes() {
 }
 
 #[test]
+fn cli_convert_accepts_jpeg_lossless_sv1_transfer_syntax() {
+    let cli = Cli::try_parse_from([
+        "wsi-dicom",
+        "convert",
+        "source.svs",
+        "--out",
+        "out",
+        "--transfer-syntax",
+        "jpeg-lossless-sv1",
+    ])
+    .unwrap();
+
+    let Command::Convert { export, .. } = cli.command else {
+        panic!("expected convert command");
+    };
+
+    assert_eq!(
+        export.options().unwrap().transfer_syntax,
+        TransferSyntax::JpegLosslessSv1
+    );
+    assert_eq!(
+        serde_json::to_string(&TransferSyntax::JpegLosslessSv1).unwrap(),
+        "\"jpeg-lossless-sv1\""
+    );
+}
+
+#[test]
 fn cli_convert_preserves_explicit_htj2k_lossless_rpcl() {
     let cli = Cli::try_parse_from([
         "wsi-dicom",
@@ -323,10 +350,6 @@ fn cli_validate_accepts_validation_options() {
         "--json",
         "--dcmvalidate-iod",
         "vl-wsi.xml",
-        "--htj2k-decoder",
-        "ojph_expand -i {input} -o {output}",
-        "--max-pixel-frames",
-        "3",
         "--command-timeout-secs",
         "12",
     ])
@@ -337,8 +360,6 @@ fn cli_validate_accepts_validation_options() {
         strict,
         json,
         dcmvalidate_iod,
-        htj2k_decoder,
-        max_pixel_frames,
         command_timeout_secs,
         ..
     }) = cli.command
@@ -350,24 +371,17 @@ fn cli_validate_accepts_validation_options() {
     assert!(strict);
     assert!(json);
     assert_eq!(dcmvalidate_iod, Some(PathBuf::from("vl-wsi.xml")));
-    assert_eq!(
-        htj2k_decoder.as_deref(),
-        Some("ojph_expand -i {input} -o {output}")
-    );
-    assert_eq!(max_pixel_frames, 3);
     assert_eq!(command_timeout_secs, 12);
 }
 
 #[test]
-fn cli_validate_defaults_to_one_pixel_frame_smoke() {
+fn cli_validate_defaults() {
     let cli = Cli::try_parse_from(["wsi-dicom", "validate", "dicom-out"]).unwrap();
 
     let Command::Validate(crate::cli_args::ValidateArgs {
         strict,
         json,
         dcmvalidate_iod,
-        htj2k_decoder,
-        max_pixel_frames,
         command_timeout_secs,
         ..
     }) = cli.command
@@ -378,9 +392,25 @@ fn cli_validate_defaults_to_one_pixel_frame_smoke() {
     assert!(!strict);
     assert!(!json);
     assert_eq!(dcmvalidate_iod, None);
-    assert_eq!(htj2k_decoder, None);
-    assert_eq!(max_pixel_frames, 1);
     assert_eq!(command_timeout_secs, 60);
+}
+
+#[test]
+fn cli_rejects_removed_external_decoder_flags() {
+    for args in [
+        &["wsi-dicom", "validate", "dicom-out", "--htj2k-decoder", "x"][..],
+        &[
+            "wsi-dicom",
+            "validate",
+            "dicom-out",
+            "--max-pixel-frames",
+            "1",
+        ],
+        &["wsi-dicom", "doctor", "--htj2k-decoder", "x"],
+        &["wsi-dicom", "self-test", "--htj2k-decoder", "x"],
+    ] {
+        assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+    }
 }
 
 #[test]
@@ -392,8 +422,6 @@ fn cli_doctor_accepts_reviewer_tooling_options() {
         "--json",
         "--dcmvalidate-iod",
         "vl-wsi.xml",
-        "--htj2k-decoder",
-        "ojph_expand -i {input} -o {output}",
     ])
     .unwrap();
 
@@ -401,7 +429,6 @@ fn cli_doctor_accepts_reviewer_tooling_options() {
         strict,
         json,
         dcmvalidate_iod,
-        htj2k_decoder,
     } = cli.command
     else {
         panic!("expected doctor command");
@@ -410,10 +437,6 @@ fn cli_doctor_accepts_reviewer_tooling_options() {
     assert!(strict);
     assert!(json);
     assert_eq!(dcmvalidate_iod, Some(PathBuf::from("vl-wsi.xml")));
-    assert_eq!(
-        htj2k_decoder.as_deref(),
-        Some("ojph_expand -i {input} -o {output}")
-    );
 }
 
 #[test]
@@ -428,8 +451,6 @@ fn cli_self_test_accepts_reviewer_evidence_options() {
         "--keep-output",
         "--dcmvalidate-iod",
         "vl-wsi.xml",
-        "--htj2k-decoder",
-        "ojph_expand -i {input} -o {output}",
         "--command-timeout-secs",
         "12",
     ])
@@ -441,7 +462,6 @@ fn cli_self_test_accepts_reviewer_evidence_options() {
         out,
         keep_output,
         dcmvalidate_iod,
-        htj2k_decoder,
         command_timeout_secs,
         ..
     }) = cli.command
@@ -454,9 +474,5 @@ fn cli_self_test_accepts_reviewer_evidence_options() {
     assert_eq!(out, Some(PathBuf::from("evidence")));
     assert!(keep_output);
     assert_eq!(dcmvalidate_iod, Some(PathBuf::from("vl-wsi.xml")));
-    assert_eq!(
-        htj2k_decoder.as_deref(),
-        Some("ojph_expand -i {input} -o {output}")
-    );
     assert_eq!(command_timeout_secs, 12);
 }

@@ -43,9 +43,26 @@ test = false
 doc = false
 bench = false
 
-[[bin]]
-name = "htj2k_decoder_template"
-path = "fuzz_targets/htj2k_decoder_template.rs"
-test = false
-doc = false
-bench = false
+# J2K and wsi-rs are consumed from their main branches until releases contain
+# the JPEG Lossless and optimized-Huffman encoders (J2K) and the NDPI retiling,
+# compositing and TIFF LZW changes (wsi-rs 6431c24). Remove this section once
+# both are on crates.io; crates.io rejects git dependencies.
+[patch.crates-io]
+j2k = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-codec-math = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-core = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-cuda = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-cuda-build-support = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-cuda-j2k-engine = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-cuda-runtime = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-jpeg = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-jpeg-metal = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-metal = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-metal-support = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-native = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-profile = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-tilecodec = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-transcode = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-transcode-metal = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+j2k-types = { git = "https://github.com/frames-sg/j2k", rev = "9e5d66ed61d07746f357fa17138e6538bcc3ae14" }
+wsi-rs = { git = "https://github.com/frames-sg/wsi-rs", rev = "6431c246040b5b732eda461fc7f35bd4a93185cb" }

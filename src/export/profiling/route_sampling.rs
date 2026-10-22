@@ -159,7 +159,7 @@ pub(super) fn profile_lossless_j2k_routes(
                 remaining = remaining.saturating_sub(1);
                 continue;
             }
-            if !decision.allows_j2k_encode_fallback() {
+            if !decision.allows_j2k_encode() {
                 metrics.record_j2k_passthrough_only_fallback_classification();
                 remaining = remaining.saturating_sub(1);
                 continue;
@@ -233,6 +233,7 @@ pub(super) fn profile_jpeg_baseline_routes(
         let row_plan = plan_jpeg_baseline_row(
             slide,
             JpegBaselineRowPlanRequest {
+                level,
                 location,
                 row,
                 tile_count: row_tile_count,
@@ -303,6 +304,7 @@ pub(super) fn profile_jpeg_baseline_routes(
                         frame_columns,
                         frame_rows,
                         normalized_options.semantics.jpeg_quality,
+                        normalized_options.semantics.jpeg_optimize_huffman,
                         *uncompressed_bytes,
                         &mut blank_jpeg_cache,
                     )?;
@@ -343,6 +345,9 @@ pub(super) fn profile_jpeg_baseline_routes(
                                 frame_columns,
                                 frame_rows,
                                 jpeg_quality: normalized_options.semantics.jpeg_quality,
+                                optimize_huffman: normalized_options
+                                    .semantics
+                                    .jpeg_optimize_huffman,
                                 max_prepared_frame_bytes: normalized_options
                                     .resources
                                     .max_prepared_frame_bytes,
@@ -432,6 +437,7 @@ pub(super) fn coverage_jpeg_baseline_routes(
         let row_plan = plan_jpeg_baseline_row(
             slide,
             JpegBaselineRowPlanRequest {
+                level,
                 location,
                 row,
                 tile_count: row_tile_count,

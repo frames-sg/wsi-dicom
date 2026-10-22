@@ -4,9 +4,8 @@ use std::time::Duration;
 use wsi_rs::Slide;
 
 use super::j2k_policy::{
-    effective_lossless_j2k_encode_backend, j2k_fallback_profile, j2k_fallback_reversible_transform,
-    jpeg_direct_htj2k_supported_for_backend, lossless_j2k_cpu_fallback_indices,
-    validate_dicom_j2k_frame,
+    effective_lossless_j2k_encode_backend, jpeg_direct_htj2k_supported_for_backend,
+    lossless_j2k_cpu_fallback_indices, validate_dicom_j2k_frame,
 };
 use super::lossless_j2k_cpu::{
     encode_cpu_input_lossless_j2k_planned_batch, LosslessJ2kCpuBatchOutcome,
@@ -22,7 +21,7 @@ use crate::encode::{DicomJ2kEncoder, EncodedDicomJ2kFrame};
 use crate::error::Error;
 use crate::options::{NormalizedExportOptions, TransferSyntax};
 use crate::report::ExportMetrics;
-use crate::routing::j2k_encode_transfer_syntax;
+use crate::routing::{j2k_encode_transfer_syntax, j2k_encoded_lossless_profile};
 use crate::tile::PixelProfile;
 
 use super::scatter_indexed_results;
@@ -260,7 +259,7 @@ pub(super) fn resolve_lossless_j2k_fallback_frame(
     if let Some(routed) = routed_encoded {
         return Ok(ResolvedLosslessJ2kFallbackFrame {
             encoded: routed.encoded,
-            profile: j2k_fallback_profile(planned_frame, routed.profile, transfer_syntax),
+            profile: j2k_encoded_lossless_profile(routed.profile, transfer_syntax),
             used_gpu_input: routed.used_gpu_input,
             input_decode_duration: Duration::ZERO,
             compose_duration: Duration::ZERO,
@@ -276,10 +275,6 @@ pub(super) fn resolve_lossless_j2k_fallback_frame(
                 outcome.compose_duration,
             )
         } else {
-            j2k_encoder.set_reversible_transform(j2k_fallback_reversible_transform(
-                planned_frame,
-                transfer_syntax,
-            ));
             encode_cpu_input_tile(
                 slide,
                 j2k_encoder,
@@ -291,7 +286,7 @@ pub(super) fn resolve_lossless_j2k_fallback_frame(
 
     Ok(ResolvedLosslessJ2kFallbackFrame {
         encoded,
-        profile: j2k_fallback_profile(planned_frame, profile, transfer_syntax),
+        profile: j2k_encoded_lossless_profile(profile, transfer_syntax),
         used_gpu_input: false,
         input_decode_duration,
         compose_duration,

@@ -246,6 +246,7 @@ impl WsiDicomGui {
                             TransferSyntax::Htj2k,
                             TransferSyntax::Htj2kLossless,
                             TransferSyntax::Htj2kLosslessRpcl,
+                            TransferSyntax::JpegLosslessSv1,
                         ] {
                             ui.selectable_value(
                                 &mut self.transfer_syntax,
@@ -381,21 +382,6 @@ impl WsiDicomGui {
                     "Strict validation",
                     "errors on warnings and optional fields",
                 );
-                ui.add_space(8.0);
-                egui::Grid::new("validation_grid")
-                    .num_columns(2)
-                    .spacing([14.0, 10.0])
-                    .min_col_width(140.0)
-                    .show(ui, |ui| {
-                        grid_label(ui, "HTJ2K decoder");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.htj2k_decoder)
-                                .desired_width(f32::INFINITY)
-                                .hint_text("external decoder (optional)")
-                                .font(TextStyle::Monospace),
-                        );
-                        ui.end_row();
-                    });
             },
         );
     }

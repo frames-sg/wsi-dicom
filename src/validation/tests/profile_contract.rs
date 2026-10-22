@@ -5,7 +5,6 @@ fn intrinsic_status(path: &Path, name: &str) -> ValidationStatus {
         path,
         &ValidationOptions {
             profile: ValidationProfile::Core2026c,
-            max_pixel_frames: 0,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -201,7 +200,6 @@ fn general_profile_omits_core_only_checks_and_core_rejects_other_sop_classes() {
     let general = validate_dicom_path_with_runner(
         &path,
         &ValidationOptions {
-            max_pixel_frames: 0,
             ..Default::default()
         },
         &FakeRunner::default(),
@@ -231,7 +229,6 @@ fn validation_enforces_input_size_before_parsing() {
     let size = std::fs::metadata(&path).unwrap().len();
     let options = ValidationOptions {
         max_input_bytes: size - 1,
-        max_pixel_frames: 0,
         ..Default::default()
     };
     let error =

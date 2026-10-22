@@ -28,6 +28,7 @@ pub(super) fn transfer_syntax_label(value: TransferSyntax) -> &'static str {
         TransferSyntax::Htj2k => "HTJ2K",
         TransferSyntax::Htj2kLossless => "HTJ2K Lossless",
         TransferSyntax::Htj2kLosslessRpcl => "HTJ2K Lossless RPCL",
+        TransferSyntax::JpegLosslessSv1 => "JPEG Lossless SV1",
         TransferSyntax::ExplicitVrLittleEndian => "Explicit VR Little Endian",
         _ => "Unknown transfer syntax",
     }

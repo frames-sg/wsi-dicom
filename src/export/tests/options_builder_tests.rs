@@ -206,7 +206,7 @@ fn default_transfer_syntax_prefers_general_jpeg2000_passthrough_source() {
 }
 
 #[test]
-fn default_transfer_syntax_retiles_oversized_jpeg2000_source() {
+fn default_transfer_syntax_rejects_implicit_jpeg2000_retiling() {
     let tmp = tempfile::tempdir().unwrap();
     let bytes: Vec<u8> = (0..4 * 4 * 3)
         .map(|value| ((value * 13) & 0xFF) as u8)
@@ -222,19 +222,22 @@ fn default_transfer_syntax_retiles_oversized_jpeg2000_source() {
     let source = tmp.path().join("source.svs");
     write_tiled_jp2k_ycbcr_tiff(&source, 4, 4, 4, 4, std::slice::from_ref(&codestream));
 
-    let selected = default_transfer_syntax_for_source(DefaultTransferSyntaxRequest {
+    let error = default_transfer_syntax_for_source(DefaultTransferSyntaxRequest {
         source_path: source,
         tile_size: 2,
         level_filter: None,
         max_levels: None,
     })
-    .unwrap();
-
-    assert_eq!(selected, TransferSyntax::Htj2kLosslessRpcl);
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("pixel re-encoding fallback is disabled"),
+        "{error}"
+    );
 }
 
 #[test]
-fn source_aware_builder_writes_requested_tile_geometry_for_oversized_jpeg2000_source() {
+fn source_aware_builder_rejects_unsupported_jpeg2000_retiling() {
     let tmp = tempfile::tempdir().unwrap();
     let bytes: Vec<u8> = (0..4 * 4 * 3)
         .map(|value| ((value * 17) & 0xFF) as u8)
@@ -251,7 +254,7 @@ fn source_aware_builder_writes_requested_tile_geometry_for_oversized_jpeg2000_so
     write_tiled_jp2k_ycbcr_tiff(&source, 4, 4, 4, 4, std::slice::from_ref(&codestream));
 
     reset_slide_open_count_for_current_thread();
-    let report = Export::from_slide(&source)
+    let error = Export::from_slide(&source)
         .to_directory(tmp.path().join("out"))
         .tile_size(2)
         .encode_backend(EncodeBackendPreference::CpuOnly)
@@ -259,26 +262,12 @@ fn source_aware_builder_writes_requested_tile_geometry_for_oversized_jpeg2000_so
         .with_research_placeholder_metadata()
         .color_management(ColorManagement::SourceOrSrgb)
         .run()
-        .unwrap();
+        .unwrap_err()
+        .to_string();
     assert_eq!(slide_open_count_for_current_thread(), 1);
-
-    assert_eq!(report.instances[0].frame_count, 4);
-    assert_eq!(
-        report.instances[0].transfer_syntax_uid,
-        TransferSyntax::Htj2kLosslessRpcl.uid()
-    );
-    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-    assert_eq!(
-        object.element(tags::ROWS).unwrap().to_int::<u16>().unwrap(),
-        2
-    );
-    assert_eq!(
-        object
-            .element(tags::COLUMNS)
-            .unwrap()
-            .to_int::<u16>()
-            .unwrap(),
-        2
+    assert!(
+        error.contains("pixel re-encoding fallback is disabled"),
+        "{error}"
     );
 }
 
@@ -355,6 +344,7 @@ fn dicom_export_builder_with_options_preserves_explicit_option_fields() {
         transfer_syntax: TransferSyntax::Jpeg2000Lossless,
         jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossless53,
         jpeg_quality: 80,
+        jpeg_optimize_huffman: true,
         uid_policy: UidPolicy::Deterministic,
         source_pixel_spacing_mm: Some(SourcePixelSpacingMm::new(0.0005, 0.00025).unwrap()),
         encode_backend: EncodeBackendPreference::CpuOnly,

@@ -228,10 +228,7 @@ mod tests {
             SelfTestOptions {
                 output_dir: Some(workspace.clone()),
                 keep_output: true,
-                validation: ValidationOptions {
-                    max_pixel_frames: 0,
-                    ..ValidationOptions::default()
-                },
+                validation: ValidationOptions::default(),
                 ..SelfTestOptions::default()
             },
             |path, validation| validate_dicom_path_with_runner(path, validation, &NoExternalTools),

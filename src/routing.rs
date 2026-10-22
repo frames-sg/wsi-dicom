@@ -43,7 +43,7 @@ pub(crate) fn j2k_route_tile_size(
             reason: "tile_size must be greater than zero".into(),
         });
     }
-    if transfer_syntax.is_jpeg2000_passthrough_only() {
+    if transfer_syntax.is_jpeg2000_passthrough_only() || transfer_syntax == TransferSyntax::Htj2k {
         let native_square = match level.tile_layout {
             TileLayout::Regular {
                 tile_width,
@@ -115,23 +115,18 @@ pub(crate) fn transfer_syntax_from_uid(uid: &str) -> Option<TransferSyntax> {
         .find(|transfer_syntax| transfer_syntax.uid() == uid)
 }
 
-pub(crate) fn source_path_has_extension(path: &Path, ext: &str) -> bool {
-    path.extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case(ext))
-}
-
 pub(crate) fn j2k_family_passthrough_probe_allowed(
-    source_path: &Path,
+    _source_path: &Path,
     transfer_syntax: TransferSyntax,
 ) -> bool {
-    match transfer_syntax {
-        TransferSyntax::Jpeg2000 | TransferSyntax::Jpeg2000Lossless => true,
-        TransferSyntax::Htj2k
-        | TransferSyntax::Htj2kLossless
-        | TransferSyntax::Htj2kLosslessRpcl => source_path_has_extension(source_path, "dcm"),
-        _ => false,
-    }
+    matches!(
+        transfer_syntax,
+        TransferSyntax::Jpeg2000
+            | TransferSyntax::Jpeg2000Lossless
+            | TransferSyntax::Htj2k
+            | TransferSyntax::Htj2kLossless
+            | TransferSyntax::Htj2kLosslessRpcl
+    )
 }
 
 pub(crate) fn level_is_synthetic_downsample(
@@ -166,7 +161,9 @@ pub(crate) fn required_passthrough_syntax(
         },
         TransferSyntax::Htj2kLossless => Some(CompressedTransferSyntax::HtJpeg2000Lossless),
         TransferSyntax::Htj2kLosslessRpcl => Some(CompressedTransferSyntax::HtJpeg2000Lossless),
-        TransferSyntax::JpegBaseline8Bit | TransferSyntax::ExplicitVrLittleEndian => None,
+        TransferSyntax::JpegBaseline8Bit
+        | TransferSyntax::JpegLosslessSv1
+        | TransferSyntax::ExplicitVrLittleEndian => None,
     }
 }
 
@@ -177,11 +174,16 @@ pub(crate) fn unsupported_j2k_route_error(
 ) -> Error {
     let reason = if transfer_syntax == TransferSyntax::Htj2k {
         format!(
-            "HTJ2K 9/7 export requires direct source JPEG-to-HTJ2K transcoding; frame row={row} col={col} was not eligible"
+            "HTJ2K export requires compatible compressed-frame passthrough or direct source JPEG-to-HTJ2K transcoding; frame row={row} col={col} was not eligible"
+        )
+    } else if transfer_syntax.is_jpeg2000_passthrough_only() {
+        format!(
+            "JPEG 2000 transfer syntax export is passthrough-only; frame row={row} col={col} was not eligible for compressed-frame passthrough"
         )
     } else {
         format!(
-            "JPEG 2000 transfer syntax export is passthrough-only; frame row={row} col={col} was not eligible for compressed-frame passthrough"
+            "transfer syntax {} has no compatible preservation route for frame row={row} col={col}; pixel re-encoding fallback is disabled",
+            transfer_syntax.uid()
         )
     };
     Error::Unsupported { reason }
@@ -258,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn htj2k_passthrough_probe_is_limited_to_dicom_sources() {
+    fn htj2k_passthrough_probe_accepts_any_source_container() {
         assert!(j2k_family_passthrough_probe_allowed(
             Path::new("source.svs"),
             TransferSyntax::Jpeg2000
@@ -275,11 +277,11 @@ mod tests {
             Path::new("source.DCM"),
             TransferSyntax::Htj2kLossless
         ));
-        assert!(!j2k_family_passthrough_probe_allowed(
+        assert!(j2k_family_passthrough_probe_allowed(
             Path::new("source.svs"),
             TransferSyntax::Htj2kLosslessRpcl
         ));
-        assert!(!j2k_family_passthrough_probe_allowed(
+        assert!(j2k_family_passthrough_probe_allowed(
             Path::new("source.ndpi"),
             TransferSyntax::Htj2kLosslessRpcl
         ));

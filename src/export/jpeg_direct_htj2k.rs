@@ -462,18 +462,13 @@ fn to_wsi_error(source: j2k_transcode::JpegToHtj2kError) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use dicom_dictionary_std::tags;
-
     use crate::api::Export;
     use crate::metadata::MetadataSource;
     use crate::options::{
         CodecValidation, EncodeBackendPreference, ExportOptions, JpegDirectHtj2kProfile,
     };
     use crate::request::{ExportRequest, RouteProfileRequest};
-    use crate::test_support::{
-        assert_htj2k_rpcl_codestream, dicom_fragment_payload_without_padding, encode_test_jpeg,
-        write_tiled_jpeg_tiff,
-    };
+    use crate::test_support::{encode_test_jpeg, write_tiled_jpeg_tiff};
 
     use super::super::{export_dicom, profile_dicom_routes};
     use super::*;
@@ -500,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn export_htj2k_from_native_jpeg_tiles_falls_back_to_conformant_ybr_rct() {
+    fn export_htj2k_rejects_native_color_jpeg_reencoding() {
         let tmp = tempfile::tempdir().unwrap();
         let source = tmp.path().join("source.svs");
         let out = tmp.path().join("out");
@@ -508,7 +503,7 @@ mod tests {
         let jpeg_b = encode_test_jpeg(8, 8, [20, 160, 40]);
         write_tiled_jpeg_tiff(&source, 16, 8, 8, 8, &[jpeg_a, jpeg_b]);
 
-        let report = export_dicom(ExportRequest {
+        let error = export_dicom(ExportRequest {
             source_path: source,
             output_dir: out,
             options: ExportOptions {
@@ -523,54 +518,13 @@ mod tests {
             metadata: MetadataSource::ResearchPlaceholder,
             level_filter: None,
         })
-        .unwrap();
-
-        assert_eq!(report.instances.len(), 1);
-        assert_eq!(report.instances[0].frame_count, 2);
-        assert_eq!(report.metrics.routes.total_frames, 2);
-        assert_eq!(
-            report.metrics.jpeg_direct_htj2k.jpeg_direct_htj2k_53_frames,
-            0
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("pixel re-encoding fallback is disabled"),
+            "{error}"
         );
-        assert_eq!(
-            report.metrics.jpeg_direct_htj2k.jpeg_direct_htj2k_97_frames,
-            0
-        );
-        assert_eq!(
-            report
-                .metrics
-                .jpeg_direct_htj2k
-                .jpeg_direct_htj2k_rejected_frames,
-            2
-        );
-        assert_eq!(report.metrics.routes.cpu_input_frames, 2);
-        assert_eq!(report.metrics.routes.jpeg_decode_fallback_frames, 0);
-        assert_eq!(report.metrics.routes.cpu_fallback_frames, 2);
-        assert_eq!(report.metrics.route_unclassified_frames(), 0);
-        assert!(report.metrics.timings.encode_micros > 0);
-
-        let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-        assert_eq!(
-            object.meta().transfer_syntax.trim_end_matches('\0'),
-            TransferSyntax::Htj2kLosslessRpcl.uid()
-        );
-        assert_eq!(
-            object
-                .element(tags::PHOTOMETRIC_INTERPRETATION)
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .as_ref(),
-            "YBR_RCT"
-        );
-        let fragments = object
-            .element(tags::PIXEL_DATA)
-            .unwrap()
-            .value()
-            .fragments()
-            .unwrap();
-        assert_eq!(fragments.len(), 2);
-        assert_htj2k_rpcl_codestream(dicom_fragment_payload_without_padding(&fragments[0]));
+        assert!(error.contains("ProfileUnsupported"), "{error}");
     }
 
     #[test]
@@ -600,7 +554,9 @@ mod tests {
         })
         .expect_err("YBR_FULL direct HTJ2K should not be emitted for VL WSI");
 
-        assert!(err.to_string().contains("HTJ2K 9/7 export"));
+        assert!(err
+            .to_string()
+            .contains("pixel re-encoding fallback is disabled"));
     }
 
     #[test]
@@ -643,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_dicom_routes_reports_conformant_fallback_for_jpeg_backed_htj2k() {
+    fn profile_dicom_routes_rejects_color_jpeg_reencoding() {
         let tmp = tempfile::tempdir().unwrap();
         let jpeg_a = encode_test_jpeg(8, 8, [160, 20, 40]);
         let jpeg_b = encode_test_jpeg(8, 8, [20, 160, 40]);
@@ -655,7 +611,7 @@ mod tests {
             EncodeBackendPreference::CpuOnly
         };
 
-        let report = profile_dicom_routes(RouteProfileRequest {
+        let error = profile_dicom_routes(RouteProfileRequest {
             source_path: source,
             options: ExportOptions {
                 tile_size: 8,
@@ -669,46 +625,13 @@ mod tests {
             level: 0,
             max_frames: 2,
         })
-        .unwrap();
-
-        assert_eq!(report.level, 0);
-        assert_eq!(report.requested_frames, 2);
-        assert_eq!(report.metrics.routes.total_frames, 2);
-        assert_eq!(
-            report.metrics.jpeg_direct_htj2k.jpeg_direct_htj2k_53_frames,
-            0
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("pixel re-encoding fallback is disabled"),
+            "{error}"
         );
-        assert_eq!(
-            report.metrics.jpeg_direct_htj2k.jpeg_direct_htj2k_97_frames,
-            0
-        );
-        assert_eq!(
-            report
-                .metrics
-                .jpeg_direct_htj2k
-                .jpeg_direct_htj2k_rejected_frames,
-            2
-        );
-        assert_eq!(report.metrics.routes.jpeg_decode_fallback_frames, 0);
-        if cfg!(all(feature = "metal", target_os = "macos")) {
-            assert_eq!(report.metrics.routes.cpu_input_frames, 2);
-            assert_eq!(report.metrics.routes.gpu_input_decode_frames, 0);
-            assert_eq!(report.metrics.routes.gpu_encode_frames, 2);
-            assert_eq!(report.metrics.routes.gpu_transcode_frames, 2);
-            assert_eq!(report.metrics.routes.resident_gpu_transcode_frames, 0);
-            assert_eq!(report.metrics.routes.partial_gpu_transcode_frames, 2);
-            assert_eq!(report.metrics.routes.cpu_fallback_frames, 0);
-            assert!(report.metrics.gpu_encode.gpu_encode_wall_micros > 0);
-        } else {
-            assert_eq!(report.metrics.routes.cpu_input_frames, 2);
-            assert_eq!(report.metrics.routes.gpu_input_decode_frames, 0);
-            assert_eq!(report.metrics.routes.gpu_encode_frames, 0);
-            assert_eq!(report.metrics.routes.gpu_transcode_frames, 0);
-            assert_eq!(report.metrics.routes.cpu_fallback_frames, 2);
-        }
-        assert_eq!(report.metrics.route_unclassified_frames(), 0);
-        assert!(report.metrics.timings.encode_micros > 0);
-        assert!(report.elapsed_micros > 0);
+        assert!(error.contains("ProfileUnsupported"), "{error}");
     }
 
     #[test]

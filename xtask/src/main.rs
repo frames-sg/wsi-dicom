@@ -274,8 +274,7 @@ mod tests {
         let args = validate_dicom_cargo_args([
             OsString::from("dicom-out"),
             OsString::from("--strict"),
-            OsString::from("--max-pixel-frames"),
-            OsString::from("0"),
+            OsString::from("--json"),
         ]);
 
         assert_eq!(
@@ -287,8 +286,7 @@ mod tests {
                 OsString::from("validate"),
                 OsString::from("dicom-out"),
                 OsString::from("--strict"),
-                OsString::from("--max-pixel-frames"),
-                OsString::from("0"),
+                OsString::from("--json"),
             ]
         );
     }

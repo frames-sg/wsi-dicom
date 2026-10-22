@@ -5,8 +5,9 @@ use wsi_rs::Slide;
 
 use super::jpeg_baseline::jpeg_baseline_route_frame_geometry;
 use super::jpeg_baseline_instance::export_jpeg_passthrough_instance;
+use super::jpeg_lossless_instance::prepare_jpeg_lossless_instance;
 use super::lossless_j2k_instance::{
-    export_instance, prepare_lossless_j2k_instance, PendingLosslessJ2kInstance,
+    export_instance, prepare_lossless_j2k_instance, PendingLosslessInstance,
 };
 use super::tile_grid::{checked_frame_count_u32, TileGrid};
 use super::{level_pixel_spacing_mm, require_pixel_spacing_mm, InstanceExportContext};
@@ -363,20 +364,21 @@ pub(super) fn export_dicom_instance_jobs_serial(
     // Write each prepared instance (spool copy and sync) on a writer thread
     // while the next instance encodes. At most one prepared instance waits.
     std::thread::scope(|scope| {
-        let (writer_tx, writer_rx) = std::sync::mpsc::sync_channel::<PendingLosslessJ2kInstance>(1);
+        let (writer_tx, writer_rx) = std::sync::mpsc::sync_channel::<PendingLosslessInstance>(1);
         // Stopping at the first failure drops the receiver, which ends preparation.
         let writer = scope.spawn(move || {
             writer_rx
                 .into_iter()
-                .map(PendingLosslessJ2kInstance::finish)
+                .map(PendingLosslessInstance::finish)
                 .collect::<Result<Vec<_>, _>>()
         });
         let prepared = jobs.iter().try_for_each(|job| {
-            let pending = prepare_lossless_j2k_instance(
-                slide,
-                request,
-                instance_export_context(options, metadata, identity, job),
-            )?;
+            let context = instance_export_context(options, metadata, identity, job);
+            let pending = if options.semantics.transfer_syntax == TransferSyntax::JpegLosslessSv1 {
+                prepare_jpeg_lossless_instance(slide, request, context)?
+            } else {
+                prepare_lossless_j2k_instance(slide, request, context)?
+            };
             // A closed channel means the writer failed; its error is reported below.
             let _ = writer_tx.send(pending);
             Ok::<_, Error>(())
@@ -442,10 +444,14 @@ pub(super) fn export_dicom_instance_job(
     job: &DicomExportInstanceJob<'_>,
 ) -> Result<InstanceReport, Error> {
     let context = instance_export_context(options, metadata, identity, job);
-    if options.semantics.transfer_syntax == TransferSyntax::JpegBaseline8Bit {
-        export_jpeg_passthrough_instance(slide, request, context)
-    } else {
-        export_instance(slide, request, context)
+    match options.semantics.transfer_syntax {
+        TransferSyntax::JpegBaseline8Bit => {
+            export_jpeg_passthrough_instance(slide, request, context)
+        }
+        TransferSyntax::JpegLosslessSv1 => {
+            prepare_jpeg_lossless_instance(slide, request, context)?.finish()
+        }
+        _ => export_instance(slide, request, context),
     }
 }
 

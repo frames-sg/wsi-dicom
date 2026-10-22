@@ -1,4 +1,4 @@
-use j2k::{J2kView, ReversibleTransform};
+use j2k::J2kView;
 use j2k_core::{Colorspace, CompressedPayloadKind, PassthroughRequirements};
 use wsi_rs::{Compression, EncodedTilePhotometricInterpretation, RawCompressedTile};
 
@@ -16,19 +16,8 @@ use super::LosslessJ2kPlannedFrame;
 use crate::error::Error;
 use crate::options::{EncodeBackendPreference, NormalizedExportOptions, TransferSyntax};
 use crate::passthrough::j2k_codestream_is_rpcl;
-use crate::routing::{
-    j2k_encode_backend, j2k_encoded_lossless_profile, required_passthrough_syntax,
-};
+use crate::routing::{j2k_encode_backend, required_passthrough_syntax};
 use crate::tile::PixelProfile;
-
-fn j2k_source_fallback_allowed(
-    planned: &LosslessJ2kPlannedFrame,
-    transfer_syntax: TransferSyntax,
-) -> bool {
-    transfer_syntax == TransferSyntax::Jpeg2000
-        && planned.source_j2k_syntax.is_some()
-        && planned.source_j2k_dimensions == Some((planned.width, planned.height))
-}
 
 pub(super) fn j2k_non_passthrough_encode_allowed(
     planned: &LosslessJ2kPlannedFrame,
@@ -38,8 +27,11 @@ pub(super) fn j2k_non_passthrough_encode_allowed(
         return false;
     }
     planned.passthrough.is_none()
-        && (!transfer_syntax.is_jpeg2000_passthrough_only()
-            || j2k_source_fallback_allowed(planned, transfer_syntax))
+        && planned.source_j2k.is_none()
+        && planned.source_jpeg.is_none()
+        && planned.source_j2k_syntax.is_none()
+        && !planned.source_jpeg_direct_rejected
+        && !transfer_syntax.is_jpeg2000_passthrough_only()
 }
 
 pub(super) fn lossless_j2k_cpu_fallback_indices(
@@ -56,47 +48,6 @@ pub(super) fn lossless_j2k_cpu_fallback_indices(
             .then_some(idx)
         })
         .collect()
-}
-
-pub(super) fn j2k_fallback_profile(
-    planned: &LosslessJ2kPlannedFrame,
-    encoded_profile: PixelProfile,
-    transfer_syntax: TransferSyntax,
-) -> PixelProfile {
-    if transfer_syntax == TransferSyntax::Jpeg2000 {
-        if let Some(source_profile) = j2k_lossless_fallback_source_profile(planned, encoded_profile)
-        {
-            return source_profile;
-        }
-    }
-    let profile = encoded_profile;
-    j2k_encoded_lossless_profile(profile, transfer_syntax)
-}
-
-pub(super) fn j2k_fallback_reversible_transform(
-    planned: &LosslessJ2kPlannedFrame,
-    transfer_syntax: TransferSyntax,
-) -> ReversibleTransform {
-    if transfer_syntax == TransferSyntax::Jpeg2000
-        && planned.source_j2k_profile.is_some_and(|profile| {
-            profile.components == 3 && profile.photometric_interpretation == "RGB"
-        })
-    {
-        ReversibleTransform::None53
-    } else {
-        ReversibleTransform::Rct53
-    }
-}
-
-fn j2k_lossless_fallback_source_profile(
-    planned: &LosslessJ2kPlannedFrame,
-    encoded_profile: PixelProfile,
-) -> Option<PixelProfile> {
-    planned.source_j2k_profile.filter(|source_profile| {
-        source_profile.components == encoded_profile.components
-            && source_profile.bits_allocated == encoded_profile.bits_allocated
-            && matches!(source_profile.photometric_interpretation, "RGB" | "YBR_RCT")
-    })
 }
 
 pub(super) fn reject_lossy_j2k_lossless_fallback(
@@ -239,9 +190,9 @@ fn j2k_passthrough_photometric_interpretation(
     raw_photometric: EncodedTilePhotometricInterpretation,
     info: &j2k_core::Info,
 ) -> Option<&'static str> {
-    // Passthrough is limited to component semantics that the decoded fallback can
-    // reproduce. MCT=0 YCbCr cannot be declared RGB, while the fallback encoder
-    // emits reversible RCT, so ICT also requires a whole-instance transcode.
+    // Preserve the encoded transform. The instance is buffered and every frame
+    // must pass the same pixel-profile check before any DICOM file is published.
+    // MCT=0 YCbCr still cannot be declared RGB.
     match (info.components, raw_photometric) {
         (1, EncodedTilePhotometricInterpretation::Monochrome2)
             if matches!(info.colorspace, Colorspace::Grayscale | Colorspace::SGray) =>
@@ -251,10 +202,12 @@ fn j2k_passthrough_photometric_interpretation(
         (3, EncodedTilePhotometricInterpretation::Rgb) => match info.colorspace {
             Colorspace::Rgb | Colorspace::SRgb => Some("RGB"),
             Colorspace::Rct => Some("YBR_RCT"),
+            Colorspace::Ict => Some("YBR_ICT"),
             _ => None,
         },
         (3, EncodedTilePhotometricInterpretation::YbrFull422) => match info.colorspace {
             Colorspace::Rct => Some("YBR_RCT"),
+            Colorspace::Ict => Some("YBR_ICT"),
             _ => None,
         },
         _ => None,

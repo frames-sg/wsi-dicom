@@ -10,7 +10,6 @@ use crate::Error;
 mod command_checks;
 mod discovery;
 mod doctor;
-mod pixel_decode;
 mod pixel_structure;
 mod process;
 mod wsi_conformance;
@@ -20,13 +19,6 @@ use discovery::discover_dicom_files;
 pub use doctor::doctor_dicom_environment;
 #[cfg(test)]
 use doctor::doctor_dicom_environment_with_runner;
-pub(crate) use pixel_decode::htj2k_decoder_command;
-use pixel_decode::{auto_htj2k_decoder_template, run_pixel_decode_checks, ValidationTempDir};
-#[cfg(test)]
-use pixel_decode::{
-    inspect_pnm_output, write_private_validation_file, DecodedFrameExpectation,
-    AUTO_HTJ2K_DECODER_COMMAND,
-};
 #[cfg(test)]
 use pixel_structure::assemble_encapsulated_frames;
 #[cfg(any(test, feature = "bench-internals"))]
@@ -64,14 +56,10 @@ pub struct ValidationOptions {
     /// Maximum encoded file bytes admitted before parsing (default 1 GiB).
     /// This bounds input, not the parser's heap amplification.
     pub max_input_bytes: u64,
-    /// Treat missing required validators or pixel decoders as failures.
+    /// Treat missing required validators as failures.
     pub strict: bool,
     /// Optional dcm4che IOD XML file used by `dcmvalidate`.
     pub dcmvalidate_iod: Option<PathBuf>,
-    /// Optional HTJ2K decoder command template using `{input}` and `{output}` placeholders.
-    pub htj2k_decoder: Option<String>,
-    /// Maximum number of pixel frames to decode per transfer syntax; zero disables pixel checks.
-    pub max_pixel_frames: usize,
     /// Timeout in seconds applied to each external validator command.
     pub command_timeout_secs: u64,
     /// Maximum DICOM files discovered under a directory input.
@@ -91,8 +79,6 @@ impl Default for ValidationOptions {
             max_input_bytes: 1024 * 1024 * 1024,
             strict: false,
             dcmvalidate_iod: None,
-            htj2k_decoder: None,
-            max_pixel_frames: 1,
             command_timeout_secs: 60,
             max_files: 100_000,
             max_depth: 64,
@@ -118,8 +104,6 @@ pub struct DoctorOptions {
     pub strict: bool,
     /// Optional dcm4che IOD XML file used to decide whether `dcmvalidate` is configured.
     pub dcmvalidate_iod: Option<PathBuf>,
-    /// Optional HTJ2K decoder command template to check.
-    pub htj2k_decoder: Option<String>,
 }
 
 /// Validator environment report.
@@ -276,7 +260,7 @@ pub enum ExecutionFailure {
     Unavailable,
     /// Executable could not be started.
     Launch,
-    /// Decoder or validator configuration was invalid.
+    /// Validator configuration was invalid.
     Configuration,
     /// Evidence staging or output could not be read or written.
     Io,
@@ -288,7 +272,7 @@ pub enum ExecutionFailure {
     Terminated,
 }
 
-/// Result of one external validator or pixel decode check.
+/// Result of one intrinsic or external validator check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct ValidationCheck {
@@ -331,52 +315,30 @@ struct ValidatorToolSpec {
     name: &'static str,
     required: bool,
     doctor_args: &'static [&'static str],
-    nonzero_success_output: Option<&'static str>,
 }
 
 const DCIODVFY_TOOL: ValidatorToolSpec = ValidatorToolSpec {
     name: "dciodvfy",
     required: true,
     doctor_args: &["-version"],
-    nonzero_success_output: None,
 };
 const DCENTVFY_TOOL: ValidatorToolSpec = ValidatorToolSpec {
     name: "dcentvfy",
     required: true,
     doctor_args: &["-version"],
-    nonzero_success_output: None,
 };
 const VALIDATE_IODS_TOOL: ValidatorToolSpec = ValidatorToolSpec {
     name: "validate_iods",
     required: true,
     doctor_args: &["-h"],
-    nonzero_success_output: None,
-};
-const DJPEG_TOOL: ValidatorToolSpec = ValidatorToolSpec {
-    name: "djpeg",
-    required: false,
-    doctor_args: &["-version"],
-    nonzero_success_output: None,
-};
-const OPJ_DECOMPRESS_TOOL: ValidatorToolSpec = ValidatorToolSpec {
-    name: "opj_decompress",
-    required: false,
-    doctor_args: &["-h"],
-    nonzero_success_output: Some("OpenJPEG"),
 };
 const DCMVALIDATE_TOOL: ValidatorToolSpec = ValidatorToolSpec {
     name: "dcmvalidate",
     required: true,
     doctor_args: &["--help"],
-    nonzero_success_output: None,
 };
-const VALIDATOR_DOCTOR_TOOLS: &[ValidatorToolSpec] = &[
-    DCIODVFY_TOOL,
-    DCENTVFY_TOOL,
-    VALIDATE_IODS_TOOL,
-    DJPEG_TOOL,
-    OPJ_DECOMPRESS_TOOL,
-];
+const VALIDATOR_DOCTOR_TOOLS: &[ValidatorToolSpec] =
+    &[DCIODVFY_TOOL, DCENTVFY_TOOL, VALIDATE_IODS_TOOL];
 const VALIDATOR_SET_FILE_CHUNK_SIZE: usize = 512;
 
 fn staged_dicom3tools_command(name: &str) -> Option<PathBuf> {
@@ -419,12 +381,7 @@ pub(crate) fn validate_dicom_path_with_runner(
     let mut checks = Vec::new();
     let mut corpus = WsiConformanceCorpus::default();
 
-    let temp_dir = if options.max_pixel_frames > 0 {
-        Some(ValidationTempDir::create()?)
-    } else {
-        None
-    };
-    for (file_idx, file) in files.iter().enumerate() {
+    for file in &files {
         let input_file = std::fs::File::open(file).map_err(|err| Error::Validation {
             reason: format!("cannot open {}: {err}", file.display()),
         })?;
@@ -443,8 +400,7 @@ pub(crate) fn validate_dicom_path_with_runner(
                 ),
             });
         }
-        // Reuse the parsed object for intrinsic and decoder checks. Limiting the
-        // opened handle also prevents reading beyond policy if the file grows.
+        // Limiting the opened handle prevents reading beyond policy if the file grows.
         let object = match dicom_object::OpenFileOptions::new()
             .read_preamble(dicom_object::file::ReadPreamble::Auto)
             .from_reader(input_file.take(options.max_input_bytes))
@@ -470,16 +426,6 @@ pub(crate) fn validate_dicom_path_with_runner(
             options.profile,
         ));
         corpus.observe(file, &object);
-        if let Some(temp_dir) = &temp_dir {
-            checks.extend(run_pixel_decode_checks(
-                file_idx,
-                file,
-                &object,
-                options,
-                runner,
-                temp_dir.path(),
-            ));
-        }
     }
     if let Some(check) = run_specimen_uid_set_check(&corpus) {
         checks.push(check);
@@ -584,34 +530,6 @@ fn failed_check(name: &str, path: Option<&PathBuf>, message: String) -> Validati
         name: name.to_string(),
         path: path.cloned(),
         status: ValidationStatus::Failed,
-        command: Vec::new(),
-        message,
-        stdout: String::new(),
-        stderr: String::new(),
-    }
-}
-
-fn execution_failed_check(
-    name: &str,
-    path: Option<&PathBuf>,
-    message: String,
-    failure: ExecutionFailure,
-) -> ValidationCheck {
-    let mut check = failed_check(name, path, message);
-    check.execution = Some(ValidationExecution {
-        return_code: None,
-        elapsed_millis: 0,
-        failure: Some(failure),
-    });
-    check
-}
-
-fn skipped_check(name: &str, path: Option<&PathBuf>, message: String) -> ValidationCheck {
-    ValidationCheck {
-        execution: None,
-        name: name.to_string(),
-        path: path.cloned(),
-        status: ValidationStatus::Skipped,
         command: Vec::new(),
         message,
         stdout: String::new(),

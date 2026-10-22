@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{find_command_for_test, j2k_cod_marker_offset, read_binary_ppm_for_test};
+use crate::test_support::j2k_cod_marker_offset;
 use crate::{CodecValidation, EncodeBackendPreference, TransferSyntax};
 use j2k::{
     j2k_lossless_decomposition_levels_for_options, J2kBlockCodingMode, J2kLosslessEncodeOptions,
@@ -388,11 +388,7 @@ fn metal_host_fallback_parallel_chunk_size_bounds_serial_work() {
 }
 
 #[test]
-fn metal_edge_rgb8_htj2k_rpcl_codestream_decodes_with_reference_codec_when_available() {
-    let Some(grk_decompress) = find_command_for_test("grk_decompress") else {
-        eprintln!("skipping resident Metal HTJ2K edge parity smoke: grk_decompress not found");
-        return;
-    };
+fn metal_edge_rgb8_htj2k_rpcl_codestream_pads_the_partial_tile() {
     let pixels: Vec<u8> = (0..7 * 5 * 3)
         .map(|idx| ((idx * 43 + 17) & 0xFF) as u8)
         .collect();
@@ -420,21 +416,11 @@ fn metal_edge_rgb8_htj2k_rpcl_codestream_decodes_with_reference_codec_when_avail
     assert_eq!(codestream[cod_marker + 5], 0x02);
     assert_eq!(codestream[cod_marker + 12], 0x40);
 
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let codestream_path = tmp.path().join("edge-rgb8.j2k");
-    let ppm_path = tmp.path().join("edge-rgb8.ppm");
-    std::fs::write(&codestream_path, codestream).expect("write codestream");
-    let status = std::process::Command::new(grk_decompress)
-        .args(["-i"])
-        .arg(&codestream_path)
-        .args(["-o"])
-        .arg(&ppm_path)
-        .status()
-        .expect("run grk_decompress");
-    assert!(status.success(), "grk_decompress failed with {status}");
-
-    let (width, height, decoded) = read_binary_ppm_for_test(&ppm_path);
-    assert_eq!((width, height), (8, 8));
+    let mut decoded = vec![0u8; 8 * 8 * 3];
+    j2k::J2kDecoder::new(codestream.as_ref())
+        .expect("parse J2K")
+        .decode_into(&mut decoded, 8 * 3, J2kPixelFormat::Rgb8)
+        .expect("decode J2K");
     for y in 0..8usize {
         for x in 0..8usize {
             let dst = (y * 8 + x) * 3;

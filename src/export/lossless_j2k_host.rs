@@ -37,6 +37,9 @@ pub(super) fn encode_host_fallback_batch(
     indices: &[usize],
     metrics: &mut ExportMetrics,
 ) -> Result<Vec<(usize, LosslessJ2kCpuBatchOutcome)>, Error> {
+    if indices.is_empty() {
+        return Ok(Vec::new());
+    }
     let chunk_len = frame_batch_len(context.tile_size, context.tile_size);
     let uploader = match encoder.metal_host_sample_uploader() {
         Ok(uploader) => Some(uploader),
@@ -160,11 +163,17 @@ fn finish_host_chunk(
         Ok(encoded) => {
             metrics.record_gpu_batches(0, 0, 1);
             metrics.record_gpu_encode_batch_stats(encoded.gpu_encode_stats);
+            if encoded.frames.len() != prepared.len() {
+                return Err(Error::Encode {
+                    message: "Metal host encode returned the wrong frame count".into(),
+                });
+            }
             encoded.frames
         }
         Err(err) if encoder.preference() == EncodeBackendPreference::RequireDevice => {
             return Err(err)
         }
+        // Auto re-encodes a failed device chunk on the CPU.
         Err(_) => (0..prepared.len()).map(|_| None).collect(),
     };
     for ((&index, tile), encoded) in indices.iter().zip(&prepared).zip(encoded) {

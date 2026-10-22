@@ -35,8 +35,6 @@ pub(crate) fn handle_validate(arguments: crate::cli_args::ValidateArgs) -> Resul
         path,
         strict,
         dcmvalidate_iod,
-        htj2k_decoder,
-        max_pixel_frames,
         command_timeout_secs,
         profile,
         max_input_bytes,
@@ -47,8 +45,6 @@ pub(crate) fn handle_validate(arguments: crate::cli_args::ValidateArgs) -> Resul
     options.max_input_bytes = max_input_bytes;
     options.strict = strict;
     options.dcmvalidate_iod = dcmvalidate_iod;
-    options.htj2k_decoder = htj2k_decoder;
-    options.max_pixel_frames = max_pixel_frames;
     options.command_timeout_secs = command_timeout_secs;
     let report = validate_dicom_path(&path, &options)?;
     let has_failures = report.has_failures();
@@ -73,13 +69,11 @@ pub(crate) fn handle_validate(arguments: crate::cli_args::ValidateArgs) -> Resul
 pub(crate) fn handle_doctor(
     strict: bool,
     dcmvalidate_iod: Option<PathBuf>,
-    htj2k_decoder: Option<String>,
     json: bool,
 ) -> Result<(), Error> {
     let mut options = DoctorOptions::default();
     options.strict = strict;
     options.dcmvalidate_iod = dcmvalidate_iod;
-    options.htj2k_decoder = htj2k_decoder;
     let report = doctor_dicom_environment(&options);
     let has_failures = report.has_failures();
     let failed_tools = report.failed_tools();
@@ -111,7 +105,6 @@ pub(crate) fn handle_self_test(arguments: SelfTestArgs) -> Result<(), Error> {
     let mut validation = ValidationOptions::default();
     validation.strict = arguments.strict;
     validation.dcmvalidate_iod = arguments.dcmvalidate_iod;
-    validation.htj2k_decoder = arguments.htj2k_decoder;
     validation.command_timeout_secs = arguments.command_timeout_secs;
     let mut options = SelfTestOptions::default();
     options.output_dir = arguments.out;

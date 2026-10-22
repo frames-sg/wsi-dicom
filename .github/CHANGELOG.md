@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- JPEG Lossless SV1 output (`--transfer-syntax jpeg-lossless-sv1`,
+  `1.2.840.10008.1.2.4.70`) for 8- and 16-bit RGB and MONOCHROME2 frames,
+  encoded on the CPU. `RequireDevice` is rejected.
+- `jpeg_optimize_huffman` (`--jpeg-optimize-huffman`) writes re-encoded JPEG
+  Baseline frames with per-frame optimal Huffman tables: same pixels, smaller
+  frames. Passthrough and retiled frames keep their source bytes. Deterministic
+  UIDs are unchanged unless the option is enabled.
+
+### Removed
+
+- **Breaking:** validation no longer runs external codecs. The `djpeg`,
+  `opj_decompress`, and HTJ2K decoder pixel-decode checks are gone, along with
+  `ValidationOptions::{htj2k_decoder, max_pixel_frames}`,
+  `DoctorOptions::htj2k_decoder`, the `--htj2k-decoder` and
+  `--max-pixel-frames` flags, the GUI decoder field, and the
+  `htj2k_decoder_template` fuzz target. Intrinsic checks and the DICOM
+  conformance validators are unchanged. Persisted options that still carry the
+  removed fields load as before. Independent decoding of sampled frames now
+  runs in the [WSI-DICOM Bench](https://github.com/frames-sg/wsi-dicom-bench)
+  workbench.
+
 ## [0.8.0] - 2026-10-06
 
 ### Changed

@@ -44,10 +44,15 @@ pub(super) fn read_raw_jpeg_retile_display_tile(
         .with_plane(PlaneSelection::new(location.z, location.c, location.t)),
     ) {
         Ok(raw) => raw,
-        Err(err) => {
+        Err(err @ WsiError::Unsupported { .. }) => {
             return Ok(RawJpegRetileProbe::Rejected(
                 classify_raw_jpeg_retile_error(&err),
             ));
+        }
+        Err(error) => {
+            return Err(Error::SlideRead {
+                message: format!("JPEG retile read failed at row={row} col={col}: {error}"),
+            });
         }
     };
     if raw_jpeg_matches_frame_geometry(&raw, frame_columns, frame_rows) {

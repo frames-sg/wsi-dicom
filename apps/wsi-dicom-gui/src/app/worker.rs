@@ -42,8 +42,6 @@ impl WsiDicomGui {
             overwrite: self.overwrite,
             validate_after_export: self.validate_after_export,
             validation_strict: self.validation_strict,
-            htj2k_decoder: (!self.htj2k_decoder.trim().is_empty())
-                .then(|| self.htj2k_decoder.trim().to_string()),
         };
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
@@ -133,7 +131,6 @@ struct GuiRunRequest {
     overwrite: bool,
     validate_after_export: bool,
     validation_strict: bool,
-    htj2k_decoder: Option<String>,
 }
 
 pub(super) struct GuiRunReport {
@@ -169,7 +166,6 @@ fn run_export(request: GuiRunRequest) -> GuiRunResult {
     workflow.validation = if request.validate_after_export {
         let mut validation = ValidationOptions::default();
         validation.strict = request.validation_strict;
-        validation.htj2k_decoder = request.htj2k_decoder;
         Some(validation)
     } else {
         None

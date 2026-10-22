@@ -1,4 +1,4 @@
-//! Preserve canonical JPEG and irreversible JPEG 2000 source reconstruction.
+//! Select CPU input before dispatch when strict device decoding is unavailable.
 
 use super::super::cpu_batch::frame_batch_len;
 use super::super::frame_region::OutputFrameRect;
@@ -10,7 +10,7 @@ use super::{
 };
 use crate::encode::DicomJ2kEncoder;
 use crate::{EncodeBackendPreference, Error};
-use wsi_rs::{Compression, Slide, TileLayout};
+use wsi_rs::{Compression, Slide, TileLayout, WsiError};
 
 pub(super) fn try_encode_canonical_source(
     slide: &Slide,
@@ -18,13 +18,18 @@ pub(super) fn try_encode_canonical_source(
     encoder: &mut DicomJ2kEncoder,
     request: MetalInputTileRunRequest<'_>,
 ) -> Result<Option<MetalEncodedTileRun>, Error> {
-    let TileLayout::Regular {
-        tile_width,
-        tile_height,
-        ..
-    } = request.level.tile_layout
-    else {
-        return Ok(None);
+    let (tile_width, tile_height) = match request.level.tile_layout {
+        TileLayout::Regular {
+            tile_width,
+            tile_height,
+            ..
+        }
+        | TileLayout::WholeLevel {
+            virtual_tile_width: tile_width,
+            virtual_tile_height: tile_height,
+            ..
+        } => (tile_width, tile_height),
+        _ => return Ok(None),
     };
     if tile_width == 0 || tile_height == 0 || request.tile_count == 0 {
         return Ok(None);
@@ -67,13 +72,22 @@ pub(super) fn try_encode_canonical_source(
                 .read_raw_compressed_tile(&request.location.tile_request(source_col, source_row))
             {
                 Ok(raw) => raw,
-                Err(_) => continue, // The ordinary source reader reports decode failures.
+                Err(WsiError::Unsupported { .. }) => {
+                    canonical = true;
+                    continue;
+                }
+                Err(error) => {
+                    return Err(Error::SlideRead {
+                        message: format!("source capability inspection failed: {error}"),
+                    });
+                }
             };
             if !matches!(
                 raw.compression(),
                 Compression::Jpeg | Compression::Jp2kRgb | Compression::Jp2kYcbcr
             ) {
-                return Ok(None);
+                canonical = true;
+                continue;
             }
             // A following row can use a different irreversible coding style.
             // Do not prefetch it before its own source-policy inspection.
@@ -137,14 +151,7 @@ pub(super) fn try_encode_canonical_source(
             .map(|tile| lossless_j2k_samples_from_prepared_region(tile, request.tile_size))
             .collect::<Result<Vec<_>, _>>()?;
         let encoded =
-            match encoder.encode_host_samples_batch(&samples, request.tile_size, request.tile_size)
-            {
-                Ok(encoded) => encoded,
-                Err(err) if reader.preference == EncodeBackendPreference::RequireDevice => {
-                    return Err(err)
-                }
-                Err(_) => return Ok(Some(empty_metal_tile_run(request.tile_count))),
-            };
+            encoder.encode_host_samples_batch(&samples, request.tile_size, request.tile_size)?;
         run.gpu_encode_stats.add_assign(encoded.gpu_encode_stats);
         run.encode_batches += 1;
         for (tile, encoded) in prepared.into_iter().zip(encoded.frames) {

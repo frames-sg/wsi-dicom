@@ -1,23 +1,36 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 
-The current WSI validation challenge is maintained in
-[`wsi-dicom-bench`](https://github.com/frames-sg/wsi-dicom-bench):
-69 authored defects and 14 controls covering 18 selected rule families. Earlier sealed studies
-remain historical evidence; this challenge does not claim exhaustive normative DICOM coverage.
-
 # wsi-dicom
+
+[![CI](https://github.com/frames-sg/wsi-dicom/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/frames-sg/wsi-dicom/actions/workflows/ci.yml?query=branch%3Amain)
+
+[Project website](https://frames-sg.com/dicom-whole-slide-conversion/) ·
+[API documentation](https://docs.rs/wsi-dicom)
 
 `wsi-dicom` converts whole-slide imaging files that `wsi-rs` can open into
 DICOM VL Whole Slide Microscopy instances. It provides a Rust API, a CLI, and an
 optional native GUI.
 
-[J2K, the pure-Rust JPEG 2000 codec](https://frames-sg.github.io/j2k/rust-jpeg2000-codec/),
+[J2K, the pure-Rust JPEG 2000 codec](https://frames-sg.com/j2k/rust-jpeg2000-codec/),
 supplies JPEG, JPEG 2000, and HTJ2K codec primitives. `wsi-rs`
 opens vendor WSI formats such as SVS and NDPI. `wsi-dicom` owns DICOM export,
 metadata validation, transfer-syntax routing, reports, and writer errors.
 `wsi-dicom-annotations` owns the UI-independent QuPath/GeoJSON terminology and
 DICOM ANN, SEG, and SR conversion; this package orchestrates it alongside WSI
 conversion.
+
+DICOM parsing and serialization use [dicom-rs](https://github.com/Enet4/dicom-rs).
+ICC validation uses `moxcms`; LZW, DEFLATE, and Zstd use `j2k-tilecodec`. Native
+CZI reading belongs to `wsi-rs`. The reader uses the `image` crate for PNG/BMP
+decoding, public RGB/RGBA display buffers, and image saving.
+
+## Validation benchmark
+
+The current WSI validation challenge is maintained in
+[`wsi-dicom-bench`](https://github.com/frames-sg/wsi-dicom-bench): 69 authored
+defects and 14 controls covering 18 selected rule families. Earlier sealed
+studies remain historical evidence; this challenge does not claim exhaustive
+normative DICOM coverage.
 
 ## Install
 
@@ -290,19 +303,12 @@ wsi-dicom-bench-workbench dicom-out \
   --profile "${profile}"
 ```
 
-HTJ2K pixel decode validation auto-detects `grk_decompress` when it is on
-`PATH`. You can also provide an explicit absolute decoder command:
-
-```sh
-wsi-dicom validate dicom-out \
-  --htj2k-decoder "/opt/homebrew/bin/grk_decompress -i {input} -o {output}"
-```
-
-Every validation run performs intrinsic checks before optional external
-validation. The Pixel Data structure check verifies Number of Frames, native
-versus encapsulated representation, nonempty data, and bounded frame mapping
-through Basic or Extended Offset Tables; it still runs when
-`--max-pixel-frames 0`. VL Whole Slide Microscopy Image objects additionally
+Validation never runs an external codec. Every validation run performs
+intrinsic checks before the optional external DICOM conformance validators
+(dicom3tools `dciodvfy`/`dcentvfy`, `validate_iods`, and `dcmvalidate` when an
+IOD file is given). The Pixel Data structure check verifies Number of Frames,
+native versus encapsulated representation, nonempty data, and bounded frame
+mapping through Basic or Extended Offset Tables. VL Whole Slide Microscopy Image objects additionally
 run stable `intrinsic-wsi-dicom-2026c-*` checks for ICC profiles, monochrome
 presentation attributes, lossy declarations, specimen identity, and dimension
 ordering, plus a set-level Specimen UID consistency check. These checks do not
@@ -386,14 +392,21 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
   `1`.
 - Lossy compression history is independent of the final transfer syntax. A
   lossless transcode does not erase prior lossy JPEG/JPEG 2000/HTJ2K stages.
-- JPEG Baseline output preserves compatible native JPEG frames. HTJ2K lossless
-  output rejects nonconformant color JPEG direct routes and falls back through
-  decoded RGB/RCT.
-- JPEG 2000 passthrough preserves eligible native source codestreams.
-- When re-encoding irreversible JPEG 2000 sources, CPU reconstruction preserves
-  the same source pixels across CPU and Metal output routes. Metal encoding can
-  still be required; `source_device_decode` permits device input but does not
-  require it. Route counters report the actual input backend.
+- JPEG Baseline output copies compatible native JPEG frames or retiles them
+  without pixel re-encoding. Unsupported geometry or color profiles fail instead
+  of silently recompressing JPEG input.
+- JPEG 2000 and HTJ2K passthrough preserve compatible source codestreams,
+  including ICT/9/7, regardless of the source container extension. Incompatible
+  edges and mixed color profiles fail before the instance is published.
+- Direct J2K-to-HTJ2K conversion requires coefficient-preserving recoding.
+  Direct JPEG/J2K route failures are returned to the caller; rejected compressed
+  routes cannot fall back to decoded-pixel re-encoding. Color JPEG-to-HTJ2K and
+  arbitrary regular TIFF JPEG retiling remain unsupported where the first-party
+  compressed-domain route cannot produce the requested DICOM profile.
+- CPU encoding remains available as the primary route for pixel inputs. Auto
+  may choose a backend before execution; failures after device submission are
+  returned rather than retried on the CPU. A selected device encode must complete
+  its required stages on the device.
 - Mixed JPEG exports retain only encoded/retiled exceptions in the payload
   spool and reread unchanged source frames when writing. Keep source datasets
   unchanged during conversion. Length, geometry, profile and file metadata
@@ -413,13 +426,9 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
   consumers must use report paths rather than assuming the pre-0.7 name shape.
 - Passing validators is release evidence, not formal DICOM certification.
 
-Lossless HTJ2K export preflights WholeLevel JPEG input with at most four native
-readers. When every native JPEG has a color profile that cannot be transcoded
-directly, export skips compressed-domain retiling and reconstructs RGB as before.
-Prior JPEG compression ratios then use each native source frame once, independent
-of output tile size. If any native frame cannot be verified, export keeps the
-ordinary planning path for the entire instance. Bounded route profiles inspect
-source headers only for their sampled output frames.
+WholeLevel JPEG route preflight inspects native source headers only for the
+current output batch or bounded profile sample. It does not scan the entire
+slide to authorize a pixel-reconstruction fallback.
 
 CPU preparation runs in bounded batches and shares unchanged U8 storage. GPU
 source caching accounts for unique retained allocations, with a 128 MiB cache
@@ -488,7 +497,7 @@ WSI_DICOM_APERIO_JP2K_FIXTURE=/absolute/path/aperio-jp2k.svs \
 | --- | --- |
 | `export_dicom_can_export_source_synthetic_downsample_level` | CPU or Metal build, CPU encode |
 | `export_dicom_requires_device_encode_for_synthetic_level_with_cpu_source_input` | Metal |
-| `ndpi_default_htj2k_export_preserves_canonical_pixels_and_padding` | CPU reconstruction, Metal encode |
+| `ndpi_default_htj2k_export_rejects_implicit_color_reencoding` | CPU reconstruction, Metal encode |
 | `ndpi_edge_tile_device_encode_round_trips_all_lossless_j2k_profiles` | Metal |
 | `ndpi_fixture_exports_full_jpeg_baseline_passthrough_instance` | CPU or Metal build, passthrough |
 | `aperio_jp2k_device_encoded_256_htj2k_rpcl_tile_matches_cpu` | Metal encode, policy-selected input |

@@ -144,9 +144,8 @@ fn encode_frame_refs_batch(
 
 /// Describes the recoded codestream rather than the source frame.
 ///
-/// j2k may take its pixel-preserving path, which re-encodes an RCT source
-/// without a component transform, so the source photometric interpretation
-/// cannot be reused for the recoded frame.
+/// Validate the component transform from the produced codestream before it
+/// contributes to the instance-wide profile check.
 fn recoded_profile(codestream: &[u8], source: PixelProfile) -> Result<PixelProfile, Error> {
     let view = J2kView::parse(codestream).map_err(|err| Error::Encode {
         message: format!("direct J2K to HTJ2K recode produced an invalid codestream: {err}"),
@@ -187,7 +186,8 @@ fn options(
         CompressedPayloadKind::Jpeg2000Codestream,
         progression,
         codec_validation.to_j2k_validation(),
-    ))
+    )
+    .with_coefficient_only())
 }
 
 fn to_wsi_error(source: j2k::J2kError) -> Error {
@@ -287,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn rct_source_recode_is_labelled_from_the_recoded_codestream() {
+    fn rct_source_requiring_pixel_reencoding_is_rejected() {
         let bytes: Vec<u8> = (0..32_u32 * 32)
             .flat_map(|i| [(i % 251) as u8, (i * 7 % 253) as u8, (i * 13 % 241) as u8])
             .collect();
@@ -312,7 +312,7 @@ mod tests {
             },
         };
 
-        let outcome = encode_frame_refs_batch(
+        let error = encode_frame_refs_batch(
             &[&frame],
             TransferSyntax::Htj2kLosslessRpcl,
             CodecValidation::RoundTrip,
@@ -320,18 +320,9 @@ mod tests {
         .unwrap()
         .pop()
         .unwrap()
-        .unwrap();
-
-        super::super::j2k_policy::validate_dicom_j2k_frame(
-            &outcome.codestream,
-            outcome.profile,
-            TransferSyntax::Htj2kLosslessRpcl,
-        )
-        .unwrap();
-        assert_eq!(
-            decode_j2k_frame_for_test(&outcome.codestream, 32, 32, 3, 8),
-            bytes
-        );
+        .err()
+        .expect("unsupported coefficient extraction must not re-encode pixels");
+        assert!(error.to_string().contains("pixel-domain re-encoding"));
     }
 
     fn decode_j2k_frame_for_test(

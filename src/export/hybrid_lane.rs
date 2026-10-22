@@ -12,7 +12,7 @@ use super::jobs::{
     DicomExportInstanceJob,
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
-use super::lossless_j2k_instance::{prepare_lossless_j2k_instance, PendingLosslessJ2kInstance};
+use super::lossless_j2k_instance::{prepare_lossless_j2k_instance, PendingLosslessInstance};
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use super::InstanceExportContext;
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -149,7 +149,7 @@ pub(crate) fn export_dicom_instance_jobs_prefer_device_htj2k_hybrid_lanes(
 
     let mut reports = std::thread::scope(|scope| -> Result<Vec<_>, Error> {
         let (writer_tx, writer_rx) =
-            std::sync::mpsc::sync_channel::<(usize, PendingLosslessJ2kInstance)>(1);
+            std::sync::mpsc::sync_channel::<(usize, PendingLosslessInstance)>(1);
         let writer_handle = scope.spawn(move || {
             let mut writer_reports = Vec::new();
             for (ordinal, pending) in writer_rx {

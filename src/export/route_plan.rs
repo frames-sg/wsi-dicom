@@ -41,19 +41,15 @@ pub(crate) struct RouteRejections {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FrameRouteDecision {
     pub(crate) route: PlannedFrameRoute,
-    pub(crate) fallback: Option<PlannedFrameRoute>,
     pub(crate) transfer_syntax: TransferSyntax,
     pub(crate) rejections: RouteRejections,
 }
 
 impl FrameRouteDecision {
-    pub(crate) fn allows_j2k_encode_fallback(self) -> bool {
+    pub(crate) fn allows_j2k_encode(self) -> bool {
         matches!(
             self.route,
             PlannedFrameRoute::J2kCpuEncode | PlannedFrameRoute::J2kDeviceEncodeCandidate
-        ) || matches!(
-            self.fallback,
-            Some(PlannedFrameRoute::J2kCpuEncode | PlannedFrameRoute::J2kDeviceEncodeCandidate)
         )
     }
 }
@@ -70,7 +66,6 @@ pub(crate) enum FrameRouteSource {
         passthrough: bool,
         direct_j2k: bool,
         direct_jpeg: bool,
-        j2k_reencode: bool,
     },
 }
 
@@ -115,8 +110,7 @@ impl RoutePlanner {
                 passthrough,
                 direct_j2k,
                 direct_jpeg,
-                j2k_reencode,
-            } => self.decide_j2k(passthrough, direct_j2k, direct_jpeg, j2k_reencode),
+            } => self.decide_j2k(passthrough, direct_j2k, direct_jpeg),
         }
     }
 
@@ -149,7 +143,6 @@ impl RoutePlanner {
         passthrough: bool,
         direct_j2k: bool,
         direct_jpeg: bool,
-        j2k_reencode: bool,
     ) -> FrameRouteDecision {
         if !self.context.transfer_syntax.is_j2k_family() {
             return self.unsupported(RouteRejection::TransferSyntaxMismatch);
@@ -160,11 +153,11 @@ impl RoutePlanner {
         }
         rejections.passthrough = Some(RouteRejection::SourceRouteUnavailable);
         if direct_j2k {
-            return self.direct_j2k_decision(PlannedFrameRoute::DirectJ2kToHtj2k, rejections);
+            return self.decision(PlannedFrameRoute::DirectJ2kToHtj2k, rejections);
         }
         rejections.direct_j2k = Some(RouteRejection::SourceRouteUnavailable);
         if direct_jpeg {
-            return self.direct_j2k_decision(PlannedFrameRoute::DirectJpegToHtj2k, rejections);
+            return self.decision(PlannedFrameRoute::DirectJpegToHtj2k, rejections);
         }
         rejections.direct_jpeg = Some(RouteRejection::SourceRouteUnavailable);
 
@@ -175,9 +168,6 @@ impl RoutePlanner {
             );
         }
         if self.context.transfer_syntax.is_jpeg2000_passthrough_only() {
-            if j2k_reencode {
-                return self.decision(PlannedFrameRoute::J2kCpuEncode, rejections);
-            }
             return self.decision(
                 PlannedFrameRoute::Unsupported(RouteRejection::PassthroughRequired),
                 rejections,
@@ -201,33 +191,6 @@ impl RoutePlanner {
     fn decision(self, route: PlannedFrameRoute, rejections: RouteRejections) -> FrameRouteDecision {
         FrameRouteDecision {
             route,
-            fallback: None,
-            transfer_syntax: self.context.transfer_syntax,
-            rejections,
-        }
-    }
-
-    fn direct_j2k_decision(
-        self,
-        route: PlannedFrameRoute,
-        rejections: RouteRejections,
-    ) -> FrameRouteDecision {
-        let fallback = matches!(
-            self.context.transfer_syntax,
-            TransferSyntax::Jpeg2000Lossless
-                | TransferSyntax::Htj2kLossless
-                | TransferSyntax::Htj2kLosslessRpcl
-        )
-        .then_some(
-            if self.context.encode_backend == EncodeBackendPreference::CpuOnly {
-                PlannedFrameRoute::J2kCpuEncode
-            } else {
-                PlannedFrameRoute::J2kDeviceEncodeCandidate
-            },
-        );
-        FrameRouteDecision {
-            route,
-            fallback,
             transfer_syntax: self.context.transfer_syntax,
             rejections,
         }

@@ -121,7 +121,7 @@ fn export_dicom_requires_device_encode_for_synthetic_level_with_cpu_source_input
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
 #[ignore = "requires WSI_DICOM_NDPI_FIXTURE and Metal"]
-fn ndpi_default_htj2k_export_preserves_canonical_pixels_and_padding() {
+fn ndpi_default_htj2k_export_rejects_implicit_color_reencoding() {
     const MAX_FRAMES: u64 = 256;
 
     let source = required_fixture_path("WSI_DICOM_NDPI_FIXTURE");
@@ -137,7 +137,7 @@ fn ndpi_default_htj2k_export_preserves_canonical_pixels_and_padding() {
     assert_eq!(options.transfer_syntax, TransferSyntax::Htj2kLosslessRpcl);
     let tile_size = options.tile_size;
     let series = &slide.dataset().scenes[0].series[0];
-    let (level_idx, level, tiles_across, tiles_down, frame_count) = series
+    let (level_idx, _, _, _, _) = series
         .levels
         .iter()
         .enumerate()
@@ -165,18 +165,7 @@ fn ndpi_default_htj2k_export_preserves_canonical_pixels_and_padding() {
         .min_by_key(|(level_idx, _, _, _, frame_count)| (*level_idx != 4, *frame_count))
         .expect("NDPI fixture should expose a modest physical whole-level pyramid level");
     let level_idx = level_idx as u32;
-    assert!(
-        super::super::lossless_j2k_plan::WholeLevelJpegExportPreflight::new(
-            &slide,
-            level,
-            InstanceCoordinate::new(0, 0, level_idx, 0, 0, 0),
-            options.transfer_syntax,
-        )
-        .is_some(),
-        "the selected NDPI level must exercise export-wide JPEG source preflight"
-    );
-
-    let report = export_dicom(ExportRequest {
+    let error = export_dicom(ExportRequest {
         source_path: source,
         output_dir: tmp.path().join("out"),
         options,
@@ -184,76 +173,13 @@ fn ndpi_default_htj2k_export_preserves_canonical_pixels_and_padding() {
         metadata: MetadataSource::ResearchPlaceholder,
         level_filter: Some(level_idx),
     })
-    .unwrap();
-
-    assert_eq!(report.instances.len(), 1);
-    assert_eq!(report.instances[0].level, level_idx);
-    assert_eq!(u64::from(report.instances[0].frame_count), frame_count);
-    assert_eq!(report.metrics.routes.total_frames, frame_count);
-    assert_eq!(report.metrics.routes.cpu_input_frames, frame_count);
-    assert_eq!(report.metrics.routes.gpu_encode_frames, frame_count);
-    assert_eq!(
-        report.metrics.routes.partial_gpu_transcode_frames,
-        frame_count
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("pixel re-encoding fallback is disabled"),
+        "{error}"
     );
-    assert_eq!(report.metrics.routes.resident_gpu_transcode_frames, 0);
-    assert_eq!(report.metrics.routes.jpeg_retile_frames, 0);
-    assert_eq!(
-        report.metrics.jpeg_direct_htj2k.jpeg_direct_htj2k_53_frames,
-        0
-    );
-
-    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-    assert_eq!(
-        object.meta().transfer_syntax.trim_end_matches('\0'),
-        TransferSyntax::Htj2kLosslessRpcl.uid()
-    );
-    let fragments = object
-        .element(tags::PIXEL_DATA)
-        .unwrap()
-        .value()
-        .fragments()
-        .unwrap();
-    assert_eq!(fragments.len(), frame_count as usize);
-
-    let mut representative_frames = vec![
-        tiles_across + 1,
-        2 * tiles_across - 1,
-        (tiles_down - 1) * tiles_across + 1,
-        frame_count - 1,
-    ];
-    representative_frames.sort_unstable();
-    representative_frames.dedup();
-    for index in representative_frames {
-        let col = index % tiles_across;
-        let row = index / tiles_across;
-        let x = col * u64::from(tile_size);
-        let y = row * u64::from(tile_size);
-        let valid_width = (level.dimensions.0 - x).min(u64::from(tile_size)) as u32;
-        let valid_height = (level.dimensions.1 - y).min(u64::from(tile_size)) as u32;
-        let region = slide
-            .read_region(&RegionRequest::new(
-                0,
-                0,
-                level_idx,
-                (x as i64, y as i64),
-                (valid_width, valid_height),
-            ))
-            .unwrap();
-        let expected = prepare_tile_samples(&region, tile_size, tile_size).unwrap();
-        let actual = decode_j2k_frame_for_test(
-            dicom_fragment_payload_without_padding(&fragments[index as usize]),
-            tile_size,
-            tile_size,
-            expected.profile.components,
-            expected.profile.bits_allocated,
-        );
-        assert_eq!(
-            actual.as_slice(),
-            expected.bytes.as_slice(),
-            "canonical pixels and zero padding for NDPI level {level_idx}, frame {index}"
-        );
-    }
+    assert!(error.contains("ProfileUnsupported"), "{error}");
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -951,7 +877,7 @@ fn metal_strip_composer_rejects_metadata_mismatch_and_out_of_grid_reads() {
 
 #[test]
 #[cfg(all(feature = "metal", target_os = "macos"))]
-fn jpeg_baseline_metal_tile_entries_keep_full_tiles_when_edge_geometry_falls_back() {
+fn jpeg_baseline_metal_tile_entries_reject_changed_geometry() {
     let Ok(device) = j2k_metal_support::system_default_device() else {
         return;
     };
@@ -979,15 +905,7 @@ fn jpeg_baseline_metal_tile_entries_keep_full_tiles_when_edge_geometry_falls_bac
         },
     ];
 
-    let entries = jpeg_baseline_metal_tile_entries(
-        vec![full_a, edge, full_b],
-        &frames,
-        EncodeBackendPreference::PreferDevice,
-    )
-    .unwrap();
-
-    assert_eq!(entries.len(), 3);
-    assert!(entries[0].is_some());
-    assert!(entries[1].is_none());
-    assert!(entries[2].is_some());
+    let error = jpeg_baseline_metal_tile_entries(vec![full_a, edge, full_b], &frames)
+        .expect_err("changed input geometry must not select CPU fallback");
+    assert!(error.to_string().contains("input geometry changed"));
 }

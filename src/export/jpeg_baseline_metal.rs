@@ -51,16 +51,22 @@ pub(super) fn try_encode_jpeg_baseline_metal_input_tile_run(
         frame_columns,
         frame_rows,
         jpeg_quality,
+        optimize_huffman,
         max_prepared_frame_bytes,
     } = settings;
     objc2::rc::autoreleasepool(|_| {
-        if !jpeg_baseline_auto_allows_metal_batch(
-            metal_input.preference,
-            frame_columns,
-            frame_rows,
-            frames.len(),
-            metal_input.source_device_decode,
-        ) {
+        // The Metal encoder writes standard Annex K tables, so optimized
+        // Huffman frames go to the CPU. `ExportOptions::validate` rejects
+        // RequireDevice with optimized tables.
+        if optimize_huffman
+            || !jpeg_baseline_auto_allows_metal_batch(
+                metal_input.preference,
+                frame_columns,
+                frame_rows,
+                frames.len(),
+                metal_input.source_device_decode,
+            )
+        {
             return Ok(empty_jpeg_baseline_metal_run(frames.len()));
         }
         if !output_frame_maps_to_wsi_rs_tile(level, frame_columns, frame_rows) {
@@ -100,39 +106,23 @@ pub(super) fn try_encode_jpeg_baseline_metal_input_tile_run(
             );
         }
         let input_decode_started = Instant::now();
-        let pixels = match metal_input.read_source_tiles(slide, &requests) {
-            Ok(pixels) if pixels.len() == frames.len() => pixels,
-            Ok(pixels) if metal_input.preference == EncodeBackendPreference::RequireDevice => {
-                return Err(Error::SlideRead {
-                    message: format!(
-                        "JPEG Baseline Metal input decode returned {} tile(s), expected {}",
-                        pixels.len(),
-                        frames.len()
-                    ),
-                });
-            }
-            Ok(_) => {
-                return Ok(empty_jpeg_baseline_metal_run_with_input_duration(
-                    frames.len(),
-                    input_decode_started.elapsed(),
-                ));
-            }
-            Err(err) if metal_input.preference == EncodeBackendPreference::RequireDevice => {
-                return Err(Error::SlideRead {
-                    message: format!("JPEG Baseline Metal input decode failed: {err}"),
-                });
-            }
-            Err(_) => {
-                return Ok(empty_jpeg_baseline_metal_run_with_input_duration(
-                    frames.len(),
-                    input_decode_started.elapsed(),
-                ));
-            }
-        };
+        let pixels = metal_input
+            .read_source_tiles(slide, &requests)
+            .map_err(|err| Error::SlideRead {
+                message: format!("JPEG Baseline Metal input decode failed: {err}"),
+            })?;
+        if pixels.len() != frames.len() {
+            return Err(Error::SlideRead {
+                message: format!(
+                    "JPEG Baseline Metal input decode returned {} tile(s), expected {}",
+                    pixels.len(),
+                    frames.len()
+                ),
+            });
+        }
         let input_decode_duration = input_decode_started.elapsed();
 
-        let tile_entries =
-            jpeg_baseline_metal_tile_entries(pixels, frames, metal_input.preference)?;
+        let tile_entries = jpeg_baseline_metal_tile_entries(pixels, frames)?;
         let batch_tiles: Vec<_> = tile_entries
             .iter()
             .filter_map(|entry| entry.as_ref().cloned())
@@ -164,33 +154,21 @@ pub(super) fn try_encode_jpeg_baseline_metal_input_tile_run(
         }
 
         let encode_started = Instant::now();
-        let encoded = match encode_jpeg_baseline_metal_device_tile_batch(
+        let encoded = encode_jpeg_baseline_metal_device_tile_batch(
             &batch_tiles,
             frame_columns,
             frame_rows,
             jpeg_quality,
             metal_input.jpeg_encode_session()?,
-        ) {
-            Ok(encoded) => encoded,
-            Err(err) if metal_input.preference == EncodeBackendPreference::RequireDevice => {
-                return Err(err);
-            }
-            Err(_) => return Ok(empty_jpeg_baseline_metal_run(frames.len())),
-        };
+        )?;
         if encoded.len() != batch_tiles.len() {
-            if metal_input.preference == EncodeBackendPreference::RequireDevice {
-                return Err(Error::Encode {
-                    message: format!(
-                        "JPEG Baseline Metal encode returned {} frame(s), expected {}",
-                        encoded.len(),
-                        batch_tiles.len()
-                    ),
-                });
-            }
-            return Ok(empty_jpeg_baseline_metal_run_with_input_duration(
-                frames.len(),
-                input_decode_duration,
-            ));
+            return Err(Error::Encode {
+                message: format!(
+                    "JPEG Baseline Metal encode returned {} frame(s), expected {}",
+                    encoded.len(),
+                    batch_tiles.len()
+                ),
+            });
         }
         let encode_duration = encode_started.elapsed();
         let mut encoded = encoded.into_iter();
@@ -227,7 +205,6 @@ pub(super) fn try_encode_jpeg_baseline_metal_input_tile_run(
 pub(super) fn jpeg_baseline_metal_tile_entries(
     pixels: Vec<wsi_rs::output::metal::MetalDeviceTile>,
     frames: &[JpegBaselineFallbackFrame],
-    preference: EncodeBackendPreference,
 ) -> Result<Vec<Option<wsi_rs::output::metal::MetalDeviceTile>>, Error> {
     let mut entries = Vec::new();
     entries
@@ -237,16 +214,12 @@ pub(super) fn jpeg_baseline_metal_tile_entries(
         })?;
     for (tile, frame) in pixels.into_iter().zip(frames.iter()) {
         if tile.width != frame.width || tile.height != frame.height {
-            if preference == EncodeBackendPreference::RequireDevice {
-                return Err(Error::Unsupported {
-                    reason: format!(
-                        "JPEG Baseline Metal input geometry changed: expected {}x{}, got {}x{}",
-                        frame.width, frame.height, tile.width, tile.height
-                    ),
-                });
-            }
-            entries.push(None);
-            continue;
+            return Err(Error::Unsupported {
+                reason: format!(
+                    "JPEG Baseline Metal input geometry changed: expected {}x{}, got {}x{}",
+                    frame.width, frame.height, tile.width, tile.height
+                ),
+            });
         }
         entries.push(Some(tile));
     }

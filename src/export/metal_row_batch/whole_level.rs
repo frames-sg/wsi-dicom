@@ -232,7 +232,6 @@ fn read_whole_level_source_tiles(
     metal_input: &mut MetalInputTileReader,
     strip_layout: WholeLevelStripLayout,
     source_window: &WholeLevelSourceWindow,
-    preference: EncodeBackendPreference,
     messages: &WholeLevelSourceReadMessages,
 ) -> Result<WholeLevelSourceRead, Error> {
     let mut source_tiles = vec![None; source_window.tile_count];
@@ -254,34 +253,22 @@ fn read_whole_level_source_tiles(
         let input_decode_started = Instant::now();
         let pixels = match metal_input.read_source_tiles(slide, &missing_requests) {
             Ok(pixels) => pixels,
-            Err(err) if preference == EncodeBackendPreference::RequireDevice => {
+            Err(err) => {
                 return Err(Error::SlideRead {
                     message: format!("{} decode failed: {err}", messages.decode_subject),
-                });
-            }
-            Err(_) => {
-                return Ok(WholeLevelSourceRead {
-                    tiles: None,
-                    input_decode_duration: Duration::ZERO,
                 });
             }
         };
         input_decode_duration = input_decode_started.elapsed();
         if pixels.len() != missing_requests.len() {
-            if preference == EncodeBackendPreference::RequireDevice {
-                return Err(Error::SlideRead {
-                    message: format!(
-                        "{} returned {} {}, expected {}",
-                        messages.decode_subject,
-                        pixels.len(),
-                        messages.returned_unit,
-                        missing_requests.len()
-                    ),
-                });
-            }
-            return Ok(WholeLevelSourceRead {
-                tiles: None,
-                input_decode_duration: Duration::ZERO,
+            return Err(Error::SlideRead {
+                message: format!(
+                    "{} returned {} {}, expected {}",
+                    messages.decode_subject,
+                    pixels.len(),
+                    messages.returned_unit,
+                    missing_requests.len()
+                ),
             });
         }
         for ((index, key), tile) in missing_indices.into_iter().zip(missing_keys).zip(pixels) {
@@ -290,21 +277,15 @@ fn read_whole_level_source_tiles(
                 || tile.width > strip_layout.width
                 || tile.height > strip_layout.height
             {
-                if preference == EncodeBackendPreference::RequireDevice {
-                    return Err(Error::Unsupported {
-                        reason: format!(
-                            "{} geometry changed: expected <= {}x{}, got {}x{}",
-                            messages.geometry_subject,
-                            strip_layout.width,
-                            strip_layout.height,
-                            tile.width,
-                            tile.height
-                        ),
-                    });
-                }
-                return Ok(WholeLevelSourceRead {
-                    tiles: None,
-                    input_decode_duration: Duration::ZERO,
+                return Err(Error::Unsupported {
+                    reason: format!(
+                        "{} geometry changed: expected <= {}x{}, got {}x{}",
+                        messages.geometry_subject,
+                        strip_layout.width,
+                        strip_layout.height,
+                        tile.width,
+                        tile.height
+                    ),
                 });
             }
             cache_and_store_whole_level_source_tile(
@@ -496,7 +477,6 @@ pub(in crate::export) fn try_encode_metal_whole_level_strip_run(
         metal_input,
         strip_layout,
         &source_window,
-        preference,
         &WHOLE_LEVEL_ROW_SOURCE_READ_MESSAGES,
     )?;
     let Some(source_tiles) = source_read.tiles else {
@@ -565,14 +545,13 @@ pub(in crate::export) fn try_encode_metal_whole_level_strip_run(
     for frame in batch_encoded.frames {
         match frame {
             Some(codestream) => encoded.push(Some((codestream, profile))),
-            None if preference == EncodeBackendPreference::RequireDevice => {
+            None => {
                 return Err(Error::Unsupported {
                     reason:
                         "requested JPEG 2000 Metal tile encode did not dispatch all required stages"
                             .into(),
                 });
             }
-            None => encoded.push(None),
         }
     }
 
@@ -687,7 +666,6 @@ fn prepare_metal_whole_level_strip_grid_run(
         metal_input,
         strip_layout,
         &source_window,
-        preference,
         &WHOLE_LEVEL_GRID_SOURCE_READ_MESSAGES,
     )?;
     let Some(source_tiles) = source_read.tiles else {
@@ -761,14 +739,13 @@ pub(super) fn try_encode_metal_whole_level_strip_grid_run(
     for frame in batch_encoded.frames {
         match frame {
             Some(codestream) => encoded.push(Some((codestream, composed.profile))),
-            None if preference == EncodeBackendPreference::RequireDevice => {
+            None => {
                 return Err(Error::Unsupported {
                     reason:
                         "requested JPEG 2000 Metal tile grid encode did not dispatch all required stages"
                             .into(),
                 });
             }
-            None => encoded.push(None),
         }
     }
 
@@ -831,7 +808,6 @@ pub(super) fn try_submit_metal_whole_level_strip_grid_run(
         encode_batches,
         row_batch_rows: composed.row_count,
         row_batch_target_tiles: metal_input.row_batch_target_tiles,
-        preference,
         missing_encode_message:
             "requested JPEG 2000 Metal tile grid encode did not dispatch all required stages",
     })

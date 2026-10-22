@@ -131,12 +131,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Command::Doctor {
             strict,
             dcmvalidate_iod,
-            htj2k_decoder,
             json,
         } => Ok(cli_validation::handle_doctor(
             strict,
             dcmvalidate_iod,
-            htj2k_decoder,
             json,
         )?),
         Command::SelfTest(arguments) => Ok(cli_validation::handle_self_test(arguments)?),

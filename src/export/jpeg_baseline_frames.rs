@@ -96,6 +96,7 @@ impl JpegFrameEncoder<'_> {
             let row_plan = plan_jpeg_baseline_row(
                 self.slide,
                 JpegBaselineRowPlanRequest {
+                    level: self.level,
                     location: self.location,
                     row,
                     tile_count: self.geometry.tiles_across,
@@ -215,6 +216,7 @@ impl JpegFrameEncoder<'_> {
             self.geometry.frame_columns,
             self.geometry.frame_rows,
             self.options.semantics.jpeg_quality,
+            self.options.semantics.jpeg_optimize_huffman,
             *frame_uncompressed_bytes,
             &mut self.blank_jpeg_cache,
         )?;
@@ -281,6 +283,7 @@ impl JpegFrameEncoder<'_> {
                     frame_columns: self.geometry.frame_columns,
                     frame_rows: self.geometry.frame_rows,
                     jpeg_quality: self.options.semantics.jpeg_quality,
+                    optimize_huffman: self.options.semantics.jpeg_optimize_huffman,
                     max_prepared_frame_bytes: self.options.resources.max_prepared_frame_bytes,
                 },
             },

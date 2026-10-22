@@ -118,6 +118,13 @@ impl Export {
         self
     }
 
+    /// Use optimal per-frame Huffman tables for re-encoded JPEG Baseline frames.
+    #[must_use = "builder methods return the updated Export"]
+    pub fn jpeg_optimize_huffman(mut self, enabled: bool) -> Self {
+        self.options.jpeg_optimize_huffman = enabled;
+        self
+    }
+
     /// Set the required color-management behavior for color output.
     #[must_use = "builder methods return the updated Export"]
     pub fn color_management(mut self, color_management: ColorManagement) -> Self {

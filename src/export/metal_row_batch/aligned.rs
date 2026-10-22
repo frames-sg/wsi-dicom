@@ -116,34 +116,20 @@ fn read_aligned_tile_grid_entries(
     let input_decode_started = Instant::now();
     let pixels = match metal_input.read_source_tiles(slide, &requests) {
         Ok(pixels) => pixels,
-        Err(err) if metal_input.preference == EncodeBackendPreference::RequireDevice => {
+        Err(err) => {
             return Err(Error::SlideRead {
                 message: format!("Metal input tile grid decode failed: {err}"),
-            });
-        }
-        Err(_) => {
-            return Ok(MetalAlignedGridRead {
-                tile_count,
-                tile_entries: None,
-                input_decode_duration: Duration::ZERO,
             });
         }
     };
     let input_decode_duration = input_decode_started.elapsed();
 
     if pixels.len() != tile_count {
-        if metal_input.preference == EncodeBackendPreference::RequireDevice {
-            return Err(Error::SlideRead {
-                message: format!(
-                    "Metal input tile grid returned {} tile(s), expected {tile_count}",
-                    pixels.len()
-                ),
-            });
-        }
-        return Ok(MetalAlignedGridRead {
-            tile_count,
-            tile_entries: None,
-            input_decode_duration: Duration::ZERO,
+        return Err(Error::SlideRead {
+            message: format!(
+                "Metal input tile grid returned {} tile(s), expected {tile_count}",
+                pixels.len()
+            ),
         });
     }
 
@@ -174,16 +160,12 @@ fn read_aligned_tile_grid_entries(
         let height = (matrix_rows - y).min(u64::from(tile_size)) as u32;
 
         if tile.width != width || tile.height != height {
-            if metal_input.preference == EncodeBackendPreference::RequireDevice {
-                return Err(Error::Unsupported {
-                    reason: format!(
-                        "Metal input tile grid geometry changed: expected {}x{}, got {}x{}",
-                        width, height, tile.width, tile.height
-                    ),
-                });
-            }
-            tile_entries.push(None);
-            continue;
+            return Err(Error::Unsupported {
+                reason: format!(
+                    "Metal input tile grid geometry changed: expected {}x{}, got {}x{}",
+                    width, height, tile.width, tile.height
+                ),
+            });
         }
 
         let profile = pixel_profile_from_wsi_device_format(tile.format)?;
@@ -230,26 +212,22 @@ pub(in crate::export) fn try_encode_metal_aligned_tile_run(
     let input_decode_started = Instant::now();
     let pixels = match metal_input.read_source_tiles(slide, &requests) {
         Ok(pixels) => pixels,
-        Err(err) if metal_input.preference == EncodeBackendPreference::RequireDevice => {
+        Err(err) => {
             return Err(Error::SlideRead {
                 message: format!("Metal input tile batch decode failed: {err}"),
             });
         }
-        Err(_) => return Ok(empty_metal_tile_run(tile_count)),
     };
     let input_decode_duration = input_decode_started.elapsed();
 
     if pixels.len() != tile_count {
-        if metal_input.preference == EncodeBackendPreference::RequireDevice {
-            return Err(Error::SlideRead {
-                message: format!(
-                    "Metal input tile batch returned {} tile(s), expected {}",
-                    pixels.len(),
-                    tile_count
-                ),
-            });
-        }
-        return Ok(empty_metal_tile_run(tile_count));
+        return Err(Error::SlideRead {
+            message: format!(
+                "Metal input tile batch returned {} tile(s), expected {}",
+                pixels.len(),
+                tile_count
+            ),
+        });
     }
 
     let mut tile_entries = Vec::new();
@@ -280,16 +258,12 @@ pub(in crate::export) fn try_encode_metal_aligned_tile_run(
         let height = (matrix_rows - y).min(u64::from(tile_size)) as u32;
 
         if tile.width != width || tile.height != height {
-            if metal_input.preference == EncodeBackendPreference::RequireDevice {
-                return Err(Error::Unsupported {
-                    reason: format!(
-                        "Metal input tile geometry changed: expected {}x{}, got {}x{}",
-                        width, height, tile.width, tile.height
-                    ),
-                });
-            }
-            tile_entries.push(None);
-            continue;
+            return Err(Error::Unsupported {
+                reason: format!(
+                    "Metal input tile geometry changed: expected {}x{}, got {}x{}",
+                    width, height, tile.width, tile.height
+                ),
+            });
         }
 
         let profile = pixel_profile_from_wsi_device_format(tile.format)?;
@@ -301,7 +275,6 @@ pub(in crate::export) fn try_encode_metal_aligned_tile_run(
         tile_entries,
         tile_size,
         tile_size,
-        metal_input.preference,
         "requested JPEG 2000 Metal tile encode did not dispatch all required stages",
     )?;
 
@@ -338,7 +311,6 @@ pub(super) fn try_encode_metal_aligned_tile_grid_run(
         tile_entries,
         tile_size,
         tile_size,
-        metal_input.preference,
         "requested JPEG 2000 Metal tile grid encode did not dispatch all required stages",
     )?;
 
@@ -391,7 +363,6 @@ pub(super) fn try_submit_metal_aligned_tile_grid_run(
         encode_batches,
         row_batch_rows: row_count,
         row_batch_target_tiles: metal_input.row_batch_target_tiles,
-        preference: metal_input.preference,
         missing_encode_message:
             "requested JPEG 2000 Metal tile grid encode did not dispatch all required stages",
     })

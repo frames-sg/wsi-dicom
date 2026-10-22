@@ -41,9 +41,7 @@ pub(super) fn test_lossless_j2k_planned_frame(col: u64) -> LosslessJ2kPlannedFra
         y: 0,
         width: 4,
         height: 4,
-        source_j2k_dimensions: None,
         source_j2k_syntax: None,
-        source_j2k_profile: None,
         source_j2k: None,
         source_jpeg: None,
         source_jpeg_retiled: false,
@@ -234,75 +232,6 @@ pub(super) fn export_htj2k_rpcl_dicom_passthrough_for_test(
     .unwrap()
 }
 
-pub(super) struct ExternalJ2kDecoderFrameForTest {
-    pub(super) expected_pixels: Vec<u8>,
-    pub(super) codestream_path: std::path::PathBuf,
-    pub(super) ppm_path: std::path::PathBuf,
-}
-
-pub(super) fn write_external_j2k_decoder_frame_for_test(
-    work_dir: &std::path::Path,
-    sop_instance_uid: &str,
-    transfer_syntax: TransferSyntax,
-) -> ExternalJ2kDecoderFrameForTest {
-    let source = work_dir.join("source.dcm");
-    let expected_pixels = vec![
-        255u8, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0, 0, 255, 255, 255, 0, 255,
-    ];
-    write_source_dicom_with_pixels(&source, sop_instance_uid, 3, 2, expected_pixels.clone());
-
-    let report = export_dicom(ExportRequest {
-        source_path: source,
-        output_dir: work_dir.join("out"),
-        options: ExportOptions {
-            tile_size: 3,
-            transfer_syntax,
-            encode_backend: EncodeBackendPreference::CpuOnly,
-            codec_validation: CodecValidation::Disabled,
-            source_device_decode: false,
-            ..ExportOptions::default()
-        },
-        color_management: ColorManagement::SourceOrSrgb,
-        metadata: MetadataSource::ResearchPlaceholder,
-        level_filter: None,
-    })
-    .unwrap();
-    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
-    let fragments = object
-        .element(tags::PIXEL_DATA)
-        .unwrap()
-        .value()
-        .fragments()
-        .unwrap();
-    assert_eq!(fragments.len(), 1);
-
-    let codestream_path = work_dir.join("frame.j2k");
-    let ppm_path = work_dir.join("frame.ppm");
-    std::fs::write(
-        &codestream_path,
-        dicom_fragment_payload_without_padding(&fragments[0]),
-    )
-    .unwrap();
-
-    ExternalJ2kDecoderFrameForTest {
-        expected_pixels,
-        codestream_path,
-        ppm_path,
-    }
-}
-
-pub(super) fn assert_external_decoder_ppm_matches_source_for_test(
-    ppm_path: &std::path::Path,
-    expected_pixels: &[u8],
-) {
-    let decoded = read_binary_ppm_for_test(ppm_path);
-
-    assert_eq!(decoded.0, 3);
-    assert_eq!(decoded.1, 3);
-    assert_eq!(&decoded.2[..expected_pixels.len()], expected_pixels);
-    assert_eq!(&decoded.2[expected_pixels.len()..], &[0; 9]);
-}
-
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) fn auto_route_candidate(complete: bool, micros: u64) -> AutoLosslessJ2kRouteCandidate {
     AutoLosslessJ2kRouteCandidate {
@@ -488,6 +417,7 @@ pub(super) fn assert_transfer_syntax_codestream(
         TransferSyntax::JpegBaseline8Bit
         | TransferSyntax::Jpeg2000
         | TransferSyntax::Htj2k
+        | TransferSyntax::JpegLosslessSv1
         | TransferSyntax::ExplicitVrLittleEndian => {
             panic!("non-JPEG 2000 transfer syntax in lossless J2K fixture test");
         }
@@ -573,11 +503,6 @@ pub(super) fn write_source_dicom_with_pixels(
         pixels,
     )
     .unwrap();
-}
-
-pub(super) fn j2k_view_dimensions(codestream: &[u8]) -> (u32, u32) {
-    let view = J2kView::parse(codestream).expect("parse J2K view");
-    view.info().dimensions
 }
 
 pub(super) fn j2k_passthrough_transfer_syntax(codestream: &[u8]) -> CompressedTransferSyntax {

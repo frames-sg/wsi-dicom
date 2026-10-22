@@ -90,8 +90,6 @@ fn shipped_binary_rejects_malformed_compressed_pixel_data_without_external_tools
     let output = Command::new(env!("CARGO_BIN_EXE_wsi-dicom"))
         .arg("validate")
         .arg(&path)
-        .arg("--max-pixel-frames")
-        .arg("0")
         .arg("--json")
         .output()
         .expect("execute shipped wsi-dicom binary");

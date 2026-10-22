@@ -502,6 +502,7 @@ pub(super) fn encode_blank_jpeg_baseline_frame(
     frame_columns: u32,
     frame_rows: u32,
     jpeg_quality: u8,
+    optimize_huffman: bool,
     uncompressed_bytes: u64,
     cache: &mut Option<(Vec<u8>, Duration)>,
 ) -> Result<(Vec<u8>, Duration), Error> {
@@ -520,6 +521,7 @@ pub(super) fn encode_blank_jpeg_baseline_frame(
             height: frame_rows,
         },
         jpeg_quality,
+        optimize_huffman,
         JpegSubsampling::Ybr422,
         jpeg_baseline_cpu_restart_interval(frame_columns, frame_rows, JpegSubsampling::Ybr422),
     )?;
@@ -588,18 +590,21 @@ pub(super) fn jpeg_baseline_fallback_uncompressed_bytes(
 pub(super) fn encode_jpeg_baseline_cpu_fragment(
     samples: JpegSamples<'_>,
     jpeg_quality: u8,
+    optimize_huffman: bool,
     subsampling: JpegSubsampling,
     restart_interval: Option<u16>,
 ) -> Result<EncodedJpeg, Error> {
-    j2k_jpeg::encode_jpeg_baseline(
-        samples,
-        j2k_jpeg::JpegEncodeOptions {
-            quality: jpeg_quality,
-            subsampling,
-            restart_interval,
-            backend: JpegBackend::Cpu,
-        },
-    )
+    let options = j2k_jpeg::JpegEncodeOptions {
+        quality: jpeg_quality,
+        subsampling,
+        restart_interval,
+        backend: JpegBackend::Cpu,
+    };
+    if optimize_huffman {
+        j2k_jpeg::encode_jpeg_baseline_optimized(samples, options)
+    } else {
+        j2k_jpeg::encode_jpeg_baseline(samples, options)
+    }
     .map_err(|source| Error::Encode {
         message: source.to_string(),
     })

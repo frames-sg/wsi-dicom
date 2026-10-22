@@ -13,10 +13,7 @@ fn validation_discovers_dicom_files_recursively() {
 
     let report = validate_dicom_path_with_runner(
         tmp.path(),
-        &ValidationOptions {
-            max_pixel_frames: 0,
-            ..ValidationOptions::default()
-        },
+        &ValidationOptions::default(),
         &FakeRunner::default(),
     )
     .expect("validation report");
@@ -35,7 +32,6 @@ fn validation_enforces_file_and_depth_limits() {
     let err = validate_dicom_path_with_runner(
         tmp.path(),
         &ValidationOptions {
-            max_pixel_frames: 0,
             max_files: 1,
             ..ValidationOptions::default()
         },
@@ -47,7 +43,6 @@ fn validation_enforces_file_and_depth_limits() {
     let err = validate_dicom_path_with_runner(
         tmp.path(),
         &ValidationOptions {
-            max_pixel_frames: 0,
             max_depth: 0,
             ..ValidationOptions::default()
         },
@@ -60,7 +55,6 @@ fn validation_enforces_file_and_depth_limits() {
     let err = validate_dicom_path_with_runner(
         &direct,
         &ValidationOptions {
-            max_pixel_frames: 0,
             max_files: 0,
             ..ValidationOptions::default()
         },
@@ -81,10 +75,7 @@ fn validation_refuses_symlink_traversal() {
 
     let err = validate_dicom_path_with_runner(
         tmp.path(),
-        &ValidationOptions {
-            max_pixel_frames: 0,
-            ..ValidationOptions::default()
-        },
+        &ValidationOptions::default(),
         &FakeRunner::default(),
     )
     .unwrap_err();
@@ -99,10 +90,7 @@ fn missing_tools_are_skipped_by_default() {
 
     let report = validate_dicom_path_with_runner(
         &file,
-        &ValidationOptions {
-            max_pixel_frames: 0,
-            ..ValidationOptions::default()
-        },
+        &ValidationOptions::default(),
         &FakeRunner::default(),
     )
     .expect("validation report");
@@ -124,7 +112,6 @@ fn strict_mode_fails_missing_required_tools() {
         &file,
         &ValidationOptions {
             strict: true,
-            max_pixel_frames: 0,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -152,10 +139,7 @@ fn dcentvfy_runs_once_for_the_output_set() {
 
     let report = validate_dicom_path_with_runner(
         tmp.path(),
-        &ValidationOptions {
-            max_pixel_frames: 0,
-            ..ValidationOptions::default()
-        },
+        &ValidationOptions::default(),
         &FakeRunner::default().with_command("dcentvfy"),
     )
     .expect("validation report");
@@ -198,15 +182,9 @@ fn set_level_validators_are_chunked_and_preserve_failures() {
         },
     );
 
-    let report = validate_dicom_path_with_runner(
-        tmp.path(),
-        &ValidationOptions {
-            max_pixel_frames: 0,
-            ..ValidationOptions::default()
-        },
-        &runner,
-    )
-    .expect("validation report");
+    let report =
+        validate_dicom_path_with_runner(tmp.path(), &ValidationOptions::default(), &runner)
+            .expect("validation report");
 
     let dcentvfy_checks = report
         .checks
@@ -224,153 +202,53 @@ fn set_level_validators_are_chunked_and_preserve_failures() {
 }
 
 #[test]
-fn jpeg_baseline_pixel_decode_uses_djpeg() {
+fn validation_never_runs_external_pixel_decoders() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let file = tmp.path().join("jpeg.dcm");
-    write_encapsulated_dicom(&file, "1.2.840.10008.1.2.4.50", &[0xFF, 0xD8, 0xFF, 0xD9]);
+    let decoders = [
+        "djpeg",
+        "opj_decompress",
+        "grk_decompress",
+        "kdu_expand",
+        "ojph_expand",
+    ];
+    let mut runner = FakeRunner::default();
+    for decoder in decoders {
+        runner = runner.with_command(decoder);
+    }
+    for (name, transfer_syntax) in [
+        ("jpeg.dcm", "1.2.840.10008.1.2.4.50"),
+        ("jpeg-lossless.dcm", "1.2.840.10008.1.2.4.70"),
+        ("j2k.dcm", "1.2.840.10008.1.2.4.90"),
+        ("htj2k.dcm", "1.2.840.10008.1.2.4.202"),
+    ] {
+        let file = tmp.path().join(name);
+        write_encapsulated_dicom(&file, transfer_syntax, &[0xFF, 0xD8, 0xFF, 0xD9]);
 
-    let report = validate_dicom_path_with_runner(
-        &file,
-        &ValidationOptions::default(),
-        &FakeRunner::default().with_command("djpeg"),
-    )
-    .expect("validation report");
+        let report = validate_dicom_path_with_runner(
+            &file,
+            &ValidationOptions {
+                strict: true,
+                ..ValidationOptions::default()
+            },
+            &runner,
+        )
+        .expect("validation report");
 
-    assert!(report
-        .checks
-        .iter()
-        .any(|check| { check.name == "pixel-djpeg" && check.status == ValidationStatus::Passed }));
-}
-
-#[test]
-fn jpeg2000_pixel_decode_uses_openjpeg() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let file = tmp.path().join("j2k.dcm");
-    write_encapsulated_dicom(&file, "1.2.840.10008.1.2.4.90", &[0xFF, 0x4F, 0xFF, 0x51]);
-
-    let report = validate_dicom_path_with_runner(
-        &file,
-        &ValidationOptions::default(),
-        &FakeRunner::default().with_command("opj_decompress"),
-    )
-    .expect("validation report");
-
-    assert!(report.checks.iter().any(|check| {
-        check.name == "pixel-opj-decompress" && check.status == ValidationStatus::Passed
-    }));
-}
-
-#[test]
-fn htj2k_pixel_decode_uses_auto_grok_decoder_when_available() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let file = tmp.path().join("htj2k.dcm");
-    write_encapsulated_dicom(&file, "1.2.840.10008.1.2.4.202", &[0xFF, 0x4F, 0xFF, 0x51]);
-
-    let report = validate_dicom_path_with_runner(
-        &file,
-        &ValidationOptions::default(),
-        &FakeRunner::default()
-            .with_command_path(super::AUTO_HTJ2K_DECODER_COMMAND, ABSOLUTE_GROK_DECODER),
-    )
-    .expect("validation report");
-
-    assert!(report.checks.iter().any(|check| {
-        check.name == "pixel-htj2k"
-            && check.status == ValidationStatus::Passed
-            && check
-                .command
-                .first()
-                .is_some_and(|command| command == ABSOLUTE_GROK_DECODER)
-    }));
-}
-
-#[test]
-fn htj2k_pixel_decode_skips_without_configured_or_auto_decoder() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let file = tmp.path().join("htj2k.dcm");
-    write_encapsulated_dicom(&file, "1.2.840.10008.1.2.4.202", &[0xFF, 0x4F, 0xFF, 0x51]);
-
-    let report = validate_dicom_path_with_runner(
-        &file,
-        &ValidationOptions::default(),
-        &FakeRunner::default(),
-    )
-    .expect("validation report");
-
-    assert!(report
-        .checks
-        .iter()
-        .any(|check| { check.name == "pixel-htj2k" && check.status == ValidationStatus::Skipped }));
-}
-
-#[test]
-fn strict_htj2k_pixel_decode_fails_without_configured_or_auto_decoder() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let file = tmp.path().join("htj2k.dcm");
-    write_encapsulated_dicom(&file, "1.2.840.10008.1.2.4.202", &[0xFF, 0x4F, 0xFF, 0x51]);
-
-    let report = validate_dicom_path_with_runner(
-        &file,
-        &ValidationOptions {
-            strict: true,
-            ..ValidationOptions::default()
-        },
-        &FakeRunner::default(),
-    )
-    .expect("validation report");
-
-    assert!(report
-        .checks
-        .iter()
-        .any(|check| { check.name == "pixel-htj2k" && check.status == ValidationStatus::Failed }));
-    assert!(report.has_failures());
-}
-
-#[test]
-fn strict_mode_fails_missing_pixel_decoder_for_encountered_transfer_syntax() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let file = tmp.path().join("jpeg.dcm");
-    write_encapsulated_dicom(&file, "1.2.840.10008.1.2.4.50", &[0xFF, 0xD8, 0xFF, 0xD9]);
-
-    let report = validate_dicom_path_with_runner(
-        &file,
-        &ValidationOptions {
-            strict: true,
-            ..ValidationOptions::default()
-        },
-        &FakeRunner::default(),
-    )
-    .expect("validation report");
-
-    assert!(report
-        .checks
-        .iter()
-        .any(|check| { check.name == "pixel-djpeg" && check.status == ValidationStatus::Failed }));
-}
-
-#[test]
-fn zero_pixel_frame_limit_disables_optional_decode_but_keeps_intrinsic_checks() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let file = tmp.path().join("jpeg.dcm");
-    write_encapsulated_dicom(&file, "1.2.840.10008.1.2.4.50", &[0xFF, 0xD8, 0xFF, 0xD9]);
-
-    let report = validate_dicom_path_with_runner(
-        &file,
-        &ValidationOptions {
-            max_pixel_frames: 0,
-            ..ValidationOptions::default()
-        },
-        &FakeRunner::default().with_command("djpeg"),
-    )
-    .expect("validation report");
-
-    assert!(report.checks.iter().any(|check| {
-        check.name == "intrinsic-pixel-structure" && check.status == ValidationStatus::Passed
-    }));
-    assert!(!report
-        .checks
-        .iter()
-        .any(|check| check.name == "pixel-djpeg"));
+        assert!(report.checks.iter().any(|check| {
+            check.name == "intrinsic-pixel-structure" && check.status == ValidationStatus::Passed
+        }));
+        assert!(
+            report
+                .checks
+                .iter()
+                .all(|check| !check.name.starts_with("pixel-")
+                    && !check
+                        .command
+                        .iter()
+                        .any(|arg| decoders.contains(&arg.as_str()))),
+            "{transfer_syntax}: validation ran an external decoder"
+        );
+    }
 }
 
 #[test]
@@ -380,7 +258,6 @@ fn iod_validation_records_an_explicit_standard_edition() {
     let report = validate_dicom_path_with_runner(
         &path,
         &ValidationOptions {
-            max_pixel_frames: 0,
             ..Default::default()
         },
         &FakeRunner::default().with_command("validate_iods"),
@@ -395,4 +272,112 @@ fn iod_validation_records_an_explicit_standard_edition() {
         .command
         .windows(2)
         .any(|pair| pair == ["--edition", "2026c"]));
+}
+
+#[test]
+fn command_timeout_is_reported_as_failed_check() {
+    let runner = FakeRunner::default().with_command("dciodvfy").with_outcome(
+        "dciodvfy -new one.dcm",
+        CommandOutcome {
+            return_code: Some(1),
+            elapsed_millis: 0,
+            success: false,
+            timed_out: true,
+            stdout: String::new(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+        },
+    );
+
+    let check = super::run_named_command_check(
+        &runner,
+        super::CommandCheckRequest {
+            check_name: "dciodvfy",
+            command_name: "dciodvfy",
+            args: vec![OsString::from("-new"), OsString::from("one.dcm")],
+            path: None,
+            required: true,
+            error_line_is_failure: true,
+            timeout: std::time::Duration::from_millis(25),
+            max_output_bytes: 4 * 1024 * 1024,
+        },
+    );
+
+    assert_eq!(check.status, ValidationStatus::Failed);
+    assert!(check.message.contains("timed out after 25ms"));
+}
+
+#[test]
+fn command_output_limit_is_reported_as_failed_check() {
+    let runner = FakeRunner::default().with_command("dciodvfy").with_outcome(
+        "dciodvfy -new one.dcm",
+        CommandOutcome {
+            return_code: Some(0),
+            elapsed_millis: 0,
+            success: true,
+            timed_out: false,
+            stdout: "prefix".to_string(),
+            stderr: String::new(),
+            stdout_truncated: true,
+            stderr_truncated: false,
+        },
+    );
+
+    let check = super::run_named_command_check(
+        &runner,
+        super::CommandCheckRequest {
+            check_name: "dciodvfy",
+            command_name: "dciodvfy",
+            args: vec![OsString::from("-new"), OsString::from("one.dcm")],
+            path: None,
+            required: true,
+            error_line_is_failure: true,
+            timeout: std::time::Duration::from_millis(25),
+            max_output_bytes: 4,
+        },
+    );
+
+    assert_eq!(check.status, ValidationStatus::Failed);
+    assert!(check.message.contains("capture limit"));
+}
+
+#[test]
+fn validation_options_use_seconds_for_json_and_runtime_timeout() {
+    let options = ValidationOptions {
+        profile: super::ValidationProfile::General,
+        max_input_bytes: 1024 * 1024 * 1024,
+        strict: true,
+        dcmvalidate_iod: Some(PathBuf::from("iod.xml")),
+        command_timeout_secs: 12,
+        max_files: 100_000,
+        max_depth: 64,
+        max_child_output_bytes: 4 * 1024 * 1024,
+        max_pixel_frame_bytes: 512 * 1024 * 1024,
+    };
+
+    let json = serde_json::to_string(&options).expect("serialize validation options");
+    assert!(json.contains("\"command_timeout_secs\":12"));
+
+    let options: ValidationOptions =
+        serde_json::from_str(&json).expect("deserialize validation options");
+    assert!(options.strict);
+    assert_eq!(options.command_timeout(), Duration::from_secs(12));
+}
+
+#[test]
+fn validation_options_from_before_decoder_removal_still_deserialize() {
+    let options: ValidationOptions = serde_json::from_str(
+        r#"{"strict":true,"htj2k_decoder":"grk_decompress -i {input} -o {output}","max_pixel_frames":3}"#,
+    )
+    .expect("removed external decoder fields are ignored");
+
+    assert!(options.strict);
+    assert_eq!(
+        options,
+        ValidationOptions {
+            strict: true,
+            ..ValidationOptions::default()
+        }
+    );
 }
