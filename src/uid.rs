@@ -298,7 +298,12 @@ mod tests {
             uid_policy: UidPolicy::Deterministic,
             ..ExportOptions::default()
         };
-        let metadata = DicomMetadata::research_placeholder();
+        // The seed includes the software version; pin the one the expected UID was
+        // computed with so the check covers the seed format, not the crate version.
+        let metadata = DicomMetadata {
+            software_versions: Some("0.8.0".into()),
+            ..DicomMetadata::research_placeholder()
+        };
         let optimized_options = ExportOptions {
             jpeg_optimize_huffman: true,
             ..options.clone()

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly BASELINE_VERSION="0.7.5"
-readonly BASELINE_COMMIT="eb5e691152af930810347b8c333884c899b463c4"
-readonly CANDIDATE_VERSION="0.8.0"
+readonly BASELINE_VERSION="0.8.0"
+readonly BASELINE_COMMIT="c44ab549caf6c7467854b0667c3dbfae3551fa56"
+readonly CANDIDATE_VERSION="0.9.0"
 readonly SEMVER_CHECKS_VERSION="cargo-semver-checks 0.50.0"
-readonly ALLOWLIST=".github/semver-0.7.5-to-0.8.0-allowed-breaks.txt"
-readonly ARCHIVED_REPORT=".github/semver-0.7.5-to-0.8.0-report.md"
+readonly ALLOWLIST=".github/semver-0.8.0-to-0.9.0-allowed-breaks.txt"
+readonly ARCHIVED_REPORT=".github/semver-0.8.0-to-0.9.0-report.md"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work_dir="$(mktemp -d)"
@@ -103,7 +103,7 @@ if [[ "$patch_status" -ne 0 && ! -s "$actual_breaks" ]]; then
   exit 1
 fi
 if ! diff -u "$ALLOWLIST" "$actual_breaks"; then
-  echo "semver break set differs from the reviewed 0.7.5-to-0.8.0 transition" >&2
+  echo "semver break set differs from the reviewed 0.8.0-to-0.9.0 transition" >&2
   exit 1
 fi
 
@@ -125,7 +125,7 @@ report = [
     f"# wsi-dicom {os.environ['REPORT_BASELINE_VERSION']} to {os.environ['REPORT_CANDIDATE_VERSION']} semver report",
     "",
     f"- Baseline: `{os.environ['REPORT_BASELINE_VERSION']}` at immutable commit `{os.environ['REPORT_BASELINE_COMMIT']}`.",
-    "- Baseline publication state: tagged as v0.7.5 and published to crates.io.",
+    f"- Baseline publication state: tagged as v{os.environ['REPORT_BASELINE_VERSION']} and published to crates.io.",
     f"- Candidate: `{os.environ['REPORT_CANDIDATE_VERSION']}`.",
     f"- Tool: `{os.environ['REPORT_SEMVER_CHECKS_VERSION']}` with Rust `1.99.0` rustdoc JSON.",
     "- Policy: CI requires the exact reviewed patch-level break set below; an empty set means the public API is compatible.",
