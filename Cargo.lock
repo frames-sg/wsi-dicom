@@ -1953,7 +1953,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "j2k"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 dependencies = [
  "j2k-core",
  "j2k-native",
@@ -1965,7 +1965,7 @@ dependencies = [
 [[package]]
 name = "j2k-codec-math"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 dependencies = [
  "j2k-types",
 ]
@@ -1973,7 +1973,7 @@ dependencies = [
 [[package]]
 name = "j2k-core"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 dependencies = [
  "libc",
  "thiserror 2.0.18",
@@ -1983,7 +1983,7 @@ dependencies = [
 [[package]]
 name = "j2k-cuda"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 dependencies = [
  "j2k",
  "j2k-core",
@@ -1998,12 +1998,12 @@ dependencies = [
 [[package]]
 name = "j2k-cuda-build-support"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 
 [[package]]
 name = "j2k-cuda-j2k-engine"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 dependencies = [
  "j2k-codec-math",
  "j2k-core",
@@ -2015,7 +2015,7 @@ dependencies = [
 [[package]]
 name = "j2k-cuda-runtime"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 dependencies = [
  "j2k-codec-math",
  "j2k-core",
@@ -2027,7 +2027,7 @@ dependencies = [
 [[package]]
 name = "j2k-jpeg"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 dependencies = [
  "fearless_simd 1.0.0",
  "j2k-codec-math",
@@ -2041,7 +2041,7 @@ dependencies = [
 [[package]]
 name = "j2k-jpeg-metal"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 dependencies = [
  "dispatch2",
  "j2k-core",
@@ -2056,7 +2056,7 @@ dependencies = [
 [[package]]
 name = "j2k-metal"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 dependencies = [
  "cc",
  "j2k",
@@ -2076,7 +2076,7 @@ dependencies = [
 [[package]]
 name = "j2k-metal-support"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 dependencies = [
  "j2k-core",
  "log",
@@ -2088,7 +2088,7 @@ dependencies = [
 [[package]]
 name = "j2k-native"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 dependencies = [
  "fearless_simd 1.0.0",
  "j2k-codec-math",
@@ -2101,12 +2101,12 @@ dependencies = [
 [[package]]
 name = "j2k-profile"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 
 [[package]]
 name = "j2k-tilecodec"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 dependencies = [
  "flate2",
  "j2k-core",
@@ -2118,7 +2118,7 @@ dependencies = [
 [[package]]
 name = "j2k-transcode"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 dependencies = [
  "j2k",
  "j2k-codec-math",
@@ -2132,7 +2132,7 @@ dependencies = [
 [[package]]
 name = "j2k-transcode-metal"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 dependencies = [
  "j2k-codec-math",
  "j2k-core",
@@ -2147,7 +2147,7 @@ dependencies = [
 [[package]]
 name = "j2k-types"
 version = "0.12.0"
-source = "git+https://github.com/frames-sg/j2k?rev=9e5d66ed61d07746f357fa17138e6538bcc3ae14#9e5d66ed61d07746f357fa17138e6538bcc3ae14"
+source = "git+https://github.com/frames-sg/j2k?rev=3544b328e51517140949a79caea47f3809af286a#3544b328e51517140949a79caea47f3809af286a"
 
 [[package]]
 name = "jni"
@@ -4733,7 +4733,7 @@ dependencies = [
 [[package]]
 name = "wsi-rs"
 version = "0.8.0"
-source = "git+https://github.com/frames-sg/wsi-rs?rev=6431c246040b5b732eda461fc7f35bd4a93185cb#6431c246040b5b732eda461fc7f35bd4a93185cb"
+source = "git+https://github.com/frames-sg/wsi-rs?rev=672ed7101c5a8de85ca0caff5ab15c0fc1ea8590#672ed7101c5a8de85ca0caff5ab15c0fc1ea8590"
 dependencies = [
  "base64",
  "byteorder",
