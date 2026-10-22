@@ -47,6 +47,43 @@ fn tiled_full_accepts_implicit_frame_positions() {
 }
 
 #[test]
+fn tiled_full_accepts_dimension_index_without_per_frame_groups() {
+    // PixelMed TIFFToDicom output (most of NCI IDC) keeps the row/column
+    // Dimension Index Sequence and omits the Per-frame Functional Groups.
+    let tmp = tempfile::tempdir().unwrap();
+    let path = export_valid_color_wsi_grid_for_validation(tmp.path(), "implicit-index", 4, 4, 2);
+    let mut object = dicom_object::open_file(&path).unwrap();
+    object
+        .take(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)
+        .unwrap();
+    object.write_to_file(&path).unwrap();
+    assert_eq!(
+        intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-dimension-order"),
+        ValidationStatus::Passed
+    );
+}
+
+#[test]
+fn dimension_order_requires_per_frame_groups_outside_tiled_full() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = export_valid_color_wsi_grid_for_validation(tmp.path(), "sparse-index", 4, 4, 2);
+    let mut object = dicom_object::open_file(&path).unwrap();
+    object
+        .take(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)
+        .unwrap();
+    object.put(DataElement::new(
+        tags::DIMENSION_ORGANIZATION_TYPE,
+        VR::CS,
+        "TILED_SPARSE",
+    ));
+    object.write_to_file(&path).unwrap();
+    assert_eq!(
+        intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-dimension-order"),
+        ValidationStatus::Failed
+    );
+}
+
+#[test]
 fn tiled_full_rejects_a_complete_but_permuted_frame_order() {
     let tmp = tempfile::tempdir().unwrap();
     let path = export_valid_color_wsi_grid_for_validation(tmp.path(), "permuted", 4, 4, 2);

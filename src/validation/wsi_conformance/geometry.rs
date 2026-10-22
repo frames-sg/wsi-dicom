@@ -161,6 +161,22 @@ pub(super) fn validate_dimension_rule(object: &DefaultDicomObject) -> Result<(),
         );
     }
 
+    // PS3.3 C.7.6.17.3: TILED_FULL frames follow the implicit row-major tile
+    // order, so the Per-frame Functional Groups Sequence may be omitted even
+    // when the Dimension Index Sequence names the row and column positions.
+    if object
+        .element(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)
+        .is_err()
+        && required_string(
+            object,
+            tags::DIMENSION_ORGANIZATION_TYPE,
+            "Dimension Organization Type",
+        )
+        .is_ok_and(|dimension_type| dimension_type == "TILED_FULL")
+    {
+        return Ok(());
+    }
+
     let frame_rows = required_positive_u64(object, tags::ROWS, "Rows")?;
     let frame_columns = required_positive_u64(object, tags::COLUMNS, "Columns")?;
     let per_frame = sequence_items(
