@@ -4,7 +4,7 @@ set -euo pipefail
 readonly BASELINE_VERSION="0.8.0"
 readonly BASELINE_COMMIT="c44ab549caf6c7467854b0667c3dbfae3551fa56"
 readonly CANDIDATE_VERSION="0.9.0"
-readonly SEMVER_CHECKS_VERSION="cargo-semver-checks 0.50.0"
+readonly SEMVER_CHECKS_VERSION="cargo-semver-checks 0.51.0"
 readonly ALLOWLIST=".github/semver-0.8.0-to-0.9.0-allowed-breaks.txt"
 readonly ARCHIVED_REPORT=".github/semver-0.8.0-to-0.9.0-report.md"
 

@@ -234,7 +234,7 @@ jobs:
           toolchain: nightly
       - uses: taiki-e/install-action@b4a4706ba6e0f8a3cec3ed74eccce6e2d93436f7
         with:
-          tool: cargo-semver-checks@0.50.0
+          tool: cargo-semver-checks@0.51.0
       - run: scripts/check-semver.sh
 
   features:
