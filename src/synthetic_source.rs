@@ -2,7 +2,7 @@ use std::path::Path;
 
 use dicom_core::{DataElement, PrimitiveValue, VR};
 use dicom_dictionary_std::{tags, uids};
-use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
+use dicom_object::InMemDicomObject;
 
 use crate::Error;
 
@@ -161,12 +161,10 @@ pub(crate) fn write_rgb_source_dicom(
         PrimitiveValue::from(pixels),
     ));
     object
-        .with_meta(
-            FileMetaTableBuilder::new()
-                .media_storage_sop_class_uid(uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE)
-                .media_storage_sop_instance_uid(sop_instance_uid)
-                .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN),
-        )
+        .with_meta(crate::instance_context::vl_wsi_file_meta(
+            sop_instance_uid,
+            uids::EXPLICIT_VR_LITTLE_ENDIAN,
+        ))
         .map_err(|source| Error::DicomWrite {
             path: path.to_path_buf(),
             message: source.to_string(),

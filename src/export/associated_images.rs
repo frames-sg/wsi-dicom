@@ -5,24 +5,25 @@
 
 use std::time::Instant;
 
-use j2k::J2kLosslessSamples;
-use j2k_jpeg::JpegSamples;
-use wsi_rs::{Compression, Slide, SourceEncoding};
+use wsi_rs::Slide;
 
 use super::icc_profile::{resolve_icc_profile, resolve_label_camera_icc_profile};
+use super::jobs::refuse_existing_output;
 use super::jpeg_baseline::{encode_jpeg_baseline_cpu_fragment, jpeg_baseline_cpu_restart_interval};
-use super::jpeg_baseline_pipeline::jpeg_baseline_output_profile;
+use super::jpeg_baseline_pipeline::{jpeg_baseline_output_profile, jpeg_baseline_samples};
 use super::jpeg_lossless_instance::encode_jpeg_lossless_frame;
-use super::lossy_provenance::reported_encoding_history;
+use super::lossless_j2k_cpu::lossless_j2k_samples;
+use super::lossy_provenance::associated_source_lossy_history;
 use super::{level_pixel_spacing_mm, require_pixel_spacing_mm};
 use crate::coordinate::InstanceCoordinate;
-use crate::encode::DicomJ2kEncoder;
+use crate::encode::encode_dicom_lossless;
 use crate::error::Error;
-use crate::instance_context::{associated_output_path, AssociatedInstanceIds};
+use crate::instance_context::{associated_output_path, vl_wsi_file_meta, AssociatedInstanceIds};
 use crate::lossy::{uncompressed_pixel_bytes, LossyCompressionHistory, JPEG_BASELINE_METHOD};
 use crate::metadata::DicomMetadata;
 use crate::options::{
-    AssociatedImageKind, NormalizedExportOptions, PixelReencodePolicy, TransferSyntax,
+    AssociatedImageKind, ConformanceLevel, NormalizedExportOptions, PixelReencodePolicy,
+    TransferSyntax,
 };
 use crate::report::{ExportMetrics, ImageFlavor, InstanceReport, SkippedAssociatedImage};
 use crate::request::ExportRequest;
@@ -33,13 +34,14 @@ use crate::writer::{
     build_dicom_object, write_single_frame_dicom_object, DicomObjectIdentifiers, DicomObjectParams,
     FrameGrid,
 };
-use crate::VL_WSI_SOP_CLASS_UID;
 
-/// One associated image to write.
+/// One associated image to write, with the decisions that need no pixels.
 pub(super) struct AssociatedImageJob {
     pub(super) name: String,
     pub(super) kind: AssociatedImageKind,
-    pub(super) encoding: SourceEncoding,
+    pub(super) source_is_compressed: bool,
+    pub(super) transfer_syntax: TransferSyntax,
+    pub(super) source_lossy: LossyCompressionHistory,
 }
 
 /// Associated images an export writes, and the ones it cannot write.
@@ -60,7 +62,9 @@ pub(super) fn plan_associated_images(
     options: &NormalizedExportOptions,
 ) -> Result<AssociatedImagePlan, Error> {
     let mut plan = AssociatedImagePlan::default();
-    if request.level_filter.is_some() {
+    // They are optional instances of the IOD.
+    if request.level_filter.is_some() || options.semantics.conformance == ConformanceLevel::Required
+    {
         return Ok(plan);
     }
     let mut names = slide.dataset().associated_images.keys().collect::<Vec<_>>();
@@ -76,7 +80,12 @@ pub(super) fn plan_associated_images(
         if options.semantics.exclude_associated.excludes(kind) {
             continue;
         }
-        let Some(encoding) = slide.associated_encoding(name) else {
+        let encoding = slide
+            .associated_encoding(name)
+            .map_err(|source| Error::SlideRead {
+                message: format!("associated image '{name}': {source}"),
+            })?;
+        let Some(encoding) = encoding else {
             plan.skipped.push(skipped(
                 name,
                 "the source reader does not report how this image is stored, so its lossy compression history is unknown",
@@ -92,10 +101,18 @@ pub(super) fn plan_associated_images(
                 ),
             });
         }
+        let source_is_compressed = crate::lossy::is_image_codec(encoding.compression);
         plan.jobs.push(AssociatedImageJob {
             name: name.clone(),
             kind,
-            encoding,
+            source_is_compressed,
+            transfer_syntax: associated_transfer_syntax(
+                options.semantics.transfer_syntax,
+                options.semantics.pixel_reencode,
+                source_is_compressed,
+                name,
+            )?,
+            source_lossy: associated_source_lossy_history(slide, name, encoding)?,
         });
     }
     Ok(plan)
@@ -107,19 +124,12 @@ pub(super) fn preflight_associated_output_paths(
     options: &NormalizedExportOptions,
     jobs: &[AssociatedImageJob],
 ) -> Result<(), Error> {
-    for job in jobs {
-        let path = associated_output_path(&request.output_dir, job.kind);
-        if !options.semantics.overwrite && path.exists() {
-            return Err(Error::Io {
-                path,
-                source: std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    "output file exists; enable overwrite to replace it",
-                ),
-            });
-        }
-    }
-    Ok(())
+    jobs.iter().try_for_each(|job| {
+        refuse_existing_output(
+            associated_output_path(&request.output_dir, job.kind),
+            options.semantics.overwrite,
+        )
+    })
 }
 
 fn skipped(name: &str, reason: &str) -> SkippedAssociatedImage {
@@ -139,19 +149,19 @@ pub(super) struct AssociatedExportContext<'a> {
     pub(super) identity: &'a DicomExportIdentity,
 }
 
-/// Write each planned associated image, numbering instances from
-/// `first_instance_number`.
+/// Write each planned associated image, numbering instances after the
+/// `pyramid_instance_count` pyramid instances.
 pub(super) fn export_associated_images(
     context: AssociatedExportContext<'_>,
     jobs: &[AssociatedImageJob],
-    first_instance_number: u32,
+    pyramid_instance_count: usize,
 ) -> Result<Vec<InstanceReport>, Error> {
     jobs.iter()
         .enumerate()
         .map(|(offset, job)| {
-            let instance_number = u32::try_from(offset)
-                .ok()
-                .and_then(|offset| first_instance_number.checked_add(offset))
+            let instance_number = pyramid_instance_count
+                .checked_add(offset + 1)
+                .and_then(|value| u32::try_from(value).ok())
                 .ok_or_else(|| Error::Unsupported {
                     reason: "DICOM instance count exceeds u32".into(),
                 })?;
@@ -174,6 +184,8 @@ fn export_associated_image(
     } = context;
     let flavor = ImageFlavor::from(job.kind);
     let mut metrics = ExportMetrics::default();
+    let transfer_syntax = job.transfer_syntax;
+    let mut lossy_compression = job.source_lossy.clone();
 
     let decode_started = Instant::now();
     let tile = slide
@@ -196,19 +208,44 @@ fn export_associated_image(
     let prepared = prepare_tile_samples_with_limit(&tile, width, height, max_prepared_bytes)?;
     metrics.timings.input_decode_micros = decode_started.elapsed().as_micros();
 
-    let source_is_compressed = matches!(
-        job.encoding.compression,
-        Compression::Jpeg | Compression::Jp2kRgb | Compression::Jp2kYcbcr
-    );
-    let transfer_syntax = associated_transfer_syntax(
-        options.semantics.transfer_syntax,
-        options.semantics.pixel_reencode,
-        source_is_compressed,
-        &job.name,
-    )?;
-    if source_is_compressed {
+    if job.source_is_compressed {
         metrics.record_compressed_source_reencode();
     }
+    let ids = AssociatedInstanceIds::new(identity, &request.output_dir, job.kind)?;
+    let (pixel_spacing_mm, icc, derivation_source) = match job.kind {
+        AssociatedImageKind::Thumbnail => {
+            let level_zero = level_zero(slide)?;
+            let spacing = thumbnail_pixel_spacing_mm(slide, level_zero, options, width, height)?;
+            let icc = resolve_icc_profile(
+                slide,
+                request,
+                metadata,
+                InstanceCoordinate::new(0, 0, 0, 0, 0, 0),
+                level_zero,
+                prepared.profile,
+            )?;
+            (
+                Some(spacing),
+                icc,
+                Some(ids.level_zero_sop_instance_uid.as_str()),
+            )
+        }
+        AssociatedImageKind::Label | AssociatedImageKind::Overview => {
+            let embedded = slide
+                .dataset()
+                .associated_images
+                .get(&job.name)
+                .and_then(|image| image.icc_profile());
+            let icc = resolve_label_camera_icc_profile(
+                &request.color_management,
+                embedded,
+                prepared.profile,
+                &job.name,
+            )?;
+            (None, icc, None)
+        }
+    };
+
     let encode_started = Instant::now();
     let encoded = encode_frame(
         &prepared.bytes,
@@ -219,49 +256,8 @@ fn export_associated_image(
         options,
     )?;
     metrics.timings.encode_micros = encode_started.elapsed().as_micros();
-    let mut lossy_compression = reported_encoding_history(
-        Some(job.encoding),
-        &format!("associated image '{}'", job.name),
-    )?;
     lossy_compression.append(encoded.lossy_compression);
 
-    let ids = AssociatedInstanceIds::new(identity, &request.output_dir, job.kind)?;
-    let plane = InstanceCoordinate::new(0, 0, 0, 0, 0, 0);
-    let pixel_spacing_mm = match job.kind {
-        AssociatedImageKind::Thumbnail => {
-            Some(thumbnail_pixel_spacing_mm(slide, options, width, height)?)
-        }
-        AssociatedImageKind::Label | AssociatedImageKind::Overview => None,
-    };
-    let icc = match job.kind {
-        AssociatedImageKind::Thumbnail => {
-            let level_zero = level_zero(slide)?;
-            resolve_icc_profile(
-                slide,
-                request,
-                metadata,
-                plane,
-                level_zero,
-                prepared.profile,
-            )?
-        }
-        AssociatedImageKind::Label | AssociatedImageKind::Overview => {
-            let embedded = slide
-                .dataset()
-                .associated_images
-                .get(&job.name)
-                .and_then(|image| image.icc_profile());
-            resolve_label_camera_icc_profile(
-                &request.color_management,
-                embedded,
-                prepared.profile,
-                &job.name,
-            )?
-        }
-    };
-
-    let derivation_source = (job.kind == AssociatedImageKind::Thumbnail)
-        .then_some(ids.level_zero_sop_instance_uid.as_str());
     let object = build_dicom_object(DicomObjectParams {
         metadata,
         identifiers: DicomObjectIdentifiers {
@@ -270,9 +266,7 @@ fn export_associated_image(
             series_uid: &ids.series_uid,
             sop_instance_uid: &ids.sop_instance_uid,
             frame_of_reference_uid: &ids.frame_of_reference_uid,
-            // Written only for VOLUME instances.
-            pyramid_uid: "",
-            pyramid_label: "",
+            pyramid: None,
             dimension_organization_uid: &ids.dimension_organization_uid,
             derivation_source_sop_instance_uid: derivation_source,
         },
@@ -290,17 +284,15 @@ fn export_associated_image(
         profile: encoded.profile,
         pixel_spacing_mm,
         icc_profile: icc.bytes.as_deref(),
+        objective_lens_power: slide.dataset().properties.objective_power(),
         lossy_compression,
+        conformance: options.semantics.conformance,
     })?;
-    let meta = dicom_object::FileMetaTableBuilder::new()
-        .media_storage_sop_class_uid(VL_WSI_SOP_CLASS_UID)
-        .media_storage_sop_instance_uid(&ids.sop_instance_uid)
-        .transfer_syntax(transfer_syntax.uid());
     let write_started = Instant::now();
     write_single_frame_dicom_object(
         &ids.path,
         object,
-        meta,
+        vl_wsi_file_meta(&ids.sop_instance_uid, transfer_syntax.uid()),
         options.semantics.overwrite,
         &encoded.data,
     )?;
@@ -386,20 +378,8 @@ fn encode_frame(
         }
         TransferSyntax::JpegBaseline8Bit => {
             let (output_profile, subsampling) = jpeg_baseline_output_profile(profile)?;
-            let samples = match profile.components {
-                1 => JpegSamples::Gray8 {
-                    data: bytes,
-                    width,
-                    height,
-                },
-                _ => JpegSamples::Rgb8 {
-                    data: bytes,
-                    width,
-                    height,
-                },
-            };
             let encoded = encode_jpeg_baseline_cpu_fragment(
-                samples,
+                jpeg_baseline_samples(bytes, profile, width, height)?,
                 options.semantics.jpeg_quality,
                 options.semantics.jpeg_optimize_huffman,
                 subsampling,
@@ -423,24 +403,12 @@ fn encode_frame(
             })
         }
         lossless_j2k => {
-            let samples = J2kLosslessSamples::new(
-                bytes,
-                width,
-                height,
-                u16::from(profile.components),
-                profile.bits_allocated as u8,
-                false,
-            )
-            .map_err(|source| Error::Encode {
-                message: source.to_string(),
-            })?;
-            let data = DicomJ2kEncoder::new(
-                options.execution.encode_backend,
+            let data = encode_dicom_lossless(
+                lossless_j2k_samples(bytes, profile, width, height)?,
                 lossless_j2k,
+                options.execution.encode_backend,
                 options.execution.codec_validation,
-            )
-            .encode(samples)?
-            .into_codestream()?;
+            )?;
             Ok(EncodedAssociatedFrame {
                 data,
                 profile: j2k_encoded_lossless_profile(profile, lossless_j2k),
@@ -466,11 +434,11 @@ fn level_zero(slide: &Slide) -> Result<&wsi_rs::Level, Error> {
 /// zero spacing scaled by that axis's size ratio.
 fn thumbnail_pixel_spacing_mm(
     slide: &Slide,
+    level_zero: &wsi_rs::Level,
     options: &NormalizedExportOptions,
     width: u32,
     height: u32,
 ) -> Result<(f64, f64), Error> {
-    let level_zero = level_zero(slide)?;
     let (row_spacing_mm, column_spacing_mm) = require_pixel_spacing_mm(level_pixel_spacing_mm(
         slide,
         level_zero,

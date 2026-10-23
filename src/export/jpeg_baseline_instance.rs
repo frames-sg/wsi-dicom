@@ -10,10 +10,7 @@ use super::jpeg_passthrough::{
     DirectJpegPassthroughStart,
 };
 use super::tile_grid::checked_frame_count_u32;
-use super::{
-    level_pixel_spacing_mm, require_pixel_spacing_mm, InstanceExportContext,
-    DIRECT_JPEG_PASSTHROUGH_WRITE_CHUNK_FRAMES,
-};
+use super::{InstanceExportContext, DIRECT_JPEG_PASSTHROUGH_WRITE_CHUNK_FRAMES};
 use crate::error::Error;
 use crate::instance_context::{DicomInstanceContext, InstanceDicomObjectParams};
 use crate::lossy::{uncompressed_pixel_bytes, JPEG_BASELINE_METHOD};
@@ -36,7 +33,10 @@ pub(super) fn export_jpeg_passthrough_instance(
         export.coordinate,
         export.options.semantics.tile_size,
     )?;
-    let frame_count = checked_frame_count_u32(geometry.tiles_across, geometry.tiles_down)?;
+    let frame_count = export.frame_count(checked_frame_count_u32(
+        geometry.tiles_across,
+        geometry.tiles_down,
+    )?);
     let output = JpegInstanceOutput {
         export,
         source_path: &request.source_path,
@@ -51,26 +51,20 @@ pub(super) fn export_jpeg_passthrough_instance(
             matrix_columns: export.level.dimensions.0,
             matrix_rows: export.level.dimensions.1,
         },
-        context: DicomInstanceContext::new(
-            export.identity,
-            &request.output_dir,
-            require_pixel_spacing_mm(level_pixel_spacing_mm(
-                slide,
-                export.level,
-                export.options.semantics.source_pixel_spacing_mm,
-            )?)?,
-            export.coordinate,
-        )?
-        .with_level_zero_source(export.identity, request.level_filter.is_none()),
+        context: export.dicom_context(slide, request)?,
     };
-    let declared_lossy_compression = super::lossy_provenance::source_lossy_history(
+    let declared_lossy_compression =
+        super::lossy_provenance::source_lossy_history(slide, export.coordinate)?;
+    let direct_start = try_prepare_direct_jpeg_passthrough(
         slide,
-        &request.source_path,
         export.coordinate,
+        export.level,
+        geometry,
+        export
+            .per_frame_plan
+            .map_or(0, |plan| plan.grid_frame_index(0) as usize),
     )?;
-    if let Some(start) =
-        try_prepare_direct_jpeg_passthrough(slide, export.coordinate, export.level, geometry)?
-    {
+    if let Some(start) = direct_start {
         if let Some(report) = export_direct(
             slide,
             request,
@@ -93,7 +87,6 @@ pub(super) fn export_jpeg_passthrough_instance(
         export,
         geometry,
         unique_spool_path(&output.context.path),
-        frame_count as usize,
     )?;
     let icc = output.resolve_icc(slide, request, profile)?;
     let observed_lossy = source_lossy.into_history()?;
@@ -105,6 +98,9 @@ pub(super) fn export_jpeg_passthrough_instance(
     lossy.append(target_lossy.into_history()?);
     output.write(profile, icc, lossy, None, metrics, |writer| {
         spool.stream_frames_to(writer, |index| {
+            let index = export
+                .per_frame_plan
+                .map_or(index, |plan| plan.grid_frame_index(index as u32) as usize);
             let raw = super::jpeg_passthrough::read_raw_jpeg_passthrough_tile(
                 slide,
                 export.coordinate,
@@ -168,6 +164,7 @@ fn export_direct(
         slide,
         output.export.coordinate,
         geometry,
+        output.export.per_frame_plan,
         frame_count,
         start,
         DIRECT_JPEG_PASSTHROUGH_WRITE_CHUNK_FRAMES,
@@ -244,9 +241,11 @@ impl JpegInstanceOutput<'_> {
             icc_profile: icc.bytes.as_deref(),
             lossy_compression: lossy,
         })?;
-        let per_frame_plan =
-            self.context
-                .per_frame_plan(self.frame_count, self.grid, self.export.per_frame_plan)?;
+        let per_frame_plan = self.context.per_frame_plan(
+            self.frame_count,
+            self.grid,
+            self.export.per_frame_plan.cloned(),
+        )?;
         let write_started = Instant::now();
         let streamed = write_dicom_object_with_streamed_pixel_data(
             &self.context.path,

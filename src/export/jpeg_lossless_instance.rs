@@ -1,8 +1,6 @@
 //! JPEG Lossless (Process 14, first-order prediction) instance export.
 //!
-//! Every frame is decoded to samples and re-encoded on the CPU. No source
-//! codec stores JPEG Lossless frames, so there is no passthrough or
-//! compressed-domain route.
+//! Every frame is decoded to samples and re-encoded on the CPU.
 
 use std::time::{Duration, Instant};
 
@@ -17,13 +15,9 @@ use super::lossless_j2k_cpu::prepare_cpu_input_batch;
 use super::lossless_j2k_instance::PendingLosslessInstance;
 use super::lossless_j2k_plan::source_tile_codec;
 use super::tile_grid::TileGrid;
-use super::{
-    ensure_consistent_pixel_profile, level_pixel_spacing_mm, require_pixel_spacing_mm,
-    InstanceExportContext,
-};
+use super::{ensure_consistent_pixel_profile, InstanceExportContext};
 use crate::coordinate::InstanceCoordinate;
 use crate::error::Error;
-use crate::instance_context::DicomInstanceContext;
 use crate::lossy::{LossyCompressionAccumulator, LossyCompressionByteCounts};
 use crate::options::{CodecValidation, NormalizedExportOptions, TransferSyntax};
 use crate::report::ExportMetrics;
@@ -55,20 +49,10 @@ pub(super) fn prepare_jpeg_lossless_instance(
     )?;
     let (matrix_columns, matrix_rows) = level.dimensions;
     let grid = TileGrid::square(matrix_columns, matrix_rows, tile_size)?;
-    let frame_count = grid.frame_count_u32()?;
-    let context = DicomInstanceContext::new(
-        identity,
-        &request.output_dir,
-        require_pixel_spacing_mm(level_pixel_spacing_mm(
-            slide,
-            level,
-            options.semantics.source_pixel_spacing_mm,
-        )?)?,
-        coordinate,
-    )?
-    .with_level_zero_source(identity, request.level_filter.is_none());
+    let frame_count = export.frame_count(grid.frame_count_u32()?);
+    let context = export.dicom_context(slide, request)?;
     let declared_lossy_compression =
-        super::lossy_provenance::source_lossy_history(slide, &request.source_path, coordinate)?;
+        super::lossy_provenance::source_lossy_history(slide, coordinate)?;
     let mut pixel_data = BufferedPixelDataSink::create(
         unique_spool_path(&context.path),
         frame_count as usize,
@@ -87,7 +71,10 @@ pub(super) fn prepare_jpeg_lossless_instance(
     let mut row = 0;
     while row < grid.tiles_down {
         let row_count = lossless_j2k_cpu_row_batch_count(grid.tiles_across, grid.tiles_down - row);
-        let frames = grid_frames(frame_grid, grid.tiles_across, row, row_count)?;
+        let mut frames = grid_frames(frame_grid, grid.tiles_across, row, row_count)?;
+        if let Some(plan) = per_frame_plan {
+            frames.retain(|frame| plan.includes_grid_position(frame.row, frame.col));
+        }
         for batch in frames.chunks(frame_batch_len(tile_size, tile_size)) {
             let encoded = encode_frame_batch(slide, level, coordinate, batch, tile_size, options)?;
             for frame in encoded {
@@ -151,7 +138,7 @@ pub(super) fn prepare_jpeg_lossless_instance(
         transfer_syntax: options.semantics.transfer_syntax,
         overwrite: options.semantics.overwrite,
         max_instance_metadata_bytes: options.resources.max_instance_metadata_bytes,
-        per_frame_plan,
+        per_frame_plan: per_frame_plan.cloned(),
     })
 }
 

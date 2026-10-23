@@ -188,7 +188,7 @@ pub(crate) fn export_dicom_instance_jobs_prefer_device_htj2k_hybrid_lanes(
                     instance_number: job.instance_number,
                     coordinate: job.coordinate,
                     level: job.level,
-                    per_frame_plan: job.per_frame_plan,
+                    per_frame_plan: job.per_frame_plan.as_ref(),
                 },
             )?;
             writer_tx

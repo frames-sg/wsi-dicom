@@ -106,7 +106,7 @@ fn shipped_binary_rejects_malformed_compressed_pixel_data_without_external_tools
         )
     });
     assert_eq!(report["schema_version"], "wsi-dicom-validation-report-v1");
-    assert_eq!(report["rule_set_id"], "wsi-dicom-general-v1");
+    assert_eq!(report["rule_set_id"], "wsi-dicom-general-v2");
     let checks = report["checks"].as_array().expect("validation checks");
     assert!(checks.iter().any(|check| {
         check["name"] == "intrinsic-pixel-structure" && check["status"] == "failed"
@@ -342,4 +342,71 @@ fn shipped_binary_doctor_identifies_its_json_contract() {
     let report: Value = serde_json::from_slice(&output.stdout).expect("doctor JSON");
     assert_eq!(report["schema_version"], "wsi-dicom-doctor-report-v1");
     assert!(report["tools"].is_array());
+}
+
+#[test]
+fn shipped_binary_conformance_flags_select_optional_or_required_output() {
+    let temporary_directory = tempfile::tempdir().expect("create temporary directory");
+    let self_test = run_self_test(&temporary_directory.path().join("synthetic-source"));
+    assert!(self_test.status.success());
+    let self_test_report: Value = serde_json::from_slice(&self_test.stdout).unwrap();
+    let source = path_from_json(&self_test_report["source_path"]);
+    let wsi_dicom = || Command::new(env!("CARGO_BIN_EXE_wsi-dicom"));
+
+    let mut absent_counts = Vec::new();
+    for flag in ["--optional", "--required"] {
+        let output_dir = temporary_directory
+            .path()
+            .join(flag.trim_start_matches('-'));
+        let converted = wsi_dicom()
+            .args([
+                "convert",
+                "--research-placeholder",
+                "--backend",
+                "cpu",
+                flag,
+                "--json",
+            ])
+            .arg(source)
+            .arg("--out")
+            .arg(&output_dir)
+            .output()
+            .expect("convert the synthetic source");
+        assert!(
+            converted.status.success(),
+            "convert {flag} failed: {}",
+            String::from_utf8_lossy(&converted.stderr)
+        );
+        let validated = wsi_dicom()
+            .args(["validate", "--json"])
+            .arg(&output_dir)
+            .output()
+            .expect("validate the output");
+        assert!(
+            validated.status.success(),
+            "validate after convert {flag} failed: {}",
+            String::from_utf8_lossy(&validated.stdout)
+        );
+        let report: Value = serde_json::from_slice(&validated.stdout).unwrap();
+        let absent = report["optional_absent"].as_array().unwrap();
+        absent_counts.push(absent[0]["absent"].as_array().unwrap().len());
+
+        let required = wsi_dicom()
+            .args(["validate", "--required", "--json"])
+            .arg(&output_dir)
+            .output()
+            .expect("validate the output at the required level");
+        let report: Value = serde_json::from_slice(&required.stdout).unwrap();
+        assert_eq!(report["optional_absent"], Value::Array(Vec::new()));
+    }
+    // Required output omits optional attributes that Optional output writes.
+    assert!(absent_counts[1] > absent_counts[0], "{absent_counts:?}");
+
+    let conflicting = wsi_dicom()
+        .args(["validate", "--optional", "--required"])
+        .arg(temporary_directory.path())
+        .output()
+        .expect("run validate with both flags");
+    assert!(!conflicting.status.success());
+    assert!(String::from_utf8_lossy(&conflicting.stderr).contains("cannot be used with"));
 }

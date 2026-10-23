@@ -12,8 +12,8 @@ use crate::cli_output::print_cli_output;
 
 const DOCTOR_REPORT_SCHEMA: &str = "wsi-dicom-doctor-report-v1";
 const VALIDATION_REPORT_SCHEMA: &str = "wsi-dicom-validation-report-v1";
-const GENERAL_RULE_SET: &str = "wsi-dicom-general-v1";
-const CORE_2026C_RULE_SET: &str = "wsi-dicom-core-profile-2026c-v2";
+const GENERAL_RULE_SET: &str = "wsi-dicom-general-v2";
+const CORE_2026C_RULE_SET: &str = "wsi-dicom-core-profile-2026c-v3";
 
 #[derive(Serialize)]
 struct DoctorCliReport<'a> {
@@ -38,10 +38,12 @@ pub(crate) fn handle_validate(arguments: crate::cli_args::ValidateArgs) -> Resul
         command_timeout_secs,
         profile,
         max_input_bytes,
+        conformance,
         json,
     } = arguments;
     let mut options = ValidationOptions::default();
     options.profile = profile;
+    options.conformance = conformance.level();
     options.max_input_bytes = max_input_bytes;
     options.strict = strict;
     options.dcmvalidate_iod = dcmvalidate_iod;
@@ -124,14 +126,30 @@ pub(crate) fn handle_self_test(arguments: SelfTestArgs) -> Result<(), Error> {
 }
 
 fn format_validation_summary(report: &ValidationReport) -> String {
-    format!(
+    let mut summary = format!(
         "validated {} DICOM file(s) from {}; checks passed={} failed={} skipped={}",
         report.files.len(),
         report.input.display(),
         report.passed_checks(),
         report.failed_checks(),
         report.skipped_checks()
-    )
+    );
+    let mut absent = std::collections::BTreeMap::<&str, usize>::new();
+    for object in &report.optional_absent {
+        for item in &object.absent {
+            *absent.entry(item).or_insert(0) += 1;
+        }
+    }
+    if !absent.is_empty() {
+        summary.push_str(&format!(
+            "\noptional VL WSI items absent ({} distinct, not failures; --required skips this):",
+            absent.len()
+        ));
+        for (item, files) in absent {
+            summary.push_str(&format!("\n  {item} [{files} file(s)]"));
+        }
+    }
+    summary
 }
 
 fn format_doctor_summary(report: &DoctorReport) -> String {

@@ -99,7 +99,7 @@ class DependencyTopologyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         paths = result.stdout.splitlines()
         self.assertIn("src/lib.rs", paths)
-        leaked = [path for path in paths if path.startswith(("docs/USCAP", "docs/manuscript/", "grant/")) or path == "figure1.pptx"]
+        leaked = [path for path in paths if path.startswith(("docs/", "grant/")) or path == "figure1.pptx"]
         self.assertEqual(leaked, [], "unpublished artifacts must not enter the public crate archive")
 
     def test_direct_project_dependencies_use_reproducible_sources(self):

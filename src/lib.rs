@@ -73,9 +73,9 @@ pub use metadata::{
     METADATA_JSON_MAX_BYTES,
 };
 pub use options::{
-    AssociatedImageExclusions, AssociatedImageKind, CodecValidation, EncodeBackendPreference,
-    ExportOptions, ExportPreset, JpegDirectHtj2kProfile, PixelReencodePolicy, SourcePixelSpacingMm,
-    TransferSyntax, UidPolicy,
+    AssociatedImageExclusions, AssociatedImageKind, CodecValidation, ConformanceLevel,
+    EncodeBackendPreference, ExportOptions, ExportPreset, JpegDirectHtj2kProfile,
+    PixelReencodePolicy, SourcePixelSpacingMm, TransferSyntax, UidPolicy,
 };
 pub use report::{
     EncodedFrame, ExportMetrics, ExportReport, GpuEncodeMetrics, IccConflictDecision,
@@ -90,8 +90,8 @@ pub use request::{
 };
 pub use validation::{
     doctor_dicom_environment, validate_dicom_path, DoctorOptions, DoctorReport, DoctorStatus,
-    DoctorTool, ExecutionFailure, ValidationCheck, ValidationExecution, ValidationOptions,
-    ValidationProfile, ValidationReport, ValidationStatus,
+    DoctorTool, ExecutionFailure, OptionalAbsence, ValidationCheck, ValidationExecution,
+    ValidationOptions, ValidationProfile, ValidationReport, ValidationStatus,
 };
 
 pub mod prelude {
@@ -99,8 +99,8 @@ pub mod prelude {
 
     pub use crate::{
         AssociatedImageExclusions, AssociatedImageKind, CodecValidation, ColorManagement,
-        DefaultTransferSyntaxRequest, Error, Export, ExportOptions, ExportPreset, ExportReport,
-        ExportRequest, FrameSamples, IccCalibrationRegistry, IccConflictDecision,
+        ConformanceLevel, DefaultTransferSyntaxRequest, Error, Export, ExportOptions, ExportPreset,
+        ExportReport, ExportRequest, FrameSamples, IccCalibrationRegistry, IccConflictDecision,
         IccConflictPolicy, IccProfile, IccProfileSource, J2kFrameEncodeRequest,
         JpegDirectHtj2kProfile, MetadataSource, PixelReencodePolicy, ScannerIdentity,
         SourcePixelSpacingMm, SpecimenIdentifierIssuer, TransferSyntax, UidPolicy,

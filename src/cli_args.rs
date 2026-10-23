@@ -324,6 +324,8 @@ pub(crate) struct ExportCliArgs {
     /// overview, which shows part of the label, can carry patient identifiers.
     #[arg(long, value_enum, value_delimiter = ',', value_name = "KIND")]
     pub(crate) exclude_associated: Vec<AssociatedImageArg>,
+    #[command(flatten)]
+    pub(crate) conformance: ConformanceArgs,
     #[arg(long, default_value_t = 256)]
     pub(crate) max_instance_metadata_mib: u64,
     #[arg(long, default_value_t = 1024)]
@@ -351,6 +353,7 @@ impl ExportCliArgs {
                 AssociatedImageArg::Thumbnail => exclusions.with(AssociatedImageKind::Thumbnail),
             },
         );
+        options.conformance = self.conformance.level();
         options.max_instance_metadata_bytes = checked_metadata_mib_to_bytes(
             "max_instance_metadata_mib",
             self.max_instance_metadata_mib,
@@ -430,6 +433,29 @@ pub(crate) struct ValidateArgs {
     pub(crate) profile: wsi_dicom::ValidationProfile,
     #[arg(long, default_value_t = 1024 * 1024 * 1024)]
     pub(crate) max_input_bytes: u64,
+    #[command(flatten)]
+    pub(crate) conformance: ConformanceArgs,
     #[arg(long)]
     pub(crate) json: bool,
+}
+
+/// `--optional` (the default) or `--required`.
+#[derive(Debug, Clone, Copy, Default, Args)]
+pub(crate) struct ConformanceArgs {
+    /// Also cover the optional VL WSI modules and attributes (the default).
+    #[arg(long, conflicts_with = "required")]
+    pub(crate) optional: bool,
+    /// Cover only what the standard requires.
+    #[arg(long)]
+    pub(crate) required: bool,
+}
+
+impl ConformanceArgs {
+    pub(crate) fn level(self) -> wsi_dicom::ConformanceLevel {
+        if self.required {
+            wsi_dicom::ConformanceLevel::Required
+        } else {
+            wsi_dicom::ConformanceLevel::Optional
+        }
+    }
 }

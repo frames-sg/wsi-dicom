@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::path::Path;
 
 use j2k_jpeg::{JpegBackend, JpegSamples, JpegSubsampling};
@@ -248,84 +247,25 @@ fn write_tiled_tiff_with_bits(
     bits_per_sample: u16,
     tiles: &[Vec<u8>],
 ) {
-    let mut buf = Vec::new();
-    buf.extend_from_slice(b"II");
-    buf.extend_from_slice(&42u16.to_le_bytes());
-    let first_ifd_pos = buf.len();
-    buf.extend_from_slice(&0u32.to_le_bytes());
-
-    let mut tile_offsets = Vec::with_capacity(tiles.len());
-    let mut tile_byte_counts = Vec::with_capacity(tiles.len());
-    for tile in tiles {
-        tile_offsets.push(buf.len() as u32);
-        tile_byte_counts.push(tile.len() as u32);
-        buf.extend_from_slice(tile);
-    }
-
-    let tile_offsets_array_offset = buf.len() as u32;
-    for value in &tile_offsets {
-        buf.extend_from_slice(&value.to_le_bytes());
-    }
-    let tile_byte_counts_array_offset = buf.len() as u32;
-    for value in &tile_byte_counts {
-        buf.extend_from_slice(&value.to_le_bytes());
-    }
-    let x_resolution_offset = buf.len() as u32;
-    buf.extend_from_slice(&40_000u32.to_le_bytes());
-    buf.extend_from_slice(&1u32.to_le_bytes());
-    let y_resolution_offset = buf.len() as u32;
-    buf.extend_from_slice(&40_000u32.to_le_bytes());
-    buf.extend_from_slice(&1u32.to_le_bytes());
-
-    let ifd_offset = buf.len() as u32;
-    buf[first_ifd_pos..first_ifd_pos + 4].copy_from_slice(&ifd_offset.to_le_bytes());
-    let mut tags = vec![
-        tiff_tag(256, 4, 1, width.to_le_bytes()),
-        tiff_tag(257, 4, 1, height.to_le_bytes()),
-        tiff_tag(258, 3, 1, tiff_short_value(bits_per_sample)),
-        tiff_tag(259, 3, 1, tiff_short_value(compression)),
-        tiff_tag(262, 3, 1, tiff_short_value(photometric)),
-        tiff_tag(277, 3, 1, tiff_short_value(samples_per_pixel)),
-        tiff_tag(282, 5, 1, x_resolution_offset.to_le_bytes()),
-        tiff_tag(283, 5, 1, y_resolution_offset.to_le_bytes()),
-        tiff_tag(296, 3, 1, tiff_short_value(3)),
-        tiff_tag(322, 4, 1, tile_width.to_le_bytes()),
-        tiff_tag(323, 4, 1, tile_height.to_le_bytes()),
-        tiff_tag(
-            324,
-            4,
-            tile_offsets.len() as u32,
-            if tile_offsets.len() == 1 {
-                tile_offsets[0].to_le_bytes()
-            } else {
-                tile_offsets_array_offset.to_le_bytes()
+    write_multi_image_tiff(
+        path,
+        &[TiffImageSpec {
+            width,
+            height,
+            compression,
+            photometric,
+            samples_per_pixel,
+            bits_per_sample,
+            pixels_per_cm: Some(40_000),
+            layout: TiffChunkLayout::Tiled {
+                tile_width,
+                tile_height,
             },
-        ),
-        tiff_tag(
-            325,
-            4,
-            tile_byte_counts.len() as u32,
-            if tile_byte_counts.len() == 1 {
-                tile_byte_counts[0].to_le_bytes()
-            } else {
-                tile_byte_counts_array_offset.to_le_bytes()
-            },
-        ),
-    ];
-    tags.sort_by_key(|tag| tag.0);
-
-    buf.extend_from_slice(&(tags.len() as u16).to_le_bytes());
-    for (tag, typ, count, value) in tags {
-        buf.extend_from_slice(&tag.to_le_bytes());
-        buf.extend_from_slice(&typ.to_le_bytes());
-        buf.extend_from_slice(&count.to_le_bytes());
-        buf.extend_from_slice(&value);
-    }
-    buf.extend_from_slice(&0u32.to_le_bytes());
-
-    let mut file = std::fs::File::create(path).unwrap();
-    file.write_all(&buf).unwrap();
-    file.flush().unwrap();
+            chunks: tiles,
+            description: None,
+            subfile_type: None,
+        }],
+    );
 }
 
 /// Storage of one synthetic TIFF image.
@@ -342,6 +282,8 @@ pub(crate) struct TiffImageSpec<'a> {
     pub(crate) compression: u16,
     pub(crate) photometric: u16,
     pub(crate) samples_per_pixel: u16,
+    pub(crate) bits_per_sample: u16,
+    pub(crate) pixels_per_cm: Option<u32>,
     pub(crate) layout: TiffChunkLayout,
     pub(crate) chunks: &'a [Vec<u8>],
     pub(crate) description: Option<&'a str>,
@@ -391,12 +333,22 @@ pub(crate) fn write_multi_image_tiff(path: &Path, images: &[TiffImageSpec<'_>]) 
         let mut tags = vec![
             tiff_tag(256, 4, 1, image.width.to_le_bytes()),
             tiff_tag(257, 4, 1, image.height.to_le_bytes()),
-            tiff_tag(258, 3, 1, tiff_short_value(8)),
+            tiff_tag(258, 3, 1, tiff_short_value(image.bits_per_sample)),
             tiff_tag(259, 3, 1, tiff_short_value(image.compression)),
             tiff_tag(262, 3, 1, tiff_short_value(image.photometric)),
             tiff_tag(277, 3, 1, tiff_short_value(image.samples_per_pixel)),
             tiff_tag(284, 3, 1, tiff_short_value(1)),
         ];
+        if let Some(resolution) = image.pixels_per_cm {
+            let offset = buf.len() as u32;
+            buf.extend_from_slice(&resolution.to_le_bytes());
+            buf.extend_from_slice(&1_u32.to_le_bytes());
+            tags.extend([
+                tiff_tag(282, 5, 1, offset.to_le_bytes()),
+                tiff_tag(283, 5, 1, offset.to_le_bytes()),
+                tiff_tag(296, 3, 1, tiff_short_value(3)),
+            ]);
+        }
         if let Some(subfile_type) = image.subfile_type {
             tags.push(tiff_tag(254, 4, 1, subfile_type.to_le_bytes()));
         }
@@ -472,6 +424,8 @@ pub(crate) fn write_aperio_svs_with_associated_images(path: &Path, unnamed_extra
         compression,
         photometric,
         samples_per_pixel: 3,
+        bits_per_sample: 8,
+        pixels_per_cm: None,
         layout: TiffChunkLayout::Stripped {
             rows_per_strip: height,
         },
@@ -486,6 +440,8 @@ pub(crate) fn write_aperio_svs_with_associated_images(path: &Path, unnamed_extra
             compression: 7,
             photometric: 6,
             samples_per_pixel: 3,
+            bits_per_sample: 8,
+            pixels_per_cm: None,
             layout: TiffChunkLayout::Tiled {
                 tile_width: 32,
                 tile_height: 32,
@@ -512,6 +468,35 @@ pub(crate) fn tiff_short_value(value: u16) -> [u8; 4] {
 
 pub(crate) fn tiff_tag(tag: u16, typ: u16, count: u32, value: [u8; 4]) -> (u16, u16, u32, [u8; 4]) {
     (tag, typ, count, value)
+}
+
+pub(crate) fn decode_j2k_frame_for_test(
+    codestream: &[u8],
+    width: u32,
+    height: u32,
+    components: u8,
+    bits_allocated: u16,
+) -> Vec<u8> {
+    let fmt = match (components, bits_allocated) {
+        (1, 8) => j2k::PixelFormat::Gray8,
+        (3, 8) => j2k::PixelFormat::Rgb8,
+        (1, 16) => j2k::PixelFormat::Gray16,
+        (3, 16) => j2k::PixelFormat::Rgb16,
+        other => panic!("unsupported frame profile: {other:?}"),
+    };
+    let bytes_per_sample = if bits_allocated <= 8 { 1usize } else { 2usize };
+    let stride = width as usize * components as usize * bytes_per_sample;
+    let mut decoder = j2k::J2kDecoder::new(codestream).unwrap_or_else(|err| {
+        if codestream.last() == Some(&0) {
+            j2k::J2kDecoder::new(&codestream[..codestream.len() - 1])
+                .unwrap_or_else(|_| panic!("parse frame: {err}"))
+        } else {
+            panic!("parse frame: {err}");
+        }
+    });
+    let mut decoded = vec![0; stride * height as usize];
+    decoder.decode_into(&mut decoded, stride, fmt).unwrap();
+    decoded
 }
 
 #[cfg(test)]

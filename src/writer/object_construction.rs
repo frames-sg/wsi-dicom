@@ -4,11 +4,10 @@ use dicom_dictionary_std::tags;
 use dicom_object::InMemDicomObject;
 
 use super::encoding::format_ds;
-#[cfg(test)]
-use super::functional_groups::per_frame_items;
 use super::functional_groups::FrameGrid;
 use crate::lossy::LossyCompressionHistory;
 use crate::metadata::ValidatedDicomMetadata;
+use crate::options::ConformanceLevel;
 use crate::report::ImageFlavor;
 use crate::tile::PixelProfile;
 use crate::{DicomMetadata, Error, VL_WSI_SOP_CLASS_UID};
@@ -28,9 +27,10 @@ pub(crate) struct DicomObjectIdentifiers<'a> {
     pub(crate) series_uid: &'a str,
     pub(crate) sop_instance_uid: &'a str,
     pub(crate) frame_of_reference_uid: &'a str,
-    pub(crate) pyramid_uid: &'a str,
+    /// Pyramid UID and Pyramid Label of a pyramid level; LABEL, OVERVIEW and
+    /// THUMBNAIL instances stay outside the Multi-Resolution Pyramid module.
+    pub(crate) pyramid: Option<(&'a str, &'a str)>,
     pub(crate) dimension_organization_uid: &'a str,
-    pub(crate) pyramid_label: &'a str,
     /// Level-zero SOP Instance a resampled level was derived from, when that
     /// instance is part of the same export.
     pub(crate) derivation_source_sop_instance_uid: Option<&'a str>,
@@ -50,16 +50,18 @@ pub(crate) struct DicomObjectParams<'a> {
     pub(crate) profile: PixelProfile,
     pub(crate) pixel_spacing_mm: Option<(f64, f64)>,
     pub(crate) icc_profile: Option<&'a [u8]>,
+    /// Objective lens power the source reports (`openslide.objective-power`).
+    pub(crate) objective_lens_power: Option<f64>,
     pub(crate) lossy_compression: LossyCompressionHistory,
+    /// `Optional` also writes the optional attributes this writer can fill
+    /// truthfully; `Required` leaves every optional descriptive one out.
+    pub(crate) conformance: ConformanceLevel,
 }
 
 struct DicomObjectBuildContext<'a> {
     params: DicomObjectParams<'a>,
     metadata: ValidatedDicomMetadata<'a>,
     image_type: &'static str,
-    /// Row and column spacing; absent only for LABEL and OVERVIEW, which do
-    /// not require Pixel Spacing.
-    pixel_spacing_mm: Option<(f64, f64)>,
     dicom_frame_rows: u16,
     dicom_frame_columns: u16,
     dicom_matrix_columns: u32,
@@ -71,7 +73,7 @@ pub(crate) fn build_dicom_object(params: DicomObjectParams<'_>) -> Result<InMemD
     let frame_grid = params.frame_grid;
     frame_grid.validate()?;
     let flavor = params.flavor;
-    if params.pixel_spacing_mm.is_none() && flavor_requires_pixel_spacing(flavor) {
+    if params.pixel_spacing_mm.is_none() && flavor_is_slide_registered(flavor) {
         return Err(Error::Metadata {
             reason: format!(
                 "VL WSI {} export requires pixel spacing metadata",
@@ -86,12 +88,10 @@ pub(crate) fn build_dicom_object(params: DicomObjectParams<'_>) -> Result<InMemD
     let dicom_matrix_rows =
         checked_u32_attribute(frame_grid.matrix_rows, "Total Pixel Matrix Rows")?;
     let image_type = image_type(flavor, params.level_idx);
-    let pixel_spacing_mm = params.pixel_spacing_mm;
     let context = DicomObjectBuildContext {
         params,
         metadata,
         image_type,
-        pixel_spacing_mm,
         dicom_frame_rows,
         dicom_frame_columns,
         dicom_matrix_columns,
@@ -110,8 +110,6 @@ pub(crate) fn build_dicom_object(params: DicomObjectParams<'_>) -> Result<InMemD
     if flavor == ImageFlavor::Label {
         put_slide_label_module(&mut object);
     }
-    #[cfg(test)]
-    put_per_frame_functional_groups(&mut object, &context)?;
 
     Ok(object)
 }
@@ -126,15 +124,10 @@ fn image_type(flavor: ImageFlavor, level_idx: u32) -> &'static str {
     }
 }
 
-/// Pixel Spacing is required unless Image Type Value 3 is LABEL or OVERVIEW
-/// (PS3.3 C.7.6.16.2.1, with Volumetric Properties VOLUME).
-fn flavor_requires_pixel_spacing(flavor: ImageFlavor) -> bool {
-    !matches!(flavor, ImageFlavor::Label | ImageFlavor::Overview)
-}
-
-/// Frame of Reference is required for VOLUME and THUMBNAIL (PS3.3 A.32.8).
-/// LABEL and OVERVIEW images are not registered to the slide coordinates.
-fn flavor_has_frame_of_reference(flavor: ImageFlavor) -> bool {
+/// VOLUME and THUMBNAIL images are registered to the slide coordinates: they
+/// carry the Frame of Reference (PS3.3 A.32.8) and Pixel Spacing (C.7.6.16.2.1).
+/// LABEL and OVERVIEW images require neither.
+fn flavor_is_slide_registered(flavor: ImageFlavor) -> bool {
     matches!(flavor, ImageFlavor::Volume | ImageFlavor::Thumbnail)
 }
 
@@ -176,7 +169,7 @@ fn put_sop_common_and_identification_modules(
         VR::UI,
         identifiers.series_uid,
     );
-    if flavor_has_frame_of_reference(params.flavor) {
+    if flavor_is_slide_registered(params.flavor) {
         put_str(
             object,
             tags::FRAME_OF_REFERENCE_UID,
@@ -184,30 +177,25 @@ fn put_sop_common_and_identification_modules(
             identifiers.frame_of_reference_uid,
         );
     }
-    // The Multi-Resolution Pyramid module groups the pyramid levels; LABEL,
-    // OVERVIEW and THUMBNAIL instances stay outside it.
-    if params.flavor == ImageFlavor::Volume {
-        put_str(object, tags::PYRAMID_UID, VR::UI, identifiers.pyramid_uid);
-        put_str(
-            object,
-            tags::PYRAMID_LABEL,
-            VR::LO,
-            identifiers.pyramid_label,
-        );
+    let optional = params.conformance == ConformanceLevel::Optional;
+    // The Multi-Resolution Pyramid module may be present for pyramid levels.
+    if let Some((pyramid_uid, pyramid_label)) = identifiers.pyramid.filter(|_| optional) {
+        put_str(object, tags::PYRAMID_UID, VR::UI, pyramid_uid);
+        put_str(object, tags::PYRAMID_LABEL, VR::LO, pyramid_label);
     }
     put_str(object, tags::MODALITY, VR::CS, "SM");
-    put_str(
-        object,
-        tags::ACQUISITION_DATE,
-        VR::DA,
-        metadata.content_date.as_deref().unwrap_or(DEFAULT_DATE),
-    );
-    put_str(
-        object,
-        tags::ACQUISITION_TIME,
-        VR::TM,
-        metadata.content_time.as_deref().unwrap_or(DEFAULT_TIME),
-    );
+    if optional {
+        let date = metadata.content_date.as_deref().unwrap_or(DEFAULT_DATE);
+        let time = metadata.content_time.as_deref().unwrap_or(DEFAULT_TIME);
+        for (tag, vr, value) in [
+            (tags::SERIES_DATE, VR::DA, date),
+            (tags::SERIES_TIME, VR::TM, time),
+            (tags::ACQUISITION_DATE, VR::DA, date),
+            (tags::ACQUISITION_TIME, VR::TM, time),
+        ] {
+            put_str(object, tag, vr, value);
+        }
+    }
     put_str(object, tags::IMAGE_TYPE, VR::CS, context.image_type);
     put_str(object, tags::LOSSY_IMAGE_COMPRESSION, VR::CS, "00");
 }
@@ -271,12 +259,11 @@ fn put_study_and_frame_of_reference_modules(
         VR::SH,
         metadata.study_id.as_deref().unwrap_or("1"),
     );
-    put_str(
-        object,
-        tags::STUDY_DESCRIPTION,
-        VR::LO,
-        metadata.study_description.as_deref().unwrap_or_default(),
-    );
+    if let Some(description) = non_empty(metadata.study_description.as_deref())
+        .filter(|_| context.params.conformance == ConformanceLevel::Optional)
+    {
+        put_str(object, tags::STUDY_DESCRIPTION, VR::LO, description);
+    }
     put_str(
         object,
         tags::REFERRING_PHYSICIAN_NAME,
@@ -289,7 +276,7 @@ fn put_study_and_frame_of_reference_modules(
     if let Some(laterality) = non_empty(metadata.laterality.as_deref()) {
         put_str(object, tags::LATERALITY, VR::CS, laterality);
     }
-    if flavor_has_frame_of_reference(context.params.flavor) {
+    if flavor_is_slide_registered(context.params.flavor) {
         put_str(
             object,
             tags::POSITION_REFERENCE_INDICATOR,
@@ -392,7 +379,7 @@ fn put_image_pixel_module(object: &mut InMemDicomObject, context: &DicomObjectBu
     );
     // Imaged Volume Width, Height and Depth are required only for VOLUME.
     if let (ImageFlavor::Volume, Some((row_spacing_mm, column_spacing_mm))) =
-        (params.flavor, context.pixel_spacing_mm)
+        (params.flavor, params.pixel_spacing_mm)
     {
         put_fl(
             object,
@@ -501,7 +488,26 @@ fn put_wsi_image_module(object: &mut InMemDicomObject, context: &DicomObjectBuil
     put_str(object, tags::EXTENDED_DEPTH_OF_FIELD, VR::CS, "NO");
     put_is(object, tags::SERIES_NUMBER, params.series_number);
     put_is(object, tags::INSTANCE_NUMBER, params.instance_number);
-    put_u16(object, tags::REPRESENTATIVE_FRAME_NUMBER, 1);
+    if params.conformance == ConformanceLevel::Optional {
+        put_u16(object, tags::REPRESENTATIVE_FRAME_NUMBER, 1);
+        put_str(object, tags::TILES_OVERLAP, VR::CS, "NONE");
+        put_str(object, tags::QUALITY_CONTROL_IMAGE, VR::CS, "NO");
+        // A label can identify the patient; tissue cannot. Whether a source
+        // thumbnail shows the label is unknown.
+        let recognizable = match params.flavor {
+            ImageFlavor::Label | ImageFlavor::Overview => Some("YES"),
+            ImageFlavor::Volume => Some("NO"),
+            ImageFlavor::Thumbnail => None,
+        };
+        if let Some(recognizable) = recognizable {
+            put_str(
+                object,
+                tags::RECOGNIZABLE_VISUAL_FEATURES,
+                VR::CS,
+                recognizable,
+            );
+        }
+    }
     put_str(
         object,
         tags::IMAGE_ORIENTATION_SLIDE,
@@ -518,7 +524,15 @@ fn put_wsi_sequences(object: &mut InMemDicomObject, context: &DicomObjectBuildCo
     object.put(DataElement::<InMemDicomObject>::new(
         tags::OPTICAL_PATH_SEQUENCE,
         VR::SQ,
-        DataSetSequence::from(vec![optical_path_item(params.icc_profile)]),
+        DataSetSequence::from(vec![optical_path_item(
+            params.icc_profile,
+            // LABEL and OVERVIEW images come from the macro camera, not the
+            // scanning objective.
+            params
+                .objective_lens_power
+                .filter(|_| flavor_is_slide_registered(params.flavor)),
+            params.conformance,
+        )]),
     ));
     object.put(DataElement::<InMemDicomObject>::new(
         tags::ACQUISITION_CONTEXT_SEQUENCE,
@@ -541,6 +555,7 @@ fn put_wsi_sequences(object: &mut InMemDicomObject, context: &DicomObjectBuildCo
         DataSetSequence::from(vec![specimen_description_item(
             metadata.as_metadata(),
             identifiers.specimen_uid,
+            params.conformance,
         )]),
     ));
     object.put(DataElement::<InMemDicomObject>::new(
@@ -553,13 +568,18 @@ fn put_wsi_sequences(object: &mut InMemDicomObject, context: &DicomObjectBuildCo
         VR::SQ,
         DataSetSequence::from(vec![shared_functional_groups_item(
             context.image_type,
-            context.pixel_spacing_mm,
-            flavor_requires_pixel_spacing(params.flavor).then(|| metadata.slice_thickness_mm_ds()),
+            params.pixel_spacing_mm,
+            flavor_is_slide_registered(params.flavor).then(|| metadata.slice_thickness_mm_ds()),
             identifiers.derivation_source_sop_instance_uid,
         )]),
     ));
     if let Some(source_uid) = identifiers.derivation_source_sop_instance_uid {
-        put_derivation_references(object, identifiers.series_uid, source_uid);
+        put_derivation_references(
+            object,
+            identifiers.series_uid,
+            source_uid,
+            params.conformance,
+        );
     }
     object.put(DataElement::<InMemDicomObject>::new(
         tags::DIMENSION_ORGANIZATION_SEQUENCE,
@@ -582,42 +602,22 @@ fn put_wsi_sequences(object: &mut InMemDicomObject, context: &DicomObjectBuildCo
     }
 }
 
-#[cfg(test)]
-fn put_per_frame_functional_groups(
-    object: &mut InMemDicomObject,
-    context: &DicomObjectBuildContext<'_>,
-) -> Result<(), Error> {
-    let params = &context.params;
-    // Only pyramid levels carry per-frame groups; the streamed writer replaces
-    // these with its own, and single-frame associated images carry none.
-    let (ImageFlavor::Volume, Some((row_spacing_mm, column_spacing_mm))) =
-        (params.flavor, context.pixel_spacing_mm)
-    else {
-        return Ok(());
-    };
-    object.put(DataElement::<InMemDicomObject>::new(
-        tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE,
-        VR::SQ,
-        DataSetSequence::from(per_frame_items(
-            params.frame_count,
-            params.frame_grid,
-            row_spacing_mm,
-            column_spacing_mm,
-        )?),
-    ));
-
-    Ok(())
-}
-
-fn optical_path_item(icc_profile: Option<&[u8]>) -> InMemDicomObject {
+fn optical_path_item(
+    icc_profile: Option<&[u8]>,
+    objective_lens_power: Option<f64>,
+    conformance: ConformanceLevel,
+) -> InMemDicomObject {
+    let optional = conformance == ConformanceLevel::Optional;
     let mut item = InMemDicomObject::new_empty();
     put_str(&mut item, tags::OPTICAL_PATH_IDENTIFIER, VR::SH, "0");
-    put_str(
-        &mut item,
-        tags::OPTICAL_PATH_DESCRIPTION,
-        VR::ST,
-        "Default optical path",
-    );
+    if optional {
+        put_str(
+            &mut item,
+            tags::OPTICAL_PATH_DESCRIPTION,
+            VR::ST,
+            "Default optical path",
+        );
+    }
     item.put(DataElement::<InMemDicomObject>::new(
         tags::ILLUMINATION_TYPE_CODE_SEQUENCE,
         VR::SQ,
@@ -629,17 +629,29 @@ fn optical_path_item(icc_profile: Option<&[u8]>) -> InMemDicomObject {
         DataSetSequence::from(vec![code_item("371251000", "SCT", "White")]),
     ));
     put_fl(&mut item, tags::ILLUMINATION_WAVE_LENGTH, 550.0);
+    if let Some(power) = objective_lens_power.filter(|_| optional) {
+        put_ds(&mut item, tags::OBJECTIVE_LENS_POWER, power);
+    }
     if let Some(icc_profile) = icc_profile {
         item.put(DataElement::new(
             tags::ICC_PROFILE,
             VR::OB,
             PrimitiveValue::from(icc_profile.to_vec()),
         ));
+        // Color Space names the profile's space only when it is known to be
+        // sRGB (PS3.3 C.11.15.1.4).
+        if optional && crate::icc::is_synthetic_srgb_icc_profile(icc_profile) {
+            put_str(&mut item, tags::COLOR_SPACE, VR::CS, "SRGB");
+        }
     }
     item
 }
 
-fn specimen_description_item(metadata: &DicomMetadata, specimen_uid: &str) -> InMemDicomObject {
+fn specimen_description_item(
+    metadata: &DicomMetadata,
+    specimen_uid: &str,
+    conformance: ConformanceLevel,
+) -> InMemDicomObject {
     let identifier = metadata.specimen_identifier_or_default();
     let description = metadata
         .specimen_description
@@ -648,18 +660,20 @@ fn specimen_description_item(metadata: &DicomMetadata, specimen_uid: &str) -> In
     let mut item = InMemDicomObject::new_empty();
     put_str(&mut item, tags::SPECIMEN_IDENTIFIER, VR::LO, identifier);
     put_str(&mut item, tags::SPECIMEN_UID, VR::UI, specimen_uid);
-    put_str(
-        &mut item,
-        tags::SPECIMEN_SHORT_DESCRIPTION,
-        VR::LO,
-        description,
-    );
-    put_str(
-        &mut item,
-        tags::SPECIMEN_DETAILED_DESCRIPTION,
-        VR::UT,
-        description,
-    );
+    if conformance == ConformanceLevel::Optional {
+        put_str(
+            &mut item,
+            tags::SPECIMEN_SHORT_DESCRIPTION,
+            VR::LO,
+            description,
+        );
+        put_str(
+            &mut item,
+            tags::SPECIMEN_DETAILED_DESCRIPTION,
+            VR::UT,
+            description,
+        );
+    }
     match &metadata.specimen_identifier_issuer {
         Some(issuer) => {
             item.put(DataElement::<InMemDicomObject>::new(
@@ -721,12 +735,22 @@ fn total_pixel_matrix_origin_item() -> InMemDicomObject {
 /// General Reference Source Image Sequence (PS3.3 C.12.4) and Common
 /// Instance Reference (C.12.2) for a level resampled from `source_uid`, which
 /// is in the same Series.
-fn put_derivation_references(object: &mut InMemDicomObject, series_uid: &str, source_uid: &str) {
-    object.put(DataElement::<InMemDicomObject>::new(
-        tags::SOURCE_IMAGE_SEQUENCE,
-        VR::SQ,
-        DataSetSequence::from(vec![referenced_instance_item(source_uid)]),
-    ));
+/// The level-zero source of a resampled level, in the Common Instance
+/// Reference module (required once the Derivation Image functional group
+/// references it) and, as an optional General Reference, at the top level.
+fn put_derivation_references(
+    object: &mut InMemDicomObject,
+    series_uid: &str,
+    source_uid: &str,
+    conformance: ConformanceLevel,
+) {
+    if conformance == ConformanceLevel::Optional {
+        object.put(DataElement::<InMemDicomObject>::new(
+            tags::SOURCE_IMAGE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![referenced_instance_item(source_uid)]),
+        ));
+    }
     let mut series = InMemDicomObject::new_empty();
     put_str(&mut series, tags::SERIES_INSTANCE_UID, VR::UI, series_uid);
     series.put(DataElement::<InMemDicomObject>::new(

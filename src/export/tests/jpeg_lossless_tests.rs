@@ -144,6 +144,162 @@ fn export_jpeg_lossless_sv1_records_lossy_jpeg_source_history() {
 }
 
 #[test]
+fn sparse_exports_omit_absent_tiles_but_keep_acquired_black_tiles() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("sparse.tiff");
+    let tiles = [
+        Vec::new(),
+        Vec::new(),
+        encode_test_jpeg(8, 8, [160, 20, 40]),
+        encode_test_jpeg(8, 8, [0, 0, 0]),
+        Vec::new(),
+        encode_test_jpeg(8, 8, [20, 40, 160]),
+    ];
+    write_tiled_jpeg_tiff(&source, 16, 24, 8, 8, &tiles);
+    for (index, transfer_syntax) in [
+        TransferSyntax::JpegBaseline8Bit,
+        TransferSyntax::JpegLosslessSv1,
+        TransferSyntax::Jpeg2000Lossless,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let report = export_dicom(ExportRequest {
+            source_path: source.clone(),
+            output_dir: tmp.path().join(format!("out-{index}")),
+            options: ExportOptions {
+                tile_size: 8,
+                transfer_syntax,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                ..ExportOptions::default()
+            },
+            color_management: ColorManagement::SourceOrSrgb,
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: Some(0),
+        })
+        .unwrap();
+        assert_eq!(report.instances[0].frame_count, 3, "{transfer_syntax:?}");
+        assert_eq!(report.metrics.routes.total_frames, 3);
+        let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+        assert_eq!(
+            object
+                .element(tags::DIMENSION_ORGANIZATION_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "TILED_SPARSE"
+        );
+        assert_eq!(frame_positions_for_test(&object), [(9, 1), (9, 9), (17, 9)]);
+        // Required for TILED_FULL and kept for TILED_SPARSE.
+        for tag in [
+            tags::NUMBER_OF_OPTICAL_PATHS,
+            tags::TOTAL_PIXEL_MATRIX_FOCAL_PLANES,
+        ] {
+            assert_eq!(object.element(tag).unwrap().to_int::<u32>().unwrap(), 1);
+        }
+        assert_eq!(
+            object
+                .element(tags::PIXEL_DATA)
+                .unwrap()
+                .value()
+                .fragments()
+                .unwrap()
+                .len(),
+            3
+        );
+        let original = wsi_rs::Slide::open(&source).unwrap();
+        let written = wsi_rs::Slide::open(&report.instances[0].path).unwrap();
+        assert_eq!(
+            written
+                .tile_is_present(&wsi_rs::TileRequest::new(0, 0, 0, 0, 0))
+                .unwrap(),
+            Some(false)
+        );
+        for (col, row) in [(0, 1), (1, 1), (1, 2)] {
+            let request = wsi_rs::TileRequest::new(0, 0, 0, col, row);
+            let expected = original.read_tile(&request).unwrap();
+            let actual = written.read_tile(&request).unwrap();
+            assert_eq!(actual.data().as_u8(), expected.data().as_u8());
+        }
+        run_sparse_dicom_validators_for_test(&report.instances[0].path);
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
+fn sparse_jpeg_tiff_j2k_device_route_preserves_tiles_across_an_interior_gap() {
+    if j2k_metal_support::system_default_device().is_err() {
+        eprintln!("skipping sparse Metal export test: no Metal device");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("sparse-metal.tiff");
+    let tiles = [
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        encode_test_jpeg(8, 8, [160, 20, 40]),
+        Vec::new(),
+        encode_test_jpeg(8, 8, [20, 40, 160]),
+    ];
+    write_tiled_jpeg_tiff(&source, 24, 16, 8, 8, &tiles);
+    let original = wsi_rs::Slide::open(&source).unwrap();
+    let expected: Vec<_> = [0, 2]
+        .into_iter()
+        .map(|col| {
+            original
+                .read_tile(&wsi_rs::TileRequest::new(0, 0, 0, col, 1))
+                .unwrap()
+                .data()
+                .as_u8()
+                .unwrap()
+                .to_vec()
+        })
+        .collect();
+
+    let report = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 8,
+            transfer_syntax: TransferSyntax::Jpeg2000Lossless,
+            encode_backend: EncodeBackendPreference::RequireDevice,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: true,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: Some(0),
+    })
+    .unwrap();
+
+    assert_eq!(report.instances[0].frame_count, 2);
+    // Canonical JPEG sources use host decode with the requested Metal encoder.
+    // The two noncontiguous frames must reach it as separate grid runs.
+    assert_eq!(report.metrics.routes.cpu_input_frames, 2);
+    assert_eq!(report.metrics.routes.gpu_encode_frames, 2);
+    assert_eq!(report.metrics.routes.gpu_encode_batches, 2);
+    assert_eq!(report.metrics.routes.partial_gpu_transcode_frames, 2);
+    assert_eq!(report.metrics.routes.resident_gpu_transcode_frames, 0);
+    let written = wsi_rs::Slide::open(&report.instances[0].path).unwrap();
+    for ((col, expected), frame_index) in [0, 2].into_iter().zip(expected).zip(0..) {
+        let actual = written
+            .read_tile(&wsi_rs::TileRequest::new(0, 0, 0, col, 1))
+            .unwrap();
+        let actual = actual.data().as_u8().unwrap();
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!(
+                actual.abs_diff(expected) <= 4,
+                "frame {frame_index} sample mismatch: {actual} vs {expected}"
+            );
+        }
+    }
+}
+
+#[test]
 fn export_jpeg_lossless_preserves_sparse_tiff_pixels_across_native_tiles() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("sparse.tiff");
@@ -241,6 +397,88 @@ fn export_jpeg_lossless_sv1_preserves_16_bit_grayscale_samples() {
     let (pairs, _) = decoded.as_slice().as_chunks::<2>();
     let decoded: Vec<u16> = pairs.iter().map(|pair| u16::from_ne_bytes(*pair)).collect();
     assert_eq!(decoded, samples);
+}
+
+#[test]
+fn sixteen_bit_dicom_pyramid_round_trips_through_lossless_export() {
+    use dicom_core::{DataElement, PrimitiveValue};
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let mut levels = Vec::new();
+    for (level, size) in [4_u32, 2].into_iter().enumerate() {
+        let path = source.join(format!("level-{level}.dcm"));
+        write_source_dicom_with_dimensions(
+            &path,
+            &format!("1.2.826.0.1.3680043.10.999.94{level}"),
+            size,
+            size,
+        );
+        let values: Vec<u16> = (0..size * size * 3)
+            .map(|index| (index as u16).wrapping_mul(4099) ^ 0x8001)
+            .collect();
+        let mut object = dicom_object::open_file(&path).unwrap();
+        for (tag, value) in [
+            (tags::BITS_ALLOCATED, 16_u16),
+            (tags::BITS_STORED, 16),
+            (tags::HIGH_BIT, 15),
+        ] {
+            object.put(DataElement::new(tag, VR::US, PrimitiveValue::from(value)));
+        }
+        object.put(DataElement::new(
+            tags::PIXEL_DATA,
+            VR::OW,
+            PrimitiveValue::U16(values.clone().into()),
+        ));
+        object.write_to_file(&path).unwrap();
+        levels.push((size, values));
+    }
+    for (index, transfer_syntax) in [
+        TransferSyntax::JpegLosslessSv1,
+        TransferSyntax::Jpeg2000Lossless,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let report = export_dicom(ExportRequest {
+            source_path: source.clone(),
+            output_dir: tmp.path().join(format!("out-{index}")),
+            options: ExportOptions {
+                tile_size: 2,
+                transfer_syntax,
+                encode_backend: EncodeBackendPreference::CpuOnly,
+                ..ExportOptions::default()
+            },
+            color_management: ColorManagement::SourceOrSrgb,
+            metadata: MetadataSource::ResearchPlaceholder,
+            level_filter: None,
+        })
+        .unwrap();
+        assert_eq!(report.instances.len(), 2);
+        let output = wsi_rs::Slide::open(&report.output_dir).unwrap();
+        for (level, (size, values)) in levels.iter().enumerate() {
+            for row in 0..size / 2 {
+                for col in 0..size / 2 {
+                    let tile = output
+                        .read_tile(&wsi_rs::TileRequest::new(
+                            0,
+                            0,
+                            level as u32,
+                            i64::from(col),
+                            i64::from(row),
+                        ))
+                        .unwrap();
+                    let expected: Vec<u16> = (0..2)
+                        .flat_map(|y| {
+                            let start = (((row * 2 + y) * size + col * 2) * 3) as usize;
+                            values[start..start + 6].iter().copied()
+                        })
+                        .collect();
+                    assert_eq!(tile.data().as_u16(), Some(expected.as_slice()));
+                }
+            }
+        }
+    }
 }
 
 #[test]

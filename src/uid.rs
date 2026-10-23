@@ -132,6 +132,7 @@ fn deterministic_generation_seed(
         jpeg_direct_htj2k_profile: options.semantics.jpeg_direct_htj2k_profile,
         jpeg_quality: options.semantics.jpeg_quality,
         jpeg_optimize_huffman: options.semantics.jpeg_optimize_huffman,
+        conformance: options.semantics.conformance,
         source_pixel_spacing_mm: options.semantics.source_pixel_spacing_mm,
         effective_icc_sha256,
         encode_backend: options.execution.encode_backend,
@@ -162,6 +163,10 @@ struct DeterministicUidInputs<'a> {
     // stay stable.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     jpeg_optimize_huffman: bool,
+    // Omitted at the default level, for the same reason; the levels write
+    // different objects, so they must not share identities.
+    #[serde(skip_serializing_if = "crate::ConformanceLevel::is_optional")]
+    conformance: crate::ConformanceLevel,
     source_pixel_spacing_mm: Option<crate::options::SourcePixelSpacingMm>,
     effective_icc_sha256: &'a [Option<String>],
     encode_backend: crate::options::EncodeBackendPreference,

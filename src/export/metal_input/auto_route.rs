@@ -250,12 +250,21 @@ pub(in crate::export) fn probe_auto_metal_input_tile_run(
     let first = planned.first().ok_or_else(|| Error::Unsupported {
         reason: "auto Metal input route probe requires at least one tile".into(),
     })?;
+    if first.row != row
+        || planned
+            .windows(2)
+            .any(|pair| !pair[1].directly_follows(&pair[0]))
+    {
+        return Err(Error::Unsupported {
+            reason: "auto Metal input route probe requires consecutive tiles from one row".into(),
+        });
+    }
 
     let previous_limit = metal_input.frame_limit;
     let probe_end = row
         .checked_mul(matrix_columns.div_ceil(u64::from(tile_size)))
         .and_then(|start| start.checked_add(first.col))
-        .and_then(|start| start.checked_add(planned.len() as u64))
+        .and_then(|start| start.checked_add(u64::try_from(planned.len()).ok()?))
         .ok_or_else(|| Error::Unsupported {
             reason: "auto route probe frame limit overflow".into(),
         })?;

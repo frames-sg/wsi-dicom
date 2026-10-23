@@ -174,6 +174,9 @@ pub(super) struct MetalInputTileReader {
     pub(super) pipeline_depth: usize,
     /// Exclusive row-major output frame limit, including any lookahead work.
     pub(super) frame_limit: Option<u64>,
+    /// The instance omits absent frames, so its rows are not whole grid rows
+    /// and multi-row batches cannot be encoded ahead of the request.
+    pub(super) sparse_frames: bool,
     pub(super) max_prepared_frame_bytes: u64,
 }
 
@@ -255,6 +258,7 @@ impl MetalInputTileReader {
             row_batch_target_tiles: None,
             pipeline_depth: DEFAULT_GPU_PIPELINE_DEPTH,
             frame_limit: None,
+            sparse_frames: false,
             max_prepared_frame_bytes: 64 * 1024 * 1024,
         }
     }

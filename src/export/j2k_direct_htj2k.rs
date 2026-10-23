@@ -206,8 +206,8 @@ mod tests {
     use crate::options::{EncodeBackendPreference, ExportOptions};
     use crate::request::ExportRequest;
     use crate::test_support::{
-        assert_htj2k_rpcl_codestream, dicom_fragment_payload_without_padding,
-        write_tiled_jp2k_rgb_tiff,
+        assert_htj2k_rpcl_codestream, decode_j2k_frame_for_test,
+        dicom_fragment_payload_without_padding, write_tiled_jp2k_rgb_tiff,
     };
 
     use super::super::export_dicom;
@@ -323,27 +323,5 @@ mod tests {
         .err()
         .expect("unsupported coefficient extraction must not re-encode pixels");
         assert!(error.to_string().contains("pixel-domain re-encoding"));
-    }
-
-    fn decode_j2k_frame_for_test(
-        codestream: &[u8],
-        width: u32,
-        height: u32,
-        components: u8,
-        bits_allocated: u16,
-    ) -> Vec<u8> {
-        let fmt = match (components, bits_allocated) {
-            (1, 8) => j2k::PixelFormat::Gray8,
-            (3, 8) => j2k::PixelFormat::Rgb8,
-            (1, 16) => j2k::PixelFormat::Gray16,
-            (3, 16) => j2k::PixelFormat::Rgb16,
-            other => panic!("unsupported frame profile: {other:?}"),
-        };
-        let bytes_per_sample = if bits_allocated <= 8 { 1usize } else { 2usize };
-        let stride = width as usize * components as usize * bytes_per_sample;
-        let mut decoder = j2k::J2kDecoder::new(codestream).unwrap();
-        let mut decoded = vec![0; stride * height as usize];
-        decoder.decode_into(&mut decoded, stride, fmt).unwrap();
-        decoded
     }
 }

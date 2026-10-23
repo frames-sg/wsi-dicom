@@ -75,6 +75,7 @@ impl ValidationCommandRunner for FakeRunner {
 
 mod conformance;
 mod doctor;
+mod iod;
 mod orchestration;
 mod profile_contract;
 mod runner;

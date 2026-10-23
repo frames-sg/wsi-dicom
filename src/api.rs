@@ -8,9 +8,9 @@ use crate::export::{
 use crate::routing::open_slide;
 use crate::{
     default_transfer_syntax_for_source, export_dicom, AssociatedImageKind, CodecValidation,
-    ColorManagement, DefaultTransferSyntaxRequest, EncodeBackendPreference, Error, ExportOptions,
-    ExportReport, ExportRequest, JpegDirectHtj2kProfile, MetadataSource, PixelReencodePolicy,
-    QuPathAnnotationOptions, TransferSyntax,
+    ColorManagement, ConformanceLevel, DefaultTransferSyntaxRequest, EncodeBackendPreference,
+    Error, ExportOptions, ExportReport, ExportRequest, JpegDirectHtj2kProfile, MetadataSource,
+    PixelReencodePolicy, QuPathAnnotationOptions, TransferSyntax,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +139,15 @@ impl Export {
     #[must_use = "builder methods return the updated Export"]
     pub fn exclude_associated(mut self, kind: AssociatedImageKind) -> Self {
         self.options.exclude_associated = self.options.exclude_associated.with(kind);
+        self
+    }
+
+    /// Write only what the VL WSI IOD requires (`Required`), or also the
+    /// optional instances and attributes the source supports (`Optional`, the
+    /// default).
+    #[must_use = "builder methods return the updated Export"]
+    pub fn conformance(mut self, conformance: ConformanceLevel) -> Self {
+        self.options.conformance = conformance;
         self
     }
 

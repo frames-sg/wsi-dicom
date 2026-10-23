@@ -44,6 +44,14 @@ pub(crate) struct LosslessJ2kPlannedFrame {
 }
 
 impl LosslessJ2kPlannedFrame {
+    /// Whether this frame is the next column of `previous`'s row.
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub(super) fn directly_follows(&self, previous: &Self) -> bool {
+        self.row == previous.row && previous.col.checked_add(1) == Some(self.col)
+    }
+}
+
+impl LosslessJ2kPlannedFrame {
     pub(super) fn rect(&self) -> OutputFrameRect {
         OutputFrameRect::new(self.x, self.y, self.width, self.height)
     }
@@ -122,13 +130,14 @@ pub(crate) fn plan_lossless_j2k_frames(
     slide: &Slide,
     request: LosslessJ2kPlanRequest,
 ) -> Result<Vec<LosslessJ2kPlannedFrame>, Error> {
-    plan_lossless_j2k_frames_with_preflight(slide, request, None)
+    plan_lossless_j2k_frames_with_preflight(slide, request, None, None)
 }
 
 pub(super) fn plan_lossless_j2k_frames_with_preflight(
     slide: &Slide,
     request: LosslessJ2kPlanRequest,
     preflight: Option<WholeLevelJpegPreflight>,
+    per_frame_plan: Option<&crate::writer::PerFrameFunctionalGroupsPlan>,
 ) -> Result<Vec<LosslessJ2kPlannedFrame>, Error> {
     let rows = usize::try_from(request.row_count).map_err(|_| Error::Unsupported {
         reason: "J2K row planning row count exceeds platform addressable memory".into(),
@@ -161,7 +170,9 @@ pub(super) fn plan_lossless_j2k_frames_with_preflight(
                 .ok_or_else(|| Error::Unsupported {
                     reason: "J2K row planning tile column overflow".into(),
                 })?;
-            positions.push((row, col));
+            if per_frame_plan.is_none_or(|plan| plan.includes_grid_position(row, col)) {
+                positions.push((row, col));
+            }
         }
     }
     let jpeg_preflight = match preflight {
@@ -549,10 +560,7 @@ pub(super) fn source_tile_codec(
     };
     let syntax = RawJ2kInspection::new(&raw).map(|inspection| inspection.syntax());
     Ok(Some(SourceTileCodec {
-        compressed: matches!(
-            raw.compression(),
-            Compression::Jpeg | Compression::Jp2kRgb | Compression::Jp2kYcbcr
-        ),
+        compressed: crate::lossy::is_image_codec(raw.compression()),
         lossy_compression: lossy_compression_from_raw(&raw, syntax)?,
     }))
 }

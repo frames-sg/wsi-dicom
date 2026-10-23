@@ -23,13 +23,32 @@ pub(crate) fn lossy_method_for_compression(
         Compression::JpegXr => Ok(Some(JPEG_XR_METHOD)),
         Compression::Jp2kRgb | Compression::Jp2kYcbcr => Ok(Some(JPEG_2000_METHOD)),
         Compression::JpegLs => Ok(Some(JPEG_LS_METHOD)),
-        Compression::None | Compression::Lzw | Compression::Deflate | Compression::Zstd => Ok(None),
+        Compression::None
+        | Compression::Lzw
+        | Compression::Deflate
+        | Compression::Zstd
+        | Compression::Rle => Ok(None),
         other => Err(Error::Metadata {
             reason: format!(
                 "source codec {other:?} cannot be classified as lossless or lossy, so its compression history cannot be recorded"
             ),
         }),
     }
+}
+
+/// Whether pixels stored with `compression` can only be kept by a
+/// compressed-domain route, so decoding them is a re-encode the
+/// `pixel_reencode` policy governs. General-purpose lossless coding is not;
+/// a codec this crate does not know is treated as an image codec.
+pub(crate) fn is_image_codec(compression: Compression) -> bool {
+    !matches!(
+        compression,
+        Compression::None
+            | Compression::Lzw
+            | Compression::Deflate
+            | Compression::Zstd
+            | Compression::Rle
+    )
 }
 
 pub(crate) fn method_for_lossy_transfer_syntax(uid: &str) -> Option<&'static str> {

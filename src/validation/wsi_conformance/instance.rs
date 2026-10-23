@@ -7,15 +7,6 @@ use super::fields::{
 };
 use crate::icc::validate_dicom_icc_profile;
 use crate::lossy::method_for_lossy_transfer_syntax;
-use crate::VL_WSI_SOP_CLASS_UID;
-
-pub(super) fn is_vl_wsi(object: &DefaultDicomObject) -> bool {
-    object
-        .element(tags::SOP_CLASS_UID)
-        .ok()
-        .and_then(|element| element.to_str().ok())
-        .is_some_and(|uid| uid.trim_end_matches('\0') == VL_WSI_SOP_CLASS_UID)
-}
 
 pub(super) fn validate_core_image_profile_rule(object: &DefaultDicomObject) -> Result<(), String> {
     let image_type = object

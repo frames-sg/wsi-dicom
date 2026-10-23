@@ -362,6 +362,7 @@ pub(super) fn route_lossless_j2k_metal_input_runs(
         while run_end < planned.len()
             && planned[run_end].passthrough.is_none()
             && !lossless_j2k_direct_route_succeeded(direct_routes, run_end)
+            && planned[run_end].directly_follows(&planned[run_end - 1])
         {
             run_end += 1;
         }

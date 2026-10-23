@@ -55,28 +55,14 @@ pub(super) fn test_lossless_j2k_planned_frame(col: u64) -> LosslessJ2kPlannedFra
 }
 
 pub(super) fn assert_j2k_facade_roundtrip(samples: J2kLosslessSamples<'_>, codestream: &[u8]) {
-    let mut decoder = j2k::J2kDecoder::new(codestream).expect("parse encoded J2K");
-    let bytes_per_sample = if samples.bit_depth <= 8 {
-        1usize
-    } else {
-        2usize
-    };
-    let stride = samples.width as usize * samples.components as usize * bytes_per_sample;
-    let mut decoded = vec![0; stride * samples.height as usize];
-    let fmt = match (samples.components, samples.bit_depth) {
-        (1, 8) => j2k::PixelFormat::Gray8,
-        (3, 8) => j2k::PixelFormat::Rgb8,
-        (1, 16) => j2k::PixelFormat::Gray16,
-        (3, 16) => j2k::PixelFormat::Rgb16,
-        _ => panic!(
-            "unsupported test sample profile: components={} bit_depth={}",
-            samples.components, samples.bit_depth
-        ),
-    };
-    decoder
-        .decode_into(&mut decoded, stride, fmt)
-        .expect("decode encoded J2K");
-
+    let bits_allocated = if samples.bit_depth <= 8 { 8 } else { 16 };
+    let decoded = crate::test_support::decode_j2k_frame_for_test(
+        codestream,
+        samples.width,
+        samples.height,
+        u8::try_from(samples.components).expect("test sample component count"),
+        bits_allocated,
+    );
     assert_eq!(decoded, samples.data);
 }
 
@@ -430,35 +416,6 @@ pub(super) fn assert_transfer_syntax_codestream(
     }
 }
 
-pub(super) fn decode_j2k_frame_for_test(
-    codestream: &[u8],
-    width: u32,
-    height: u32,
-    components: u8,
-    bits_allocated: u16,
-) -> Vec<u8> {
-    let fmt = match (components, bits_allocated) {
-        (1, 8) => j2k::PixelFormat::Gray8,
-        (3, 8) => j2k::PixelFormat::Rgb8,
-        (1, 16) => j2k::PixelFormat::Gray16,
-        (3, 16) => j2k::PixelFormat::Rgb16,
-        other => panic!("unsupported frame profile: {other:?}"),
-    };
-    let bytes_per_sample = if bits_allocated <= 8 { 1usize } else { 2usize };
-    let stride = width as usize * components as usize * bytes_per_sample;
-    let mut decoder = j2k::J2kDecoder::new(codestream).unwrap_or_else(|err| {
-        if codestream.last() == Some(&0) {
-            j2k::J2kDecoder::new(&codestream[..codestream.len() - 1])
-                .unwrap_or_else(|_| panic!("parse frame: {err}"))
-        } else {
-            panic!("parse frame: {err}");
-        }
-    });
-    let mut decoded = vec![0; stride * height as usize];
-    decoder.decode_into(&mut decoded, stride, fmt).unwrap();
-    decoded
-}
-
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(super) fn metal_test_tile(
     device: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>,
@@ -557,22 +514,143 @@ pub(super) fn dicom_fragment_jpeg_payload(fragment: &[u8]) -> &[u8] {
 }
 
 pub(super) fn run_dicom_validators_for_test(path: &std::path::Path) {
-    let mut ran = false;
-    if let Some(dciodvfy) = find_command_for_test("dciodvfy") {
-        run_dicom_validator_for_test("dciodvfy", &dciodvfy, &["-new"], &[path]);
-        ran = true;
+    run_dicom3tools_validators_for_test(path, None);
+}
+
+/// Run external validators for a conformant TILED_SPARSE object while
+/// recognizing one exact dicom3tools geometry bug. dciodvfy currently applies
+/// the TILED_FULL rectangular frame-count formula whenever the per-frame item
+/// count matches Number of Frames, which is required for TILED_SPARSE too.
+pub(super) fn run_sparse_dicom_validators_for_test(path: &std::path::Path) {
+    let expected_dciodvfy_error = expected_sparse_dciodvfy_cardinality_error(path);
+    run_dicom3tools_validators_for_test(path, Some(&expected_dciodvfy_error));
+    if let Some(validate_iods) = find_command_for_test("validate_iods") {
+        run_dicom_validator_for_test(
+            "validate_iods",
+            &validate_iods,
+            &["--edition", "2026c"],
+            &[path],
+        );
     } else {
-        eprintln!("skipping dciodvfy validation: dciodvfy not found");
+        eprintln!("skipping validate_iods validation: validate_iods not found");
     }
-    if let Some(dcentvfy) = find_command_for_test("dcentvfy") {
-        run_dicom_validator_for_test("dcentvfy", &dcentvfy, &[], &[path]);
-        ran = true;
-    } else {
-        eprintln!("skipping dcentvfy validation: dcentvfy not found");
+}
+
+fn run_dicom3tools_validators_for_test(path: &std::path::Path, sparse_error: Option<&str>) {
+    for (name, args) in [("dciodvfy", &["-new"][..]), ("dcentvfy", &[][..])] {
+        let Some(command) = find_command_for_test(name) else {
+            eprintln!("skipping {name} validation: {name} not found");
+            continue;
+        };
+        let output = run_dicom_validator_command_for_test(&command, args, &[path]);
+        if let Some(expected) =
+            sparse_error.filter(|_| name == "dciodvfy" && !validator_output_succeeded(&output))
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                dciodvfy_failure_is_sparse_cardinality_false_positive(
+                    output.status.code(),
+                    &stdout,
+                    &stderr,
+                    expected,
+                ),
+                "dciodvfy failed outside its known TILED_SPARSE cardinality bug with status {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                output.status
+            );
+            eprintln!(
+                "dciodvfy incorrectly applies the TILED_FULL frame-count formula to this verified TILED_SPARSE object"
+            );
+        } else {
+            assert_validator_output_succeeded(name, &output);
+        }
     }
-    if !ran {
-        eprintln!("skipping external DICOM validator smoke: no DICOM validators found");
+}
+
+fn expected_sparse_dciodvfy_cardinality_error(path: &std::path::Path) -> String {
+    let object = dicom_object::open_file(path).expect("open sparse DICOM validation fixture");
+    assert_eq!(
+        object
+            .element(tags::DIMENSION_ORGANIZATION_TYPE)
+            .expect("sparse Dimension Organization Type")
+            .to_str()
+            .unwrap()
+            .trim(),
+        "TILED_SPARSE"
+    );
+    let number_of_frames = object
+        .element(tags::NUMBER_OF_FRAMES)
+        .expect("sparse Number of Frames")
+        .to_int::<u32>()
+        .unwrap();
+    assert_eq!(
+        frame_positions_for_test(&object).len(),
+        number_of_frames as usize
+    );
+
+    let int = |tag| object.element(tag).unwrap().to_int::<u32>().unwrap();
+    let (rows, columns) = (int(tags::ROWS), int(tags::COLUMNS));
+    let matrix_rows = int(tags::TOTAL_PIXEL_MATRIX_ROWS);
+    let matrix_columns = int(tags::TOTAL_PIXEL_MATRIX_COLUMNS);
+    let tile_rows = matrix_rows.div_ceil(rows);
+    let tile_columns = matrix_columns.div_ceil(columns);
+    let mut positions = std::collections::BTreeSet::new();
+    for (row, column) in frame_positions_for_test(&object) {
+        assert!(row > 0 && row <= matrix_rows && (row - 1).is_multiple_of(rows));
+        assert!(column > 0 && column <= matrix_columns && (column - 1).is_multiple_of(columns));
+        assert!(
+            positions.insert((row, column)),
+            "duplicate sparse frame position"
+        );
     }
+
+    let optical_paths = int(tags::NUMBER_OF_OPTICAL_PATHS);
+    let focal_planes = int(tags::TOTAL_PIXEL_MATRIX_FOCAL_PLANES);
+    let expected = optical_paths * focal_planes * tile_rows * tile_columns;
+    format!(
+        "Error - </NumberOfFrames(0028,0008)> - NumberOfFrames does not match expected value for tiled total pixel matrix = <{number_of_frames} > - expected {expected} for {optical_paths} optical paths, {focal_planes} focal planes, {tile_rows} rows of tiles, {tile_columns} columns of tiles"
+    )
+}
+
+/// The 1-based (row, column) Plane Position (Slide) of each Per-Frame item.
+pub(super) fn frame_positions_for_test(object: &dicom_object::InMemDicomObject) -> Vec<(u32, u32)> {
+    object
+        .element(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)
+        .expect("Per-frame Functional Groups Sequence")
+        .items()
+        .expect("Per-frame Functional Groups Sequence items")
+        .iter()
+        .map(|frame| {
+            let position = &frame
+                .element(tags::PLANE_POSITION_SLIDE_SEQUENCE)
+                .expect("Plane Position (Slide) Sequence")
+                .items()
+                .expect("Plane Position (Slide) Sequence items")[0];
+            let int = |tag| position.element(tag).unwrap().to_int::<u32>().unwrap();
+            (
+                int(tags::ROW_POSITION_IN_TOTAL_IMAGE_PIXEL_MATRIX),
+                int(tags::COLUMN_POSITION_IN_TOTAL_IMAGE_PIXEL_MATRIX),
+            )
+        })
+        .collect()
+}
+
+fn dciodvfy_failure_is_sparse_cardinality_false_positive(
+    status_code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+    expected: &str,
+) -> bool {
+    if status_code != Some(1) {
+        return false;
+    }
+    let errors = stdout
+        .lines()
+        .chain(stderr.lines())
+        .map(str::trim)
+        .filter(|line| line.starts_with("Error"))
+        .collect::<Vec<_>>();
+    errors == [expected]
 }
 
 pub(super) fn run_htj2k_dicom_validators_for_test(path: &std::path::Path) {
@@ -726,6 +804,37 @@ fn dcentvfy_errors_are_unsupported_htj2k_cascade(stderr: &str) -> bool {
 }
 
 #[test]
+fn dciodvfy_sparse_classifier_accepts_only_the_exact_known_error() {
+    let expected = "Error - </NumberOfFrames(0028,0008)> - NumberOfFrames does not match expected value for tiled total pixel matrix = <3 > - expected 4 for 1 optical paths, 1 focal planes, 2 rows of tiles, 2 columns of tiles";
+    assert!(dciodvfy_failure_is_sparse_cardinality_false_positive(
+        Some(1),
+        "",
+        expected,
+        expected
+    ));
+    assert!(!dciodvfy_failure_is_sparse_cardinality_false_positive(
+        Some(1),
+        "Error - </PatientID(0010,0020)> - Missing Type 2 attribute",
+        expected,
+        expected,
+    ));
+    assert!(!dciodvfy_failure_is_sparse_cardinality_false_positive(
+        Some(1),
+        "",
+        "Error - </NumberOfFrames(0028,0008)> - different cardinality failure",
+        expected,
+    ));
+    for status_code in [Some(0), Some(2), None] {
+        assert!(!dciodvfy_failure_is_sparse_cardinality_false_positive(
+            status_code,
+            "",
+            expected,
+            expected,
+        ));
+    }
+}
+
+#[test]
 fn dciodvfy_htj2k_capability_classifier_accepts_only_the_known_parse_cascade() {
     let unsupported = "\
 Error - Undefined value length of other byte/word element is illegal in non-encapsulated transfer syntax\n\
@@ -773,4 +882,30 @@ fn htj2k_validator_runner_accepts_the_known_dcentvfy_incapability() {
         &["-c", script],
         std::path::Path::new("unused.dcm"),
     ));
+}
+
+pub(super) fn text(object: &dicom_object::InMemDicomObject, tag: dicom_core::Tag) -> String {
+    object
+        .element(tag)
+        .unwrap_or_else(|err| panic!("missing {tag:?}: {err}"))
+        .to_str()
+        .unwrap()
+        .trim_end_matches(['\0', ' '])
+        .to_string()
+}
+
+/// Declares lossy source history: Lossy Image Compression "01" with the
+/// backslash-separated `methods` and `ratios`.
+pub(super) fn declare_lossy_history_for_test(
+    object: &mut dicom_object::InMemDicomObject,
+    methods: &str,
+    ratios: &str,
+) {
+    for (tag, vr, value) in [
+        (tags::LOSSY_IMAGE_COMPRESSION, VR::CS, "01"),
+        (tags::LOSSY_IMAGE_COMPRESSION_METHOD, VR::CS, methods),
+        (tags::LOSSY_IMAGE_COMPRESSION_RATIO, VR::DS, ratios),
+    ] {
+        object.put(dicom_core::DataElement::new(tag, vr, value));
+    }
 }

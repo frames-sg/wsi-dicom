@@ -53,7 +53,7 @@ fn vl_wsi_rectangular_frames_write_rows_columns_and_positions() {
         photometric_interpretation: "YBR_FULL_422",
     };
     params.pixel_spacing_mm = Some((0.0005, 0.00025));
-    let object = super::build_dicom_object(params).unwrap();
+    let object = super::build_with_per_frame_groups(params).unwrap();
 
     assert_eq!(
         object.element(tags::ROWS).unwrap().to_int::<u16>().unwrap(),
@@ -105,7 +105,7 @@ fn vl_wsi_rejects_per_frame_positions_outside_sl_range() {
         photometric_interpretation: "YBR_FULL_422",
     };
     params.pixel_spacing_mm = Some((0.0005, 0.00025));
-    let err = super::build_dicom_object(params).unwrap_err();
+    let err = super::build_with_per_frame_groups(params).unwrap_err();
 
     assert!(
         err.to_string().contains("position exceeds SL range"),

@@ -29,6 +29,29 @@ fn sample_object_with_metadata(metadata: DicomMetadata) -> InMemDicomObject {
     sample_object_with_metadata_level(metadata, 0)
 }
 
+/// The object `build_dicom_object` returns, with the Per-Frame Functional
+/// Groups the streamed writer adds when it writes a pyramid level.
+fn build_with_per_frame_groups(
+    params: super::DicomObjectParams<'_>,
+) -> Result<InMemDicomObject, Error> {
+    let (frame_count, frame_grid) = (params.frame_count, params.frame_grid);
+    let (row_spacing_mm, column_spacing_mm) = params
+        .pixel_spacing_mm
+        .expect("pyramid levels have pixel spacing");
+    let mut object = build_dicom_object(params)?;
+    object.put(DataElement::new(
+        tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE,
+        VR::SQ,
+        dicom_core::value::DataSetSequence::from(per_frame_items(
+            frame_count,
+            frame_grid,
+            row_spacing_mm,
+            column_spacing_mm,
+        )?),
+    ));
+    Ok(object)
+}
+
 fn sample_object_with_metadata_level(metadata: DicomMetadata, level_idx: u32) -> InMemDicomObject {
     sample_object_with_metadata_level_and_offset_tables(
         metadata,
@@ -58,7 +81,7 @@ fn sample_object_with_metadata_level_and_offset_tables(
     let mut params = sample_dicom_object_params(&metadata, Some(&icc_profile));
     params.level_idx = level_idx;
     params.frame_count = frame_count;
-    let mut object = super::build_dicom_object(params).unwrap();
+    let mut object = build_with_per_frame_groups(params).unwrap();
     object.put(DataElement::new(
         tags::EXTENDED_OFFSET_TABLE,
         VR::OV,
@@ -128,9 +151,11 @@ fn sample_dicom_object_params<'a>(
             series_uid: "1.2.826.0.1.3680043.10.999.2",
             sop_instance_uid: "1.2.826.0.1.3680043.10.999.3",
             frame_of_reference_uid: "1.2.826.0.1.3680043.10.999.4",
-            pyramid_uid: "1.2.826.0.1.3680043.10.999.5",
+            pyramid: Some((
+                "1.2.826.0.1.3680043.10.999.5",
+                "WSI pyramid s0 ser0 z0 c0 t0",
+            )),
             dimension_organization_uid: "1.2.826.0.1.3680043.10.999.6",
-            pyramid_label: "WSI pyramid s0 ser0 z0 c0 t0",
             derivation_source_sop_instance_uid: None,
         },
         series_number: 7,
@@ -151,7 +176,9 @@ fn sample_dicom_object_params<'a>(
         },
         pixel_spacing_mm: Some((0.0005, 0.0005)),
         icc_profile,
+        objective_lens_power: None,
         lossy_compression: super::LossyCompressionHistory::default(),
+        conformance: crate::ConformanceLevel::Optional,
     }
 }
 

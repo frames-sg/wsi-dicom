@@ -214,7 +214,35 @@ pub(super) struct InstanceExportContext<'a> {
     pub(super) instance_number: u32,
     pub(super) coordinate: InstanceCoordinate,
     pub(super) level: &'a wsi_rs::Level,
-    pub(super) per_frame_plan: Option<PerFrameFunctionalGroupsPlan>,
+    pub(super) per_frame_plan: Option<&'a PerFrameFunctionalGroupsPlan>,
+}
+
+impl InstanceExportContext<'_> {
+    /// Frames the instance writes: the planned frames of a sparse instance,
+    /// else every frame of the `dense` grid.
+    fn frame_count(self, dense: u32) -> u32 {
+        self.per_frame_plan.map_or(dense, |plan| plan.frame_count())
+    }
+
+    fn dicom_context(
+        self,
+        slide: &Slide,
+        request: &ExportRequest,
+    ) -> Result<crate::instance_context::DicomInstanceContext, Error> {
+        Ok(crate::instance_context::DicomInstanceContext::new(
+            self.identity,
+            &request.output_dir,
+            require_pixel_spacing_mm(level_pixel_spacing_mm(
+                slide,
+                self.level,
+                self.options.semantics.source_pixel_spacing_mm,
+            )?)?,
+            self.coordinate,
+        )?
+        .with_level_zero_source(self.identity, request.level_filter.is_none())
+        .with_objective_lens_power(slide.dataset().properties.objective_power())
+        .with_conformance(self.options.semantics.conformance))
+    }
 }
 
 fn level_pixel_spacing_mm(
@@ -359,6 +387,19 @@ pub(crate) fn export_dicom_prepared(
     staged_request.options.overwrite = false;
     let mut staged_options = options;
     staged_options.semantics.overwrite = false;
+    // Associated images are small; writing them first surfaces their
+    // refusals before the pyramid is encoded.
+    let associated_instances = export_associated_images(
+        AssociatedExportContext {
+            slide: &slide,
+            request: &staged_request,
+            options: &staged_options,
+            metadata: &metadata,
+            identity: &identity,
+        },
+        &associated.jobs,
+        jobs.len(),
+    )?;
     let mut instances = export_dicom_instance_jobs(
         &slide,
         &staged_request,
@@ -378,23 +419,7 @@ pub(crate) fn export_dicom_prepared(
             },
         });
     }
-    let first_associated_instance_number = u32::try_from(jobs.len())
-        .ok()
-        .and_then(|count| count.checked_add(1))
-        .ok_or_else(|| Error::Unsupported {
-            reason: "DICOM instance count exceeds u32".into(),
-        })?;
-    instances.extend(export_associated_images(
-        AssociatedExportContext {
-            slide: &slide,
-            request: &staged_request,
-            options: &staged_options,
-            metadata: &metadata,
-            identity: &identity,
-        },
-        &associated.jobs,
-        first_associated_instance_number,
-    )?);
+    instances.extend(associated_instances);
     transaction.commit(&mut instances, options.semantics.overwrite)?;
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -472,10 +497,10 @@ mod tests {
         dicom_j2k_decomposition_levels, encode_dicom_j2k_lossless, encode_dicom_lossless,
     };
     use crate::test_support::{
-        dicom_fragment_payload_without_padding, encode_test_gray_jpeg, encode_test_jpeg,
-        find_command_for_test, tiff_short_value, tiff_tag, write_tiled_aperio_jp2k_ycbcr_tiff,
-        write_tiled_grayscale_jpeg_tiff, write_tiled_jp2k_rgb_tiff, write_tiled_jp2k_ycbcr_tiff,
-        write_tiled_jpeg_tiff,
+        decode_j2k_frame_for_test, dicom_fragment_payload_without_padding, encode_test_gray_jpeg,
+        encode_test_jpeg, find_command_for_test, tiff_short_value, tiff_tag,
+        write_tiled_aperio_jp2k_ycbcr_tiff, write_tiled_grayscale_jpeg_tiff,
+        write_tiled_jp2k_rgb_tiff, write_tiled_jp2k_ycbcr_tiff, write_tiled_jpeg_tiff,
     };
     use dicom_core::VR;
     use dicom_dictionary_std::{tags, uids};
@@ -491,6 +516,7 @@ mod tests {
     mod associated_image_tests;
     #[cfg(all(feature = "metal", target_os = "macos"))]
     mod auto_route_tests;
+    mod conformance_tests;
     mod export_integration_tests;
     mod fixture_tests;
     mod icc_profile_tests;

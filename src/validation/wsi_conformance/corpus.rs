@@ -10,9 +10,9 @@ use super::geometry::{slide_coordinate_identity, SlideCoordinateIdentity};
 use super::identity::{
     clinical_identity, specimen_identities, ClinicalIdentity, IssuerIdentity, SpecimenIdentity,
 };
-use super::instance::is_vl_wsi;
 use super::rule_check;
 use crate::uid::is_valid_dicom_uid;
+use crate::validation::iod::declares_vl_wsi;
 
 const SPECIMEN_SET_RULE: &str = "intrinsic-wsi-dicom-2026c-specimen-uid-set";
 const IDENTITY_SET_RULE: &str = "intrinsic-wsi-dicom-2026c-identity-set";
@@ -39,7 +39,7 @@ struct WsiInstanceFacts {
 
 impl WsiConformanceCorpus {
     pub(in crate::validation) fn observe(&mut self, path: &Path, object: &DefaultDicomObject) {
-        if !is_vl_wsi(object) {
+        if !declares_vl_wsi(object) {
             return;
         }
         let sop_instance_uid = required_string(object, tags::SOP_INSTANCE_UID, "SOP Instance UID");
