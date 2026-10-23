@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 
 # wsi-dicom
 
@@ -8,8 +8,7 @@
 [API documentation](https://docs.rs/wsi-dicom)
 
 `wsi-dicom` converts whole-slide imaging files that `wsi-rs` can open into
-DICOM VL Whole Slide Microscopy instances. It provides a Rust API, a CLI, and an
-optional native GUI.
+DICOM VL Whole Slide Microscopy instances. It provides a Rust API and a CLI.
 
 [J2K, the pure-Rust JPEG 2000 codec](https://frames-sg.com/j2k/rust-jpeg2000-codec/),
 supplies JPEG, JPEG 2000, and HTJ2K codec primitives. `wsi-rs`
@@ -57,7 +56,7 @@ wsi-dicom = { version = "0.8.0", features = ["cuda"] } # CUDA-capable Linux
 ```
 
 This source tree requires Rust 1.99.0 and targets J2K 0.12.0, `wsi-rs` 0.8.0,
-and `wsi-dicom-annotations` 0.1.4. Release builds resolve these dependencies
+and `wsi-dicom-annotations` 0.2.0. Release builds resolve these dependencies
 from crates.io:
 
 ```sh
@@ -100,12 +99,6 @@ For local maximum CPU throughput:
 
 ```sh
 RUSTFLAGS="-C target-cpu=native" cargo build --release
-```
-
-The optional GUI lives in `apps/wsi-dicom-gui`:
-
-```sh
-cargo run -p wsi-dicom-gui
 ```
 
 ## Quickstart
@@ -273,8 +266,8 @@ wsi-dicom calibration create --icc vendor-profile.icc \
 
 `calibration create` validates and packages an existing vendor- or
 target-generated profile. It does not derive scanner calibration from an
-ordinary tissue slide. Calibration selection is CLI/API-only in 0.7.5; the GUI
-offers source-required, sRGB fallback, and Display P3 fallback choices.
+ordinary tissue slide. Calibration selection is available through the CLI and
+Rust API.
 
 The default conversion preset is `lossless-review`, which emits HTJ2K Lossless
 RPCL. For explicit JPEG Baseline output:
@@ -353,7 +346,7 @@ let report = Export::from_slide("slide.ndpi")
     .run()?;
 ```
 
-CLI and GUI-style integrations that also need metadata selection, annotation
+Applications that also need metadata selection, annotation
 preparation, optional validation, report persistence, and progress events can
 use `run_export_workflow` with `ExportWorkflowRequest`. Route-analysis callers
 can use the target-specific `SlideRouteCoverageRequest` and
@@ -549,7 +542,6 @@ Core checks:
 cargo fmt --all -- --check
 cargo clippy --workspace --no-default-features --all-targets --locked -- -D warnings
 cargo test --workspace --no-default-features --all-targets --locked
-cargo check -p wsi-dicom-gui --locked
 ```
 
 The ignored fixture checks are explicit real-slide runs. Set
@@ -640,5 +632,12 @@ color-management API: `IccProfilePolicy` is removed, `ExportRequest::new` requir
 
 ## License
 
-Dual-licensed under either [MIT](LICENSE-MIT) or
-[Apache-2.0](LICENSE-APACHE), at your option.
+The 0.9.0 development release is available under the
+[GNU Affero General Public License version 3 only](LICENSE-AGPL)
+(`AGPL-3.0-only`), or under a separate [commercial license](COMMERCIAL-LICENSE.md)
+from Frames. Commercial use is permitted under the AGPL without purchasing a
+commercial license when its terms are followed.
+
+Published releases through 0.8.0 retain their original MIT/Apache-2.0 licenses.
+Existing permissive grants and separately licensed material are preserved; see
+[LICENSE](LICENSE). J2K and wsi-rs retain their own licenses.

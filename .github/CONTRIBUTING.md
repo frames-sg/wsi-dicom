@@ -12,7 +12,6 @@ cargo fmt --all -- --check
 cargo clippy --workspace --no-default-features --all-targets --locked -- -D warnings
 cargo test --workspace --no-default-features --all-targets --locked
 cargo doc --no-default-features --no-deps --locked
-cargo check -p wsi-dicom-gui --locked
 ```
 
 GPU routes are optional and should be tested on hardware that supports the

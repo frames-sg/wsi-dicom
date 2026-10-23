@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 
 # Changelog
 
@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Changed
+
+- The 0.9.0 development release is offered under AGPL-3.0-only, with a
+  separately negotiated commercial license available from Frames. Previously
+  released versions retain their MIT/Apache-2.0 licenses. Release archives
+  include the AGPL text, commercial licensing contact, and retained permissive
+  notices.
 
 ### Added
 
@@ -45,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- Removed the optional `wsi-dicom-gui` application and its CI build job. The
+  converter is provided through its CLI and Rust API.
 - **Breaking:** validation no longer runs external codecs. The `djpeg`,
   `opj_decompress`, and HTJ2K decoder pixel-decode checks are gone, along with
   `ValidationOptions::{htj2k_decoder, max_pixel_frames}`,

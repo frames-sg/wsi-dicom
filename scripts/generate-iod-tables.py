@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 
 """Generate the VL Whole Slide Microscopy IOD requirement tables.
 

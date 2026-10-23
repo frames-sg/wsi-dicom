@@ -120,7 +120,7 @@ import sys
 
 breaks = Path(os.environ["ACTUAL_BREAKS"]).read_text(encoding="utf-8").splitlines()
 report = [
-    "<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->",
+    "<!-- SPDX-License-Identifier: AGPL-3.0-only -->",
     "",
     f"# wsi-dicom {os.environ['REPORT_BASELINE_VERSION']} to {os.environ['REPORT_CANDIDATE_VERSION']} semver report",
     "",

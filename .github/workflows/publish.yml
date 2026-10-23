@@ -166,7 +166,7 @@ jobs:
           stage="dist/wsi-dicom-${version}-${RELEASE_TARGET}"
           mkdir -p "$stage"
           cp "$binary" "$stage/wsi-dicom"
-          cp README.md LICENSE-MIT LICENSE-APACHE "$stage/"
+          cp README.md LICENSE LICENSE-AGPL COMMERCIAL-LICENSE.md LICENSE-MIT LICENSE-APACHE "$stage/"
           lock_sha="$(shasum -a 256 Cargo.lock | awk '{print $1}')"
           scripts/write-release-metadata.py \
             --version "$version" \
@@ -195,7 +195,7 @@ jobs:
           $stage = "dist/wsi-dicom-$version-$env:RELEASE_TARGET"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item $binary "$stage/wsi-dicom.exe"
-          Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE $stage
+          Copy-Item README.md, LICENSE, LICENSE-AGPL, COMMERCIAL-LICENSE.md, LICENSE-MIT, LICENSE-APACHE $stage
           $lockSha = (Get-FileHash Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant()
           python scripts/write-release-metadata.py `
             --version $version `

@@ -2,7 +2,7 @@
 name = "wsi-dicom"
 version = "0.9.0"
 edition = "2021"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-only"
 description = "Convert whole-slide imaging files to DICOM VL Whole Slide Microscopy"
 rust-version = "1.99.0"
 readme = "README.md"
@@ -12,7 +12,6 @@ documentation = "https://docs.rs/wsi-dicom"
 keywords = ["dicom", "whole-slide", "microscopy", "pathology", "wsi"]
 categories = ["multimedia::images", "science"]
 exclude = [
-    "apps/wsi-dicom-gui/**",
     ".github/**",
     ".cargo/**",
     "fuzz/**",
@@ -44,7 +43,7 @@ j2k-jpeg-metal = { version = "0.13.1", optional = true }
 j2k-transcode = "0.13.1"
 j2k-transcode-metal = { version = "0.13.1", optional = true }
 wsi-rs = "0.8.0"
-wsi-dicom-annotations = { version = "=0.1.4", default-features = false }
+wsi-dicom-annotations = { version = "=0.2.0", default-features = false }
 tempfile = "3"
 thiserror = "2"
 
@@ -99,7 +98,7 @@ harness = false
 required-features = ["bench-internals"]
 
 [workspace]
-members = [".", "xtask", "apps/wsi-dicom-gui"]
+members = [".", "xtask"]
 resolver = "2"
 
 [profile.dev]
