@@ -9,6 +9,7 @@ use super::functional_groups::per_frame_items;
 use super::functional_groups::FrameGrid;
 use crate::lossy::LossyCompressionHistory;
 use crate::metadata::ValidatedDicomMetadata;
+use crate::report::ImageFlavor;
 use crate::tile::PixelProfile;
 use crate::{DicomMetadata, Error, VL_WSI_SOP_CLASS_UID};
 
@@ -40,6 +41,9 @@ pub(crate) struct DicomObjectParams<'a> {
     pub(crate) identifiers: DicomObjectIdentifiers<'a>,
     pub(crate) series_number: u32,
     pub(crate) instance_number: u32,
+    /// Image Type Value 3; it decides which flavour-conditional modules and
+    /// attributes the object carries (PS3.3 A.32.8, C.8.12.4).
+    pub(crate) flavor: ImageFlavor,
     pub(crate) level_idx: u32,
     pub(crate) frame_grid: FrameGrid,
     pub(crate) frame_count: u32,
@@ -53,8 +57,9 @@ struct DicomObjectBuildContext<'a> {
     params: DicomObjectParams<'a>,
     metadata: ValidatedDicomMetadata<'a>,
     image_type: &'static str,
-    row_spacing_mm: f64,
-    column_spacing_mm: f64,
+    /// Row and column spacing; absent only for LABEL and OVERVIEW, which do
+    /// not require Pixel Spacing.
+    pixel_spacing_mm: Option<(f64, f64)>,
     dicom_frame_rows: u16,
     dicom_frame_columns: u16,
     dicom_matrix_columns: u32,
@@ -65,27 +70,28 @@ pub(crate) fn build_dicom_object(params: DicomObjectParams<'_>) -> Result<InMemD
     let metadata = params.metadata.validated_for_writer()?;
     let frame_grid = params.frame_grid;
     frame_grid.validate()?;
-    let (row_spacing_mm, column_spacing_mm) =
-        params.pixel_spacing_mm.ok_or_else(|| Error::Metadata {
-            reason: "VL WSI VOLUME export requires pixel spacing metadata".into(),
-        })?;
+    let flavor = params.flavor;
+    if params.pixel_spacing_mm.is_none() && flavor_requires_pixel_spacing(flavor) {
+        return Err(Error::Metadata {
+            reason: format!(
+                "VL WSI {} export requires pixel spacing metadata",
+                flavor.as_dicom()
+            ),
+        });
+    }
     let dicom_frame_rows = checked_u16_attribute(frame_grid.frame_rows, "Rows")?;
     let dicom_frame_columns = checked_u16_attribute(frame_grid.frame_columns, "Columns")?;
     let dicom_matrix_columns =
         checked_u32_attribute(frame_grid.matrix_columns, "Total Pixel Matrix Columns")?;
     let dicom_matrix_rows =
         checked_u32_attribute(frame_grid.matrix_rows, "Total Pixel Matrix Rows")?;
-    let image_type = if params.level_idx == 0 {
-        "ORIGINAL\\PRIMARY\\VOLUME\\NONE"
-    } else {
-        "DERIVED\\PRIMARY\\VOLUME\\RESAMPLED"
-    };
+    let image_type = image_type(flavor, params.level_idx);
+    let pixel_spacing_mm = params.pixel_spacing_mm;
     let context = DicomObjectBuildContext {
         params,
         metadata,
         image_type,
-        row_spacing_mm,
-        column_spacing_mm,
+        pixel_spacing_mm,
         dicom_frame_rows,
         dicom_frame_columns,
         dicom_matrix_columns,
@@ -101,10 +107,43 @@ pub(crate) fn build_dicom_object(params: DicomObjectParams<'_>) -> Result<InMemD
     put_lossy_compression_module(&mut object, &context);
     put_wsi_image_module(&mut object, &context);
     put_wsi_sequences(&mut object, &context);
+    if flavor == ImageFlavor::Label {
+        put_slide_label_module(&mut object);
+    }
     #[cfg(test)]
     put_per_frame_functional_groups(&mut object, &context)?;
 
     Ok(object)
+}
+
+fn image_type(flavor: ImageFlavor, level_idx: u32) -> &'static str {
+    match flavor {
+        ImageFlavor::Volume if level_idx == 0 => "ORIGINAL\\PRIMARY\\VOLUME\\NONE",
+        ImageFlavor::Volume => "DERIVED\\PRIMARY\\VOLUME\\RESAMPLED",
+        ImageFlavor::Label => "ORIGINAL\\PRIMARY\\LABEL\\NONE",
+        ImageFlavor::Overview => "ORIGINAL\\PRIMARY\\OVERVIEW\\NONE",
+        ImageFlavor::Thumbnail => "DERIVED\\PRIMARY\\THUMBNAIL\\RESAMPLED",
+    }
+}
+
+/// Pixel Spacing is required unless Image Type Value 3 is LABEL or OVERVIEW
+/// (PS3.3 C.7.6.16.2.1, with Volumetric Properties VOLUME).
+fn flavor_requires_pixel_spacing(flavor: ImageFlavor) -> bool {
+    !matches!(flavor, ImageFlavor::Label | ImageFlavor::Overview)
+}
+
+/// Frame of Reference is required for VOLUME and THUMBNAIL (PS3.3 A.32.8).
+/// LABEL and OVERVIEW images are not registered to the slide coordinates.
+fn flavor_has_frame_of_reference(flavor: ImageFlavor) -> bool {
+    matches!(flavor, ImageFlavor::Volume | ImageFlavor::Thumbnail)
+}
+
+/// Slide Label module (PS3.3 C.8.12.8), required for LABEL images. Barcode
+/// Value and Label Text are Type 2; they are left empty because the source's
+/// label content is carried only in the pixels.
+fn put_slide_label_module(object: &mut InMemDicomObject) {
+    put_str(object, tags::BARCODE_VALUE, VR::LT, "");
+    put_str(object, tags::LABEL_TEXT, VR::UT, "");
 }
 
 fn put_sop_common_and_identification_modules(
@@ -137,19 +176,25 @@ fn put_sop_common_and_identification_modules(
         VR::UI,
         identifiers.series_uid,
     );
-    put_str(
-        object,
-        tags::FRAME_OF_REFERENCE_UID,
-        VR::UI,
-        identifiers.frame_of_reference_uid,
-    );
-    put_str(object, tags::PYRAMID_UID, VR::UI, identifiers.pyramid_uid);
-    put_str(
-        object,
-        tags::PYRAMID_LABEL,
-        VR::LO,
-        identifiers.pyramid_label,
-    );
+    if flavor_has_frame_of_reference(params.flavor) {
+        put_str(
+            object,
+            tags::FRAME_OF_REFERENCE_UID,
+            VR::UI,
+            identifiers.frame_of_reference_uid,
+        );
+    }
+    // The Multi-Resolution Pyramid module groups the pyramid levels; LABEL,
+    // OVERVIEW and THUMBNAIL instances stay outside it.
+    if params.flavor == ImageFlavor::Volume {
+        put_str(object, tags::PYRAMID_UID, VR::UI, identifiers.pyramid_uid);
+        put_str(
+            object,
+            tags::PYRAMID_LABEL,
+            VR::LO,
+            identifiers.pyramid_label,
+        );
+    }
     put_str(object, tags::MODALITY, VR::CS, "SM");
     put_str(
         object,
@@ -244,12 +289,14 @@ fn put_study_and_frame_of_reference_modules(
     if let Some(laterality) = non_empty(metadata.laterality.as_deref()) {
         put_str(object, tags::LATERALITY, VR::CS, laterality);
     }
-    put_str(
-        object,
-        tags::POSITION_REFERENCE_INDICATOR,
-        VR::LO,
-        DEFAULT_POSITION_REFERENCE,
-    );
+    if flavor_has_frame_of_reference(context.params.flavor) {
+        put_str(
+            object,
+            tags::POSITION_REFERENCE_INDICATOR,
+            VR::LO,
+            DEFAULT_POSITION_REFERENCE,
+        );
+    }
 }
 
 fn put_equipment_and_content_modules(
@@ -343,21 +390,26 @@ fn put_image_pixel_module(object: &mut InMemDicomObject, context: &DicomObjectBu
         tags::TOTAL_PIXEL_MATRIX_ROWS,
         context.dicom_matrix_rows,
     );
-    put_fl(
-        object,
-        tags::IMAGED_VOLUME_WIDTH,
-        frame_grid.matrix_columns as f64 * context.column_spacing_mm,
-    );
-    put_fl(
-        object,
-        tags::IMAGED_VOLUME_HEIGHT,
-        frame_grid.matrix_rows as f64 * context.row_spacing_mm,
-    );
-    put_fl(
-        object,
-        tags::IMAGED_VOLUME_DEPTH,
-        f64::from(metadata.imaged_volume_depth_um()),
-    );
+    // Imaged Volume Width, Height and Depth are required only for VOLUME.
+    if let (ImageFlavor::Volume, Some((row_spacing_mm, column_spacing_mm))) =
+        (params.flavor, context.pixel_spacing_mm)
+    {
+        put_fl(
+            object,
+            tags::IMAGED_VOLUME_WIDTH,
+            frame_grid.matrix_columns as f64 * column_spacing_mm,
+        );
+        put_fl(
+            object,
+            tags::IMAGED_VOLUME_HEIGHT,
+            frame_grid.matrix_rows as f64 * row_spacing_mm,
+        );
+        put_fl(
+            object,
+            tags::IMAGED_VOLUME_DEPTH,
+            f64::from(metadata.imaged_volume_depth_um()),
+        );
+    }
     put_str(
         object,
         tags::NUMBER_OF_FRAMES,
@@ -429,8 +481,13 @@ fn put_wsi_image_module(object: &mut InMemDicomObject, context: &DicomObjectBuil
     );
     put_u32(object, tags::NUMBER_OF_OPTICAL_PATHS, 1);
     put_u32(object, tags::TOTAL_PIXEL_MATRIX_FOCAL_PLANES, 1);
-    put_str(object, tags::SPECIMEN_LABEL_IN_IMAGE, VR::CS, "NO");
-    put_str(object, tags::BURNED_IN_ANNOTATION, VR::CS, "NO");
+    // Specimen Label in Image shall be YES for OVERVIEW and LABEL (PS3.3
+    // C.8.12.4). A label can identify the patient, so those images also
+    // declare burned-in annotation.
+    let shows_label = matches!(params.flavor, ImageFlavor::Label | ImageFlavor::Overview);
+    let yes_no = if shows_label { "YES" } else { "NO" };
+    put_str(object, tags::SPECIMEN_LABEL_IN_IMAGE, VR::CS, yes_no);
+    put_str(object, tags::BURNED_IN_ANNOTATION, VR::CS, yes_no);
     put_str(object, tags::VOLUMETRIC_PROPERTIES, VR::CS, "VOLUME");
     put_str(
         object,
@@ -496,9 +553,8 @@ fn put_wsi_sequences(object: &mut InMemDicomObject, context: &DicomObjectBuildCo
         VR::SQ,
         DataSetSequence::from(vec![shared_functional_groups_item(
             context.image_type,
-            context.row_spacing_mm,
-            context.column_spacing_mm,
-            metadata.slice_thickness_mm_ds(),
+            context.pixel_spacing_mm,
+            flavor_requires_pixel_spacing(params.flavor).then(|| metadata.slice_thickness_mm_ds()),
             identifiers.derivation_source_sop_instance_uid,
         )]),
     ));
@@ -512,13 +568,18 @@ fn put_wsi_sequences(object: &mut InMemDicomObject, context: &DicomObjectBuildCo
             identifiers.dimension_organization_uid,
         )]),
     ));
-    object.put(DataElement::<InMemDicomObject>::new(
-        tags::DIMENSION_INDEX_SEQUENCE,
-        VR::SQ,
-        DataSetSequence::from(dimension_index_items(
-            identifiers.dimension_organization_uid,
-        )),
-    ));
+    // Dimension Index Sequence is 1C, not required for TILED_FULL; its
+    // pointers name the per-frame Plane Position (Slide) that pyramid levels
+    // carry. Single-frame LABEL, OVERVIEW and THUMBNAIL images carry none.
+    if params.flavor == ImageFlavor::Volume {
+        object.put(DataElement::<InMemDicomObject>::new(
+            tags::DIMENSION_INDEX_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(dimension_index_items(
+                identifiers.dimension_organization_uid,
+            )),
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -527,14 +588,21 @@ fn put_per_frame_functional_groups(
     context: &DicomObjectBuildContext<'_>,
 ) -> Result<(), Error> {
     let params = &context.params;
+    // Only pyramid levels carry per-frame groups; the streamed writer replaces
+    // these with its own, and single-frame associated images carry none.
+    let (ImageFlavor::Volume, Some((row_spacing_mm, column_spacing_mm))) =
+        (params.flavor, context.pixel_spacing_mm)
+    else {
+        return Ok(());
+    };
     object.put(DataElement::<InMemDicomObject>::new(
         tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE,
         VR::SQ,
         DataSetSequence::from(per_frame_items(
             params.frame_count,
             params.frame_grid,
-            context.row_spacing_mm,
-            context.column_spacing_mm,
+            row_spacing_mm,
+            column_spacing_mm,
         )?),
     ));
 
@@ -726,9 +794,8 @@ fn derivation_image_item(source_uid: &str) -> InMemDicomObject {
 
 fn shared_functional_groups_item(
     image_type: &str,
-    row_spacing_mm: f64,
-    column_spacing_mm: f64,
-    slice_thickness_mm_ds: &str,
+    pixel_spacing_mm: Option<(f64, f64)>,
+    slice_thickness_mm_ds: Option<&str>,
     derivation_source_uid: Option<&str>,
 ) -> InMemDicomObject {
     let mut item = InMemDicomObject::new_empty();
@@ -743,8 +810,7 @@ fn shared_functional_groups_item(
         tags::PIXEL_MEASURES_SEQUENCE,
         VR::SQ,
         DataSetSequence::from(vec![pixel_measures_item(
-            row_spacing_mm,
-            column_spacing_mm,
+            pixel_spacing_mm,
             slice_thickness_mm_ds,
         )]),
     ));
@@ -761,24 +827,29 @@ fn shared_functional_groups_item(
     item
 }
 
+/// Pixel Measures item; Pixel Spacing and Slice Thickness are 1C and absent
+/// when not required and not known (LABEL and OVERVIEW).
 fn pixel_measures_item(
-    row_spacing_mm: f64,
-    column_spacing_mm: f64,
-    slice_thickness_mm_ds: &str,
+    pixel_spacing_mm: Option<(f64, f64)>,
+    slice_thickness_mm_ds: Option<&str>,
 ) -> InMemDicomObject {
     let mut item = InMemDicomObject::new_empty();
-    put_ds_pair(
-        &mut item,
-        tags::PIXEL_SPACING,
-        row_spacing_mm,
-        column_spacing_mm,
-    );
-    put_str(
-        &mut item,
-        tags::SLICE_THICKNESS,
-        VR::DS,
-        slice_thickness_mm_ds,
-    );
+    if let Some((row_spacing_mm, column_spacing_mm)) = pixel_spacing_mm {
+        put_ds_pair(
+            &mut item,
+            tags::PIXEL_SPACING,
+            row_spacing_mm,
+            column_spacing_mm,
+        );
+    }
+    if let Some(slice_thickness_mm_ds) = slice_thickness_mm_ds {
+        put_str(
+            &mut item,
+            tags::SLICE_THICKNESS,
+            VR::DS,
+            slice_thickness_mm_ds,
+        );
+    }
     item
 }
 

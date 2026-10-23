@@ -171,6 +171,98 @@ impl PixelReencodePolicy {
     }
 }
 
+/// Associated images a source can carry beside its pyramid. Each is written as
+/// a single-frame VL Whole Slide Microscopy instance whose Image Type Value 3
+/// is LABEL, OVERVIEW or THUMBNAIL.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, ValueEnum,
+)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum AssociatedImageKind {
+    /// The slide label, which can carry patient and case identifiers.
+    Label,
+    /// The overview (macro) photograph of the slide, which shows at least part
+    /// of the label.
+    Overview,
+    /// A downsampled image of the scanned area, without the label.
+    Thumbnail,
+}
+
+impl AssociatedImageKind {
+    /// Every associated image kind.
+    pub const ALL: [Self; 3] = [Self::Label, Self::Overview, Self::Thumbnail];
+
+    /// The kind of a wsi-rs associated image, by the name wsi-rs gives it.
+    pub(crate) fn from_source_name(name: &str) -> Option<Self> {
+        match name {
+            "label" => Some(Self::Label),
+            "macro" | "overview" => Some(Self::Overview),
+            "thumbnail" => Some(Self::Thumbnail),
+            _ => None,
+        }
+    }
+
+    /// Lower-case name used in output file names and messages.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Label => "label",
+            Self::Overview => "overview",
+            Self::Thumbnail => "thumbnail",
+        }
+    }
+}
+
+/// Associated image kinds left out of an export. Every associated image a
+/// source carries is written unless its kind is excluded here. Exclude both
+/// the label and the overview to keep label content out of the export.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+#[non_exhaustive]
+pub struct AssociatedImageExclusions {
+    /// Leave out the slide label.
+    pub label: bool,
+    /// Leave out the overview (macro) image.
+    pub overview: bool,
+    /// Leave out the thumbnail.
+    pub thumbnail: bool,
+}
+
+impl AssociatedImageExclusions {
+    /// Write every associated image the source carries.
+    pub const NONE: Self = Self {
+        label: false,
+        overview: false,
+        thumbnail: false,
+    };
+    /// Write no associated images.
+    pub const ALL: Self = Self {
+        label: true,
+        overview: true,
+        thumbnail: true,
+    };
+
+    /// These exclusions plus `kind`.
+    #[must_use]
+    pub const fn with(mut self, kind: AssociatedImageKind) -> Self {
+        match kind {
+            AssociatedImageKind::Label => self.label = true,
+            AssociatedImageKind::Overview => self.overview = true,
+            AssociatedImageKind::Thumbnail => self.thumbnail = true,
+        }
+        self
+    }
+
+    /// Whether `kind` is left out.
+    pub const fn excludes(self, kind: AssociatedImageKind) -> bool {
+        match kind {
+            AssociatedImageKind::Label => self.label,
+            AssociatedImageKind::Overview => self.overview,
+            AssociatedImageKind::Thumbnail => self.thumbnail,
+        }
+    }
+}
+
 /// Policy for identifiers generated when the caller does not supply them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -389,6 +481,9 @@ pub struct ExportOptions {
     /// When compressed source frames rejected by every compressed-domain route
     /// may be decoded and re-encoded. Defaults to lossless targets only.
     pub pixel_reencode: PixelReencodePolicy,
+    /// Associated images (label, overview, thumbnail) left out of the export.
+    /// All associated images are written by default when no level filter is set.
+    pub exclude_associated: AssociatedImageExclusions,
     /// Policy for generated Study, Series, SOP, and related DICOM UIDs.
     pub uid_policy: UidPolicy,
     /// Optional governed level-zero source spacing when the reader lacks calibration metadata.
@@ -423,6 +518,7 @@ pub(crate) struct NormalizedExportSemantics {
     pub(crate) jpeg_quality: u8,
     pub(crate) jpeg_optimize_huffman: bool,
     pub(crate) pixel_reencode: PixelReencodePolicy,
+    pub(crate) exclude_associated: AssociatedImageExclusions,
     pub(crate) uid_policy: UidPolicy,
     pub(crate) source_pixel_spacing_mm: Option<SourcePixelSpacingMm>,
 }
@@ -479,6 +575,7 @@ impl NormalizedExportOptions {
                 jpeg_quality: options.jpeg_quality,
                 jpeg_optimize_huffman: options.jpeg_optimize_huffman,
                 pixel_reencode: options.pixel_reencode,
+                exclude_associated: options.exclude_associated,
                 uid_policy: options.uid_policy,
                 source_pixel_spacing_mm: options.source_pixel_spacing_mm,
             },
@@ -517,6 +614,7 @@ impl Default for ExportOptions {
             jpeg_quality: 90,
             jpeg_optimize_huffman: false,
             pixel_reencode: PixelReencodePolicy::Lossless,
+            exclude_associated: AssociatedImageExclusions::NONE,
             uid_policy: UidPolicy::Fresh,
             source_pixel_spacing_mm: None,
             encode_backend: EncodeBackendPreference::Auto,
@@ -930,6 +1028,7 @@ mod tests {
             jpeg_quality: 77,
             jpeg_optimize_huffman: true,
             pixel_reencode: PixelReencodePolicy::Any,
+            exclude_associated: AssociatedImageExclusions::NONE.with(AssociatedImageKind::Label),
             uid_policy: UidPolicy::Deterministic,
             source_pixel_spacing_mm: Some(SourcePixelSpacingMm::new(0.0005, 0.00025).unwrap()),
             encode_backend: EncodeBackendPreference::PreferDevice,

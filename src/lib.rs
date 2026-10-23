@@ -73,14 +73,15 @@ pub use metadata::{
     METADATA_JSON_MAX_BYTES,
 };
 pub use options::{
-    CodecValidation, EncodeBackendPreference, ExportOptions, ExportPreset, JpegDirectHtj2kProfile,
-    PixelReencodePolicy, SourcePixelSpacingMm, TransferSyntax, UidPolicy,
+    AssociatedImageExclusions, AssociatedImageKind, CodecValidation, EncodeBackendPreference,
+    ExportOptions, ExportPreset, JpegDirectHtj2kProfile, PixelReencodePolicy, SourcePixelSpacingMm,
+    TransferSyntax, UidPolicy,
 };
 pub use report::{
     EncodedFrame, ExportMetrics, ExportReport, GpuEncodeMetrics, IccConflictDecision,
-    IccProfileSource, InstanceReport, JpegDirectHtj2kMetrics, RouteCorpusCoverageFailure,
-    RouteCorpusCoverageReport, RouteCounters, RouteCoverageReport, RouteProfileReport,
-    WriteTimings,
+    IccProfileSource, ImageFlavor, InstanceReport, JpegDirectHtj2kMetrics,
+    RouteCorpusCoverageFailure, RouteCorpusCoverageReport, RouteCounters, RouteCoverageReport,
+    RouteProfileReport, SkippedAssociatedImage, WriteTimings,
 };
 pub use request::{
     CorpusRouteCoverageRequest, DefaultTransferSyntaxRequest, ExportRequest, FrameSamples,
@@ -97,12 +98,13 @@ pub mod prelude {
     //! Common imports for applications using `wsi-dicom`.
 
     pub use crate::{
-        CodecValidation, ColorManagement, DefaultTransferSyntaxRequest, Error, Export,
-        ExportOptions, ExportPreset, ExportReport, ExportRequest, FrameSamples,
-        IccCalibrationRegistry, IccConflictDecision, IccConflictPolicy, IccProfile,
-        IccProfileSource, J2kFrameEncodeRequest, JpegDirectHtj2kProfile, MetadataSource,
-        PixelReencodePolicy, ScannerIdentity, SourcePixelSpacingMm, SpecimenIdentifierIssuer,
-        TransferSyntax, UidPolicy, UniversalEntityIdType, ValidationOptions,
+        AssociatedImageExclusions, AssociatedImageKind, CodecValidation, ColorManagement,
+        DefaultTransferSyntaxRequest, Error, Export, ExportOptions, ExportPreset, ExportReport,
+        ExportRequest, FrameSamples, IccCalibrationRegistry, IccConflictDecision,
+        IccConflictPolicy, IccProfile, IccProfileSource, J2kFrameEncodeRequest,
+        JpegDirectHtj2kProfile, MetadataSource, PixelReencodePolicy, ScannerIdentity,
+        SourcePixelSpacingMm, SpecimenIdentifierIssuer, TransferSyntax, UidPolicy,
+        UniversalEntityIdType, ValidationOptions,
     };
 }
 

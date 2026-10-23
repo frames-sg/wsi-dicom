@@ -799,6 +799,47 @@ pub(super) fn write_dicom_object_with_pixel_data(
     output.persist()
 }
 
+/// Write `object` with one encapsulated frame, indexed by a Basic Offset
+/// Table, publishing the file only once it is complete and synced.
+pub(crate) fn write_single_frame_dicom_object(
+    path: &Path,
+    object: InMemDicomObject,
+    meta: FileMetaTableBuilder,
+    overwrite: bool,
+    frame: &[u8],
+) -> Result<(), Error> {
+    let raw_len = checked_frame_len(frame.len())?;
+    let padded_len = padded_fragment_len(raw_len)?;
+    let output = PendingDicomOutput::create(path, overwrite)?;
+    let file = output.reopen()?;
+    let mut file = dicom_file_writer(file);
+    object
+        .with_meta(meta)
+        .map_err(|err| Error::DicomWrite {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?
+        .write_all(&mut file)
+        .map_err(|err| Error::DicomWrite {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?;
+    let io_error = |source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    write_encapsulated_pixel_data_header(&mut file, &[0]).map_err(io_error)?;
+    write_item_header(&mut file, padded_len).map_err(io_error)?;
+    file.write_all(frame).map_err(io_error)?;
+    if raw_len % 2 != 0 {
+        file.write_all(&[0]).map_err(io_error)?;
+    }
+    write_encapsulated_pixel_data_trailer(&mut file).map_err(io_error)?;
+    flush_and_sync_dicom_writer(&mut file, output.path())?;
+    drop(file);
+    output.persist()
+}
+
 pub(super) fn dicom_file_writer(file: File) -> BufWriter<File> {
     BufWriter::with_capacity(DICOM_FILE_WRITE_BUFFER_BYTES, file)
 }

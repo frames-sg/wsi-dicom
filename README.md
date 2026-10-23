@@ -422,6 +422,30 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
   lossy history and are counted as `source_reencoded` in the summary
   (`compressed_source_reencoded_frames` in reports). Lossy JPEG 2000 and HTJ2K
   output have no pixel re-encoding route.
+- Associated images are written by default as single-frame instances in the
+  Series of the first plane: the label (`associated-label.dcm`,
+  ORIGINAL\PRIMARY\LABEL\NONE, with an empty Slide Label module), the overview
+  or macro (`associated-overview.dcm`, OVERVIEW) and the thumbnail
+  (`associated-thumbnail.dcm`, DERIVED\PRIMARY\THUMBNAIL\RESAMPLED, which
+  references level zero and has level-zero spacing scaled to its size). Label
+  and overview declare Specimen Label in Image and Burned In Annotation YES and
+  carry no Frame of Reference or Pixel Spacing. None join the
+  Multi-Resolution Pyramid. The label and the overview, which shows at least
+  part of the label, can identify the patient: leave them out with
+  `--exclude-associated label,overview` (`all` leaves out every associated
+  image) or `Export::exclude_associated`. A level-filtered export writes no
+  associated images.
+- Associated images have no compressed-domain route, so their pixels are always
+  encoded: in the requested transfer syntax when it is lossless, otherwise in
+  its lossless sibling (JPEG Lossless SV1, JPEG 2000 Lossless, HTJ2K Lossless).
+  `pixel_reencode=any` keeps a JPEG Baseline request lossy; `never` refuses
+  associated images stored as JPEG or JPEG 2000. Their lossy history comes from
+  the codec and size the reader reports. Labels and overviews take only their
+  own embedded ICC profile, because the slide profile and scanner calibrations
+  describe the scan; without one they get the policy's synthesized profile, and
+  `RequireSource` fails. Thumbnails resolve ICC like level zero. Associated
+  images with no matching flavour, or whose reader does not report how they are
+  stored, are skipped and listed in `skipped_associated_images` and on stderr.
 - CPU encoding remains available as the primary route for pixel inputs. Auto
   may choose a backend before execution; failures after device submission are
   returned rather than retried on the CPU. A selected device encode must complete

@@ -259,6 +259,41 @@ fn tile_geometry_rule_rejects_duplicate_tiled_full_position() {
 }
 
 #[test]
+fn tile_geometry_rule_requires_imaged_volume_only_for_volume_images() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = export_valid_color_wsi_for_validation(tmp.path(), "no-imaged-volume");
+    let mut object = dicom_object::open_file(&path).unwrap();
+    object.take(tags::IMAGED_VOLUME_WIDTH).unwrap();
+    object.write_to_file(&path).unwrap();
+    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-2026c-tile-geometry");
+
+    // PS3.3 C.8.12.4 requires Imaged Volume Width only for VOLUME images.
+    object.put(DataElement::new(
+        tags::IMAGE_TYPE,
+        VR::CS,
+        "ORIGINAL\\PRIMARY\\LABEL\\NONE",
+    ));
+    object.write_to_file(&path).unwrap();
+    let report = validate_dicom_path_with_runner(
+        &path,
+        &ValidationOptions::default(),
+        &FakeRunner::default(),
+    )
+    .unwrap();
+    let tile_geometry = report
+        .checks
+        .iter()
+        .find(|check| check.name == "intrinsic-wsi-dicom-2026c-tile-geometry")
+        .unwrap();
+    assert_eq!(
+        tile_geometry.status,
+        ValidationStatus::Passed,
+        "{}",
+        tile_geometry.message
+    );
+}
+
+#[test]
 fn identity_set_rule_rejects_file_meta_and_dataset_sop_mismatch() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = export_valid_color_wsi_for_validation(tmp.path(), "sop-mismatch");

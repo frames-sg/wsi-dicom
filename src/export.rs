@@ -63,6 +63,7 @@ use crate::uid::DicomExportIdentity;
 use crate::writer::extended_offset_table_metadata_bytes;
 use crate::writer::PerFrameFunctionalGroupsPlan;
 
+mod associated_images;
 mod corpus_discovery;
 mod cpu_batch;
 mod defaults;
@@ -113,6 +114,10 @@ pub use self::profiling::{
     profile_dicom_route_coverage, profile_dicom_routes, profile_slide_route_coverage,
 };
 
+use self::associated_images::{
+    export_associated_images, plan_associated_images, preflight_associated_output_paths,
+    AssociatedExportContext,
+};
 #[cfg(test)]
 use self::corpus_discovery::collect_wsi_candidate_paths;
 
@@ -330,7 +335,9 @@ pub(crate) fn export_dicom_prepared(
     #[cfg(all(feature = "metal", target_os = "macos"))]
     load_persistent_auto_metal_input_route_cache_if_requested()?;
     let mut jobs = dicom_export_instance_jobs(&slide, &request)?;
+    let associated = plan_associated_images(&slide, &request, &options)?;
     preflight_output_paths(&request, &options, &jobs)?;
+    preflight_associated_output_paths(&request, &options, &associated.jobs)?;
     preflight_metadata_budgets(&slide, &options, &mut jobs)?;
     let effective_icc_digests = preflight_icc_profiles(&slide, &request, &metadata, &jobs)?;
     let identity = DicomExportIdentity::for_export(
@@ -371,6 +378,23 @@ pub(crate) fn export_dicom_prepared(
             },
         });
     }
+    let first_associated_instance_number = u32::try_from(jobs.len())
+        .ok()
+        .and_then(|count| count.checked_add(1))
+        .ok_or_else(|| Error::Unsupported {
+            reason: "DICOM instance count exceeds u32".into(),
+        })?;
+    instances.extend(export_associated_images(
+        AssociatedExportContext {
+            slide: &slide,
+            request: &staged_request,
+            options: &staged_options,
+            metadata: &metadata,
+            identity: &identity,
+        },
+        &associated.jobs,
+        first_associated_instance_number,
+    )?);
     transaction.commit(&mut instances, options.semantics.overwrite)?;
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -392,6 +416,7 @@ pub(crate) fn export_dicom_prepared(
         instances,
         metrics,
         annotations: None,
+        skipped_associated_images: associated.skipped,
     })
 }
 
@@ -463,6 +488,7 @@ mod tests {
         assert!(jpeg_backend_uses_device(JpegBackend::Cuda));
     }
 
+    mod associated_image_tests;
     #[cfg(all(feature = "metal", target_os = "macos"))]
     mod auto_route_tests;
     mod export_integration_tests;

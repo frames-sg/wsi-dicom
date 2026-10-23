@@ -4,14 +4,14 @@ use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 
 use crate::coordinate::InstanceCoordinate;
 use crate::metadata::DicomMetadata;
-use crate::report::{ExportMetrics, IccProfileReport, InstanceReport};
+use crate::report::{ExportMetrics, IccProfileReport, ImageFlavor, InstanceReport};
 use crate::tile::PixelProfile;
 use crate::uid::DicomExportIdentity;
 use crate::writer::{
     build_dicom_object, DicomObjectIdentifiers, DicomObjectParams, FrameGrid,
     LossyCompressionHistory, PerFrameFunctionalGroupsPlan,
 };
-use crate::{Error, VL_WSI_SOP_CLASS_UID};
+use crate::{AssociatedImageKind, Error, VL_WSI_SOP_CLASS_UID};
 
 pub(crate) struct DicomInstanceContext {
     pub(crate) path: PathBuf,
@@ -37,27 +37,9 @@ impl DicomInstanceContext {
     ) -> Result<Self, Error> {
         Ok(Self {
             path: coordinate.output_path(output_dir),
-            series_uid: identity.uid(&format!(
-                "series:{}:{}:{}:{}:{}",
-                coordinate.scene_idx,
-                coordinate.series_idx,
-                coordinate.z,
-                coordinate.c,
-                coordinate.t
-            )),
-            sop_instance_uid: identity.uid(&format!(
-                "instance:{}:{}:{}:{}:{}:{}",
-                coordinate.scene_idx,
-                coordinate.series_idx,
-                coordinate.level_idx,
-                coordinate.z,
-                coordinate.c,
-                coordinate.t
-            )),
-            frame_of_reference_uid: identity.uid(&format!(
-                "frame-of-reference:{}:{}",
-                coordinate.scene_idx, coordinate.series_idx
-            )),
+            series_uid: plane_series_uid(identity, coordinate),
+            sop_instance_uid: level_instance_uid(identity, coordinate),
+            frame_of_reference_uid: frame_of_reference_uid(identity, coordinate),
             pyramid_uid: identity.uid(&format!(
                 "pyramid:{}:{}:{}:{}:{}",
                 coordinate.scene_idx,
@@ -98,16 +80,7 @@ impl DicomInstanceContext {
     ) -> Self {
         let coordinate = self.coordinate;
         self.derivation_source_sop_instance_uid = (coordinate.level_idx > 0 && level_zero_exported)
-            .then(|| {
-                identity.uid(&format!(
-                    "instance:{}:{}:0:{}:{}:{}",
-                    coordinate.scene_idx,
-                    coordinate.series_idx,
-                    coordinate.z,
-                    coordinate.c,
-                    coordinate.t
-                ))
-            });
+            .then(|| level_instance_uid(identity, coordinate.at_level(0)));
         self
     }
 
@@ -132,6 +105,7 @@ impl DicomInstanceContext {
             },
             series_number: self.series_number,
             instance_number: params.instance_number,
+            flavor: ImageFlavor::Volume,
             level_idx: self.coordinate.level_idx,
             frame_grid: params.frame_grid,
             frame_count: params.frame_count,
@@ -194,7 +168,77 @@ impl DicomInstanceContext {
             t: self.coordinate.t,
             frame_count,
             metrics,
+            flavor: ImageFlavor::Volume,
+            associated_image: None,
         }
+    }
+}
+
+fn plane_series_uid(identity: &DicomExportIdentity, coordinate: InstanceCoordinate) -> String {
+    identity.uid(&format!(
+        "series:{}:{}:{}:{}:{}",
+        coordinate.scene_idx, coordinate.series_idx, coordinate.z, coordinate.c, coordinate.t
+    ))
+}
+
+fn level_instance_uid(identity: &DicomExportIdentity, coordinate: InstanceCoordinate) -> String {
+    identity.uid(&format!(
+        "instance:{}:{}:{}:{}:{}:{}",
+        coordinate.scene_idx,
+        coordinate.series_idx,
+        coordinate.level_idx,
+        coordinate.z,
+        coordinate.c,
+        coordinate.t
+    ))
+}
+
+fn frame_of_reference_uid(
+    identity: &DicomExportIdentity,
+    coordinate: InstanceCoordinate,
+) -> String {
+    identity.uid(&format!(
+        "frame-of-reference:{}:{}",
+        coordinate.scene_idx, coordinate.series_idx
+    ))
+}
+
+pub(crate) fn associated_output_path(output_dir: &Path, kind: AssociatedImageKind) -> PathBuf {
+    output_dir.join(format!("associated-{}.dcm", kind.as_str()))
+}
+
+/// Identifiers of an associated image (label, overview, thumbnail) instance.
+/// It joins the Series of the first plane of scene 0, series 0; a thumbnail
+/// also shares that plane's Frame of Reference and references its level zero.
+pub(crate) struct AssociatedInstanceIds {
+    pub(crate) path: PathBuf,
+    pub(crate) series_uid: String,
+    pub(crate) sop_instance_uid: String,
+    pub(crate) frame_of_reference_uid: String,
+    pub(crate) dimension_organization_uid: String,
+    pub(crate) level_zero_sop_instance_uid: String,
+    pub(crate) series_number: u32,
+}
+
+impl AssociatedInstanceIds {
+    pub(crate) fn new(
+        identity: &DicomExportIdentity,
+        output_dir: &Path,
+        kind: AssociatedImageKind,
+    ) -> Result<Self, Error> {
+        let plane = InstanceCoordinate::new(0, 0, 0, 0, 0, 0);
+        Ok(Self {
+            path: associated_output_path(output_dir, kind),
+            series_uid: plane_series_uid(identity, plane),
+            sop_instance_uid: identity.uid(&format!("associated:{}", kind.as_str())),
+            frame_of_reference_uid: frame_of_reference_uid(identity, plane),
+            dimension_organization_uid: identity.uid(&format!(
+                "dimension-organization:associated:{}",
+                kind.as_str()
+            )),
+            level_zero_sop_instance_uid: level_instance_uid(identity, plane),
+            series_number: plane.series_number()?,
+        })
     }
 }
 
@@ -218,7 +262,8 @@ mod tests {
     use crate::coordinate::InstanceCoordinate;
     use crate::options::ExportOptions;
     use crate::report::{
-        ExportMetrics, IccConflictDecision, IccProfileReport, IccProfileSource, InstanceReport,
+        ExportMetrics, IccConflictDecision, IccProfileReport, IccProfileSource, ImageFlavor,
+        InstanceReport,
     };
     use crate::uid::DicomExportIdentity;
 
@@ -280,6 +325,8 @@ mod tests {
                 t: 6,
                 frame_count: 7,
                 metrics: ExportMetrics::default(),
+                flavor: ImageFlavor::Volume,
+                associated_image: None,
             }
         );
     }

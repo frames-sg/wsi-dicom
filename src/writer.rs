@@ -29,8 +29,9 @@ use pixel_data::{
 };
 pub(crate) use pixel_data::{
     extended_offset_table_metadata_bytes, unique_spool_path,
-    write_dicom_object_with_streamed_pixel_data, BufferedPixelDataSink, DeferredLossyCompression,
-    PixelDataSink, StreamedDicomWritePlan, StreamingPixelDataFrameWriter,
+    write_dicom_object_with_streamed_pixel_data, write_single_frame_dicom_object,
+    BufferedPixelDataSink, DeferredLossyCompression, PixelDataSink, StreamedDicomWritePlan,
+    StreamingPixelDataFrameWriter,
 };
 #[cfg(test)]
 pub(crate) use pixel_data::{

@@ -2,9 +2,10 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use wsi_dicom::{
-    AnnotationCoordinateSpace, AnnotationTarget, CodecValidation, EncodeBackendPreference, Error,
-    ExportOptions, ExportPreset, JpegDirectHtj2kProfile, PixelReencodePolicy,
-    QuPathAnnotationOptions, SourcePixelSpacingMm, TransferSyntax, UidPolicy,
+    AnnotationCoordinateSpace, AnnotationTarget, AssociatedImageExclusions, AssociatedImageKind,
+    CodecValidation, EncodeBackendPreference, Error, ExportOptions, ExportPreset,
+    JpegDirectHtj2kProfile, PixelReencodePolicy, QuPathAnnotationOptions, SourcePixelSpacingMm,
+    TransferSyntax, UidPolicy,
 };
 
 use crate::cli_calibration::{CalibrationCommand, ColorManagementArgs};
@@ -318,6 +319,11 @@ pub(crate) struct ExportCliArgs {
     pub(crate) source_pixel_spacing_mm: Option<SourcePixelSpacingMm>,
     #[arg(long)]
     pub(crate) overwrite: bool,
+    /// Associated images to leave out (comma-separated): label, overview,
+    /// thumbnail, or all. All are written by default. The label and the
+    /// overview, which shows part of the label, can carry patient identifiers.
+    #[arg(long, value_enum, value_delimiter = ',', value_name = "KIND")]
+    pub(crate) exclude_associated: Vec<AssociatedImageArg>,
     #[arg(long, default_value_t = 256)]
     pub(crate) max_instance_metadata_mib: u64,
     #[arg(long, default_value_t = 1024)]
@@ -336,6 +342,15 @@ impl ExportCliArgs {
         options.uid_policy = self.uid_policy;
         options.source_pixel_spacing_mm = self.source_pixel_spacing_mm;
         options.overwrite = self.overwrite;
+        options.exclude_associated = self.exclude_associated.iter().fold(
+            AssociatedImageExclusions::NONE,
+            |exclusions, kind| match kind {
+                AssociatedImageArg::All => AssociatedImageExclusions::ALL,
+                AssociatedImageArg::Label => exclusions.with(AssociatedImageKind::Label),
+                AssociatedImageArg::Overview => exclusions.with(AssociatedImageKind::Overview),
+                AssociatedImageArg::Thumbnail => exclusions.with(AssociatedImageKind::Thumbnail),
+            },
+        );
         options.max_instance_metadata_bytes = checked_metadata_mib_to_bytes(
             "max_instance_metadata_mib",
             self.max_instance_metadata_mib,
@@ -345,6 +360,14 @@ impl ExportCliArgs {
         options.validate()?;
         Ok(options)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum AssociatedImageArg {
+    Label,
+    Overview,
+    Thumbnail,
+    All,
 }
 
 fn checked_metadata_mib_to_bytes(field: &str, value: u64) -> Result<u64, Error> {

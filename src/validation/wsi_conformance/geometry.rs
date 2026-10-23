@@ -282,7 +282,24 @@ pub(super) fn validate_tile_geometry_rule(object: &DefaultDicomObject) -> Result
         }
     }
 
+    // Imaged Volume Width and Height are required only for VOLUME images, and
+    // Pixel Spacing is not required for LABEL or OVERVIEW (PS3.3 C.8.12.4,
+    // C.7.6.16.2.1). Other flavours are checked when they declare a volume.
+    if !declares_volume_flavor(object) && object.element(tags::IMAGED_VOLUME_WIDTH).is_err() {
+        return Ok(());
+    }
     validate_imaged_volume_spacing(object, matrix_rows, matrix_columns)
+}
+
+/// Whether Image Type Value 3 is VOLUME; a missing or short Image Type is
+/// treated as VOLUME, so the stricter checks apply.
+fn declares_volume_flavor(object: &DefaultDicomObject) -> bool {
+    object
+        .element(tags::IMAGE_TYPE)
+        .ok()
+        .and_then(|element| element.to_multi_str().ok())
+        .and_then(|values| values.get(2).map(|value| value.trim() == "VOLUME"))
+        .unwrap_or(true)
 }
 
 fn validate_imaged_volume_spacing(

@@ -7,9 +7,9 @@ use crate::export::{
 };
 use crate::routing::open_slide;
 use crate::{
-    default_transfer_syntax_for_source, export_dicom, CodecValidation, ColorManagement,
-    DefaultTransferSyntaxRequest, EncodeBackendPreference, Error, ExportOptions, ExportReport,
-    ExportRequest, JpegDirectHtj2kProfile, MetadataSource, PixelReencodePolicy,
+    default_transfer_syntax_for_source, export_dicom, AssociatedImageKind, CodecValidation,
+    ColorManagement, DefaultTransferSyntaxRequest, EncodeBackendPreference, Error, ExportOptions,
+    ExportReport, ExportRequest, JpegDirectHtj2kProfile, MetadataSource, PixelReencodePolicy,
     QuPathAnnotationOptions, TransferSyntax,
 };
 
@@ -131,6 +131,14 @@ impl Export {
     #[must_use = "builder methods return the updated Export"]
     pub fn pixel_reencode(mut self, policy: PixelReencodePolicy) -> Self {
         self.options.pixel_reencode = policy;
+        self
+    }
+
+    /// Leave out associated images of `kind` (label, overview, thumbnail).
+    /// All associated images the source carries are written by default.
+    #[must_use = "builder methods return the updated Export"]
+    pub fn exclude_associated(mut self, kind: AssociatedImageKind) -> Self {
+        self.options.exclude_associated = self.options.exclude_associated.with(kind);
         self
     }
 

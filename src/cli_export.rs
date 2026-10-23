@@ -41,6 +41,12 @@ pub(crate) fn handle_convert(request: ConvertRequest) -> Result<(), Box<dyn std:
     workflow.level_filter = level;
     workflow.annotations = annotation_args.options()?;
     let report = run_export_workflow(workflow)?;
+    for skipped in &report.export.skipped_associated_images {
+        eprintln!(
+            "wsi-dicom: skipped associated image '{}': {}",
+            skipped.name, skipped.reason
+        );
+    }
     print_cli_output(json, &report.export, format_report_summary)?;
     Ok(())
 }

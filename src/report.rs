@@ -26,6 +26,10 @@ pub struct ExportReport {
     /// Optional verified DICOM annotation sidecars created for this WSI export.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<crate::AnnotationExportReport>,
+    /// Source associated images that were not written, other than excluded
+    /// kinds, with the reason for each.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped_associated_images: Vec<SkippedAssociatedImage>,
 }
 
 /// Finished compressed frame bytes ready for DICOM encapsulated Pixel Data insertion.
@@ -214,6 +218,62 @@ pub struct InstanceReport {
     pub frame_count: u32,
     /// Per-instance metrics.
     pub metrics: ExportMetrics,
+    /// Image Type Value 3 written to the instance.
+    pub flavor: ImageFlavor,
+    /// Source associated image (wsi-rs name, such as `label` or `macro`) of a
+    /// LABEL, OVERVIEW or THUMBNAIL instance; its scene, series and plane
+    /// fields are zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub associated_image: Option<String>,
+}
+
+/// Image Type Value 3 of a VL Whole Slide Microscopy instance (PS3.3
+/// C.8.12.4.1.1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[non_exhaustive]
+pub enum ImageFlavor {
+    /// A pyramid level.
+    #[default]
+    Volume,
+    /// The slide label.
+    Label,
+    /// The overview (macro) image.
+    Overview,
+    /// A thumbnail of the scanned area.
+    Thumbnail,
+}
+
+impl ImageFlavor {
+    /// The DICOM Defined Term.
+    pub fn as_dicom(self) -> &'static str {
+        match self {
+            Self::Volume => "VOLUME",
+            Self::Label => "LABEL",
+            Self::Overview => "OVERVIEW",
+            Self::Thumbnail => "THUMBNAIL",
+        }
+    }
+}
+
+impl From<crate::AssociatedImageKind> for ImageFlavor {
+    fn from(kind: crate::AssociatedImageKind) -> Self {
+        match kind {
+            crate::AssociatedImageKind::Label => Self::Label,
+            crate::AssociatedImageKind::Overview => Self::Overview,
+            crate::AssociatedImageKind::Thumbnail => Self::Thumbnail,
+        }
+    }
+}
+
+/// A source associated image that an export did not write.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct SkippedAssociatedImage {
+    /// wsi-rs name of the associated image.
+    pub name: String,
+    /// Why it was not written.
+    pub reason: String,
 }
 
 /// Route, pixel-profile, and non-GPU-specific frame counters.

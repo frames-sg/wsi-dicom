@@ -36,15 +36,7 @@ pub(super) fn resolve_icc_profile(
     let series_idx = coordinate.series_idx;
     let level_idx = coordinate.level_idx;
     if pixel_profile.photometric_interpretation == "MONOCHROME2" {
-        return Ok(ResolvedIccProfile {
-            bytes: None,
-            report: IccProfileReport {
-                source: IccProfileSource::NotApplicableMonochrome,
-                sha256: None,
-                calibration_id: None,
-                conflict_decision: IccConflictDecision::NotApplicableMonochrome,
-            },
-        });
+        return Ok(monochrome_icc_profile());
     }
 
     let source = if let Some(profile) = slide
@@ -111,6 +103,59 @@ pub(super) fn resolve_icc_profile(
             scene_idx,
             series_idx,
         ),
+    }
+}
+
+/// ICC profile for a label or overview image, taken by a camera other than
+/// the one that scanned the pyramid. Only the image's own embedded profile
+/// describes its pixels: the slide profile and a configured scanner
+/// calibration or explicit profile describe the scan. Without an embedded
+/// profile, `RequireSource` fails and the other policies synthesize their
+/// fallback (sRGB for calibration and explicit profiles).
+pub(super) fn resolve_label_camera_icc_profile(
+    color_management: &ColorManagement,
+    embedded: Option<&[u8]>,
+    pixel_profile: PixelProfile,
+    name: &str,
+) -> Result<ResolvedIccProfile, Error> {
+    if pixel_profile.photometric_interpretation == "MONOCHROME2" {
+        return Ok(monochrome_icc_profile());
+    }
+    if let Some(bytes) = embedded.filter(|bytes| !bytes.is_empty()) {
+        validate_dicom_icc_profile(bytes)?;
+        return Ok(resolve_source_profile(SourceIccProfile {
+            bytes: bytes.to_vec(),
+            source: IccProfileSource::Source,
+        }));
+    }
+    match color_management {
+        ColorManagement::RequireSource => Err(Error::Metadata {
+            reason: format!(
+                "associated image '{name}' has no ICC profile and color management requires the source profile; exclude it or choose a synthesized fallback"
+            ),
+        }),
+        ColorManagement::SourceOrDisplayP3 => resolve_unconfigured_profile(
+            synthetic_display_p3_icc_profile()?,
+            IccProfileSource::SynthesizedDisplayP3,
+        ),
+        ColorManagement::SourceOrSrgb
+        | ColorManagement::Calibration { .. }
+        | ColorManagement::ExplicitProfile { .. } => resolve_unconfigured_profile(
+            synthetic_srgb_icc_profile()?,
+            IccProfileSource::SynthesizedSrgb,
+        ),
+    }
+}
+
+fn monochrome_icc_profile() -> ResolvedIccProfile {
+    ResolvedIccProfile {
+        bytes: None,
+        report: IccProfileReport {
+            source: IccProfileSource::NotApplicableMonochrome,
+            sha256: None,
+            calibration_id: None,
+            conflict_decision: IccConflictDecision::NotApplicableMonochrome,
+        },
     }
 }
 

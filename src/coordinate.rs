@@ -39,6 +39,11 @@ impl InstanceCoordinate {
         Self::new(0, 0, level_idx, 0, 0, 0)
     }
 
+    /// The same plane at `level_idx`.
+    pub(crate) const fn at_level(self, level_idx: u32) -> Self {
+        Self { level_idx, ..self }
+    }
+
     pub(crate) fn output_path(self, output_dir: &Path) -> PathBuf {
         output_dir.join(format!(
             "scene-{}-series-{}-level-{}-z{}-c{}-t{}.dcm",

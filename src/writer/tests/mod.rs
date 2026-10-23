@@ -135,6 +135,7 @@ fn sample_dicom_object_params<'a>(
         },
         series_number: 7,
         instance_number: 42,
+        flavor: crate::report::ImageFlavor::Volume,
         level_idx: 0,
         frame_grid: super::FrameGrid {
             frame_columns: 512,

@@ -10,9 +10,7 @@ use j2k_jpeg::{JpegBackend, JpegLosslessEncodeOptions, JpegLosslessSamples};
 use wsi_rs::Slide;
 
 use super::cpu_batch::{frame_batch_len, map_cpu_frames};
-use super::frame_region::{
-    FrameRectGrid, FrameRectOverflowReasons, OutputFrameRect, PreparedCpuRegion,
-};
+use super::frame_region::{FrameRectGrid, FrameRectOverflowReasons, OutputFrameRect};
 use super::icc_profile::resolve_icc_profile;
 use super::j2k_policy::{lossless_j2k_cpu_row_batch_count, lossless_j2k_use_direct_pixel_data};
 use super::lossless_j2k_cpu::prepare_cpu_input_batch;
@@ -31,6 +29,7 @@ use crate::options::{CodecValidation, NormalizedExportOptions, TransferSyntax};
 use crate::report::ExportMetrics;
 use crate::request::ExportRequest;
 use crate::routing::j2k_route_tile_size;
+use crate::tile::PixelProfile;
 use crate::writer::{unique_spool_path, BufferedPixelDataSink, PixelDataSink};
 
 pub(super) fn prepare_jpeg_lossless_instance(
@@ -248,8 +247,14 @@ fn encode_frame_batch(
                 ),
             });
         }
-        let (data, encode_duration, validation_duration) =
-            encode_jpeg_lossless_frame(tile, tile_size, codec_validation).map_err(frame_error)?;
+        let (data, encode_duration, validation_duration) = encode_jpeg_lossless_frame(
+            &tile.bytes,
+            tile.profile,
+            tile_size,
+            tile_size,
+            codec_validation,
+        )
+        .map_err(frame_error)?;
         let source_lossy_compression = source.and_then(|source| source.lossy_compression);
         Ok(EncodedJpegLosslessFrame {
             data,
@@ -272,12 +277,13 @@ fn grid_index_i64(index: u64, axis: &str) -> Result<i64, Error> {
 
 /// Encode one prepared frame as SV1 JPEG Lossless at the profile's bit depth,
 /// returning the bytes with encode and validation durations.
-fn encode_jpeg_lossless_frame(
-    tile: &PreparedCpuRegion,
-    tile_size: u32,
+pub(super) fn encode_jpeg_lossless_frame(
+    bytes: &[u8],
+    profile: PixelProfile,
+    width: u32,
+    height: u32,
     codec_validation: CodecValidation,
 ) -> Result<(Vec<u8>, Duration, Duration), Error> {
-    let profile = tile.profile;
     let wide;
     let samples = match (
         profile.components,
@@ -285,29 +291,29 @@ fn encode_jpeg_lossless_frame(
         profile.photometric_interpretation,
     ) {
         (1, 8, "MONOCHROME2") => JpegLosslessSamples::Gray8 {
-            data: &tile.bytes,
-            width: tile_size,
-            height: tile_size,
+            data: bytes,
+            width,
+            height,
         },
         (3, 8, "RGB") => JpegLosslessSamples::Rgb8 {
-            data: &tile.bytes,
-            width: tile_size,
-            height: tile_size,
+            data: bytes,
+            width,
+            height,
         },
         (1, 16, "MONOCHROME2") => {
-            wide = little_endian_u16_samples(&tile.bytes)?;
+            wide = little_endian_u16_samples(bytes)?;
             JpegLosslessSamples::Gray16 {
                 data: &wide,
-                width: tile_size,
-                height: tile_size,
+                width,
+                height,
             }
         }
         (3, 16, "RGB") => {
-            wide = little_endian_u16_samples(&tile.bytes)?;
+            wide = little_endian_u16_samples(bytes)?;
             JpegLosslessSamples::Rgb16 {
                 data: &wide,
-                width: tile_size,
-                height: tile_size,
+                width,
+                height,
             }
         }
         (components, bits, photometric) => {
@@ -382,8 +388,8 @@ fn validate_jpeg_lossless_round_trip(
 mod tests {
     use std::sync::Arc;
 
+    use super::super::frame_region::PreparedCpuRegion;
     use super::*;
-    use crate::tile::PixelProfile;
 
     fn prepared(bytes: Vec<u8>, components: u8, bits_allocated: u16) -> PreparedCpuRegion {
         PreparedCpuRegion {
@@ -419,8 +425,14 @@ mod tests {
             prepared(gray16, 1, 16),
             prepared(rgb16, 3, 16),
         ] {
-            let (data, _, _) =
-                encode_jpeg_lossless_frame(&tile, size, CodecValidation::RoundTrip).unwrap();
+            let (data, _, _) = encode_jpeg_lossless_frame(
+                &tile.bytes,
+                tile.profile,
+                size,
+                size,
+                CodecValidation::RoundTrip,
+            )
+            .unwrap();
             assert_eq!(&data[..2], [0xFF, 0xD8]);
             assert!(
                 data.windows(2).any(|marker| marker == [0xFF, 0xC3]),
@@ -433,7 +445,9 @@ mod tests {
     fn unsupported_profiles_are_rejected_before_encode() {
         let mut tile = prepared(vec![0; 8 * 8 * 3], 3, 8);
         tile.profile.photometric_interpretation = "YBR_FULL_422";
-        let error = encode_jpeg_lossless_frame(&tile, 8, CodecValidation::Disabled).unwrap_err();
+        let error =
+            encode_jpeg_lossless_frame(&tile.bytes, tile.profile, 8, 8, CodecValidation::Disabled)
+                .unwrap_err();
         assert!(
             matches!(error, Error::UnsupportedPixelData { .. }),
             "{error}"
