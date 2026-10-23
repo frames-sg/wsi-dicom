@@ -11,7 +11,7 @@ use crate::writer::{
     build_dicom_object, DicomObjectIdentifiers, DicomObjectParams, FrameGrid,
     LossyCompressionHistory, PerFrameFunctionalGroupsPlan,
 };
-use crate::{AssociatedImageKind, Error, VL_WSI_SOP_CLASS_UID};
+use crate::{AssociatedImageKind, ConformanceLevel, Error, VL_WSI_SOP_CLASS_UID};
 
 pub(crate) struct DicomInstanceContext {
     pub(crate) path: PathBuf,
@@ -26,6 +26,8 @@ pub(crate) struct DicomInstanceContext {
     pub(crate) coordinate: InstanceCoordinate,
     /// Level-zero instance of this plane that a resampled level references.
     pub(crate) derivation_source_sop_instance_uid: Option<String>,
+    pub(crate) objective_lens_power: Option<f64>,
+    pub(crate) conformance: ConformanceLevel,
 }
 
 impl DicomInstanceContext {
@@ -68,7 +70,19 @@ impl DicomInstanceContext {
             series_number: coordinate.series_number()?,
             coordinate,
             derivation_source_sop_instance_uid: None,
+            objective_lens_power: None,
+            conformance: ConformanceLevel::Optional,
         })
+    }
+
+    pub(crate) fn with_conformance(mut self, conformance: ConformanceLevel) -> Self {
+        self.conformance = conformance;
+        self
+    }
+
+    pub(crate) fn with_objective_lens_power(mut self, power: Option<f64>) -> Self {
+        self.objective_lens_power = power;
+        self
     }
 
     /// References the level-zero instance of the same plane from a resampled
@@ -96,9 +110,8 @@ impl DicomInstanceContext {
                 series_uid: &self.series_uid,
                 sop_instance_uid: &self.sop_instance_uid,
                 frame_of_reference_uid: &self.frame_of_reference_uid,
-                pyramid_uid: &self.pyramid_uid,
+                pyramid: Some((&self.pyramid_uid, &self.pyramid_label)),
                 dimension_organization_uid: &self.dimension_organization_uid,
-                pyramid_label: &self.pyramid_label,
                 derivation_source_sop_instance_uid: self
                     .derivation_source_sop_instance_uid
                     .as_deref(),
@@ -112,7 +125,9 @@ impl DicomInstanceContext {
             profile: params.profile,
             pixel_spacing_mm: Some(self.pixel_spacing_mm),
             icc_profile: params.icc_profile,
+            objective_lens_power: self.objective_lens_power,
             lossy_compression: params.lossy_compression,
+            conformance: self.conformance,
         })
     }
 
@@ -129,7 +144,7 @@ impl DicomInstanceContext {
             self.pixel_spacing_mm.1,
         )?;
         match preflighted {
-            Some(preflighted) if preflighted.matches_layout(plan) => Ok(preflighted),
+            Some(preflighted) if preflighted.matches_layout(&plan) => Ok(preflighted),
             Some(_) => Err(Error::InvalidOptions {
                 reason: "instance geometry changed after metadata preflight".into(),
             }),
@@ -138,10 +153,7 @@ impl DicomInstanceContext {
     }
 
     pub(crate) fn file_meta(&self, transfer_syntax_uid: &'static str) -> FileMetaTableBuilder {
-        FileMetaTableBuilder::new()
-            .media_storage_sop_class_uid(VL_WSI_SOP_CLASS_UID)
-            .media_storage_sop_instance_uid(&self.sop_instance_uid)
-            .transfer_syntax(transfer_syntax_uid)
+        vl_wsi_file_meta(&self.sop_instance_uid, transfer_syntax_uid)
     }
 
     pub(crate) fn report(
@@ -172,6 +184,16 @@ impl DicomInstanceContext {
             associated_image: None,
         }
     }
+}
+
+pub(crate) fn vl_wsi_file_meta(
+    sop_instance_uid: &str,
+    transfer_syntax_uid: &str,
+) -> FileMetaTableBuilder {
+    FileMetaTableBuilder::new()
+        .media_storage_sop_class_uid(VL_WSI_SOP_CLASS_UID)
+        .media_storage_sop_instance_uid(sop_instance_uid)
+        .transfer_syntax(transfer_syntax_uid)
 }
 
 fn plane_series_uid(identity: &DicomExportIdentity, coordinate: InstanceCoordinate) -> String {

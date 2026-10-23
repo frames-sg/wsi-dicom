@@ -102,6 +102,7 @@ pub(super) struct JpegBaselineFallbackBatchRequest<'a> {
 #[derive(Clone, Copy)]
 pub(super) struct JpegBaselineRowPlanRequest<'a> {
     pub(super) level: &'a wsi_rs::Level,
+    pub(super) per_frame_plan: Option<&'a crate::writer::PerFrameFunctionalGroupsPlan>,
     pub(super) location: JpegBaselineFrameLocation,
     pub(super) row: u64,
     pub(super) tile_count: u64,
@@ -218,6 +219,11 @@ pub(super) fn plan_jpeg_baseline_row(
     // a retile costs milliseconds, so plan the row on the shared pool.
     let columns = (0..request.tile_count)
         .into_par_iter()
+        .filter(|&col| {
+            request
+                .per_frame_plan
+                .is_none_or(|plan| plan.includes_grid_position(request.row, col))
+        })
         .map(|col| plan_jpeg_baseline_frame_at(slide, request, col))
         .collect::<Result<Vec<_>, _>>()?;
     let mut retile_rejections = Vec::new();
@@ -449,6 +455,29 @@ pub(super) fn encode_jpeg_baseline_cpu_input_tile_batch(
     )
 }
 
+pub(super) fn jpeg_baseline_samples(
+    data: &[u8],
+    profile: PixelProfile,
+    width: u32,
+    height: u32,
+) -> Result<JpegSamples<'_>, Error> {
+    match profile.components {
+        1 => Ok(JpegSamples::Gray8 {
+            data,
+            width,
+            height,
+        }),
+        3 => Ok(JpegSamples::Rgb8 {
+            data,
+            width,
+            height,
+        }),
+        components => Err(Error::UnsupportedPixelData {
+            reason: format!("JPEG Baseline supports 1 or 3 components, got {components}"),
+        }),
+    }
+}
+
 pub(super) fn encode_jpeg_baseline_cpu_input_tile(
     slide: &Slide,
     location: JpegBaselineFrameLocation,
@@ -456,23 +485,12 @@ pub(super) fn encode_jpeg_baseline_cpu_input_tile(
     settings: JpegBaselineCpuEncodeSettings,
 ) -> Result<EncodedJpegBaselineFrame, Error> {
     let prepared = prepare_jpeg_baseline_cpu_input_tile(slide, location, frame, settings)?;
-    let samples = match prepared.profile.components {
-        1 => JpegSamples::Gray8 {
-            data: &prepared.bytes,
-            width: settings.frame_columns,
-            height: settings.frame_rows,
-        },
-        3 => JpegSamples::Rgb8 {
-            data: &prepared.bytes,
-            width: settings.frame_columns,
-            height: settings.frame_rows,
-        },
-        components => {
-            return Err(Error::UnsupportedPixelData {
-                reason: format!("JPEG Baseline supports 1 or 3 components, got {components}"),
-            });
-        }
-    };
+    let samples = jpeg_baseline_samples(
+        &prepared.bytes,
+        prepared.profile,
+        settings.frame_columns,
+        settings.frame_rows,
+    )?;
     let encode_started = Instant::now();
     let encoded = encode_jpeg_baseline_cpu_fragment(
         samples,

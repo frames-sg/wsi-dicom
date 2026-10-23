@@ -10,6 +10,7 @@ use crate::Error;
 mod command_checks;
 mod discovery;
 mod doctor;
+mod iod;
 mod pixel_structure;
 mod process;
 mod wsi_conformance;
@@ -70,6 +71,9 @@ pub struct ValidationOptions {
     pub max_child_output_bytes: usize,
     /// Maximum encoded bytes assembled for one compressed pixel frame.
     pub max_pixel_frame_bytes: usize,
+    /// `Optional` (the default) also lists the optional VL WSI modules and
+    /// attributes each object lacks; they are not failures.
+    pub conformance: crate::ConformanceLevel,
 }
 
 impl Default for ValidationOptions {
@@ -84,6 +88,7 @@ impl Default for ValidationOptions {
             max_depth: 64,
             max_child_output_bytes: 4 * 1024 * 1024,
             max_pixel_frame_bytes: 512 * 1024 * 1024,
+            conformance: crate::ConformanceLevel::Optional,
         }
     }
 }
@@ -204,6 +209,21 @@ pub struct ValidationReport {
     pub files: Vec<PathBuf>,
     /// Individual validation checks.
     pub checks: Vec<ValidationCheck>,
+    /// Optional VL WSI modules and attributes each object lacks, when
+    /// validation runs at `ConformanceLevel::Optional`.
+    pub optional_absent: Vec<OptionalAbsence>,
+}
+
+/// The optional VL Whole Slide Microscopy modules, functional groups and
+/// attributes one object does not encode. An absent module or Sequence is
+/// listed once, without the rows it would contain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct OptionalAbsence {
+    /// The validated file.
+    pub path: PathBuf,
+    /// One entry per absent item, with its PS3.3 table.
+    pub absent: Vec<String>,
 }
 
 impl ValidationReport {
@@ -379,6 +399,7 @@ pub(crate) fn validate_dicom_path_with_runner(
     let input = path.as_ref().to_path_buf();
     let files = discover_dicom_files(&input, options)?;
     let mut checks = Vec::new();
+    let mut optional_absent = Vec::new();
     let mut corpus = WsiConformanceCorpus::default();
 
     for file in &files {
@@ -412,6 +433,7 @@ pub(crate) fn validate_dicom_path_with_runner(
                     Some(file),
                     format!("failed to read DICOM file: {err}"),
                 ));
+                checks.extend(iod::run_unparsed_file_meta_check(file));
                 continue;
             }
         };
@@ -420,11 +442,19 @@ pub(crate) fn validate_dicom_path_with_runner(
             &object,
             options.max_pixel_frame_bytes,
         ));
-        checks.extend(run_intrinsic_wsi_conformance_checks(
+        let (wsi_checks, absent) = run_intrinsic_wsi_conformance_checks(
             file,
             &object,
             options.profile,
-        ));
+            options.conformance,
+        );
+        checks.extend(wsi_checks);
+        if let Some(absent) = absent {
+            optional_absent.push(OptionalAbsence {
+                path: file.clone(),
+                absent,
+            });
+        }
         corpus.observe(file, &object);
     }
     if let Some(check) = run_specimen_uid_set_check(&corpus) {
@@ -521,6 +551,7 @@ pub(crate) fn validate_dicom_path_with_runner(
         input,
         files,
         checks,
+        optional_absent,
     })
 }
 

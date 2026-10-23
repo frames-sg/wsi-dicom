@@ -583,6 +583,23 @@ pub(crate) fn write_dicom_object_with_streamed_pixel_data(
         frame_count,
         deferred_lossy_compression,
     } = plan;
+    // The plan that positions each frame decides the organization. Number of
+    // Optical Paths and Total Pixel Matrix Focal Planes stay: they are
+    // required for TILED_FULL and may be present otherwise.
+    if per_frame_plan.is_sparse() {
+        object.put(DataElement::new(
+            tags::DIMENSION_ORGANIZATION_TYPE,
+            VR::CS,
+            "TILED_SPARSE",
+        ));
+        // Viewers draw absent frames black, as partial frames are padded
+        // (CIELab L*=0, a*=b*=0; PS3.3 C.10.7.1.1).
+        object.put(DataElement::new(
+            tags::RECOMMENDED_ABSENT_PIXEL_CIE_LAB_VALUE,
+            VR::US,
+            PrimitiveValue::U16([0x0000, 0x8080, 0x8080].as_slice().into()),
+        ));
+    }
     if usize::try_from(per_frame_plan.frame_count()).ok() != Some(frame_count) {
         return Err(Error::DicomWrite {
             path: path.to_path_buf(),
@@ -768,7 +785,6 @@ pub(crate) fn write_dicom_object_with_streamed_pixel_data(
     Ok(report)
 }
 
-#[cfg(test)]
 pub(super) fn write_dicom_object_with_pixel_data(
     path: &Path,
     object: InMemDicomObject,
@@ -810,34 +826,15 @@ pub(crate) fn write_single_frame_dicom_object(
 ) -> Result<(), Error> {
     let raw_len = checked_frame_len(frame.len())?;
     let padded_len = padded_fragment_len(raw_len)?;
-    let output = PendingDicomOutput::create(path, overwrite)?;
-    let file = output.reopen()?;
-    let mut file = dicom_file_writer(file);
-    object
-        .with_meta(meta)
-        .map_err(|err| Error::DicomWrite {
-            path: path.to_path_buf(),
-            message: err.to_string(),
-        })?
-        .write_all(&mut file)
-        .map_err(|err| Error::DicomWrite {
-            path: path.to_path_buf(),
-            message: err.to_string(),
-        })?;
-    let io_error = |source| Error::Io {
-        path: path.to_path_buf(),
-        source,
-    };
-    write_encapsulated_pixel_data_header(&mut file, &[0]).map_err(io_error)?;
-    write_item_header(&mut file, padded_len).map_err(io_error)?;
-    file.write_all(frame).map_err(io_error)?;
-    if raw_len % 2 != 0 {
-        file.write_all(&[0]).map_err(io_error)?;
-    }
-    write_encapsulated_pixel_data_trailer(&mut file).map_err(io_error)?;
-    flush_and_sync_dicom_writer(&mut file, output.path())?;
-    drop(file);
-    output.persist()
+    write_dicom_object_with_pixel_data(path, object, meta, overwrite, |file| {
+        write_encapsulated_pixel_data_header(file, &[0])?;
+        write_item_header(file, padded_len)?;
+        file.write_all(frame)?;
+        if raw_len % 2 != 0 {
+            file.write_all(&[0])?;
+        }
+        write_encapsulated_pixel_data_trailer(file)
+    })
 }
 
 pub(super) fn dicom_file_writer(file: File) -> BufWriter<File> {

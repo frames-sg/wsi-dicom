@@ -100,6 +100,51 @@ fn tiled_full_rejects_a_complete_but_permuted_frame_order() {
 }
 
 #[test]
+fn tile_geometry_defers_missing_required_attributes_to_iod_presence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let exported = export_valid_color_wsi_grid_for_validation(tmp.path(), "missing", 4, 4, 2);
+    let original = dicom_object::open_file(&exported).unwrap();
+    for tag in [
+        tags::NUMBER_OF_FRAMES,
+        tags::ROWS,
+        tags::COLUMNS,
+        tags::TOTAL_PIXEL_MATRIX_ROWS,
+        tags::TOTAL_PIXEL_MATRIX_COLUMNS,
+    ] {
+        let path = tmp
+            .path()
+            .join(format!("missing-{}-{}.dcm", tag.group(), tag.element()));
+        let mut object = original.clone();
+        object.take(tag).unwrap();
+        object.write_to_file(&path).unwrap();
+
+        assert_eq!(
+            intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-tile-geometry"),
+            ValidationStatus::Passed,
+            "tag {tag}"
+        );
+        assert_eq!(
+            intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-iod-attribute-presence"),
+            ValidationStatus::Failed,
+            "tag {tag}"
+        );
+    }
+
+    let path = tmp.path().join("unspecified.dcm");
+    let mut object = original;
+    object.take(tags::DIMENSION_ORGANIZATION_TYPE).unwrap();
+    object.write_to_file(&path).unwrap();
+    assert_eq!(
+        intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-tile-geometry"),
+        ValidationStatus::Passed
+    );
+    assert_eq!(
+        intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-iod-attribute-presence"),
+        ValidationStatus::Passed
+    );
+}
+
+#[test]
 fn wsi_pixel_metadata_enforces_specialized_values() {
     for (tag, value) in [
         (tags::PIXEL_REPRESENTATION, 1u16),

@@ -1,8 +1,10 @@
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use rayon::prelude::*;
 use wsi_rs::Slide;
 
+use super::frame_region::{FrameRectGrid, FrameRectOverflowReasons, OutputFrameRect};
 use super::jpeg_baseline::jpeg_baseline_route_frame_geometry;
 use super::jpeg_baseline_instance::export_jpeg_passthrough_instance;
 use super::jpeg_lossless_instance::prepare_jpeg_lossless_instance;
@@ -14,7 +16,7 @@ use super::{level_pixel_spacing_mm, require_pixel_spacing_mm, InstanceExportCont
 use crate::coordinate::InstanceCoordinate;
 use crate::error::Error;
 use crate::metadata::DicomMetadata;
-use crate::options::{NormalizedExportOptions, TransferSyntax};
+use crate::options::{ConformanceLevel, NormalizedExportOptions, TransferSyntax};
 use crate::report::InstanceReport;
 use crate::request::ExportRequest;
 use crate::routing::j2k_route_tile_size;
@@ -29,7 +31,7 @@ use super::hybrid_lane;
 
 const WSI_DICOM_EXPORT_INSTANCE_WORKERS_ENV: &str = "WSI_DICOM_EXPORT_INSTANCE_WORKERS";
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct DicomExportInstanceJob<'a> {
     pub(super) ordinal: usize,
     pub(super) instance_number: u32,
@@ -156,15 +158,20 @@ pub(super) fn preflight_output_paths(
                 reason: format!("multiple export instances would write {}", path.display()),
             });
         }
-        if !options.semantics.overwrite && path.exists() {
-            return Err(Error::Io {
-                path,
-                source: std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    "output file exists; enable overwrite to replace it",
-                ),
-            });
-        }
+        refuse_existing_output(path, options.semantics.overwrite)?;
+    }
+    Ok(())
+}
+
+pub(super) fn refuse_existing_output(path: PathBuf, overwrite: bool) -> Result<(), Error> {
+    if !overwrite && path.exists() {
+        return Err(Error::Io {
+            path,
+            source: std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "output file exists; enable overwrite to replace it",
+            ),
+        });
     }
     Ok(())
 }
@@ -186,6 +193,18 @@ pub(super) fn preflight_metadata_budgets(
             row_spacing_mm,
             column_spacing_mm,
         )?;
+        // TILED_SPARSE is an optional encoding; Required pads absent frames.
+        let sparse = match options.semantics.conformance {
+            ConformanceLevel::Optional => {
+                sparse_frame_indices(slide, job, frame_count, frame_grid)?
+            }
+            ConformanceLevel::Required => None,
+        };
+        let plan = match sparse {
+            Some(indices) => plan.with_frame_indices(indices)?,
+            None => plan,
+        };
+        let frame_count = plan.frame_count();
         let offset_table_bytes = extended_offset_table_metadata_bytes(frame_count)?;
         let instance_per_frame_budget = options
             .resources
@@ -256,6 +275,72 @@ pub(super) fn preflight_metadata_budgets(
         }
     }
     Ok(())
+}
+
+/// Grid indices of the frames that cover a present source tile, or `None`
+/// when every frame does. An instance whose tiles are all absent also stays
+/// TILED_FULL, because a TILED_SPARSE instance needs at least one frame.
+fn sparse_frame_indices(
+    slide: &Slide,
+    job: &DicomExportInstanceJob<'_>,
+    frame_count: u32,
+    grid: FrameGrid,
+) -> Result<Option<Vec<u32>>, Error> {
+    let rect_grid = FrameRectGrid {
+        matrix_columns: grid.matrix_columns,
+        matrix_rows: grid.matrix_rows,
+        frame_columns: grid.frame_columns,
+        frame_rows: grid.frame_rows,
+    };
+    let across = grid.frames_across();
+    let mut present = Vec::new();
+    present
+        .try_reserve_exact(frame_count as usize)
+        .map_err(|_| Error::Unsupported {
+            reason: "sparse frame positions exceed available memory".into(),
+        })?;
+    for index in 0..frame_count {
+        let rect = OutputFrameRect::clamped(
+            u64::from(index) % across,
+            u64::from(index) / across,
+            rect_grid,
+            FrameRectOverflowReasons {
+                x: "source frame column position overflow",
+                y: "source frame row position overflow",
+            },
+        )?;
+        if frame_has_source_tile(slide, job, rect)? {
+            present.push(index);
+        }
+    }
+    Ok((!present.is_empty() && present.len() != frame_count as usize).then_some(present))
+}
+
+fn frame_has_source_tile(
+    slide: &Slide,
+    job: &DicomExportInstanceJob<'_>,
+    rect: OutputFrameRect,
+) -> Result<bool, Error> {
+    let (Ok(x), Ok(y)) = (i64::try_from(rect.x), i64::try_from(rect.y)) else {
+        return Err(Error::Unsupported {
+            reason: "source frame position exceeds i64".into(),
+        });
+    };
+    for hit in job
+        .level
+        .tile_layout
+        .tiles_for_region(x, y, rect.width, rect.height)
+    {
+        let present = slide
+            .tile_is_present(&job.coordinate.tile_request(hit.col, hit.row))
+            .map_err(|source| Error::SlideRead {
+                message: source.to_string(),
+            })?;
+        if present != Some(false) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(super) fn metadata_frame_plan(
@@ -459,7 +544,7 @@ fn instance_export_context<'a>(
     options: &'a NormalizedExportOptions,
     metadata: &'a DicomMetadata,
     identity: &'a DicomExportIdentity,
-    job: &DicomExportInstanceJob<'a>,
+    job: &'a DicomExportInstanceJob<'a>,
 ) -> InstanceExportContext<'a> {
     InstanceExportContext {
         options,
@@ -468,7 +553,7 @@ fn instance_export_context<'a>(
         instance_number: job.instance_number,
         coordinate: job.coordinate,
         level: job.level,
-        per_frame_plan: job.per_frame_plan,
+        per_frame_plan: job.per_frame_plan.as_ref(),
     }
 }
 

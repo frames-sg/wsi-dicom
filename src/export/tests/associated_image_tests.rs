@@ -3,7 +3,6 @@ use crate::report::{ImageFlavor, InstanceReport};
 use crate::test_support::write_aperio_svs_with_associated_images;
 use crate::validation::{validate_dicom_path, ValidationOptions, ValidationStatus};
 use crate::{AssociatedImageExclusions, AssociatedImageKind, PixelReencodePolicy};
-use dicom_object::DefaultDicomObject;
 
 fn export_fixture(
     options: ExportOptions,
@@ -46,16 +45,6 @@ fn flavors(report: &ExportReport) -> Vec<ImageFlavor> {
         .iter()
         .map(|instance| instance.flavor)
         .collect()
-}
-
-fn text(object: &DefaultDicomObject, tag: dicom_core::Tag) -> String {
-    object
-        .element(tag)
-        .unwrap_or_else(|err| panic!("missing {tag:?}: {err}"))
-        .to_str()
-        .unwrap()
-        .trim_end_matches(['\0', ' '])
-        .to_string()
 }
 
 #[test]
@@ -148,7 +137,7 @@ fn associated_images_export_as_label_overview_and_thumbnail_instances() {
         .items()
         .unwrap();
     assert_eq!(
-        text_in(&source_images[0], tags::REFERENCED_SOP_INSTANCE_UID),
+        text(&source_images[0], tags::REFERENCED_SOP_INSTANCE_UID),
         text(&level_zero, tags::SOP_INSTANCE_UID)
     );
     let shared = thumbnail
@@ -170,15 +159,6 @@ fn associated_images_export_as_label_overview_and_thumbnail_instances() {
             .unwrap(),
         [0.002, 0.002]
     );
-}
-
-fn text_in(item: &dicom_object::InMemDicomObject, tag: dicom_core::Tag) -> String {
-    item.element(tag)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .trim_end_matches('\0')
-        .to_string()
 }
 
 #[test]
@@ -312,6 +292,55 @@ fn lossy_requests_encode_associated_images_losslessly_unless_any() {
     assert_eq!(
         text(&object, tags::LOSSY_IMAGE_COMPRESSION_METHOD),
         "ISO_10918_1\\ISO_10918_1"
+    );
+}
+
+#[test]
+fn dicom_associated_image_preserves_its_own_declared_lossy_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source_dir = tmp.path().join("source");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    let volume = source_dir.join("volume.dcm");
+    let thumbnail = source_dir.join("thumbnail.dcm");
+    write_source_dicom_with_dimensions(&volume, "1.2.826.0.1.3680043.10.999.911", 4, 4);
+    write_source_dicom_with_dimensions(&thumbnail, "1.2.826.0.1.3680043.10.999.912", 2, 2);
+    let mut source_thumbnail = dicom_object::open_file(&thumbnail).unwrap();
+    source_thumbnail.put(dicom_core::DataElement::new(
+        tags::IMAGE_TYPE,
+        VR::CS,
+        "DERIVED\\PRIMARY\\THUMBNAIL\\RESAMPLED",
+    ));
+    declare_lossy_history_for_test(&mut source_thumbnail, "ISO_10918_1", "6.25");
+    source_thumbnail.write_to_file(&thumbnail).unwrap();
+
+    let report = export_dicom(ExportRequest {
+        source_path: source_dir,
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            transfer_syntax: TransferSyntax::Jpeg2000Lossless,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            tile_size: 2,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: None,
+    })
+    .unwrap();
+
+    let output = dicom_object::open_file(&instance(&report, ImageFlavor::Thumbnail).path).unwrap();
+    assert_eq!(text(&output, tags::LOSSY_IMAGE_COMPRESSION), "01");
+    assert_eq!(
+        text(&output, tags::LOSSY_IMAGE_COMPRESSION_METHOD),
+        "ISO_10918_1"
+    );
+    assert_eq!(
+        output
+            .element(tags::LOSSY_IMAGE_COMPRESSION_RATIO)
+            .unwrap()
+            .to_float64()
+            .unwrap(),
+        6.25
     );
 }
 

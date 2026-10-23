@@ -343,21 +343,7 @@ fn lossless_export_preserves_declared_source_lossy_history() {
     let source = tmp.path().join("lossy-history-source.dcm");
     write_source_dicom(&raw_source);
     let mut source_object = dicom_object::open_file(&raw_source).unwrap();
-    source_object.put(dicom_core::DataElement::new(
-        tags::LOSSY_IMAGE_COMPRESSION,
-        VR::CS,
-        "01",
-    ));
-    source_object.put(dicom_core::DataElement::new(
-        tags::LOSSY_IMAGE_COMPRESSION_METHOD,
-        VR::CS,
-        "ISO_10918_1\\ISO_15444_1",
-    ));
-    source_object.put(dicom_core::DataElement::new(
-        tags::LOSSY_IMAGE_COMPRESSION_RATIO,
-        VR::DS,
-        "8.5\\3.25",
-    ));
+    declare_lossy_history_for_test(&mut source_object, "ISO_10918_1\\ISO_15444_1", "8.5\\3.25");
     source_object.write_to_file(&source).unwrap();
 
     let report = export_dicom(ExportRequest {
@@ -402,6 +388,57 @@ fn lossless_export_preserves_declared_source_lossy_history() {
             .unwrap(),
         vec![8.5, 3.25]
     );
+}
+
+#[test]
+fn folder_export_preserves_lossy_history_for_the_matching_level_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source_dir = tmp.path().join("source");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    let source_level0 = source_dir.join("level0.dcm");
+    let source_level1 = source_dir.join("level1.dcm");
+    write_source_dicom_with_dimensions(&source_level0, "1.2.826.0.1.3680043.10.999.901", 4, 4);
+    write_source_dicom_with_dimensions(&source_level1, "1.2.826.0.1.3680043.10.999.902", 2, 2);
+    let mut lossy_level = dicom_object::open_file(&source_level0).unwrap();
+    declare_lossy_history_for_test(&mut lossy_level, "ISO_10918_1", "8.5");
+    lossy_level.write_to_file(&source_level0).unwrap();
+
+    let report = export_dicom(ExportRequest {
+        source_path: source_dir,
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 2,
+            transfer_syntax: TransferSyntax::Jpeg2000Lossless,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: None,
+    })
+    .unwrap();
+
+    assert_eq!(report.instances.len(), 2);
+    let level0 = dicom_object::open_file(&report.instances[0].path).unwrap();
+    let level1 = dicom_object::open_file(&report.instances[1].path).unwrap();
+    assert_eq!(text(&level0, tags::LOSSY_IMAGE_COMPRESSION), "01");
+    assert_eq!(
+        text(&level0, tags::LOSSY_IMAGE_COMPRESSION_METHOD),
+        "ISO_10918_1"
+    );
+    assert_eq!(
+        level0
+            .element(tags::LOSSY_IMAGE_COMPRESSION_RATIO)
+            .unwrap()
+            .to_float64()
+            .unwrap(),
+        8.5
+    );
+    assert_eq!(text(&level1, tags::LOSSY_IMAGE_COMPRESSION), "00");
+    assert!(level1
+        .element(tags::LOSSY_IMAGE_COMPRESSION_METHOD)
+        .is_err());
+    assert!(level1.element(tags::LOSSY_IMAGE_COMPRESSION_RATIO).is_err());
 }
 
 #[test]

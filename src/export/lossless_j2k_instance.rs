@@ -20,7 +20,7 @@ use super::lossless_j2k_plan::{
 };
 use super::route_plan::RouteExecutionContext;
 use super::tile_grid::TileGrid;
-use super::{level_pixel_spacing_mm, require_pixel_spacing_mm, InstanceExportContext};
+use super::InstanceExportContext;
 use crate::error::Error;
 use crate::instance_context::{DicomInstanceContext, InstanceDicomObjectParams};
 use crate::lossy::{uncompressed_pixel_bytes, LossyCompressionAccumulator, HTJ2K_METHOD};
@@ -185,20 +185,11 @@ pub(super) fn prepare_lossless_j2k_instance(
     let grid = TileGrid::square(matrix_columns, matrix_rows, tile_size)?;
     let tiles_across = grid.tiles_across;
     let tiles_down = grid.tiles_down;
-    let frame_count = grid.frame_count_u32()?;
-    let context = DicomInstanceContext::new(
-        identity,
-        &request.output_dir,
-        require_pixel_spacing_mm(level_pixel_spacing_mm(
-            slide,
-            level,
-            options.semantics.source_pixel_spacing_mm,
-        )?)?,
-        coordinate,
-    )?
-    .with_level_zero_source(identity, request.level_filter.is_none());
+    let dense_frame_count = grid.frame_count_u32()?;
+    let frame_count = export.frame_count(dense_frame_count);
+    let context = export.dicom_context(slide, request)?;
     let declared_lossy_compression =
-        super::lossy_provenance::source_lossy_history(slide, &request.source_path, coordinate)?;
+        super::lossy_provenance::source_lossy_history(slide, coordinate)?;
     let location = coordinate;
     let spool_path = unique_spool_path(&context.path);
     let mut pixel_data = BufferedPixelDataSink::create(
@@ -217,8 +208,12 @@ pub(super) fn prepare_lossless_j2k_instance(
         &request.source_path,
         options,
         location,
-        u64::from(frame_count),
+        u64::from(dense_frame_count),
     )?;
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    {
+        metal_input.sparse_frames = per_frame_plan.is_some_and(|plan| plan.is_sparse());
+    }
     let mut source_lossy_compression = LossyCompressionAccumulator::default();
     let mut target_lossy_compression = LossyCompressionAccumulator::default();
     let jpeg_preflight = WholeLevelJpegPreflight::profile(level, options.semantics.transfer_syntax);
@@ -274,6 +269,7 @@ pub(super) fn prepare_lossless_j2k_instance(
                         slide,
                         plan_request(row, planned_row_count),
                         jpeg_preflight,
+                        per_frame_plan,
                     )?
                 }
             };
@@ -296,7 +292,12 @@ pub(super) fn prepare_lossless_j2k_instance(
                 prefetched = Some(PrefetchedPlan {
                     request,
                     handle: scope.spawn(move || {
-                        plan_lossless_j2k_frames_with_preflight(slide, request, jpeg_preflight)
+                        plan_lossless_j2k_frames_with_preflight(
+                            slide,
+                            request,
+                            jpeg_preflight,
+                            per_frame_plan,
+                        )
                     }),
                 });
             }
@@ -323,7 +324,7 @@ pub(super) fn prepare_lossless_j2k_instance(
                 &mut j2k_encoder,
                 row,
                 &direct_routes,
-                frame_count as usize,
+                dense_frame_count as usize,
                 &mut metrics,
             )?;
             let mut cpu_batch_results = encode_lossless_j2k_cpu_fallback_after_routes(
@@ -481,6 +482,6 @@ pub(super) fn prepare_lossless_j2k_instance(
         transfer_syntax: options.semantics.transfer_syntax,
         overwrite: options.semantics.overwrite,
         max_instance_metadata_bytes: options.resources.max_instance_metadata_bytes,
-        per_frame_plan,
+        per_frame_plan: per_frame_plan.cloned(),
     })
 }

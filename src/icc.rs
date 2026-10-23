@@ -45,6 +45,14 @@ pub(crate) fn synthetic_srgb_icc_profile() -> Result<Vec<u8>, Error> {
     encode_synthetic_input_profile("sRGB", ColorProfile::new_srgb())
 }
 
+/// Whether `bytes` is the sRGB profile this crate synthesizes.
+pub(crate) fn is_synthetic_srgb_icc_profile(bytes: &[u8]) -> bool {
+    static SRGB: std::sync::OnceLock<Option<Vec<u8>>> = std::sync::OnceLock::new();
+    SRGB.get_or_init(|| synthetic_srgb_icc_profile().ok())
+        .as_deref()
+        .is_some_and(|srgb| srgb == bytes)
+}
+
 pub(crate) fn synthetic_display_p3_icc_profile() -> Result<Vec<u8>, Error> {
     encode_synthetic_input_profile("Display P3", ColorProfile::new_display_p3())
 }

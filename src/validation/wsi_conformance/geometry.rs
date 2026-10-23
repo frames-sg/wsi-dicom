@@ -216,6 +216,22 @@ pub(super) fn validate_dimension_rule(object: &DefaultDicomObject) -> Result<(),
 }
 
 pub(super) fn validate_tile_geometry_rule(object: &DefaultDicomObject) -> Result<(), String> {
+    // The generated IOD presence family owns missing required Attributes, and
+    // without the optional organization type this TILED_FULL rule does not
+    // apply. Evaluate geometry only once all inputs exist.
+    if [
+        tags::DIMENSION_ORGANIZATION_TYPE,
+        tags::NUMBER_OF_FRAMES,
+        tags::ROWS,
+        tags::COLUMNS,
+        tags::TOTAL_PIXEL_MATRIX_ROWS,
+        tags::TOTAL_PIXEL_MATRIX_COLUMNS,
+    ]
+    .into_iter()
+    .any(|tag| object.element(tag).is_err())
+    {
+        return Ok(());
+    }
     let dimension_type = required_string(
         object,
         tags::DIMENSION_ORGANIZATION_TYPE,

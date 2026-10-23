@@ -8,6 +8,7 @@ use super::{
 };
 use crate::error::Error;
 use crate::tile::PixelProfile;
+use crate::writer::PerFrameFunctionalGroupsPlan;
 use wsi_rs::{RawCompressedTile, Slide};
 
 pub(super) struct DirectJpegPassthroughStart {
@@ -19,6 +20,8 @@ pub(super) struct DirectJpegPassthroughFrameWriter<'a> {
     slide: &'a Slide,
     location: JpegBaselineFrameLocation,
     geometry: JpegBaselineFrameGeometry,
+    /// Maps output frames to grid frames when absent frames are omitted.
+    sparse_plan: Option<&'a PerFrameFunctionalGroupsPlan>,
     frame_count: usize,
     expected_profile: PixelProfile,
     chunk_frame_limit: usize,
@@ -30,10 +33,12 @@ pub(super) struct DirectJpegPassthroughFrameWriter<'a> {
 }
 
 impl<'a> DirectJpegPassthroughFrameWriter<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         slide: &'a Slide,
         location: JpegBaselineFrameLocation,
         geometry: JpegBaselineFrameGeometry,
+        sparse_plan: Option<&'a PerFrameFunctionalGroupsPlan>,
         frame_count: usize,
         start: DirectJpegPassthroughStart,
         chunk_frame_limit: usize,
@@ -47,6 +52,7 @@ impl<'a> DirectJpegPassthroughFrameWriter<'a> {
             slide,
             location,
             geometry,
+            sparse_plan,
             frame_count,
             expected_profile,
             chunk_frame_limit: chunk_frame_limit.max(1),
@@ -117,7 +123,7 @@ impl<'a> DirectJpegPassthroughFrameWriter<'a> {
                 self.location,
                 self.geometry,
                 self.expected_profile,
-                idx,
+                self.grid_frame(idx),
             ),
         };
         let first = match first {
@@ -141,7 +147,7 @@ impl<'a> DirectJpegPassthroughFrameWriter<'a> {
                 self.location,
                 self.geometry,
                 self.expected_profile,
-                next_index,
+                self.grid_frame(next_index),
             ) {
                 Ok(frame) => frame,
                 Err(error) => {
@@ -161,17 +167,25 @@ impl<'a> DirectJpegPassthroughFrameWriter<'a> {
         self.chunk_frames = frames;
         Ok(())
     }
+
+    fn grid_frame(&self, idx: usize) -> usize {
+        self.sparse_plan
+            .map_or(idx, |plan| plan.grid_frame_index(idx as u32) as usize)
+    }
 }
 
+/// Reads the first output frame, at grid frame `first_grid_frame`.
 pub(super) fn try_prepare_direct_jpeg_passthrough(
     slide: &Slide,
     location: JpegBaselineFrameLocation,
     level: &wsi_rs::Level,
     geometry: JpegBaselineFrameGeometry,
+    first_grid_frame: usize,
 ) -> Result<Option<DirectJpegPassthroughStart>, Error> {
     let allow_raw_rgb_passthrough =
         raw_rgb_passthrough_has_no_geometry_fallback(slide, level, location, geometry);
-    let Some(raw) = read_raw_jpeg_passthrough_tile(slide, location, geometry, 0)? else {
+    let Some(raw) = read_raw_jpeg_passthrough_tile(slide, location, geometry, first_grid_frame)?
+    else {
         return Ok(None);
     };
     let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&raw) else {

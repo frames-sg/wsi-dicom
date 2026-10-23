@@ -311,7 +311,12 @@ jobs:
           toolchain: "1.99.0"
       - name: Fetch locked dependencies for offline package inspection
         run: cargo fetch --locked
+      - name: Check generated IOD tables against the pinned DICOM sources
+        run: python scripts/generate-iod-tables.py --source-dir "${RUNNER_TEMP}/dicom-docbook" --fetch --check
       - run: python -m unittest discover -s tests -v
+        env:
+          WSI_DICOM_DOCBOOK_DIR: ${{ runner.temp }}/dicom-docbook
+          WSI_DICOM_IOD_TABLES_CHECKED: "1"
 
   controlled-failure-benchmark:
     if: github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')

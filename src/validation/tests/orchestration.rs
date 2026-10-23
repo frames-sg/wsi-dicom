@@ -354,6 +354,7 @@ fn validation_options_use_seconds_for_json_and_runtime_timeout() {
         max_depth: 64,
         max_child_output_bytes: 4 * 1024 * 1024,
         max_pixel_frame_bytes: 512 * 1024 * 1024,
+        conformance: crate::ConformanceLevel::Optional,
     };
 
     let json = serde_json::to_string(&options).expect("serialize validation options");

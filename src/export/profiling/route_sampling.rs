@@ -109,6 +109,7 @@ pub(super) fn profile_lossless_j2k_routes(
                 pixel_reencode: options.semantics.pixel_reencode,
             },
             jpeg_preflight,
+            None,
         )?;
         let batch_context = LosslessJ2kBatchContext {
             slide,
@@ -239,6 +240,7 @@ pub(super) fn profile_jpeg_baseline_routes(
             slide,
             JpegBaselineRowPlanRequest {
                 level,
+                per_frame_plan: None,
                 location,
                 row,
                 tile_count: row_tile_count,
@@ -445,6 +447,7 @@ pub(super) fn coverage_jpeg_baseline_routes(
             slide,
             JpegBaselineRowPlanRequest {
                 level,
+                per_frame_plan: None,
                 location,
                 row,
                 tile_count: row_tile_count,

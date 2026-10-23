@@ -42,7 +42,6 @@ fn jpeg_preparation_rejects_an_edge_that_requires_reencoding() {
         },
         geometry,
         spool_path.clone(),
-        2,
     )
     .err()
     .expect("incompatible JPEG edge must not be re-encoded");
@@ -325,13 +324,13 @@ fn direct_jpeg_buffer_holds_at_most_budget_plus_one_variable_frame() {
     let location = InstanceCoordinate::new(0, 0, 0, 0, 0, 0);
     let geometry = jpeg_baseline_route_frame_geometry(&slide, level, location, 32).unwrap();
     let start = super::super::jpeg_passthrough::try_prepare_direct_jpeg_passthrough(
-        &slide, location, level, geometry,
+        &slide, location, level, geometry, 0,
     )
     .unwrap()
     .unwrap();
     let budget = start.first_frame.len() + 32;
     let mut frames = super::super::jpeg_passthrough::DirectJpegPassthroughFrameWriter::new(
-        &slide, location, geometry, 4, start, 2048, budget,
+        &slide, location, geometry, None, 4, start, 2048, budget,
     );
 
     frames.frame_len(1).unwrap();
@@ -924,11 +923,11 @@ fn export_jpeg_baseline_preserves_native_geometry_when_first_tile_is_empty() {
 
     let report = export_jpeg_baseline_native_geometry_for_test(source, tmp.path().join("out"));
 
-    assert_eq!(report.instances[0].frame_count, 4);
+    assert_eq!(report.instances[0].frame_count, 3);
     assert_eq!(report.metrics.routes.jpeg_passthrough_frames, 3);
-    assert_eq!(report.metrics.routes.cpu_fallback_frames, 1);
+    assert_eq!(report.metrics.routes.cpu_fallback_frames, 0);
 
-    assert_dicom_instance_geometry_for_test(&report.instances[0].path, 512, 512, 4);
+    assert_dicom_instance_geometry_for_test(&report.instances[0].path, 512, 512, 3);
 }
 
 #[test]

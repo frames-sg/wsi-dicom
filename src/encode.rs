@@ -355,7 +355,6 @@ pub(crate) fn encode_dicom_j2k_lossless(
     )
 }
 
-#[cfg(test)]
 pub(crate) fn encode_dicom_lossless(
     samples: J2kLosslessSamples<'_>,
     transfer_syntax: TransferSyntax,

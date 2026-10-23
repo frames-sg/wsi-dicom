@@ -40,7 +40,12 @@ impl FrameGrid {
 
     fn tiles_across(self) -> Result<u64, Error> {
         self.validate()?;
-        Ok(self.matrix_columns.div_ceil(u64::from(self.frame_columns)))
+        Ok(self.frames_across())
+    }
+
+    /// Frames per grid row; the grid must have non-zero frame columns.
+    pub(crate) fn frames_across(self) -> u64 {
+        self.matrix_columns.div_ceil(u64::from(self.frame_columns))
     }
 
     fn location_for_frame(self, frame_index: u32) -> Result<FrameLocation, Error> {
@@ -58,13 +63,14 @@ struct FrameLocation {
     column: u64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct PerFrameFunctionalGroupsPlan {
     frame_count: u32,
     frame_grid: FrameGrid,
     row_spacing_mm: f64,
     column_spacing_mm: f64,
     encoded_bytes: Option<u64>,
+    frame_indices: Option<std::sync::Arc<[u32]>>,
 }
 
 impl PerFrameFunctionalGroupsPlan {
@@ -96,7 +102,50 @@ impl PerFrameFunctionalGroupsPlan {
             row_spacing_mm,
             column_spacing_mm,
             encoded_bytes: None,
+            frame_indices: None,
         })
+    }
+
+    /// Select present frames by their original row-major grid index. Keeping
+    /// these indices preserves slide coordinates when absent tiles are omitted.
+    pub(crate) fn with_frame_indices(mut self, indices: Vec<u32>) -> Result<Self, Error> {
+        if indices.is_empty()
+            || indices
+                .last()
+                .is_some_and(|&index| index >= self.frame_count)
+            || indices.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err(Error::Unsupported {
+                reason:
+                    "sparse frame positions must be nonempty, ordered, and inside the source grid"
+                        .into(),
+            });
+        }
+        self.frame_count = u32::try_from(indices.len()).map_err(|_| Error::Unsupported {
+            reason: "sparse frame count exceeds u32".into(),
+        })?;
+        self.frame_indices = Some(indices.into());
+        self.encoded_bytes = None;
+        Ok(self)
+    }
+
+    pub(crate) fn is_sparse(&self) -> bool {
+        self.frame_indices.is_some()
+    }
+
+    pub(crate) fn includes_grid_position(&self, row: u64, column: u64) -> bool {
+        let index = (row * self.frame_grid.frames_across() + column) as u32;
+        self.frame_indices
+            .as_ref()
+            .map_or(index < self.frame_count, |indices| {
+                indices.binary_search(&index).is_ok()
+            })
+    }
+
+    pub(crate) fn grid_frame_index(&self, ordinal: u32) -> u32 {
+        self.frame_indices
+            .as_ref()
+            .map_or(ordinal, |indices| indices[ordinal as usize])
     }
 
     pub(crate) fn preflight(mut self, max_metadata_bytes: u64) -> Result<Self, Error> {
@@ -104,7 +153,7 @@ impl PerFrameFunctionalGroupsPlan {
         Ok(self)
     }
 
-    pub(crate) fn matches_layout(self, other: Self) -> bool {
+    pub(crate) fn matches_layout(&self, other: &Self) -> bool {
         self.frame_count == other.frame_count
             && self.frame_grid == other.frame_grid
             && self.row_spacing_mm == other.row_spacing_mm
@@ -112,11 +161,11 @@ impl PerFrameFunctionalGroupsPlan {
     }
 
     #[cfg(test)]
-    pub(crate) fn encoded_len(self) -> Result<u64, Error> {
+    pub(crate) fn encoded_len(&self) -> Result<u64, Error> {
         self.encoded_len_with_limit(u64::MAX)
     }
 
-    pub(crate) fn minimum_encoded_len(self) -> Result<u64, Error> {
+    pub(crate) fn minimum_encoded_len(&self) -> Result<u64, Error> {
         u64::from(self.frame_count)
             .checked_mul(MIN_PER_FRAME_ITEM_BYTES)
             .and_then(|bytes| bytes.checked_add(PER_FRAME_SEQUENCE_CONTAINER_BYTES))
@@ -125,7 +174,7 @@ impl PerFrameFunctionalGroupsPlan {
             })
     }
 
-    pub(crate) fn encoded_len_with_limit(self, max_metadata_bytes: u64) -> Result<u64, Error> {
+    pub(crate) fn encoded_len_with_limit(&self, max_metadata_bytes: u64) -> Result<u64, Error> {
         if let Some(bytes) = self.encoded_bytes {
             return if bytes <= max_metadata_bytes {
                 Ok(bytes)
@@ -151,12 +200,12 @@ impl PerFrameFunctionalGroupsPlan {
         Ok(counter.written)
     }
 
-    pub(crate) fn frame_count(self) -> u32 {
+    pub(crate) fn frame_count(&self) -> u32 {
         self.frame_count
     }
 
     pub(crate) fn write_to(
-        self,
+        &self,
         output: &mut impl Write,
         max_metadata_bytes: u64,
     ) -> Result<u64, Error> {
@@ -180,12 +229,12 @@ impl PerFrameFunctionalGroupsPlan {
         Ok(bounded.written)
     }
 
-    fn write_encoded(self, output: &mut impl Write) -> io::Result<()> {
+    fn write_encoded(&self, output: &mut impl Write) -> io::Result<()> {
         write_sequence_header(output, tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)?;
         for frame_index in 0..self.frame_count {
             let location = self
                 .frame_grid
-                .location_for_frame(frame_index)
+                .location_for_frame(self.grid_frame_index(frame_index))
                 .map_err(io::Error::other)?;
             write_per_frame_functional_group_item(
                 output,

@@ -5,7 +5,7 @@
 version = "0.10"
 
 [imports.wsi-rs]
-url = "https://raw.githubusercontent.com/frames-sg/wsi-rs/3f819a3a7d7e724967a5db631bd5d823fc08a517/supply-chain/audits.toml"
+url = "https://raw.githubusercontent.com/frames-sg/wsi-rs/f15cf386613d88889f0ea94ee4694152235fbc4b/supply-chain/audits.toml"
 
 [policy.j2k]
 audit-as-crates-io = false

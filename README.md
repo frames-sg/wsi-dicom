@@ -65,9 +65,14 @@ cargo build --release --locked
 ```
 
 The commands and APIs below describe 0.8.0; the 0.7.5 API has
-[versioned documentation](https://docs.rs/wsi-dicom/0.7.5). In 0.8.0,
-sparse source holes represented by zero-filled transparent pixels become black
-DICOM padding. Other non-opaque pixels require an explicit composite policy.
+[versioned documentation](https://docs.rs/wsi-dicom/0.7.5).
+Frames that source coverage metadata identifies as absent are omitted, and the
+instance is written as `TILED_SPARSE` with explicit frame positions. Acquired
+black tiles are retained. Gaps within a partially covered frame remain black
+padding; other non-opaque pixels require an explicit composite policy.
+dicom3tools `dciodvfy` currently reports a false Number of Frames error for
+`TILED_SPARSE` output (it applies the `TILED_FULL` formula); validation reports
+that error as `dciodvfy` emits it.
 
 Feature flags:
 
@@ -311,10 +316,25 @@ native versus encapsulated representation, nonempty data, and bounded frame
 mapping through Basic or Extended Offset Tables. VL Whole Slide Microscopy Image objects additionally
 run stable `intrinsic-wsi-dicom-2026c-*` checks for ICC profiles, monochrome
 presentation attributes, lossy declarations, specimen identity, and dimension
-ordering, plus a set-level Specimen UID consistency check. These checks do not
-decode pixel values or infer unknowable compression history predating the
-object. Missing external tools are reported as skipped unless `--strict` is
-set. Directory validation is bounded by file count, depth, timeout, and child
+ordering, plus a set-level Specimen UID consistency check.
+
+They also run the VL WSI IOD requirements generated from the pinned DICOM
+2026c tables (PS3.3 A.32.8 and the module and macro tables it includes, PS3.6
+data dictionary, PS3.10 file meta): `iod-modules` (module and functional group
+usage, Per-Frame item count), `iod-attribute-presence` (Type 1, 1C, 2 and 2C,
+recursively in Sequence Items, with each condition evaluated), `iod-enumerated-values`,
+`iod-vr-vm`, `iod-value-format` (PS3.5 6.2), `iod-sequence-items` and
+`file-meta`. Conditions that depend on facts an object cannot carry are counted
+as undeterminable rather than failed. With `--optional` (the default),
+validation also lists the optional modules, functional groups and attributes
+each object lacks, in `optional_absent` of the JSON report; they are not
+failures. Most need facts a slide file does not hold (clinical trial, physician
+or procedure details). `--required` skips the list. Context Group (CID) code constraints are
+not checked. `scripts/generate-iod-tables.py --check` verifies the generated
+tables against the pinned DocBook sources. These checks do not decode pixel
+values or infer unknowable compression history predating the object. Missing
+external tools are reported as skipped unless `--strict` is set. Directory
+validation is bounded by file count, depth, timeout, and child
 output capture limits; symlink traversal is refused.
 
 ## Rust API
@@ -392,14 +412,19 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
   `1`.
 - Lossy compression history is independent of the final transfer syntax. A
   lossless transcode does not erase prior lossy JPEG/JPEG 2000/HTJ2K stages.
+  A DICOM source's history comes from the SOP Instances that supply each level
+  or associated image. When a level spans several Instances, they must declare
+  the same methods; each ratio is combined over them, weighted by decoded size.
+  An Instance that declares nothing takes the codec and sizes its transfer
+  syntax implies.
   For non-DICOM sources the stage is measured from the source tiles: JPEG tiles
   are lossy, and JPEG 2000 tiles are lossy when their codestream is
   irreversible. Levels without readable compressed tiles (Zeiss CZI) use the
   codec and stored size the reader reports, with the ratio of decoded to stored
-  bytes. JPEG XR and JPEG-LS reported this way are recorded as lossy, because
-  the source does not say whether a lossless mode was used; JPEG XR uses the
-  method `ISO_29199_2`, which extends the Defined Terms. A lossy codec without
-  stored sizes, or a codec that cannot be classified, fails the export.
+  bytes. JPEG XR and JPEG-LS are recorded as lossy, because no reader reports
+  whether a lossless mode was used. JPEG XR uses the method `ISO_29199_2`, which extends
+  the Defined Terms. A lossy codec without stored sizes, or a codec that cannot
+  be classified, fails the export.
 - Resampled levels reference the level-zero instance of their plane, when it is
   part of the same export, through Source Image Sequence, Referenced Series
   Sequence and a shared Derivation Image functional group (DCM 113085 "Spatial
@@ -422,6 +447,22 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
   lossy history and are counted as `source_reencoded` in the summary
   (`compressed_source_reencoded_frames` in reports). Lossy JPEG 2000 and HTJ2K
   output have no pixel re-encoding route.
+- `--optional` (the default) writes the optional instances, encodings and
+  attributes of the VL WSI IOD that the source supports: the associated images
+  below, `TILED_SPARSE` for absent frames, and attributes it can fill
+  truthfully (Tiles Overlap `NONE`, Quality Control Image `NO`, Recognizable
+  Visual Features `YES` for label and overview and `NO` for pyramid levels,
+  Series Date and Time, Color Space `SRGB` with the synthesized sRGB profile,
+  Objective Lens Power from the source's `openslide.objective-power` on pyramid
+  levels and thumbnails, a black Recommended Absent Pixel CIELab Value for
+  `TILED_SPARSE`). `--required`
+  (`Export::conformance(ConformanceLevel::Required)`) writes only the pyramid
+  levels, `TILED_FULL` with absent frames padded, and leaves out the optional
+  descriptive attributes (Multi-Resolution Pyramid module, Acquisition Date and
+  Time, Representative Frame Number, specimen and optical path descriptions,
+  General Reference links). It keeps what the encoding depends on: Dimension
+  Organization Type, offset tables, per-frame positions and the Derivation
+  Image functional group of resampled levels.
 - Associated images are written by default as single-frame instances in the
   Series of the first plane: the label (`associated-label.dcm`,
   ORIGINAL\PRIMARY\LABEL\NONE, with an empty Slide Label module), the overview
@@ -433,14 +474,17 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
   Multi-Resolution Pyramid. The label and the overview, which shows at least
   part of the label, can identify the patient: leave them out with
   `--exclude-associated label,overview` (`all` leaves out every associated
-  image) or `Export::exclude_associated`. A level-filtered export writes no
-  associated images.
+  image) or `Export::exclude_associated`. A level-filtered or `--required`
+  export writes no associated images.
 - Associated images have no compressed-domain route, so their pixels are always
   encoded: in the requested transfer syntax when it is lossless, otherwise in
   its lossless sibling (JPEG Lossless SV1, JPEG 2000 Lossless, HTJ2K Lossless).
   `pixel_reencode=any` keeps a JPEG Baseline request lossy; `never` refuses
-  associated images stored as JPEG or JPEG 2000. Their lossy history comes from
-  the codec and size the reader reports. Labels and overviews take only their
+  associated images stored with an image codec (JPEG, JPEG 2000, JPEG XR,
+  JPEG-LS), not those stored uncompressed or with LZW, Deflate, Zstandard or
+  RLE. Their lossy history
+  comes from their own DICOM Instance when applicable, or from the codec, mode,
+  and size the reader reports. Labels and overviews take only their
   own embedded ICC profile, because the slide profile and scanner calibrations
   describe the scan; without one they get the policy's synthesized profile, and
   `RequireSource` fails. Thumbnails resolve ICC like level zero. Associated

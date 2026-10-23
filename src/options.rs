@@ -263,6 +263,29 @@ impl AssociatedImageExclusions {
     }
 }
 
+/// How much of the VL Whole Slide Microscopy IOD an export writes, or a
+/// validation reports.
+///
+/// What the standard requires is always written and checked. `Optional` also
+/// writes the optional modules and attributes the source can supply, and
+/// validation lists the optional ones an object lacks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum ConformanceLevel {
+    /// Only what the standard requires.
+    Required,
+    /// Also the optional modules and attributes.
+    #[default]
+    Optional,
+}
+
+impl ConformanceLevel {
+    pub(crate) fn is_optional(&self) -> bool {
+        *self == Self::Optional
+    }
+}
+
 /// Policy for identifiers generated when the caller does not supply them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -484,6 +507,10 @@ pub struct ExportOptions {
     /// Associated images (label, overview, thumbnail) left out of the export.
     /// All associated images are written by default when no level filter is set.
     pub exclude_associated: AssociatedImageExclusions,
+    /// `Optional` (the default) also writes the optional instances, encodings
+    /// and attributes the source supports; `Required` writes the pyramid
+    /// levels, TILED_FULL, with only the attributes the IOD requires.
+    pub conformance: ConformanceLevel,
     /// Policy for generated Study, Series, SOP, and related DICOM UIDs.
     pub uid_policy: UidPolicy,
     /// Optional governed level-zero source spacing when the reader lacks calibration metadata.
@@ -519,6 +546,7 @@ pub(crate) struct NormalizedExportSemantics {
     pub(crate) jpeg_optimize_huffman: bool,
     pub(crate) pixel_reencode: PixelReencodePolicy,
     pub(crate) exclude_associated: AssociatedImageExclusions,
+    pub(crate) conformance: ConformanceLevel,
     pub(crate) uid_policy: UidPolicy,
     pub(crate) source_pixel_spacing_mm: Option<SourcePixelSpacingMm>,
 }
@@ -576,6 +604,7 @@ impl NormalizedExportOptions {
                 jpeg_optimize_huffman: options.jpeg_optimize_huffman,
                 pixel_reencode: options.pixel_reencode,
                 exclude_associated: options.exclude_associated,
+                conformance: options.conformance,
                 uid_policy: options.uid_policy,
                 source_pixel_spacing_mm: options.source_pixel_spacing_mm,
             },
@@ -615,6 +644,7 @@ impl Default for ExportOptions {
             jpeg_optimize_huffman: false,
             pixel_reencode: PixelReencodePolicy::Lossless,
             exclude_associated: AssociatedImageExclusions::NONE,
+            conformance: ConformanceLevel::Optional,
             uid_policy: UidPolicy::Fresh,
             source_pixel_spacing_mm: None,
             encode_backend: EncodeBackendPreference::Auto,
@@ -1029,6 +1059,7 @@ mod tests {
             jpeg_optimize_huffman: true,
             pixel_reencode: PixelReencodePolicy::Any,
             exclude_associated: AssociatedImageExclusions::NONE.with(AssociatedImageKind::Label),
+            conformance: ConformanceLevel::Required,
             uid_policy: UidPolicy::Deterministic,
             source_pixel_spacing_mm: Some(SourcePixelSpacingMm::new(0.0005, 0.00025).unwrap()),
             encode_backend: EncodeBackendPreference::PreferDevice,

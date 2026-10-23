@@ -15,7 +15,7 @@ fn per_frame_functional_groups_stream_with_an_exact_budget() {
     )
     .unwrap();
     let estimate = plan.encoded_len().unwrap();
-    for plan in [plan, plan.preflight(estimate).unwrap()] {
+    for plan in [plan.clone(), plan.preflight(estimate).unwrap()] {
         let mut rejected = Vec::new();
         let error = plan.write_to(&mut rejected, estimate - 1).unwrap_err();
         assert!(error.to_string().contains("metadata"));
@@ -53,6 +53,29 @@ fn per_frame_metadata_rejects_an_impossible_plan_from_its_structural_lower_bound
 fn decimal_string_formatting_stays_within_dicom_limit() {
     assert_eq!(format_ds(0.0002528), "0.0002528");
     assert!(format_ds(123_456.789_123_456).len() <= 16);
+}
+
+#[test]
+fn required_conformance_keeps_only_the_required_derivation_references() {
+    let source_uid = "1.2.826.0.1.3680043.10.999.8";
+    let metadata = DicomMetadata::research_placeholder();
+    let mut params = sample_dicom_object_params(&metadata, None);
+    params.level_idx = 1;
+    params.identifiers.derivation_source_sop_instance_uid = Some(source_uid);
+    params.conformance = crate::ConformanceLevel::Required;
+    let object = build_dicom_object(params).unwrap();
+
+    assert!(object.element(tags::SOURCE_IMAGE_SEQUENCE).is_err());
+    // Required once the functional group references another instance.
+    let referenced_series = sequence_items(&object, tags::REFERENCED_SERIES_SEQUENCE);
+    assert_eq!(referenced_series.len(), 1);
+    let shared = sequence_items(&object, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE);
+    let derivation = sequence_items(&shared[0], tags::DERIVATION_IMAGE_SEQUENCE);
+    let derivation_source = &sequence_items(&derivation[0], tags::SOURCE_IMAGE_SEQUENCE)[0];
+    assert_eq!(
+        tag_str(derivation_source, tags::REFERENCED_SOP_INSTANCE_UID),
+        source_uid
+    );
 }
 
 #[test]

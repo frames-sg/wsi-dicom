@@ -124,7 +124,7 @@ pub(super) fn try_encode_metal_input_tile_grid_run(
     j2k_encoder: &mut DicomJ2kEncoder,
     request: MetalTileGridRunRequest<'_>,
 ) -> Result<Option<MetalEncodedTileRun>, Error> {
-    if request.full_row_tiles_across().is_none() {
+    if request.full_row_tiles_across().is_none() || metal_input.sparse_frames {
         return Ok(None);
     }
     let row_count = request.row_batch_rows(metal_input)?;
@@ -174,7 +174,7 @@ pub(super) fn try_encode_metal_input_tile_grid_pipeline_run(
     j2k_encoder: &mut DicomJ2kEncoder,
     request: MetalTileGridRunRequest<'_>,
 ) -> Result<Option<MetalEncodedTileRun>, Error> {
-    if request.full_row_tiles_across().is_none() {
+    if request.full_row_tiles_across().is_none() || metal_input.sparse_frames {
         return Ok(None);
     }
     if metal_input.pipeline_depth <= 1 {

@@ -22,10 +22,11 @@ use identity::{
     specimen_identities, validate_file_meta_identity, validate_specimen_container_rule,
 };
 use instance::{
-    is_vl_wsi, validate_core_image_profile_rule, validate_icc_rule, validate_image_metadata_rule,
+    validate_core_image_profile_rule, validate_icc_rule, validate_image_metadata_rule,
     validate_lossy_rule, validate_monochrome_rule, validate_optical_path_structure_rule,
 };
 
+use super::iod::{declares_vl_wsi, run_iod_checks};
 use super::{ValidationCheck, ValidationProfile, ValidationStatus};
 
 const ICC_RULE: &str = "intrinsic-wsi-dicom-2026c-icc-profile";
@@ -41,13 +42,16 @@ const SLIDE_COORDINATE_RULE: &str = "intrinsic-wsi-dicom-2026c-slide-coordinate-
 const OPTICAL_PATH_STRUCTURE_RULE: &str = "intrinsic-wsi-dicom-2026c-optical-path-structure";
 const SPECIMEN_CONTAINER_RULE: &str = "intrinsic-wsi-dicom-2026c-specimen-container";
 
+/// The intrinsic checks of one object, with the optional IOD items it lacks.
 pub(super) fn run_intrinsic_wsi_conformance_checks(
     path: &Path,
     object: &DefaultDicomObject,
     profile: ValidationProfile,
-) -> Vec<ValidationCheck> {
-    if !is_vl_wsi(object) {
-        return if profile == ValidationProfile::Core2026c {
+    conformance: crate::ConformanceLevel,
+) -> (Vec<ValidationCheck>, Option<Vec<String>>) {
+    let (iod_checks, optional_absent) = run_iod_checks(path, object, conformance);
+    if !declares_vl_wsi(object) {
+        let mut checks = if profile == ValidationProfile::Core2026c {
             vec![rule_check(
                 path,
                 CORE_IMAGE_PROFILE_RULE,
@@ -57,6 +61,8 @@ pub(super) fn run_intrinsic_wsi_conformance_checks(
         } else {
             Vec::new()
         };
+        checks.extend(iod_checks);
+        return (checks, optional_absent);
     }
 
     let mut checks = vec![
@@ -109,6 +115,7 @@ pub(super) fn run_intrinsic_wsi_conformance_checks(
             validate_image_metadata_rule(object),
         ),
     ];
+    checks.extend(iod_checks);
     if profile == ValidationProfile::Core2026c {
         checks.extend([
             rule_check(
@@ -137,7 +144,7 @@ pub(super) fn run_intrinsic_wsi_conformance_checks(
             ),
         ]);
     }
-    checks
+    (checks, optional_absent)
 }
 
 fn rule_check(

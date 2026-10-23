@@ -51,6 +51,7 @@ struct JpegFrameEncoder<'a> {
     source_lossy_compression: LossyCompressionAccumulator,
     target_lossy_compression: LossyCompressionAccumulator,
     blank_jpeg_cache: Option<(Vec<u8>, Duration)>,
+    per_frame_plan: Option<&'a crate::writer::PerFrameFunctionalGroupsPlan>,
     #[cfg(all(feature = "metal", target_os = "macos"))]
     metal_input: MetalInputTileReader,
 }
@@ -60,7 +61,6 @@ pub(super) fn prepare_jpeg_frames(
     export: InstanceExportContext<'_>,
     geometry: JpegBaselineFrameGeometry,
     spool_path: PathBuf,
-    _frame_count: usize,
 ) -> Result<PreparedJpegFrames, Error> {
     let pixel_spool = JpegFrameSpool::create(spool_path)?;
     JpegFrameEncoder {
@@ -79,6 +79,7 @@ pub(super) fn prepare_jpeg_frames(
         source_lossy_compression: LossyCompressionAccumulator::default(),
         target_lossy_compression: LossyCompressionAccumulator::default(),
         blank_jpeg_cache: None,
+        per_frame_plan: export.per_frame_plan,
         #[cfg(all(feature = "metal", target_os = "macos"))]
         metal_input: MetalInputTileReader::new(
             export.options.execution.encode_backend,
@@ -101,6 +102,7 @@ impl JpegFrameEncoder<'_> {
                 self.slide,
                 JpegBaselineRowPlanRequest {
                     level: self.level,
+                    per_frame_plan: self.per_frame_plan,
                     location: self.location,
                     row,
                     tile_count: self.geometry.tiles_across,

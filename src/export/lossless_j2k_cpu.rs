@@ -291,16 +291,25 @@ pub(super) fn prepare_cpu_input_lossless_j2k_tile(
     )
 }
 
-pub(super) fn lossless_j2k_samples_from_prepared_region<'a>(
-    prepared: &'a PreparedCpuRegion,
+pub(super) fn lossless_j2k_samples_from_prepared_region(
+    prepared: &PreparedCpuRegion,
     tile_size: u32,
-) -> Result<J2kLosslessSamples<'a>, Error> {
+) -> Result<J2kLosslessSamples<'_>, Error> {
+    lossless_j2k_samples(&prepared.bytes, prepared.profile, tile_size, tile_size)
+}
+
+pub(super) fn lossless_j2k_samples(
+    bytes: &[u8],
+    profile: PixelProfile,
+    width: u32,
+    height: u32,
+) -> Result<J2kLosslessSamples<'_>, Error> {
     J2kLosslessSamples::new(
-        &prepared.bytes,
-        tile_size,
-        tile_size,
-        u16::from(prepared.profile.components),
-        prepared.profile.bits_allocated as u8,
+        bytes,
+        width,
+        height,
+        u16::from(profile.components),
+        profile.bits_allocated as u8,
         false,
     )
     .map_err(|source| Error::Encode {
