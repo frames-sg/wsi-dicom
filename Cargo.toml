@@ -17,8 +17,7 @@ exclude = [
     ".cargo/**",
     "fuzz/**",
     "grant/**",
-    "docs/USCAP*",
-    "docs/manuscript/**",
+    "docs/**",
     "figure1.pptx",
     "supply-chain/**",
 ]
