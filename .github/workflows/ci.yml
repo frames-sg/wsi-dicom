@@ -329,7 +329,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: frames-sg/wsi-dicom-bench
-          ref: edb44b3b433224ef752a1c015794d42d9464ce09
+          ref: 6f40ad621d3f0775b0fda6d738e9e4e7cce5a9d0
           path: wsi-dicom-bench
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -377,7 +377,7 @@ jobs:
         env:
           WSI_DICOM_BENCH: ${{ runner.temp }}/wsi-dicom-bench/bin/wsi-dicom-bench
         run: |
-          suite="$("${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("negative_bench/manifest-v4.json"))')"
+          suite="$("${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("negative_bench/manifest-v5.json"))')"
           cargo xtask benchmark --suite "${suite}" --output "${RUNNER_TEMP}/controlled-failure-evidence"
           candidate_sha256="$(sha256sum target/release/wsi-dicom | cut -d ' ' -f 1)"
           recorded_sha256="$("${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -c 'import json, os; from pathlib import Path; report=json.loads((Path(os.environ["RUNNER_TEMP"]) / "controlled-failure-evidence/observed-results/run-summary.json").read_text()); print(report["environment"]["wsi_dicom_sha256"])')"
