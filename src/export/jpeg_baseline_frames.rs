@@ -90,8 +90,12 @@ pub(super) fn prepare_jpeg_frames(
 
 impl JpegFrameEncoder<'_> {
     fn encode(mut self) -> Result<PreparedJpegFrames, Error> {
-        let allow_raw_rgb_passthrough =
-            raw_rgb_passthrough_has_no_geometry_fallback(self.level, self.geometry);
+        let allow_raw_rgb_passthrough = raw_rgb_passthrough_has_no_geometry_fallback(
+            self.slide,
+            self.level,
+            self.location,
+            self.geometry,
+        );
         for row in 0..self.geometry.tiles_down {
             let row_plan = plan_jpeg_baseline_row(
                 self.slide,
@@ -107,6 +111,7 @@ impl JpegFrameEncoder<'_> {
                         frame_rows: self.geometry.frame_rows,
                     },
                     allow_raw_rgb_passthrough,
+                    pixel_reencode: self.options.semantics.pixel_reencode,
                 },
             )?;
             record_jpeg_retile_rejections(&mut self.metrics, &row_plan.retile_rejections);
@@ -256,17 +261,21 @@ impl JpegFrameEncoder<'_> {
         }
         let start_index = index;
         let (next_index, fallback_frames) = jpeg_baseline_fallback_run(planned, index);
-        for source in planned[start_index..next_index].iter().filter_map(|frame| {
+        for frame in &planned[start_index..next_index] {
             let JpegBaselinePlannedFrame::Fallback {
                 source_lossy_compression: source_history,
+                compressed_source_reencode,
                 ..
             } = frame
             else {
-                return None;
+                continue;
             };
-            source_history.as_ref()
-        }) {
-            self.source_lossy_compression.observe(source)?;
+            if let Some(source) = source_history {
+                self.source_lossy_compression.observe(source)?;
+            }
+            if *compressed_source_reencode {
+                self.metrics.record_compressed_source_reencode();
+            }
         }
 
         let mut fallback_batch = prepare_jpeg_baseline_fallback_batch(

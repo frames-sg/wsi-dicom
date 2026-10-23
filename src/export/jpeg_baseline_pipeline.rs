@@ -13,13 +13,14 @@ use super::jpeg_baseline::{
     blank_jpeg_baseline_frame, encode_jpeg_baseline_cpu_fragment,
     jpeg_baseline_cpu_restart_interval, pixel_profile_from_raw_jpeg_tile,
     raw_compressed_error_is_empty_tile, raw_jpeg_matches_frame_geometry,
-    raw_jpeg_profile_can_passthrough, uncompressed_frame_bytes, JpegBaselineFallbackFrame,
-    JpegBaselineFrameLocation, JpegBaselineMetalEncodedRun, JpegBaselinePlannedFrame,
+    raw_jpeg_profile_can_passthrough, read_raw_source_tile, uncompressed_frame_bytes,
+    JpegBaselineFallbackFrame, JpegBaselineFrameLocation, JpegBaselineMetalEncodedRun,
+    JpegBaselinePlannedFrame,
 };
 use super::jpeg_retile::{read_raw_jpeg_retile_display_tile, RawJpegRetileProbe};
 use super::{ensure_consistent_pixel_profile, missing_metal_frame_indices};
 use crate::error::Error;
-use crate::options::EncodeBackendPreference;
+use crate::options::{EncodeBackendPreference, PixelReencodePolicy, TransferSyntax};
 use crate::report::{ExportMetrics, JpegRetileRejectionReason};
 use crate::tile::{prepare_tile_samples_with_limit, PixelProfile};
 
@@ -106,6 +107,7 @@ pub(super) struct JpegBaselineRowPlanRequest<'a> {
     pub(super) tile_count: u64,
     pub(super) grid: FrameRectGrid,
     pub(super) allow_raw_rgb_passthrough: bool,
+    pub(super) pixel_reencode: PixelReencodePolicy,
 }
 
 #[derive(Clone, Copy)]
@@ -260,7 +262,7 @@ fn plan_jpeg_baseline_frame_at(
         ))
     });
     let raw = native_position
-        .map(|(col, row)| slide.read_raw_compressed_tile(&request.location.tile_request(col, row)));
+        .map(|(col, row)| read_raw_source_tile(slide, &request.location.tile_request(col, row)));
     // The display-tile reader owns retiling eligibility. An unavailable native
     // probe must not prevent it from resolving a valid output rectangle.
     let raw_jpeg_retile_candidate =
@@ -355,11 +357,18 @@ fn plan_jpeg_baseline_frame_at(
         }
     }
 
-    if source_is_jpeg {
+    if source_is_jpeg
+        && !request
+            .pixel_reencode
+            .permits(TransferSyntax::JpegBaseline8Bit)
+    {
         return Err(Error::Unsupported {
             reason: format!(
-                "JPEG frame row={} col={col} cannot be preserved by passthrough or retiling ({retile_rejection:?}); pixel re-encoding fallback is disabled",
+                "JPEG frame row={} col={col} cannot be preserved by passthrough or retiling ({retile_rejection:?}); {}",
                 request.row,
+                request
+                    .pixel_reencode
+                    .refusal(TransferSyntax::JpegBaseline8Bit),
             ),
         });
     }
@@ -368,6 +377,7 @@ fn plan_jpeg_baseline_frame_at(
         JpegBaselinePlannedFrame::Fallback {
             frame,
             source_lossy_compression,
+            compressed_source_reencode: source_is_jpeg,
         },
         retile_rejection,
     ))

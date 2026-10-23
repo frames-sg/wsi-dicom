@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use wsi_dicom::{
     AnnotationCoordinateSpace, AnnotationTarget, CodecValidation, EncodeBackendPreference, Error,
-    ExportOptions, ExportPreset, JpegDirectHtj2kProfile, QuPathAnnotationOptions,
-    SourcePixelSpacingMm, TransferSyntax, UidPolicy,
+    ExportOptions, ExportPreset, JpegDirectHtj2kProfile, PixelReencodePolicy,
+    QuPathAnnotationOptions, SourcePixelSpacingMm, TransferSyntax, UidPolicy,
 };
 
 use crate::cli_calibration::{CalibrationCommand, ColorManagementArgs};
@@ -247,6 +247,11 @@ pub(crate) struct EncodeArgs {
     /// Use optimal per-frame Huffman tables for re-encoded JPEG Baseline frames.
     #[arg(long)]
     pub(crate) jpeg_optimize_huffman: bool,
+    /// Decode and re-encode compressed source frames that no compressed-domain
+    /// route can preserve: never, only into lossless transfer syntaxes, or also
+    /// into lossy ones (adds a lossy generation).
+    #[arg(long, value_enum, default_value_t = PixelReencodePolicy::Lossless)]
+    pub(crate) pixel_reencode: PixelReencodePolicy,
     #[arg(long, value_enum)]
     pub(crate) transfer_syntax: Option<TransferSyntax>,
     #[arg(long, value_enum)]
@@ -289,6 +294,7 @@ impl EncodeArgs {
         });
         options.j2k_decomposition_levels = self.j2k_decomposition_levels;
         options.jpeg_optimize_huffman = self.jpeg_optimize_huffman;
+        options.pixel_reencode = self.pixel_reencode;
         options.encode_backend = self.backend;
         options.codec_validation = self.codec_validation;
         options.source_device_decode = self.source_device_decode;

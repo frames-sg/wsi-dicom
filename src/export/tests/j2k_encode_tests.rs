@@ -892,6 +892,7 @@ fn export_htj2k_rpcl_passthrough_does_not_touch_gpu_even_when_device_required() 
             },
             transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
             allow_passthrough_probe: true,
+            pixel_reencode: PixelReencodePolicy::Never,
         },
     )
     .unwrap();

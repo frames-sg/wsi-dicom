@@ -42,6 +42,7 @@ fn dicom_export_metrics_serializes_stable_public_fields() {
         .is_some());
     assert!(value.get("jpeg_retile_mcu_invalid_frames").is_some());
     assert!(value.get("writer_backpressure_micros").is_some());
+    assert_eq!(value["compressed_source_reencoded_frames"], 0);
     assert_eq!(
         value
             .as_object()
@@ -142,6 +143,7 @@ fn fully_populated_metrics() -> ExportMetrics {
             jpeg_cpu_encode_frames: 1,
             jpeg_metal_encode_frames: 1,
             jpeg_decode_fallback_frames: 1,
+            compressed_source_reencoded_frames: 1,
         },
         jpeg_direct_htj2k: JpegDirectHtj2kMetrics {
             jpeg_direct_htj2k_53_frames: 1,

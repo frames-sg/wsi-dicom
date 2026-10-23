@@ -1069,16 +1069,23 @@ fn jpeg_baseline_raw_passthrough_requires_jpeg_compression_and_matching_geometry
         .data(vec![0xFF, 0x4F])
         .build()
         .unwrap();
-    let raw_jpeg = RawCompressedTile::builder(Compression::Jpeg)
-        .dimensions(512, 512)
-        .bits_allocated(8)
-        .samples_per_pixel(3)
-        .photometric_interpretation(EncodedTilePhotometricInterpretation::Rgb)
-        .data(vec![0xFF, 0xD8])
-        .build()
-        .unwrap();
+    let jpeg_tile = |logical_width| {
+        RawCompressedTile::builder(Compression::Jpeg)
+            .dimensions(logical_width, 512)
+            .bits_allocated(8)
+            .samples_per_pixel(3)
+            .photometric_interpretation(EncodedTilePhotometricInterpretation::YbrFull422)
+            .data(encode_test_jpeg(512, 512, [90, 120, 150]))
+            .build()
+            .unwrap()
+    };
+    let raw_jpeg = jpeg_tile(512);
+    // A right-edge tile reports its logical width inside a full encoded tile.
+    let padded_edge = jpeg_tile(100);
 
     assert!(!raw_jpeg_matches_frame_geometry(&raw_j2k, 512, 512));
     assert!(raw_jpeg_matches_frame_geometry(&raw_jpeg, 512, 512));
     assert!(!raw_jpeg_matches_frame_geometry(&raw_jpeg, 256, 512));
+    assert!(raw_jpeg_matches_frame_geometry(&padded_edge, 512, 512));
+    assert!(!raw_jpeg_matches_frame_geometry(&padded_edge, 100, 512));
 }

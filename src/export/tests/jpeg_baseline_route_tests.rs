@@ -8,9 +8,11 @@ use super::*;
 fn jpeg_preparation_rejects_an_edge_that_requires_reencoding() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source.svs");
+    // The edge tile encodes only its 1-pixel logical width, so it cannot fill
+    // a 32-pixel TILED_FULL frame without decoding.
     let tiles = [
         encode_test_jpeg(32, 32, [180, 30, 40]),
-        encode_test_jpeg(32, 32, [20, 170, 60]),
+        encode_test_jpeg(1, 32, [20, 170, 60]),
     ];
     write_tiled_jpeg_tiff(&source, 33, 32, 32, 32, &tiles);
     let options = NormalizedExportOptions::from_validated(&ExportOptions {
@@ -48,6 +50,254 @@ fn jpeg_preparation_rejects_an_edge_that_requires_reencoding() {
         .to_string()
         .contains("pixel re-encoding fallback is disabled"));
     assert!(error.to_string().contains("row=0 col=1"));
+}
+
+#[test]
+fn jpeg_baseline_copies_padded_edge_tiles_whole() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source.svs");
+    // TIFF pads the 1-pixel logical edge to a full encoded 32x32 tile.
+    let tiles = [
+        encode_test_jpeg(32, 32, [180, 30, 40]),
+        encode_test_jpeg(32, 32, [20, 170, 60]),
+    ];
+    write_tiled_jpeg_tiff(&source, 33, 32, 32, 32, &tiles);
+
+    let report = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 32,
+            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: false,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: Some(0),
+    })
+    .unwrap();
+
+    assert_eq!(report.metrics.routes.jpeg_passthrough_frames, 2);
+    assert_eq!(report.metrics.routes.compressed_source_reencoded_frames, 0);
+    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+    let fragments = object
+        .element(tags::PIXEL_DATA)
+        .unwrap()
+        .value()
+        .fragments()
+        .unwrap();
+    for (fragment, tile) in fragments.iter().zip(&tiles) {
+        assert_eq!(dicom_fragment_jpeg_payload(fragment), tile.as_slice());
+    }
+}
+
+/// Rewrite a baseline JPEG's SOF and SOS component identifiers to 0, 1, 2:
+/// the marker-less Aperio convention for untransformed RGB components.
+fn with_component_ids_012(jpeg: &[u8]) -> Vec<u8> {
+    let mut out = jpeg.to_vec();
+    let mut ids = Vec::new();
+    let mut offset = 2;
+    while offset + 4 <= out.len() {
+        assert_eq!(out[offset], 0xFF, "segment marker expected");
+        let marker = out[offset + 1];
+        let length = usize::from(u16::from_be_bytes([out[offset + 2], out[offset + 3]]));
+        let payload = offset + 4;
+        match marker {
+            0xC0 => {
+                for component in 0..usize::from(out[payload + 5]) {
+                    let at = payload + 6 + 3 * component;
+                    ids.push(out[at]);
+                    out[at] = component as u8;
+                }
+            }
+            0xDA => {
+                for component in 0..usize::from(out[payload]) {
+                    let at = payload + 1 + 2 * component;
+                    let index = ids.iter().position(|id| *id == out[at]).unwrap();
+                    out[at] = index as u8;
+                }
+                return out;
+            }
+            _ => {}
+        }
+        offset += 2 + length;
+    }
+    panic!("JPEG has no SOS segment");
+}
+
+#[test]
+fn rgb_jpeg_with_component_ids_012_is_copied_with_an_adobe_rgb_marker() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A 12x8 level in 8x8 tiles: the second tile is a padded edge tile.
+    let tiles = [
+        with_component_ids_012(&crate::test_support::encode_test_jpeg_with_subsampling(
+            8,
+            8,
+            [200, 40, 90],
+            JpegSubsampling::Ybr444,
+        )),
+        with_component_ids_012(&crate::test_support::encode_test_jpeg_with_subsampling(
+            8,
+            8,
+            [30, 160, 220],
+            JpegSubsampling::Ybr444,
+        )),
+    ];
+    assert_eq!(
+        super::super::jpeg_baseline::jpeg_color_evidence(&tiles[0]).unwrap(),
+        super::super::jpeg_baseline::JpegColorEvidence::RgbComponentIds012
+    );
+    let source = tmp.path().join("rgb-ids-012.tiff");
+    crate::test_support::write_tiled_compressed_tiff(&source, 12, 8, 8, 8, 7, 2, 3, &tiles);
+
+    let report = export_dicom(ExportRequest {
+        source_path: source.clone(),
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 8,
+            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: false,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: Some(0),
+    })
+    .unwrap();
+
+    assert_eq!(report.metrics.routes.jpeg_passthrough_frames, 2);
+    assert_eq!(report.metrics.routes.compressed_source_reencoded_frames, 0);
+    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+    assert_eq!(
+        object
+            .element(tags::PHOTOMETRIC_INTERPRETATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .trim(),
+        "RGB"
+    );
+    let fragments = object
+        .element(tags::PIXEL_DATA)
+        .unwrap()
+        .value()
+        .fragments()
+        .unwrap();
+    let slide = Slide::open(&source).unwrap();
+    for (index, tile) in tiles.iter().enumerate() {
+        let frame = dicom_fragment_jpeg_payload(&fragments[index]);
+        // Only an Adobe APP14 transform-0 segment is added after SOI.
+        assert_eq!(&frame[..4], &[0xFF, 0xD8, 0xFF, 0xEE]);
+        assert_eq!(&frame[4..18], b"\x00\x0eAdobe\x00\x64\x00\x00\x00\x00\x00");
+        assert_eq!(&frame[18..], &tile[2..]);
+        // A decoder that reads only the bitstream now agrees with wsi-rs.
+        let (decoded, _) = j2k_jpeg::Decoder::new(frame)
+            .unwrap()
+            .decode_request(j2k_jpeg::DecodeRequest::full(j2k_jpeg::PixelFormat::Rgb8))
+            .unwrap();
+        let width = if index == 0 { 8 } else { 4 };
+        let region = slide
+            .read_region(&wsi_rs::RegionRequest::new(
+                0usize,
+                0usize,
+                0u32,
+                (index as i64 * 8, 0),
+                (width, 8),
+            ))
+            .unwrap();
+        let wsi_rs::CpuTileData::U8(expected) = region.data() else {
+            panic!("expected 8-bit RGB source region")
+        };
+        for y in 0..8usize {
+            let row = width as usize * 3;
+            assert_eq!(
+                &decoded.as_slice()[y * 24..y * 24 + row],
+                &expected[y * row..(y + 1) * row],
+                "frame {index} row {y}"
+            );
+        }
+    }
+}
+
+#[test]
+fn export_htj2k_reencodes_jpeg_strips_losslessly_by_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source.svs");
+    let tiles = [
+        encode_test_jpeg(16, 2, [160, 20, 40]),
+        encode_test_jpeg(16, 2, [20, 160, 40]),
+        encode_test_jpeg(16, 2, [40, 20, 160]),
+        encode_test_jpeg(16, 2, [160, 160, 40]),
+    ];
+    write_tiled_jpeg_tiff(&source, 32, 4, 16, 2, &tiles);
+
+    let report = export_dicom(ExportRequest {
+        source_path: source.clone(),
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 8,
+            transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            codec_validation: CodecValidation::Disabled,
+            source_device_decode: false,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: Some(0),
+    })
+    .unwrap();
+
+    let frames = report.metrics.routes.total_frames;
+    assert_eq!(frames, 4);
+    assert_eq!(
+        report.metrics.routes.compressed_source_reencoded_frames,
+        frames
+    );
+    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+    assert_eq!(
+        object
+            .element(tags::LOSSY_IMAGE_COMPRESSION_METHOD)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .trim(),
+        "ISO_10918_1",
+        "a lossless re-encode keeps the source JPEG stage and adds none"
+    );
+    let slide = Slide::open(&source).unwrap();
+    let fragments = object
+        .element(tags::PIXEL_DATA)
+        .unwrap()
+        .value()
+        .fragments()
+        .unwrap();
+    for (index, fragment) in fragments.iter().enumerate() {
+        let decoded = decode_j2k_frame_for_test(fragment, 8, 8, 3, 8);
+        let (x, y) = ((index % 4) as i64 * 8, (index / 4) as i64 * 8);
+        let region = slide
+            .read_region(&wsi_rs::RegionRequest::new(
+                0usize,
+                0usize,
+                0u32,
+                (x, y),
+                (8, 4),
+            ))
+            .unwrap();
+        let wsi_rs::CpuTileData::U8(expected) = region.data() else {
+            panic!("expected 8-bit RGB source region")
+        };
+        assert_eq!(
+            &decoded[..expected.len()],
+            expected.as_slice(),
+            "frame {index}"
+        );
+    }
 }
 
 #[test]
@@ -316,6 +566,7 @@ fn export_htj2k_rejects_jpeg_strips_requiring_pixel_reencoding() {
             encode_backend: EncodeBackendPreference::CpuOnly,
             codec_validation: CodecValidation::Disabled,
             source_device_decode: false,
+            pixel_reencode: PixelReencodePolicy::Never,
             ..ExportOptions::default()
         },
         color_management: ColorManagement::SourceOrSrgb,
@@ -509,6 +760,7 @@ fn export_ndpi_htj2k_rejects_color_reconstruction_for_each_frame_grid() {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                pixel_reencode: PixelReencodePolicy::Never,
                 ..ExportOptions::default()
             },
             color_management: ColorManagement::SourceOrSrgb,
@@ -548,6 +800,7 @@ fn profile_ndpi_htj2k_rejects_implicit_rgb_reconstruction() {
             encode_backend: EncodeBackendPreference::CpuOnly,
             codec_validation: CodecValidation::Disabled,
             source_device_decode: false,
+            pixel_reencode: PixelReencodePolicy::Never,
             ..ExportOptions::default()
         },
         source_aware_transfer_syntax: false,

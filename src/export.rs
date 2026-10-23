@@ -37,6 +37,7 @@ use crate::options::SourcePixelSpacingMm;
 #[cfg(test)]
 use crate::options::{
     CodecValidation, EncodeBackendPreference, ExportOptions, JpegDirectHtj2kProfile,
+    PixelReencodePolicy,
 };
 use crate::options::{NormalizedExportOptions, TransferSyntax};
 #[cfg(test)]

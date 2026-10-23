@@ -393,16 +393,23 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
 - Lossy compression history is independent of the final transfer syntax. A
   lossless transcode does not erase prior lossy JPEG/JPEG 2000/HTJ2K stages.
 - JPEG Baseline output copies compatible native JPEG frames or retiles them
-  without pixel re-encoding. Unsupported geometry or color profiles fail instead
-  of silently recompressing JPEG input.
+  without pixel re-encoding. Padded TIFF edge tiles are copied whole into
+  full-size edge frames. A JPEG whose container declares RGB but whose bitstream
+  identifies RGB only by component identifiers 0, 1, 2 (Aperio) gains an Adobe
+  APP14 transform-0 marker, so bitstream-only decoders read the same RGB samples;
+  its entropy-coded data is unchanged.
 - JPEG 2000 and HTJ2K passthrough preserve compatible source codestreams,
   including ICT/9/7, regardless of the source container extension. Incompatible
   edges and mixed color profiles fail before the instance is published.
 - Direct J2K-to-HTJ2K conversion requires coefficient-preserving recoding.
-  Direct JPEG/J2K route failures are returned to the caller; rejected compressed
-  routes cannot fall back to decoded-pixel re-encoding. Color JPEG-to-HTJ2K and
-  arbitrary regular TIFF JPEG retiling remain unsupported where the first-party
-  compressed-domain route cannot produce the requested DICOM profile.
+  Compressed-domain routes are always tried first. `pixel_reencode`
+  (`--pixel-reencode`) governs frames they reject: `lossless` (the default)
+  decodes and re-encodes them only into lossless transfer syntaxes, which adds
+  no loss; `any` also permits a lossy JPEG Baseline re-encode, which adds a
+  lossy generation; `never` fails instead. Re-encoded frames keep the source's
+  lossy history and are counted as `source_reencoded` in the summary
+  (`compressed_source_reencoded_frames` in reports). Lossy JPEG 2000 and HTJ2K
+  output have no pixel re-encoding route.
 - CPU encoding remains available as the primary route for pixel inputs. Auto
   may choose a backend before execution; failures after device submission are
   returned rather than retried on the CPU. A selected device encode must complete

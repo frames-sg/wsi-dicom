@@ -3,7 +3,7 @@ use crate::cli_calibration::CalibrationCommand;
 use clap::Parser;
 use wsi_dicom::{
     AnnotationCoordinateSpace, AnnotationTarget, ColorManagement, JpegDirectHtj2kProfile,
-    SourcePixelSpacingMm, UidPolicy,
+    PixelReencodePolicy, SourcePixelSpacingMm, UidPolicy,
 };
 
 #[test]
@@ -357,6 +357,29 @@ fn cli_convert_jpeg_optimize_huffman_flag_reaches_export_options() {
             "--jpeg-optimize-huffman"
         ])
         .jpeg_optimize_huffman
+    );
+}
+
+#[test]
+fn cli_convert_pixel_reencode_defaults_to_lossless_and_accepts_each_policy() {
+    let parse = |extra: &[&str]| {
+        let args = ["wsi-dicom", "convert", "source.svs", "--out", "out"]
+            .into_iter()
+            .chain(extra.iter().copied());
+        let Command::Convert { export, .. } = Cli::try_parse_from(args).unwrap().command else {
+            panic!("expected convert command");
+        };
+        export.options().unwrap().pixel_reencode
+    };
+
+    assert_eq!(parse(&[]), PixelReencodePolicy::Lossless);
+    assert_eq!(
+        parse(&["--pixel-reencode", "never"]),
+        PixelReencodePolicy::Never
+    );
+    assert_eq!(
+        parse(&["--pixel-reencode", "any"]),
+        PixelReencodePolicy::Any
     );
 }
 

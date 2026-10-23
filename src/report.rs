@@ -296,6 +296,9 @@ pub struct RouteCounters {
     pub jpeg_metal_encode_frames: u64,
     /// Frames that required JPEG decode fallback.
     pub jpeg_decode_fallback_frames: u64,
+    /// Compressed JPEG or JPEG 2000 source frames that no compressed-domain
+    /// route could preserve, decoded and re-encoded under `pixel_reencode`.
+    pub compressed_source_reencoded_frames: u64,
 }
 
 /// Direct JPEG-to-HTJ2K coefficient-transcode counters and timings.

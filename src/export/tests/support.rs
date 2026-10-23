@@ -50,6 +50,7 @@ pub(super) fn test_lossless_j2k_planned_frame(col: u64) -> LosslessJ2kPlannedFra
         source_jpeg_direct_rejected: false,
         source_lossy_compression: None,
         passthrough: None,
+        compressed_source_reencode: false,
     }
 }
 
@@ -274,7 +275,12 @@ pub(super) fn ndpi_jpeg_passthrough_level(
         };
         if !raw_jpeg_profile_can_passthrough(
             profile,
-            raw_rgb_passthrough_has_no_geometry_fallback(level, geometry),
+            raw_rgb_passthrough_has_no_geometry_fallback(
+                slide,
+                level,
+                InstanceCoordinate::new(0, 0, level_idx as u32, 0, 0, 0),
+                geometry,
+            ),
         ) {
             continue;
         }

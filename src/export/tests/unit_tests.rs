@@ -618,10 +618,12 @@ fn jpeg_baseline_fallback_run_collects_contiguous_fallback_frames() {
         JpegBaselinePlannedFrame::Fallback {
             frame: test_jpeg_baseline_fallback_frame(0),
             source_lossy_compression: None,
+            compressed_source_reencode: false,
         },
         JpegBaselinePlannedFrame::Fallback {
             frame: test_jpeg_baseline_fallback_frame(1),
             source_lossy_compression: None,
+            compressed_source_reencode: false,
         },
         JpegBaselinePlannedFrame::Blank {
             profile: test_rgb8_pixel_profile(),
@@ -630,6 +632,7 @@ fn jpeg_baseline_fallback_run_collects_contiguous_fallback_frames() {
         JpegBaselinePlannedFrame::Fallback {
             frame: test_jpeg_baseline_fallback_frame(2),
             source_lossy_compression: None,
+            compressed_source_reencode: false,
         },
     ];
 

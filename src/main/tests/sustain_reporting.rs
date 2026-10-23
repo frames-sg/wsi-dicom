@@ -57,7 +57,7 @@ fn cli_sustain_iteration_summary_reports_throughput_memory_and_thermal_state() {
             "gpu_encode_dispatch_overhead_ms=0.000 auto_probe_frames=0 auto_probe_selected_gpu_input=0 auto_probe_gpu_batches=0 ",
             "auto_probe_cpu_ms=0.000 auto_probe_gpu_ms=0.000 jpeg_passthrough=0 j2k_passthrough=0 j2k_direct_htj2k=0 ",
             "jpeg_direct_htj2k_53=0 jpeg_direct_htj2k_97=0 jpeg_direct_htj2k_rejected=0 jpeg_retile=0 jpeg_retile_rejected=0 jpeg_retile_source_unsupported=0 jpeg_retile_geometry_mismatch=0 jpeg_retile_profile_unsupported=0 jpeg_retile_mcu_invalid=0 jpeg_retile_ms=0.000 jpeg_retile_to_htj2k_53=0 jpeg_decode_fallback=0 ",
-            "jpeg_cpu_encode=0 jpeg_metal_encode=0 final_byte_ms=0.000 input_decode_ms=0.000 compose_ms=0.000 encode_ms=0.000 ",
+            "jpeg_cpu_encode=0 jpeg_metal_encode=0 source_reencoded=0 final_byte_ms=0.000 input_decode_ms=0.000 compose_ms=0.000 encode_ms=0.000 ",
             "validation_ms=0.000 elapsed_ms=2000.000 rss_mb=40.0 thermal=\"No thermal warning level has been recorded\" ",
             "memory_pressure=\"System-wide memory free percentage: 92%\""
         )
@@ -124,7 +124,7 @@ fn cli_sustain_convert_summary_reports_real_export_throughput() {
             "gpu_encode_hardware_ms=0.000 gpu_encode_dispatch_overhead_ms=0.000 auto_probe_frames=0 auto_probe_selected_gpu_input=0 ",
             "auto_probe_gpu_batches=0 auto_probe_cpu_ms=0.000 auto_probe_gpu_ms=0.000 jpeg_passthrough=0 j2k_passthrough=4 j2k_direct_htj2k=0 ",
             "jpeg_direct_htj2k_53=0 jpeg_direct_htj2k_97=0 jpeg_direct_htj2k_rejected=0 jpeg_retile=0 jpeg_retile_rejected=0 jpeg_retile_source_unsupported=0 jpeg_retile_geometry_mismatch=0 jpeg_retile_profile_unsupported=0 jpeg_retile_mcu_invalid=0 jpeg_retile_ms=0.000 jpeg_retile_to_htj2k_53=0 jpeg_decode_fallback=0 ",
-            "jpeg_cpu_encode=0 jpeg_metal_encode=0 final_byte_ms=3.500 input_decode_ms=8.000 ",
+            "jpeg_cpu_encode=0 jpeg_metal_encode=0 source_reencoded=0 final_byte_ms=3.500 input_decode_ms=8.000 ",
             "compose_ms=2.000 encode_ms=4.000 validation_ms=1.000 elapsed_ms=2000.000 rss_mb=50.0 ",
             "thermal=\"No thermal warning level has been recorded\" memory_pressure=\"System-wide memory free percentage: 91%\""
         )

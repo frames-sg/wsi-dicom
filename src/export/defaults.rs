@@ -9,7 +9,7 @@ use super::{
     LosslessJ2kPlanRequest,
 };
 use crate::error::Error;
-use crate::options::TransferSyntax;
+use crate::options::{PixelReencodePolicy, TransferSyntax};
 use crate::request::DefaultTransferSyntaxRequest;
 use crate::routing::{j2k_route_tile_size, level_is_synthetic_downsample, open_slide};
 use crate::tile::optical_path_groups;
@@ -148,7 +148,7 @@ fn jpeg_baseline_passthrough_available_for_default(
     };
     Ok(raw_jpeg_profile_can_passthrough(
         profile,
-        raw_rgb_passthrough_has_no_geometry_fallback(level, geometry),
+        raw_rgb_passthrough_has_no_geometry_fallback(slide, level, location, geometry),
     ))
 }
 
@@ -179,6 +179,9 @@ fn j2k_passthrough_status_for_default(
             },
             transfer_syntax: TransferSyntax::Jpeg2000,
             allow_passthrough_probe: true,
+            // This probe classifies passthrough eligibility; a frame that would
+            // need re-encoding is reported as Blocked rather than refused here.
+            pixel_reencode: PixelReencodePolicy::Any,
         },
     )?;
     if planned.iter().any(|frame| frame.has_passthrough()) {

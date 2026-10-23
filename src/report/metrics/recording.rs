@@ -295,6 +295,10 @@ impl ExportMetrics {
         increment_u64(&mut self.routes.jpeg_decode_fallback_frames);
     }
 
+    pub(crate) fn record_compressed_source_reencode(&mut self) {
+        increment_u64(&mut self.routes.compressed_source_reencoded_frames);
+    }
+
     pub(crate) fn record_jpeg_cpu_fallback_route_classification(&mut self) {
         increment_u64(&mut self.routes.total_frames);
         increment_u64(&mut self.routes.cpu_fallback_frames);

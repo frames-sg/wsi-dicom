@@ -466,6 +466,7 @@ mod tests {
     use crate::metadata::MetadataSource;
     use crate::options::{
         CodecValidation, EncodeBackendPreference, ExportOptions, JpegDirectHtj2kProfile,
+        PixelReencodePolicy,
     };
     use crate::request::{ExportRequest, RouteProfileRequest};
     use crate::test_support::{encode_test_jpeg, write_tiled_jpeg_tiff};
@@ -512,6 +513,7 @@ mod tests {
                 encode_backend: EncodeBackendPreference::CpuOnly,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                pixel_reencode: PixelReencodePolicy::Never,
                 ..ExportOptions::default()
             },
             color_management: crate::ColorManagement::SourceOrSrgb,
@@ -619,6 +621,7 @@ mod tests {
                 encode_backend,
                 codec_validation: CodecValidation::Disabled,
                 source_device_decode: false,
+                pixel_reencode: PixelReencodePolicy::Never,
                 ..ExportOptions::default()
             },
             source_aware_transfer_syntax: false,

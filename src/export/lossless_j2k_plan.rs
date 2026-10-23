@@ -7,6 +7,7 @@ use wsi_rs::{Compression, Slide, TileLayout};
 
 use super::frame_region::{FrameRectGrid, FrameRectOverflowReasons, OutputFrameRect};
 use super::j2k_policy::{reject_lossy_j2k_lossless_fallback, RawJ2kInspection};
+use super::jpeg_baseline::{declare_untransformed_rgb, read_raw_source_tile};
 use super::jpeg_retile::{read_raw_jpeg_retile_display_tile, RawJpegRetileProbe};
 use super::route_plan::{
     FrameRouteDecision, FrameRouteSource, RouteExecutionContext, RoutePlanner,
@@ -17,7 +18,7 @@ use crate::error::Error;
 use crate::lossy::{
     LossyCompressionByteCounts, HTJ2K_METHOD, JPEG_2000_METHOD, JPEG_BASELINE_METHOD,
 };
-use crate::options::TransferSyntax;
+use crate::options::{PixelReencodePolicy, TransferSyntax};
 use crate::report::JpegRetileRejectionReason;
 use crate::tile::PixelProfile;
 
@@ -37,6 +38,9 @@ pub(crate) struct LosslessJ2kPlannedFrame {
     pub(super) source_jpeg_direct_rejected: bool,
     pub(super) source_lossy_compression: Option<LossyCompressionByteCounts>,
     pub(super) passthrough: Option<J2kPassthroughFrame>,
+    /// Compressed source pixels no compressed-domain route could preserve;
+    /// the frame is decoded and re-encoded under the pixel re-encode policy.
+    pub(super) compressed_source_reencode: bool,
 }
 
 impl LosslessJ2kPlannedFrame {
@@ -79,6 +83,7 @@ pub(crate) struct LosslessJ2kPlanRequest {
     pub(crate) grid: FrameRectGrid,
     pub(crate) transfer_syntax: TransferSyntax,
     pub(crate) allow_passthrough_probe: bool,
+    pub(crate) pixel_reencode: PixelReencodePolicy,
 }
 
 #[derive(Clone, Copy)]
@@ -209,6 +214,7 @@ fn whole_level_profile_preflight(
         .map(|origin @ (col, row)| {
             let unsupported = slide
                 .read_raw_compressed_tile(&request.location.tile_request(col, row))
+                .and_then(declare_untransformed_rgb)
                 .is_ok_and(|raw| jpeg_direct_htj2k::raw_profile_is_unsupported_for_htj2k(&raw));
             (origin, unsupported)
         })
@@ -282,26 +288,7 @@ fn plan_lossless_j2k_frame_at(
         .ok_or_else(|| Error::Unsupported {
             reason: "J2K frame planning source level is unavailable".into(),
         })?;
-    let (native_col, native_row) = match level.tile_layout {
-        TileLayout::Regular {
-            tile_width,
-            tile_height,
-            ..
-        }
-        | TileLayout::WholeLevel {
-            virtual_tile_width: tile_width,
-            virtual_tile_height: tile_height,
-            ..
-        } if tile_width > 0 && tile_height > 0 => (
-            i64::try_from(rect.x / u64::from(tile_width)).map_err(|_| Error::Unsupported {
-                reason: "J2K native tile column exceeds i64".into(),
-            })?,
-            i64::try_from(rect.y / u64::from(tile_height)).map_err(|_| Error::Unsupported {
-                reason: "J2K native tile row exceeds i64".into(),
-            })?,
-        ),
-        _ => (col_i64, row_i64),
-    };
+    let (native_col, native_row) = native_tile_position(level, rect, col_i64, row_i64)?;
     let allow_raw_probe = request.allow_passthrough_probe
         || jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax);
     let (
@@ -312,9 +299,10 @@ fn plan_lossless_j2k_frame_at(
         source_jpeg_profile_unsupported,
         mut source_lossy_compression,
         passthrough,
+        source_is_jpeg,
     ) = if allow_raw_probe {
         let tile_request = request.location.tile_request(native_col, native_row);
-        match slide.read_raw_compressed_tile(&tile_request) {
+        match read_raw_source_tile(slide, &tile_request) {
             Ok(raw) => {
                 let inspection = RawJ2kInspection::new(&raw);
                 if inspection.is_none()
@@ -407,10 +395,11 @@ fn plan_lossless_j2k_frame_at(
                     source_jpeg_profile_unsupported,
                     source_lossy_compression,
                     passthrough,
+                    raw_is_jpeg,
                 )
             }
             Err(wsi_rs::WsiError::Unsupported { .. }) => {
-                (None, None, None, false, false, None, None)
+                (None, None, None, false, false, None, None, false)
             }
             Err(error) => {
                 return Err(Error::SlideRead {
@@ -419,7 +408,7 @@ fn plan_lossless_j2k_frame_at(
             }
         }
     } else {
-        (None, None, None, false, false, None, None)
+        (None, None, None, false, false, None, None, false)
     };
     let mut source_jpeg_retiled = false;
     let mut source_jpeg_retile_duration = Duration::ZERO;
@@ -466,7 +455,7 @@ fn plan_lossless_j2k_frame_at(
             }
         }
     }
-    let planned = LosslessJ2kPlannedFrame {
+    let mut planned = LosslessJ2kPlannedFrame {
         row,
         col,
         x: rect.x,
@@ -482,35 +471,90 @@ fn plan_lossless_j2k_frame_at(
         source_jpeg_direct_rejected,
         source_lossy_compression,
         passthrough,
+        compressed_source_reencode: false,
     };
     if planned.passthrough.is_none()
         && planned.source_j2k.is_none()
         && planned.source_jpeg.is_none()
-        && (planned.source_j2k_syntax.is_some() || planned.source_jpeg_direct_rejected)
+        && (planned.source_j2k_syntax.is_some()
+            || source_is_jpeg
+            || planned.source_jpeg_direct_rejected)
     {
         reject_lossy_j2k_lossless_fallback(&planned, request.transfer_syntax, row)?;
-        return Err(Error::Unsupported {
-            reason: format!(
-                "compressed source frame row={row} col={col} cannot be preserved by passthrough or direct transcoding ({source_jpeg_retile_rejection:?}); pixel re-encoding fallback is disabled",
-            ),
-        });
+        if !request.pixel_reencode.permits(request.transfer_syntax) {
+            return Err(Error::Unsupported {
+                reason: format!(
+                    "compressed source frame row={row} col={col} cannot be preserved by passthrough or direct transcoding ({source_jpeg_retile_rejection:?}); {}",
+                    request.pixel_reencode.refusal(request.transfer_syntax),
+                ),
+            });
+        }
+        planned.compressed_source_reencode = true;
     }
     Ok(planned)
 }
 
-/// Lossy provenance of the source tile at `(col, row)`, or `None` when the
-/// tile is unreadable as raw compressed data or was stored losslessly.
-pub(super) fn source_tile_lossy_compression(
-    slide: &Slide,
-    location: InstanceCoordinate,
+/// Native source tile containing the output frame origin. Native and output
+/// grid indices coincide only when no native tile geometry is known.
+fn native_tile_position(
+    level: &wsi_rs::Level,
+    rect: OutputFrameRect,
     col: i64,
     row: i64,
-) -> Result<Option<LossyCompressionByteCounts>, Error> {
-    let Ok(raw) = slide.read_raw_compressed_tile(&location.tile_request(col, row)) else {
+) -> Result<(i64, i64), Error> {
+    match level.tile_layout {
+        TileLayout::Regular {
+            tile_width,
+            tile_height,
+            ..
+        }
+        | TileLayout::WholeLevel {
+            virtual_tile_width: tile_width,
+            virtual_tile_height: tile_height,
+            ..
+        } if tile_width > 0 && tile_height > 0 => Ok((
+            i64::try_from(rect.x / u64::from(tile_width)).map_err(|_| Error::Unsupported {
+                reason: "J2K native tile column exceeds i64".into(),
+            })?,
+            i64::try_from(rect.y / u64::from(tile_height)).map_err(|_| Error::Unsupported {
+                reason: "J2K native tile row exceeds i64".into(),
+            })?,
+        )),
+        _ => Ok((col, row)),
+    }
+}
+
+/// Codec facts for the native source tile under one output frame.
+pub(super) struct SourceTileCodec {
+    /// The tile is stored as JPEG or JPEG 2000 data.
+    pub(super) compressed: bool,
+    /// Lossy provenance, or `None` when the tile was stored losslessly.
+    pub(super) lossy_compression: Option<LossyCompressionByteCounts>,
+}
+
+/// Codec facts for the native source tile containing the output frame at
+/// `(col, row)`, or `None` when the tile is unreadable as raw compressed data.
+pub(super) fn source_tile_codec(
+    slide: &Slide,
+    level: &wsi_rs::Level,
+    location: InstanceCoordinate,
+    rect: OutputFrameRect,
+    col: i64,
+    row: i64,
+) -> Result<Option<SourceTileCodec>, Error> {
+    let (native_col, native_row) = native_tile_position(level, rect, col, row)?;
+    let Ok(raw) = slide.read_raw_compressed_tile(&location.tile_request(native_col, native_row))
+    else {
         return Ok(None);
     };
     let syntax = RawJ2kInspection::new(&raw).map(|inspection| inspection.syntax());
-    lossy_compression_from_raw(&raw, syntax)
+    Ok(Some(SourceTileCodec {
+        compressed: matches!(
+            raw.compression(),
+            Compression::Jpeg | Compression::Jp2kRgb | Compression::Jp2kYcbcr
+        ),
+        lossy_compression: lossy_compression_from_raw(&raw, syntax)?,
+    }))
 }
 
 fn lossy_compression_from_raw(

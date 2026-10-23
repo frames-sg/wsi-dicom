@@ -106,6 +106,7 @@ pub(super) fn profile_lossless_j2k_routes(
                 },
                 transfer_syntax: options.semantics.transfer_syntax,
                 allow_passthrough_probe,
+                pixel_reencode: options.semantics.pixel_reencode,
             },
             jpeg_preflight,
         )?;
@@ -169,6 +170,9 @@ pub(super) fn profile_lossless_j2k_routes(
                 options.semantics.transfer_syntax,
                 row,
             )?;
+            if planned_frame.compressed_source_reencode {
+                metrics.record_compressed_source_reencode();
+            }
 
             let resolved = resolve_lossless_j2k_fallback_frame(
                 batch_context,
@@ -210,7 +214,8 @@ pub(super) fn profile_jpeg_baseline_routes(
     let (matrix_columns, matrix_rows) = level.dimensions;
     let (tiles_across, tiles_down) = (geometry.tiles_across, geometry.tiles_down);
     let (frame_columns, frame_rows) = (geometry.frame_columns, geometry.frame_rows);
-    let allow_raw_rgb_passthrough = raw_rgb_passthrough_has_no_geometry_fallback(level, geometry);
+    let allow_raw_rgb_passthrough =
+        raw_rgb_passthrough_has_no_geometry_fallback(slide, level, location, geometry);
     #[cfg(all(feature = "metal", target_os = "macos"))]
     let mut metal_input = MetalInputTileReader::new(
         normalized_options.execution.encode_backend,
@@ -244,6 +249,7 @@ pub(super) fn profile_jpeg_baseline_routes(
                     frame_rows,
                 },
                 allow_raw_rgb_passthrough,
+                pixel_reencode: normalized_options.semantics.pixel_reencode,
             },
         )?;
         record_jpeg_retile_rejections(&mut metrics, &row_plan.retile_rejections);
@@ -419,7 +425,8 @@ pub(super) fn coverage_jpeg_baseline_routes(
     )?;
     let (tiles_across, tiles_down) = (geometry.tiles_across, geometry.tiles_down);
     let (frame_columns, frame_rows) = (geometry.frame_columns, geometry.frame_rows);
-    let allow_raw_rgb_passthrough = raw_rgb_passthrough_has_no_geometry_fallback(level, geometry);
+    let allow_raw_rgb_passthrough =
+        raw_rgb_passthrough_has_no_geometry_fallback(slide, level, location, geometry);
     let mut metrics = ExportMetrics::default();
     let mut pixel_profile = None;
     let mut remaining = max_frames;
@@ -448,6 +455,7 @@ pub(super) fn coverage_jpeg_baseline_routes(
                     frame_rows,
                 },
                 allow_raw_rgb_passthrough,
+                pixel_reencode: normalized_options.semantics.pixel_reencode,
             },
         )?;
         record_jpeg_retile_rejections(&mut metrics, &row_plan.retile_rejections);

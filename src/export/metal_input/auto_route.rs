@@ -682,7 +682,9 @@ mod tests {
     use crate::coordinate::InstanceCoordinate;
     use crate::export::frame_region::FrameRectGrid;
     use crate::export::lossless_j2k_plan::{plan_lossless_j2k_frames, LosslessJ2kPlanRequest};
-    use crate::options::{CodecValidation, EncodeBackendPreference, TransferSyntax};
+    use crate::options::{
+        CodecValidation, EncodeBackendPreference, PixelReencodePolicy, TransferSyntax,
+    };
 
     #[test]
     fn auto_probe_encoder_handoff_restores_auto_fallback_semantics() {
@@ -780,6 +782,7 @@ mod tests {
                 },
                 transfer_syntax: TransferSyntax::Htj2kLosslessRpcl,
                 allow_passthrough_probe: false,
+                pixel_reencode: PixelReencodePolicy::Lossless,
             },
         )
         .expect("plan probe frames");

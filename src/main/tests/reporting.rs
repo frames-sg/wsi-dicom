@@ -152,7 +152,7 @@ fn cli_summary_reports_passthrough_and_fallback_counts() {
             "gpu_encode_dispatch_overhead_ms=4.500 auto_probe_frames=0 auto_probe_selected_gpu_input=0 auto_probe_gpu_batches=0 ",
             "auto_probe_cpu_ms=0.000 auto_probe_gpu_ms=0.000 jpeg_passthrough=5 j2k_passthrough=6 j2k_direct_htj2k=0 ",
             "jpeg_direct_htj2k_53=0 jpeg_direct_htj2k_97=0 jpeg_direct_htj2k_rejected=0 jpeg_retile=0 jpeg_retile_rejected=0 jpeg_retile_source_unsupported=0 jpeg_retile_geometry_mismatch=0 jpeg_retile_profile_unsupported=0 jpeg_retile_mcu_invalid=0 jpeg_retile_ms=0.000 jpeg_retile_to_htj2k_53=0 jpeg_decode_fallback=1 ",
-            "jpeg_cpu_encode=1 jpeg_metal_encode=2 input_decode_ms=0.000 compose_ms=0.000 encode_ms=0.000 ",
+            "jpeg_cpu_encode=1 jpeg_metal_encode=2 source_reencoded=0 input_decode_ms=0.000 compose_ms=0.000 encode_ms=0.000 ",
             "validation_ms=0.000 write_ms=0.000 rss_mb=10.0"
         )
     );
@@ -230,7 +230,7 @@ fn cli_profile_summary_reports_bounded_route_counts() {
             "gpu_encode_dispatch_overhead_ms=0.000 auto_probe_frames=2 auto_probe_selected_gpu_input=0 auto_probe_gpu_batches=3 ",
             "auto_probe_cpu_ms=1.200 auto_probe_gpu_ms=1.300 jpeg_passthrough=2 j2k_passthrough=0 j2k_direct_htj2k=0 ",
             "jpeg_direct_htj2k_53=0 jpeg_direct_htj2k_97=0 jpeg_direct_htj2k_rejected=0 jpeg_retile=0 jpeg_retile_rejected=0 jpeg_retile_source_unsupported=0 jpeg_retile_geometry_mismatch=0 jpeg_retile_profile_unsupported=0 jpeg_retile_mcu_invalid=0 jpeg_retile_ms=0.000 jpeg_retile_to_htj2k_53=0 jpeg_decode_fallback=1 ",
-            "jpeg_cpu_encode=1 jpeg_metal_encode=2 final_byte_ms=1.250 input_decode_ms=0.000 compose_ms=0.000 ",
+            "jpeg_cpu_encode=1 jpeg_metal_encode=2 source_reencoded=0 final_byte_ms=1.250 input_decode_ms=0.000 compose_ms=0.000 ",
             "encode_ms=0.000 validation_ms=0.000 elapsed_ms=42.500 rss_mb=20.0"
         )
     );
@@ -320,7 +320,7 @@ fn cli_coverage_summary_reports_aggregate_route_counts() {
             "gpu_encode_dispatch_overhead_ms=0.000 auto_probe_frames=0 auto_probe_selected_gpu_input=0 auto_probe_gpu_batches=0 ",
             "auto_probe_cpu_ms=0.000 auto_probe_gpu_ms=0.000 jpeg_passthrough=8 j2k_passthrough=0 j2k_direct_htj2k=0 ",
             "jpeg_direct_htj2k_53=0 jpeg_direct_htj2k_97=0 jpeg_direct_htj2k_rejected=0 jpeg_retile=0 jpeg_retile_rejected=0 jpeg_retile_source_unsupported=0 jpeg_retile_geometry_mismatch=0 jpeg_retile_profile_unsupported=0 jpeg_retile_mcu_invalid=0 jpeg_retile_ms=0.000 jpeg_retile_to_htj2k_53=0 jpeg_decode_fallback=4 ",
-            "jpeg_cpu_encode=4 jpeg_metal_encode=0 final_byte_ms=0.000 input_decode_ms=3.000 compose_ms=0.000 encode_ms=4.000 ",
+            "jpeg_cpu_encode=4 jpeg_metal_encode=0 source_reencoded=0 final_byte_ms=0.000 input_decode_ms=3.000 compose_ms=0.000 encode_ms=4.000 ",
             "validation_ms=0.000 elapsed_ms=5.000 rss_mb=30.0"
         )
     );
@@ -362,7 +362,7 @@ fn cli_coverage_summary_formats_full_frame_coverage_request_as_all() {
             "gpu_encode_dispatch_overhead_ms=0.000 auto_probe_frames=0 auto_probe_selected_gpu_input=0 auto_probe_gpu_batches=0 ",
             "auto_probe_cpu_ms=0.000 auto_probe_gpu_ms=0.000 jpeg_passthrough=0 j2k_passthrough=0 j2k_direct_htj2k=0 ",
             "jpeg_direct_htj2k_53=0 jpeg_direct_htj2k_97=0 jpeg_direct_htj2k_rejected=0 jpeg_retile=0 jpeg_retile_rejected=0 jpeg_retile_source_unsupported=0 jpeg_retile_geometry_mismatch=0 jpeg_retile_profile_unsupported=0 jpeg_retile_mcu_invalid=0 jpeg_retile_ms=0.000 jpeg_retile_to_htj2k_53=0 jpeg_decode_fallback=0 ",
-            "jpeg_cpu_encode=0 jpeg_metal_encode=0 final_byte_ms=0.000 input_decode_ms=0.000 compose_ms=0.000 encode_ms=0.000 ",
+            "jpeg_cpu_encode=0 jpeg_metal_encode=0 source_reencoded=0 final_byte_ms=0.000 input_decode_ms=0.000 compose_ms=0.000 encode_ms=0.000 ",
             "validation_ms=0.000 elapsed_ms=1.000 rss_mb=unknown"
         )
     );
@@ -450,7 +450,7 @@ fn cli_corpus_coverage_summary_reports_sources_failures_and_aggregate_routes() {
             "gpu_encode_hardware_ms=0.000 gpu_encode_dispatch_overhead_ms=0.000 auto_probe_frames=0 auto_probe_selected_gpu_input=0 ",
             "auto_probe_gpu_batches=0 auto_probe_cpu_ms=0.000 auto_probe_gpu_ms=0.000 jpeg_passthrough=0 j2k_passthrough=0 j2k_direct_htj2k=0 ",
             "jpeg_direct_htj2k_53=0 jpeg_direct_htj2k_97=0 jpeg_direct_htj2k_rejected=0 jpeg_retile=0 jpeg_retile_rejected=0 jpeg_retile_source_unsupported=0 jpeg_retile_geometry_mismatch=0 jpeg_retile_profile_unsupported=0 jpeg_retile_mcu_invalid=0 jpeg_retile_ms=0.000 jpeg_retile_to_htj2k_53=0 jpeg_decode_fallback=0 ",
-            "jpeg_cpu_encode=0 jpeg_metal_encode=0 final_byte_ms=0.000 input_decode_ms=0.000 ",
+            "jpeg_cpu_encode=0 jpeg_metal_encode=0 source_reencoded=0 final_byte_ms=0.000 input_decode_ms=0.000 ",
             "compose_ms=0.000 encode_ms=0.000 validation_ms=0.000 elapsed_ms=12.000 rss_mb=40.0"
         )
     );

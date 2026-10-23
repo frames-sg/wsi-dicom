@@ -206,7 +206,7 @@ fn default_transfer_syntax_prefers_general_jpeg2000_passthrough_source() {
 }
 
 #[test]
-fn default_transfer_syntax_rejects_implicit_jpeg2000_retiling() {
+fn default_transfer_syntax_avoids_implicit_jpeg2000_retiling() {
     let tmp = tempfile::tempdir().unwrap();
     let bytes: Vec<u8> = (0..4 * 4 * 3)
         .map(|value| ((value * 13) & 0xFF) as u8)
@@ -222,18 +222,16 @@ fn default_transfer_syntax_rejects_implicit_jpeg2000_retiling() {
     let source = tmp.path().join("source.svs");
     write_tiled_jp2k_ycbcr_tiff(&source, 4, 4, 4, 4, std::slice::from_ref(&codestream));
 
-    let error = default_transfer_syntax_for_source(DefaultTransferSyntaxRequest {
+    // JPEG 2000 output is passthrough-only, so a source that would need
+    // retiling selects the lossless HTJ2K default instead.
+    let selected = default_transfer_syntax_for_source(DefaultTransferSyntaxRequest {
         source_path: source,
         tile_size: 2,
         level_filter: None,
         max_levels: None,
     })
-    .unwrap_err()
-    .to_string();
-    assert!(
-        error.contains("pixel re-encoding fallback is disabled"),
-        "{error}"
-    );
+    .unwrap();
+    assert_eq!(selected, TransferSyntax::Htj2kLosslessRpcl);
 }
 
 #[test]
@@ -259,6 +257,7 @@ fn source_aware_builder_rejects_unsupported_jpeg2000_retiling() {
         .tile_size(2)
         .encode_backend(EncodeBackendPreference::CpuOnly)
         .codec_validation(CodecValidation::Disabled)
+        .pixel_reencode(PixelReencodePolicy::Never)
         .with_research_placeholder_metadata()
         .color_management(ColorManagement::SourceOrSrgb)
         .run()
@@ -345,6 +344,7 @@ fn dicom_export_builder_with_options_preserves_explicit_option_fields() {
         jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossless53,
         jpeg_quality: 80,
         jpeg_optimize_huffman: true,
+        pixel_reencode: PixelReencodePolicy::Never,
         uid_policy: UidPolicy::Deterministic,
         source_pixel_spacing_mm: Some(SourcePixelSpacingMm::new(0.0005, 0.00025).unwrap()),
         encode_backend: EncodeBackendPreference::CpuOnly,

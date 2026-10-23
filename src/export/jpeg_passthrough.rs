@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 
+use super::jpeg_baseline::read_raw_source_tile;
 use super::{
     pixel_profile_from_raw_jpeg_tile, raw_jpeg_matches_frame_geometry,
     raw_jpeg_profile_can_passthrough, raw_rgb_passthrough_has_no_geometry_fallback,
@@ -168,7 +169,8 @@ pub(super) fn try_prepare_direct_jpeg_passthrough(
     level: &wsi_rs::Level,
     geometry: JpegBaselineFrameGeometry,
 ) -> Result<Option<DirectJpegPassthroughStart>, Error> {
-    let allow_raw_rgb_passthrough = raw_rgb_passthrough_has_no_geometry_fallback(level, geometry);
+    let allow_raw_rgb_passthrough =
+        raw_rgb_passthrough_has_no_geometry_fallback(slide, level, location, geometry);
     let Some(raw) = read_raw_jpeg_passthrough_tile(slide, location, geometry, 0)? else {
         return Ok(None);
     };
@@ -193,9 +195,8 @@ fn read_direct_jpeg_passthrough_frame(
 ) -> io::Result<Vec<u8>> {
     let (col, row) =
         jpeg_passthrough_tile_coordinates(geometry, frame_idx).map_err(io::Error::other)?;
-    let raw = slide
-        .read_raw_compressed_tile(&location.tile_request(col, row))
-        .map_err(io::Error::other)?;
+    let raw =
+        read_raw_source_tile(slide, &location.tile_request(col, row)).map_err(io::Error::other)?;
     if !raw_jpeg_matches_frame_geometry(&raw, geometry.frame_columns, geometry.frame_rows) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -220,7 +221,7 @@ pub(crate) fn read_raw_jpeg_passthrough_tile(
     frame_idx: usize,
 ) -> Result<Option<RawCompressedTile>, Error> {
     let (col, row) = jpeg_passthrough_tile_coordinates(geometry, frame_idx)?;
-    let raw = match slide.read_raw_compressed_tile(&location.tile_request(col, row)) {
+    let raw = match read_raw_source_tile(slide, &location.tile_request(col, row)) {
         Ok(raw) => raw,
         Err(_) => return Ok(None),
     };

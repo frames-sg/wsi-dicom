@@ -74,7 +74,7 @@ pub use metadata::{
 };
 pub use options::{
     CodecValidation, EncodeBackendPreference, ExportOptions, ExportPreset, JpegDirectHtj2kProfile,
-    SourcePixelSpacingMm, TransferSyntax, UidPolicy,
+    PixelReencodePolicy, SourcePixelSpacingMm, TransferSyntax, UidPolicy,
 };
 pub use report::{
     EncodedFrame, ExportMetrics, ExportReport, GpuEncodeMetrics, IccConflictDecision,
@@ -101,8 +101,8 @@ pub mod prelude {
         ExportOptions, ExportPreset, ExportReport, ExportRequest, FrameSamples,
         IccCalibrationRegistry, IccConflictDecision, IccConflictPolicy, IccProfile,
         IccProfileSource, J2kFrameEncodeRequest, JpegDirectHtj2kProfile, MetadataSource,
-        ScannerIdentity, SourcePixelSpacingMm, SpecimenIdentifierIssuer, TransferSyntax, UidPolicy,
-        UniversalEntityIdType, ValidationOptions,
+        PixelReencodePolicy, ScannerIdentity, SourcePixelSpacingMm, SpecimenIdentifierIssuer,
+        TransferSyntax, UidPolicy, UniversalEntityIdType, ValidationOptions,
     };
 }
 

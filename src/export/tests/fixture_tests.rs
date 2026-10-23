@@ -132,6 +132,7 @@ fn ndpi_default_htj2k_export_rejects_implicit_color_reencoding() {
     let options = ExportOptions {
         encode_backend: EncodeBackendPreference::RequireDevice,
         source_device_decode: false,
+        pixel_reencode: PixelReencodePolicy::Never,
         ..ExportOptions::default()
     };
     assert_eq!(options.transfer_syntax, TransferSyntax::Htj2kLosslessRpcl);

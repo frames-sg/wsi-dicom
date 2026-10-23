@@ -17,7 +17,7 @@ use super::icc_profile::resolve_icc_profile;
 use super::j2k_policy::{lossless_j2k_cpu_row_batch_count, lossless_j2k_use_direct_pixel_data};
 use super::lossless_j2k_cpu::prepare_cpu_input_batch;
 use super::lossless_j2k_instance::PendingLosslessInstance;
-use super::lossless_j2k_plan::source_tile_lossy_compression;
+use super::lossless_j2k_plan::source_tile_codec;
 use super::tile_grid::TileGrid;
 use super::{
     ensure_consistent_pixel_profile, level_pixel_spacing_mm, require_pixel_spacing_mm,
@@ -27,7 +27,7 @@ use crate::coordinate::InstanceCoordinate;
 use crate::error::Error;
 use crate::instance_context::DicomInstanceContext;
 use crate::lossy::{LossyCompressionAccumulator, LossyCompressionByteCounts};
-use crate::options::CodecValidation;
+use crate::options::{CodecValidation, NormalizedExportOptions, TransferSyntax};
 use crate::report::ExportMetrics;
 use crate::request::ExportRequest;
 use crate::routing::j2k_route_tile_size;
@@ -89,15 +89,7 @@ pub(super) fn prepare_jpeg_lossless_instance(
         let row_count = lossless_j2k_cpu_row_batch_count(grid.tiles_across, grid.tiles_down - row);
         let frames = grid_frames(frame_grid, grid.tiles_across, row, row_count)?;
         for batch in frames.chunks(frame_batch_len(tile_size, tile_size)) {
-            let encoded = encode_frame_batch(
-                slide,
-                level,
-                coordinate,
-                batch,
-                tile_size,
-                options.resources.max_prepared_frame_bytes,
-                options.execution.codec_validation,
-            )?;
+            let encoded = encode_frame_batch(slide, level, coordinate, batch, tile_size, options)?;
             for frame in encoded {
                 metrics.record_cpu_input();
                 metrics.record_input_decode_duration(frame.input_decode_duration);
@@ -113,6 +105,9 @@ pub(super) fn prepare_jpeg_lossless_instance(
                 )?;
                 if let Some(source) = &frame.source_lossy_compression {
                     source_lossy_compression.observe(source)?;
+                }
+                if frame.compressed_source {
+                    metrics.record_compressed_source_reencode();
                 }
                 let write_started = Instant::now();
                 pixel_data.push_owned_frame(frame.data)?;
@@ -194,6 +189,7 @@ struct EncodedJpegLosslessFrame {
     data: Vec<u8>,
     profile: crate::tile::PixelProfile,
     source_lossy_compression: Option<LossyCompressionByteCounts>,
+    compressed_source: bool,
     input_decode_duration: Duration,
     compose_duration: Duration,
     encode_duration: Duration,
@@ -206,9 +202,10 @@ fn encode_frame_batch(
     location: InstanceCoordinate,
     batch: &[GridFrame],
     tile_size: u32,
-    max_prepared_frame_bytes: u64,
-    codec_validation: CodecValidation,
+    options: &NormalizedExportOptions,
 ) -> Result<Vec<EncodedJpegLosslessFrame>, Error> {
+    let pixel_reencode = options.semantics.pixel_reencode;
+    let codec_validation = options.execution.codec_validation;
     let rects: Vec<_> = batch.iter().map(|frame| frame.rect).collect();
     let prepared = prepare_cpu_input_batch(
         slide,
@@ -216,7 +213,7 @@ fn encode_frame_batch(
         location,
         &rects,
         tile_size,
-        max_prepared_frame_bytes,
+        options.resources.max_prepared_frame_bytes,
     )?;
     let work: Vec<_> = batch.iter().zip(&prepared).collect();
     map_cpu_frames(&work, rayon::current_num_threads(), |&(frame, tile)| {
@@ -229,18 +226,35 @@ fn encode_frame_batch(
             },
             other => other,
         };
-        let (data, encode_duration, validation_duration) =
-            encode_jpeg_lossless_frame(tile, tile_size, codec_validation).map_err(frame_error)?;
-        let source_lossy_compression = source_tile_lossy_compression(
+        let source = source_tile_codec(
             slide,
+            level,
             location,
+            frame.rect,
             grid_index_i64(frame.col, "column")?,
             grid_index_i64(frame.row, "row")?,
         )?;
+        let compressed_source = source.as_ref().is_some_and(|source| source.compressed);
+        // JPEG Lossless has no compressed-domain route: every compressed
+        // source frame is decoded and re-encoded.
+        if compressed_source && !pixel_reencode.permits(TransferSyntax::JpegLosslessSv1) {
+            return Err(Error::Unsupported {
+                reason: format!(
+                    "JPEG Lossless frame row={} col={} has compressed source pixels; {}",
+                    frame.row,
+                    frame.col,
+                    pixel_reencode.refusal(TransferSyntax::JpegLosslessSv1),
+                ),
+            });
+        }
+        let (data, encode_duration, validation_duration) =
+            encode_jpeg_lossless_frame(tile, tile_size, codec_validation).map_err(frame_error)?;
+        let source_lossy_compression = source.and_then(|source| source.lossy_compression);
         Ok(EncodedJpegLosslessFrame {
             data,
             profile: tile.profile,
             source_lossy_compression,
+            compressed_source,
             input_decode_duration: tile.input_decode_duration,
             compose_duration: tile.compose_duration,
             encode_duration,

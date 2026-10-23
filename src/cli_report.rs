@@ -90,7 +90,7 @@ fn format_route_metric_fields(metrics: ExportMetrics) -> String {
     let route_passthrough = metrics.route_passthrough_frames();
     let route_unclassified = metrics.route_unclassified_frames();
     format!(
-        "route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} {} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} j2k_direct_htj2k={} jpeg_direct_htj2k_53={} jpeg_direct_htj2k_97={} jpeg_direct_htj2k_rejected={} jpeg_retile={} jpeg_retile_rejected={} jpeg_retile_source_unsupported={} jpeg_retile_geometry_mismatch={} jpeg_retile_profile_unsupported={} jpeg_retile_mcu_invalid={} jpeg_retile_ms={:.3} jpeg_retile_to_htj2k_53={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={}",
+        "route_passthrough={} route_passthrough_pct={:.1} route_gpu_transcode={} route_gpu_transcode_pct={:.1} route_resident_gpu_transcode={} route_partial_gpu_transcode={} route_cpu_fallback={} route_cpu_fallback_pct={:.1} route_unclassified={} cpu_input={} gpu_input_decode={} gpu_encode={} gpu_validation={} gray_frames={} rgb_like_frames={} other_component_frames={} unknown_pixel_profile_frames={} bits8_frames={} bits16_frames={} other_bit_depth_frames={} gpu_input_batches={} gpu_compose_batches={} gpu_encode_batches={} {} gpu_dispatch_ms={:.3} gpu_encode_hardware_ms={:.3} gpu_encode_dispatch_overhead_ms={:.3} auto_probe_frames={} auto_probe_selected_gpu_input={} auto_probe_gpu_batches={} auto_probe_cpu_ms={:.3} auto_probe_gpu_ms={:.3} jpeg_passthrough={} j2k_passthrough={} j2k_direct_htj2k={} jpeg_direct_htj2k_53={} jpeg_direct_htj2k_97={} jpeg_direct_htj2k_rejected={} jpeg_retile={} jpeg_retile_rejected={} jpeg_retile_source_unsupported={} jpeg_retile_geometry_mismatch={} jpeg_retile_profile_unsupported={} jpeg_retile_mcu_invalid={} jpeg_retile_ms={:.3} jpeg_retile_to_htj2k_53={} jpeg_decode_fallback={} jpeg_cpu_encode={} jpeg_metal_encode={} source_reencoded={}",
         route_passthrough,
         frame_percent(route_passthrough, metrics.routes.total_frames),
         metrics.routes.gpu_transcode_frames,
@@ -140,6 +140,7 @@ fn format_route_metric_fields(metrics: ExportMetrics) -> String {
         metrics.routes.jpeg_decode_fallback_frames,
         metrics.routes.jpeg_cpu_encode_frames,
         metrics.routes.jpeg_metal_encode_frames,
+        metrics.routes.compressed_source_reencoded_frames,
     )
 }
 

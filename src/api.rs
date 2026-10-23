@@ -9,7 +9,8 @@ use crate::routing::open_slide;
 use crate::{
     default_transfer_syntax_for_source, export_dicom, CodecValidation, ColorManagement,
     DefaultTransferSyntaxRequest, EncodeBackendPreference, Error, ExportOptions, ExportReport,
-    ExportRequest, JpegDirectHtj2kProfile, MetadataSource, QuPathAnnotationOptions, TransferSyntax,
+    ExportRequest, JpegDirectHtj2kProfile, MetadataSource, PixelReencodePolicy,
+    QuPathAnnotationOptions, TransferSyntax,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +123,14 @@ impl Export {
     #[must_use = "builder methods return the updated Export"]
     pub fn jpeg_optimize_huffman(mut self, enabled: bool) -> Self {
         self.options.jpeg_optimize_huffman = enabled;
+        self
+    }
+
+    /// Set when compressed source frames that no compressed-domain route can
+    /// preserve may be decoded and re-encoded.
+    #[must_use = "builder methods return the updated Export"]
+    pub fn pixel_reencode(mut self, policy: PixelReencodePolicy) -> Self {
+        self.options.pixel_reencode = policy;
         self
     }
 

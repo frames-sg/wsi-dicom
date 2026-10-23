@@ -244,6 +244,7 @@ pub(super) fn prepare_lossless_j2k_instance(
         },
         transfer_syntax: options.semantics.transfer_syntax,
         allow_passthrough_probe,
+        pixel_reencode: options.semantics.pixel_reencode,
     };
 
     let mut row = 0;
@@ -392,6 +393,9 @@ pub(super) fn prepare_lossless_j2k_instance(
                     options.semantics.transfer_syntax,
                     planned_frame.row,
                 )?;
+                if planned_frame.compressed_source_reencode {
+                    metrics.record_compressed_source_reencode();
+                }
                 let resolved = resolve_lossless_j2k_fallback_frame(
                     batch_context,
                     &mut j2k_encoder,

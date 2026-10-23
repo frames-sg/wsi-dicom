@@ -241,6 +241,7 @@ mod tests {
             source_jpeg_direct_rejected: false,
             source_lossy_compression: None,
             passthrough: None,
+            compressed_source_reencode: false,
         };
         let options = NormalizedExportOptions::new(&ExportOptions::default()).unwrap();
         for jpeg in [false, true] {

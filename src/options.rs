@@ -127,6 +127,50 @@ impl CodecValidation {
     }
 }
 
+/// When compressed source frames may be decoded and re-encoded.
+///
+/// Compressed-domain routes (passthrough, retiling, direct transcoding) are
+/// always tried first. This policy only governs frames those routes reject.
+/// Re-encoded frames keep the source's lossy compression history and are
+/// counted in `RouteMetrics::compressed_source_reencoded_frames`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum PixelReencodePolicy {
+    /// Fail when a compressed source frame cannot be preserved in the compressed domain.
+    Never,
+    /// Re-encode into lossless transfer syntaxes only; this adds no further loss.
+    #[default]
+    Lossless,
+    /// Also re-encode into lossy transfer syntaxes, adding a lossy generation.
+    Any,
+}
+
+impl PixelReencodePolicy {
+    /// Whether this policy admits decoded-pixel re-encoding into `transfer_syntax`.
+    pub fn permits(self, transfer_syntax: TransferSyntax) -> bool {
+        match self {
+            Self::Never => false,
+            Self::Lossless => transfer_syntax.is_lossless(),
+            Self::Any => true,
+        }
+    }
+
+    /// Why this policy refused a re-encode into `transfer_syntax`, naming the
+    /// setting that would admit it.
+    pub(crate) fn refusal(self, transfer_syntax: TransferSyntax) -> &'static str {
+        match self {
+            Self::Never => "pixel re-encoding fallback is disabled by pixel_reencode=never",
+            Self::Lossless | Self::Any if transfer_syntax == TransferSyntax::JpegBaseline8Bit => {
+                "pixel re-encoding fallback is disabled for lossy output; pixel_reencode=any permits a lossy JPEG Baseline re-encode"
+            }
+            Self::Lossless | Self::Any => {
+                "pixel re-encoding fallback is disabled; lossy JPEG 2000 and HTJ2K output has no pixel re-encoding route"
+            }
+        }
+    }
+}
+
 /// Policy for identifiers generated when the caller does not supply them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -236,6 +280,18 @@ impl TransferSyntax {
     pub(crate) fn is_jpeg2000_passthrough_only(self) -> bool {
         self == Self::Jpeg2000
     }
+
+    /// Whether encoding into this transfer syntax is mathematically lossless.
+    pub(crate) fn is_lossless(self) -> bool {
+        matches!(
+            self,
+            Self::Jpeg2000Lossless
+                | Self::Htj2kLossless
+                | Self::Htj2kLosslessRpcl
+                | Self::JpegLosslessSv1
+                | Self::ExplicitVrLittleEndian
+        )
+    }
 }
 
 /// Direct JPEG-to-HTJ2K coefficient path used for HTJ2K export from JPEG tiles.
@@ -330,6 +386,9 @@ pub struct ExportOptions {
     /// bytes. Optimized tables are a CPU encode: `PreferDevice` encodes these
     /// frames on the CPU, and `RequireDevice` rejects the combination.
     pub jpeg_optimize_huffman: bool,
+    /// When compressed source frames rejected by every compressed-domain route
+    /// may be decoded and re-encoded. Defaults to lossless targets only.
+    pub pixel_reencode: PixelReencodePolicy,
     /// Policy for generated Study, Series, SOP, and related DICOM UIDs.
     pub uid_policy: UidPolicy,
     /// Optional governed level-zero source spacing when the reader lacks calibration metadata.
@@ -363,6 +422,7 @@ pub(crate) struct NormalizedExportSemantics {
     pub(crate) jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile,
     pub(crate) jpeg_quality: u8,
     pub(crate) jpeg_optimize_huffman: bool,
+    pub(crate) pixel_reencode: PixelReencodePolicy,
     pub(crate) uid_policy: UidPolicy,
     pub(crate) source_pixel_spacing_mm: Option<SourcePixelSpacingMm>,
 }
@@ -418,6 +478,7 @@ impl NormalizedExportOptions {
                 jpeg_direct_htj2k_profile: options.jpeg_direct_htj2k_profile,
                 jpeg_quality: options.jpeg_quality,
                 jpeg_optimize_huffman: options.jpeg_optimize_huffman,
+                pixel_reencode: options.pixel_reencode,
                 uid_policy: options.uid_policy,
                 source_pixel_spacing_mm: options.source_pixel_spacing_mm,
             },
@@ -455,6 +516,7 @@ impl Default for ExportOptions {
             jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossless53,
             jpeg_quality: 90,
             jpeg_optimize_huffman: false,
+            pixel_reencode: PixelReencodePolicy::Lossless,
             uid_policy: UidPolicy::Fresh,
             source_pixel_spacing_mm: None,
             encode_backend: EncodeBackendPreference::Auto,
@@ -824,6 +886,31 @@ mod tests {
     }
 
     #[test]
+    fn pixel_reencode_policy_admits_lossy_targets_only_when_any() {
+        assert_eq!(
+            ExportOptions::default().pixel_reencode,
+            PixelReencodePolicy::Lossless
+        );
+        for transfer_syntax in TransferSyntax::ALL {
+            let lossless = matches!(
+                transfer_syntax,
+                TransferSyntax::Jpeg2000Lossless
+                    | TransferSyntax::Htj2kLossless
+                    | TransferSyntax::Htj2kLosslessRpcl
+                    | TransferSyntax::JpegLosslessSv1
+                    | TransferSyntax::ExplicitVrLittleEndian
+            );
+            assert!(!PixelReencodePolicy::Never.permits(transfer_syntax));
+            assert_eq!(
+                PixelReencodePolicy::Lossless.permits(transfer_syntax),
+                lossless,
+                "{transfer_syntax:?}"
+            );
+            assert!(PixelReencodePolicy::Any.permits(transfer_syntax));
+        }
+    }
+
+    #[test]
     fn export_options_default_to_bounded_metadata_budgets() {
         let options = ExportOptions::default();
         assert_eq!(options.max_instance_metadata_bytes, 256 * 1024 * 1024);
@@ -842,6 +929,7 @@ mod tests {
             jpeg_direct_htj2k_profile: JpegDirectHtj2kProfile::Lossy97Aggressive,
             jpeg_quality: 77,
             jpeg_optimize_huffman: true,
+            pixel_reencode: PixelReencodePolicy::Any,
             uid_policy: UidPolicy::Deterministic,
             source_pixel_spacing_mm: Some(SourcePixelSpacingMm::new(0.0005, 0.00025).unwrap()),
             encode_backend: EncodeBackendPreference::PreferDevice,

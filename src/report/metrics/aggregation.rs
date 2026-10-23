@@ -18,7 +18,7 @@ macro_rules! max_fields {
 
 impl ExportMetrics {
     /// Number of fields emitted by the public serialized metrics object.
-    pub const SERIALIZED_FIELD_COUNT: usize = 99;
+    pub const SERIALIZED_FIELD_COUNT: usize = 100;
 
     /// Total frames emitted by compressed passthrough routes.
     pub fn route_passthrough_frames(&self) -> u64 {
@@ -90,6 +90,7 @@ impl ExportMetrics {
                 jpeg_cpu_encode_frames,
                 jpeg_metal_encode_frames,
                 jpeg_decode_fallback_frames,
+                compressed_source_reencoded_frames,
             ]
         );
         saturating_add_fields!(
