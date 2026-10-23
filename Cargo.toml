@@ -138,4 +138,4 @@ j2k-tilecodec = { git = "https://github.com/frames-sg/j2k", rev = "4ca93a56f8563
 j2k-transcode = { git = "https://github.com/frames-sg/j2k", rev = "4ca93a56f85634d9cf46c09db2c5955ec77b956b" }
 j2k-transcode-metal = { git = "https://github.com/frames-sg/j2k", rev = "4ca93a56f85634d9cf46c09db2c5955ec77b956b" }
 j2k-types = { git = "https://github.com/frames-sg/j2k", rev = "4ca93a56f85634d9cf46c09db2c5955ec77b956b" }
-wsi-rs = { git = "https://github.com/frames-sg/wsi-rs", rev = "7ac7feeeefa2f21d629176e686d9ba3dbde657f0" }
+wsi-rs = { git = "https://github.com/frames-sg/wsi-rs", rev = "3f819a3a7d7e724967a5db631bd5d823fc08a517" }
