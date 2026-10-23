@@ -56,6 +56,68 @@ fn decimal_string_formatting_stays_within_dicom_limit() {
 }
 
 #[test]
+fn resampled_level_references_the_level_zero_instance_it_was_derived_from() {
+    let source_uid = "1.2.826.0.1.3680043.10.999.8";
+    let metadata = DicomMetadata::research_placeholder();
+    let mut params = sample_dicom_object_params(&metadata, None);
+    params.level_idx = 1;
+    params.identifiers.derivation_source_sop_instance_uid = Some(source_uid);
+    let object = build_dicom_object(params).unwrap();
+
+    let source_images = sequence_items(&object, tags::SOURCE_IMAGE_SEQUENCE);
+    assert_eq!(source_images.len(), 1);
+    assert_eq!(
+        tag_str(&source_images[0], tags::REFERENCED_SOP_INSTANCE_UID),
+        source_uid
+    );
+    let referenced_series = sequence_items(&object, tags::REFERENCED_SERIES_SEQUENCE);
+    assert_eq!(
+        tag_str(&referenced_series[0], tags::SERIES_INSTANCE_UID),
+        "1.2.826.0.1.3680043.10.999.2"
+    );
+    let referenced_instances =
+        sequence_items(&referenced_series[0], tags::REFERENCED_INSTANCE_SEQUENCE);
+    assert_eq!(
+        tag_str(&referenced_instances[0], tags::REFERENCED_SOP_INSTANCE_UID),
+        source_uid
+    );
+
+    let shared = sequence_items(&object, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE);
+    let derivation = sequence_items(&shared[0], tags::DERIVATION_IMAGE_SEQUENCE);
+    assert_code_item(
+        &sequence_items(&derivation[0], tags::DERIVATION_CODE_SEQUENCE)[0],
+        "113085",
+        "DCM",
+        "Spatial resampling",
+    );
+    let derivation_source = &sequence_items(&derivation[0], tags::SOURCE_IMAGE_SEQUENCE)[0];
+    assert_eq!(
+        tag_str(derivation_source, tags::REFERENCED_SOP_INSTANCE_UID),
+        source_uid
+    );
+    assert_eq!(
+        tag_str(derivation_source, tags::SPATIAL_LOCATIONS_PRESERVED),
+        "YES"
+    );
+    assert_code_item(
+        &sequence_items(derivation_source, tags::PURPOSE_OF_REFERENCE_CODE_SEQUENCE)[0],
+        "121322",
+        "DCM",
+        "Source image for image processing operation",
+    );
+}
+
+#[test]
+fn instances_without_a_derivation_source_carry_no_derivation_references() {
+    let object = sample_object(0);
+    let shared = sequence_items(&object, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE);
+
+    assert!(object.element(tags::SOURCE_IMAGE_SEQUENCE).is_err());
+    assert!(object.element(tags::REFERENCED_SERIES_SEQUENCE).is_err());
+    assert!(shared[0].element(tags::DERIVATION_IMAGE_SEQUENCE).is_err());
+}
+
+#[test]
 fn pyramid_resampled_level_metadata_is_grouped_and_labeled() {
     let object = sample_object(1);
 

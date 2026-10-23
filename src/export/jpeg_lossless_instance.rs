@@ -66,9 +66,10 @@ pub(super) fn prepare_jpeg_lossless_instance(
             options.semantics.source_pixel_spacing_mm,
         )?)?,
         coordinate,
-    )?;
+    )?
+    .with_level_zero_source(identity, request.level_filter.is_none());
     let declared_lossy_compression =
-        super::lossy_provenance::declared_source_lossy_history(&request.source_path)?;
+        super::lossy_provenance::source_lossy_history(slide, &request.source_path, coordinate)?;
     let mut pixel_data = BufferedPixelDataSink::create(
         unique_spool_path(&context.path),
         frame_count as usize,

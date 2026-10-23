@@ -131,6 +131,7 @@ fn sample_dicom_object_params<'a>(
             pyramid_uid: "1.2.826.0.1.3680043.10.999.5",
             dimension_organization_uid: "1.2.826.0.1.3680043.10.999.6",
             pyramid_label: "WSI pyramid s0 ser0 z0 c0 t0",
+            derivation_source_sop_instance_uid: None,
         },
         series_number: 7,
         instance_number: 42,

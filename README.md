@@ -392,6 +392,18 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
   `1`.
 - Lossy compression history is independent of the final transfer syntax. A
   lossless transcode does not erase prior lossy JPEG/JPEG 2000/HTJ2K stages.
+  For non-DICOM sources the stage is measured from the source tiles: JPEG tiles
+  are lossy, and JPEG 2000 tiles are lossy when their codestream is
+  irreversible. Levels without readable compressed tiles (Zeiss CZI) use the
+  codec and stored size the reader reports, with the ratio of decoded to stored
+  bytes. JPEG XR and JPEG-LS reported this way are recorded as lossy, because
+  the source does not say whether a lossless mode was used; JPEG XR uses the
+  method `ISO_29199_2`, which extends the Defined Terms. A lossy codec without
+  stored sizes, or a codec that cannot be classified, fails the export.
+- Resampled levels reference the level-zero instance of their plane, when it is
+  part of the same export, through Source Image Sequence, Referenced Series
+  Sequence and a shared Derivation Image functional group (DCM 113085 "Spatial
+  resampling").
 - JPEG Baseline output copies compatible native JPEG frames or retiles them
   without pixel re-encoding. Padded TIFF edge tiles are copied whole into
   full-size edge frames. A JPEG whose container declares RGB but whose bitstream

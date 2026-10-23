@@ -4,10 +4,76 @@ use dicom_core::value::Value;
 use dicom_dictionary_std::tags;
 use dicom_object::DefaultDicomObject;
 
+use wsi_rs::{Compression, Slide, SourceEncoding};
+
+use crate::coordinate::InstanceCoordinate;
 use crate::lossy::{
-    method_for_lossy_transfer_syntax, uncompressed_pixel_bytes, LossyCompressionHistory,
+    lossy_method_for_compression, method_for_lossy_transfer_syntax, uncompressed_pixel_bytes,
+    LossyCompressionHistory,
 };
 use crate::Error;
+
+/// Lossy history the source declares: DICOM Lossy Image Compression
+/// attributes, or else the codec a reader reports for a level without raw
+/// compressed tiles (Zeiss JPEG XR subblocks). Levels with raw tiles are
+/// classified per frame instead.
+pub(super) fn source_lossy_history(
+    slide: &Slide,
+    source_path: &Path,
+    coordinate: InstanceCoordinate,
+) -> Result<LossyCompressionHistory, Error> {
+    let declared = declared_source_lossy_history(source_path)?;
+    if !declared.is_empty() {
+        return Ok(declared);
+    }
+    reported_level_history(slide.level_encoding(
+        coordinate.scene_idx,
+        coordinate.series_idx,
+        coordinate.level_idx,
+    ))
+}
+
+/// JPEG 2000 levels are left to the per-frame codestream inspection, which
+/// tells reversible from irreversible coding; the reported codec cannot.
+fn reported_level_history(
+    encoding: Option<SourceEncoding>,
+) -> Result<LossyCompressionHistory, Error> {
+    match encoding {
+        Some(encoding)
+            if matches!(
+                encoding.compression,
+                Compression::Jp2kRgb | Compression::Jp2kYcbcr
+            ) =>
+        {
+            Ok(LossyCompressionHistory::default())
+        }
+        encoding => reported_encoding_history(encoding, "source level"),
+    }
+}
+
+/// One lossy stage for a source stored with a lossy codec, measured from the
+/// reported decoded and stored sizes; empty for lossless or unreported storage.
+pub(super) fn reported_encoding_history(
+    encoding: Option<SourceEncoding>,
+    what: &str,
+) -> Result<LossyCompressionHistory, Error> {
+    let Some(encoding) = encoding else {
+        return Ok(LossyCompressionHistory::default());
+    };
+    let Some(method) = lossy_method_for_compression(encoding.compression)? else {
+        return Ok(LossyCompressionHistory::default());
+    };
+    match (encoding.decoded_bytes, encoding.encoded_bytes) {
+        (Some(decoded), Some(encoded)) => {
+            LossyCompressionHistory::from_byte_counts(method, decoded, encoded)
+        }
+        _ => Err(Error::Metadata {
+            reason: format!(
+                "{what} is stored with lossy {method} compression of unknown size, so Lossy Image Compression Ratio cannot be recorded"
+            ),
+        }),
+    }
+}
 
 pub(super) fn declared_source_lossy_history(
     source_path: &Path,
@@ -271,5 +337,65 @@ mod tests {
             crate::lossy::JPEG_BASELINE_METHOD
         );
         assert!(history.stages()[0].ratio() > 0.0);
+    }
+
+    #[test]
+    fn reported_lossy_codecs_record_one_measured_stage() {
+        let encoding = SourceEncoding::new(wsi_rs::Compression::JpegXr).with_sizes(2_800, 100);
+        let history = reported_encoding_history(Some(encoding), "level").unwrap();
+        assert_eq!(history.stages().len(), 1);
+        assert_eq!(history.stages()[0].method(), crate::lossy::JPEG_XR_METHOD);
+        assert_eq!(history.stages()[0].ratio(), 28.0);
+
+        let jpeg = SourceEncoding::new(wsi_rs::Compression::Jpeg).with_sizes(900, 90);
+        let history = reported_encoding_history(Some(jpeg), "label").unwrap();
+        assert_eq!(
+            history.stages()[0].method(),
+            crate::lossy::JPEG_BASELINE_METHOD
+        );
+    }
+
+    #[test]
+    fn reported_lossless_or_absent_encodings_record_no_stage() {
+        for compression in [
+            wsi_rs::Compression::None,
+            wsi_rs::Compression::Lzw,
+            wsi_rs::Compression::Deflate,
+            wsi_rs::Compression::Zstd,
+        ] {
+            let encoding = SourceEncoding::new(compression).with_sizes(10, 5);
+            assert!(reported_encoding_history(Some(encoding), "level")
+                .unwrap()
+                .is_empty());
+        }
+        assert!(reported_encoding_history(None, "level").unwrap().is_empty());
+    }
+
+    #[test]
+    fn reported_jpeg_2000_levels_defer_to_codestream_inspection() {
+        for compression in [wsi_rs::Compression::Jp2kRgb, wsi_rs::Compression::Jp2kYcbcr] {
+            let encoding = SourceEncoding::new(compression).with_sizes(1_000, 100);
+            assert!(reported_level_history(Some(encoding)).unwrap().is_empty());
+        }
+        let jpeg_xr = SourceEncoding::new(wsi_rs::Compression::JpegXr).with_sizes(1_000, 100);
+        assert_eq!(
+            reported_level_history(Some(jpeg_xr)).unwrap().stages()[0].method(),
+            crate::lossy::JPEG_XR_METHOD
+        );
+    }
+
+    #[test]
+    fn reported_lossy_codec_without_sizes_or_unknown_codec_is_an_error() {
+        let unsized_jpeg_xr = SourceEncoding::new(wsi_rs::Compression::JpegXr);
+        let error = reported_encoding_history(Some(unsized_jpeg_xr), "source level")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Lossy Image Compression Ratio"), "{error}");
+
+        let unknown = SourceEncoding::new(wsi_rs::Compression::Other(34_712)).with_sizes(10, 5);
+        let error = reported_encoding_history(Some(unknown), "label")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("cannot be classified"), "{error}");
     }
 }

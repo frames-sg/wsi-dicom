@@ -30,6 +30,9 @@ pub(crate) struct DicomObjectIdentifiers<'a> {
     pub(crate) pyramid_uid: &'a str,
     pub(crate) dimension_organization_uid: &'a str,
     pub(crate) pyramid_label: &'a str,
+    /// Level-zero SOP Instance a resampled level was derived from, when that
+    /// instance is part of the same export.
+    pub(crate) derivation_source_sop_instance_uid: Option<&'a str>,
 }
 
 pub(crate) struct DicomObjectParams<'a> {
@@ -496,8 +499,12 @@ fn put_wsi_sequences(object: &mut InMemDicomObject, context: &DicomObjectBuildCo
             context.row_spacing_mm,
             context.column_spacing_mm,
             metadata.slice_thickness_mm_ds(),
+            identifiers.derivation_source_sop_instance_uid,
         )]),
     ));
+    if let Some(source_uid) = identifiers.derivation_source_sop_instance_uid {
+        put_derivation_references(object, identifiers.series_uid, source_uid);
+    }
     object.put(DataElement::<InMemDicomObject>::new(
         tags::DIMENSION_ORGANIZATION_SEQUENCE,
         VR::SQ,
@@ -643,13 +650,95 @@ fn total_pixel_matrix_origin_item() -> InMemDicomObject {
     item
 }
 
+/// General Reference Source Image Sequence (PS3.3 C.12.4) and Common
+/// Instance Reference (C.12.2) for a level resampled from `source_uid`, which
+/// is in the same Series.
+fn put_derivation_references(object: &mut InMemDicomObject, series_uid: &str, source_uid: &str) {
+    object.put(DataElement::<InMemDicomObject>::new(
+        tags::SOURCE_IMAGE_SEQUENCE,
+        VR::SQ,
+        DataSetSequence::from(vec![referenced_instance_item(source_uid)]),
+    ));
+    let mut series = InMemDicomObject::new_empty();
+    put_str(&mut series, tags::SERIES_INSTANCE_UID, VR::UI, series_uid);
+    series.put(DataElement::<InMemDicomObject>::new(
+        tags::REFERENCED_INSTANCE_SEQUENCE,
+        VR::SQ,
+        DataSetSequence::from(vec![referenced_instance_item(source_uid)]),
+    ));
+    object.put(DataElement::<InMemDicomObject>::new(
+        tags::REFERENCED_SERIES_SEQUENCE,
+        VR::SQ,
+        DataSetSequence::from(vec![series]),
+    ));
+}
+
+fn referenced_instance_item(sop_instance_uid: &str) -> InMemDicomObject {
+    let mut item = InMemDicomObject::new_empty();
+    put_str(
+        &mut item,
+        tags::REFERENCED_SOP_CLASS_UID,
+        VR::UI,
+        VL_WSI_SOP_CLASS_UID,
+    );
+    put_str(
+        &mut item,
+        tags::REFERENCED_SOP_INSTANCE_UID,
+        VR::UI,
+        sop_instance_uid,
+    );
+    item
+}
+
+/// Derivation Image Macro item (PS3.3 C.7.6.16.2.6): the level was spatially
+/// resampled (DCM 113085) from the referenced source (DCM 121322), keeping
+/// slide coordinates.
+fn derivation_image_item(source_uid: &str) -> InMemDicomObject {
+    let mut source = referenced_instance_item(source_uid);
+    source.put(DataElement::<InMemDicomObject>::new(
+        tags::PURPOSE_OF_REFERENCE_CODE_SEQUENCE,
+        VR::SQ,
+        DataSetSequence::from(vec![code_item(
+            "121322",
+            "DCM",
+            "Source image for image processing operation",
+        )]),
+    ));
+    put_str(
+        &mut source,
+        tags::SPATIAL_LOCATIONS_PRESERVED,
+        VR::CS,
+        "YES",
+    );
+    let mut item = InMemDicomObject::new_empty();
+    item.put(DataElement::<InMemDicomObject>::new(
+        tags::DERIVATION_CODE_SEQUENCE,
+        VR::SQ,
+        DataSetSequence::from(vec![code_item("113085", "DCM", "Spatial resampling")]),
+    ));
+    item.put(DataElement::<InMemDicomObject>::new(
+        tags::SOURCE_IMAGE_SEQUENCE,
+        VR::SQ,
+        DataSetSequence::from(vec![source]),
+    ));
+    item
+}
+
 fn shared_functional_groups_item(
     image_type: &str,
     row_spacing_mm: f64,
     column_spacing_mm: f64,
     slice_thickness_mm_ds: &str,
+    derivation_source_uid: Option<&str>,
 ) -> InMemDicomObject {
     let mut item = InMemDicomObject::new_empty();
+    if let Some(source_uid) = derivation_source_uid {
+        item.put(DataElement::<InMemDicomObject>::new(
+            tags::DERIVATION_IMAGE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![derivation_image_item(source_uid)]),
+        ));
+    }
     item.put(DataElement::<InMemDicomObject>::new(
         tags::PIXEL_MEASURES_SEQUENCE,
         VR::SQ,

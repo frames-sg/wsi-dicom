@@ -383,6 +383,53 @@ fn export_j2k_passthrough_does_not_touch_gpu_even_when_device_required() {
 }
 
 #[test]
+fn reversible_j2k_tiff_source_is_recorded_as_lossless() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bytes: Vec<u8> = (0..2 * 2 * 3)
+        .map(|value| ((value * 29) & 0xFF) as u8)
+        .collect();
+    let samples = J2kLosslessSamples::new(&bytes, 2, 2, 3, 8, false).expect("valid samples");
+    let codestream = encode_dicom_lossless(
+        samples,
+        TransferSyntax::Jpeg2000Lossless,
+        EncodeBackendPreference::CpuOnly,
+        CodecValidation::RoundTrip,
+    )
+    .unwrap();
+    let source = tmp.path().join("source.svs");
+    write_tiled_jp2k_rgb_tiff(&source, 2, 2, 2, 2, std::slice::from_ref(&codestream));
+
+    let report = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: tmp.path().join("out"),
+        options: ExportOptions {
+            tile_size: 2,
+            transfer_syntax: TransferSyntax::Jpeg2000Lossless,
+            encode_backend: EncodeBackendPreference::CpuOnly,
+            ..ExportOptions::default()
+        },
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: None,
+    })
+    .unwrap();
+
+    let object = dicom_object::open_file(&report.instances[0].path).unwrap();
+    assert_eq!(
+        object
+            .element(tags::LOSSY_IMAGE_COMPRESSION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .as_ref(),
+        "00"
+    );
+    assert!(object
+        .element(tags::LOSSY_IMAGE_COMPRESSION_METHOD)
+        .is_err());
+}
+
+#[test]
 fn export_general_j2k_passthrough_accepts_ycbcr_source_without_gpu_work() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source.svs");

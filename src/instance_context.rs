@@ -24,6 +24,8 @@ pub(crate) struct DicomInstanceContext {
     pub(crate) pixel_spacing_mm: (f64, f64),
     pub(crate) series_number: u32,
     pub(crate) coordinate: InstanceCoordinate,
+    /// Level-zero instance of this plane that a resampled level references.
+    pub(crate) derivation_source_sop_instance_uid: Option<String>,
 }
 
 impl DicomInstanceContext {
@@ -83,7 +85,30 @@ impl DicomInstanceContext {
             pixel_spacing_mm,
             series_number: coordinate.series_number()?,
             coordinate,
+            derivation_source_sop_instance_uid: None,
         })
+    }
+
+    /// References the level-zero instance of the same plane from a resampled
+    /// level, when that instance is written by the same export.
+    pub(crate) fn with_level_zero_source(
+        mut self,
+        identity: &DicomExportIdentity,
+        level_zero_exported: bool,
+    ) -> Self {
+        let coordinate = self.coordinate;
+        self.derivation_source_sop_instance_uid = (coordinate.level_idx > 0 && level_zero_exported)
+            .then(|| {
+                identity.uid(&format!(
+                    "instance:{}:{}:0:{}:{}:{}",
+                    coordinate.scene_idx,
+                    coordinate.series_idx,
+                    coordinate.z,
+                    coordinate.c,
+                    coordinate.t
+                ))
+            });
+        self
     }
 
     pub(crate) fn build_dicom_object(
@@ -101,6 +126,9 @@ impl DicomInstanceContext {
                 pyramid_uid: &self.pyramid_uid,
                 dimension_organization_uid: &self.dimension_organization_uid,
                 pyramid_label: &self.pyramid_label,
+                derivation_source_sop_instance_uid: self
+                    .derivation_source_sop_instance_uid
+                    .as_deref(),
             },
             series_number: self.series_number,
             instance_number: params.instance_number,

@@ -1,8 +1,36 @@
+use wsi_rs::Compression;
+
 use crate::Error;
 
 pub(crate) const JPEG_BASELINE_METHOD: &str = "ISO_10918_1";
 pub(crate) const JPEG_2000_METHOD: &str = "ISO_15444_1";
 pub(crate) const HTJ2K_METHOD: &str = "ISO_15444_15";
+/// JPEG XR (ISO/IEC 29199-2). Not among the PS3.3 C.7.6.1.1.5.1 Defined
+/// Terms; Defined Terms may be extended, and this follows their pattern.
+pub(crate) const JPEG_XR_METHOD: &str = "ISO_29199_2";
+pub(crate) const JPEG_LS_METHOD: &str = "ISO_14495_1";
+
+/// Lossy Image Compression Method for pixels a source stored with
+/// `compression`, or `None` for lossless storage. JPEG 2000 and JPEG-LS can
+/// be lossless, but a reported codec alone does not say so; they are recorded
+/// as lossy rather than risk declaring lossy pixels lossless. A codec this
+/// crate does not know is an error, for the same reason.
+pub(crate) fn lossy_method_for_compression(
+    compression: Compression,
+) -> Result<Option<&'static str>, Error> {
+    match compression {
+        Compression::Jpeg => Ok(Some(JPEG_BASELINE_METHOD)),
+        Compression::JpegXr => Ok(Some(JPEG_XR_METHOD)),
+        Compression::Jp2kRgb | Compression::Jp2kYcbcr => Ok(Some(JPEG_2000_METHOD)),
+        Compression::JpegLs => Ok(Some(JPEG_LS_METHOD)),
+        Compression::None | Compression::Lzw | Compression::Deflate | Compression::Zstd => Ok(None),
+        other => Err(Error::Metadata {
+            reason: format!(
+                "source codec {other:?} cannot be classified as lossless or lossy, so its compression history cannot be recorded"
+            ),
+        }),
+    }
+}
 
 pub(crate) fn method_for_lossy_transfer_syntax(uid: &str) -> Option<&'static str> {
     match uid.trim_end_matches('\0') {

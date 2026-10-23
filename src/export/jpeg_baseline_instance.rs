@@ -60,10 +60,14 @@ pub(super) fn export_jpeg_passthrough_instance(
                 export.options.semantics.source_pixel_spacing_mm,
             )?)?,
             export.coordinate,
-        )?,
+        )?
+        .with_level_zero_source(export.identity, request.level_filter.is_none()),
     };
-    let declared_lossy_compression =
-        super::lossy_provenance::declared_source_lossy_history(&request.source_path)?;
+    let declared_lossy_compression = super::lossy_provenance::source_lossy_history(
+        slide,
+        &request.source_path,
+        export.coordinate,
+    )?;
     if let Some(start) =
         try_prepare_direct_jpeg_passthrough(slide, export.coordinate, export.level, geometry)?
     {
