@@ -305,6 +305,20 @@ jobs:
         env:
           WSI_DICOM_DOCBOOK_DIR: ${{ runner.temp }}/dicom-docbook
 
+  dicom-edition:
+    # Fails when NEMA publishes an edition newer than the generated tables.
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: wsi-dicom
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: python scripts/check-dicom-edition.py
+
   controlled-failure-benchmark:
     if: github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
