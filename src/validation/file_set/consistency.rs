@@ -19,6 +19,7 @@ use super::file_id::{self, Unresolved};
 use super::notes::Notes;
 use super::records::{Directory, Record, Value, REFERENCED_FILE_ID};
 use super::structure::Tree;
+use crate::validation::disclosure::{difference, shown};
 use crate::validation::iod::{string_value, Family};
 use crate::validation::is_image_storage_sop_class;
 use crate::validation::ValidationOptions;
@@ -77,7 +78,10 @@ pub(super) fn check_references(
     let root = &context.root;
     let mut referenced = BTreeSet::new();
     if let Some(value) = directory.data_set.get(&DESCRIPTOR_FILE_ID) {
-        let what = "File-set Descriptor File ID (0004,1141)";
+        let what = (
+            DESCRIPTOR_FILE_ID,
+            "File-set Descriptor File ID (0004,1141)",
+        );
         if let Some(path) = resolve(root, value, what, family) {
             referenced.insert(path);
         }
@@ -91,7 +95,7 @@ pub(super) fn check_references(
             "Referenced File ID (0004,1500) of the record at byte {}",
             record.offset
         );
-        let Some(path) = resolve(root, value, &what, family) else {
+        let Some(path) = resolve(root, value, (REFERENCED_FILE_ID, &what), family) else {
             uncompared(record, "its Referenced File ID does not resolve", notes);
             continue;
         };
@@ -135,13 +139,20 @@ fn uncompared(record: &Record, why: &str, notes: &mut Notes) {
     }
 }
 
-/// The canonical path of the file `value`'s File ID names, after its
-/// PS3.10 8.2 and 8.5 defects are recorded; `None` when it does not resolve.
-fn resolve(root: &Root<'_>, value: &Value, what: &str, family: &mut Family) -> Option<PathBuf> {
+/// The canonical path of the file `value`, the File ID of Attribute `tag`
+/// that `what` names, names, after its PS3.10 8.2 and 8.5 defects are
+/// recorded; `None` when it does not resolve.
+fn resolve(
+    root: &Root<'_>,
+    value: &Value,
+    (tag, what): (Tag, &str),
+    family: &mut Family,
+) -> Option<PathBuf> {
     let components = value.texts();
-    let shown = components.join("\\");
+    let joined = components.join("\\");
+    let shown = shown(tag, &joined);
     for defect in file_id::defects(&components) {
-        family.push(|| format!("{what} \"{}\" {defect}", shown.escape_default()));
+        family.push(|| format!("{what} {shown} {defect}"));
     }
     match file_id::resolve(root.path, root.canonical, &components) {
         Ok(path) => Some(path),
@@ -152,9 +163,8 @@ fn resolve(root: &Root<'_>, value: &Value, what: &str, family: &mut Family) -> O
             };
             family.push(|| {
                 format!(
-                    "{reason}{what} \"{}\" {}; every referenced File shall exist in the File-set \
+                    "{reason}{what} {shown} {}; every referenced File shall exist in the File-set \
                      (PS3.10 8.6, PS3.3 F.2.1)",
-                    shown.escape_default(),
                     unresolved.message()
                 )
             });
@@ -230,10 +240,16 @@ fn check_reference_uids(
             "Referenced SOP Class UID in File (0004,1510)",
             vec![
                 (
-                    "Media Storage SOP Class UID (0002,0002)",
+                    (
+                        tags::MEDIA_STORAGE_SOP_CLASS_UID,
+                        "Media Storage SOP Class UID (0002,0002)",
+                    ),
                     Some(meta.media_storage_sop_class_uid()),
                 ),
-                ("SOP Class UID (0008,0016)", class.as_deref()),
+                (
+                    (tags::SOP_CLASS_UID, "SOP Class UID (0008,0016)"),
+                    class.as_deref(),
+                ),
             ],
         ),
         (
@@ -241,17 +257,23 @@ fn check_reference_uids(
             "Referenced SOP Instance UID in File (0004,1511)",
             vec![
                 (
-                    "Media Storage SOP Instance UID (0002,0003)",
+                    (
+                        tags::MEDIA_STORAGE_SOP_INSTANCE_UID,
+                        "Media Storage SOP Instance UID (0002,0003)",
+                    ),
                     Some(meta.media_storage_sop_instance_uid()),
                 ),
-                ("SOP Instance UID (0008,0018)", instance.as_deref()),
+                (
+                    (tags::SOP_INSTANCE_UID, "SOP Instance UID (0008,0018)"),
+                    instance.as_deref(),
+                ),
             ],
         ),
         (
             REFERENCED_TRANSFER_SYNTAX,
             "Referenced Transfer Syntax UID in File (0004,1512)",
             vec![(
-                "Transfer Syntax UID (0002,0010)",
+                (tags::TRANSFER_SYNTAX_UID, "Transfer Syntax UID (0002,0010)"),
                 Some(meta.transfer_syntax()),
             )],
         ),
@@ -268,10 +290,11 @@ fn check_reference_uids(
             continue;
         };
         let expected = value.text();
-        for (file_name, found) in file_values {
+        for (file_attribute, found) in file_values {
             let found = found.map(trim_uid);
             if found != Some(expected.as_str()) {
-                family.push(|| mismatch(record, path, name, &expected, file_name, found));
+                family
+                    .push(|| mismatch(record, path, (tag, name), &expected, file_attribute, found));
             }
         }
     }
@@ -331,15 +354,19 @@ fn check_keys(path: &Path, lineage: &[&Record], object: &DefaultDicomObject, fam
             if !same_key(tag, &expected, found.as_deref()) {
                 family.push(|| {
                     format!(
-                        "{name} of the {} record at byte {} is \"{}\", but {} has {} (PS3.3 F.5)",
+                        "{name} of the {} record at byte {} is {}, but {} has {}{} (PS3.3 F.5)",
                         ancestor.record_type(),
                         ancestor.offset,
-                        expected.escape_default(),
+                        shown(tag, &expected),
                         path.display(),
                         found.as_deref().map_or_else(
                             || "none".to_string(),
-                            |found| format!("\"{}\"", found.escape_default())
-                        )
+                            |found| shown(tag, found).to_string()
+                        ),
+                        found
+                            .as_deref()
+                            .map(|found| difference(tag, &expected, found).to_string())
+                            .unwrap_or_default()
                     )
                 });
             }
@@ -365,19 +392,19 @@ fn same_key(tag: Tag, expected: &str, found: Option<&str>) -> bool {
 fn mismatch(
     record: &Record,
     path: &Path,
-    name: &str,
+    (tag, name): (Tag, &str),
     expected: &str,
-    file_name: &str,
+    (file_tag, file_name): (Tag, &str),
     found: Option<&str>,
 ) -> String {
     format!(
-        "{name} of the record at byte {} is \"{}\", but {file_name} of {} is {} (PS3.3 F.3.2.2)",
+        "{name} of the record at byte {} is {}, but {file_name} of {} is {} (PS3.3 F.3.2.2)",
         record.offset,
-        expected.escape_default(),
+        shown(tag, expected),
         path.display(),
         found.map_or_else(
             || "absent".to_string(),
-            |found| format!("\"{}\"", found.escape_default())
+            |found| shown(file_tag, found).to_string()
         )
     )
 }

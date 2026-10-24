@@ -15,6 +15,7 @@ use super::{
     CITATION, SEGMENTATION_RULE, SYNCHRONIZATION_RULE,
 };
 use crate::validation::bulk_annotations::{screen_windings, GroupWinding};
+use crate::validation::disclosure::{shown, shown_or};
 use crate::validation::iod::{dicom_edition, Family};
 use crate::validation::{intrinsic_check, ValidationCheck, ValidationStatus};
 
@@ -284,8 +285,9 @@ fn segmentation_check(corpus: &FamilyCorpus) -> Outcome {
             match &image.frame_of_reference {
                 Some(frame) if segmentation.frame_of_reference.as_ref() != Some(frame) => {
                     outcome.violations.push(|| format!(
-                        "{pair}, whose Frame of Reference UID is {frame}, but the Segmentation's is {}; it shall have the same Frame of Reference ({CITATION} A.51.1)",
-                        segmentation.frame_of_reference.as_deref().unwrap_or("absent")
+                        "{pair}, whose Frame of Reference UID is {}, but the Segmentation's is {}; it shall have the same Frame of Reference ({CITATION} A.51.1)",
+                        shown(tags::FRAME_OF_REFERENCE_UID, frame),
+                        shown_or(tags::FRAME_OF_REFERENCE_UID, segmentation.frame_of_reference.as_deref(), "absent")
                     ));
                 }
                 Some(_) => {}
@@ -441,9 +443,9 @@ fn synchronization_check(corpus: &FamilyCorpus) -> Outcome {
             outcome.violations.push(|| format!(
                 "{} has a Synchronization Frame of Reference UID and Frame of Reference UID {}, but {differing} other Instance(s) of its Series have another, {} with {}; all SOP Instances in the Series shall share the same Frame of Reference ({CITATION} C.7.4.2.1.1)",
                 object.path.display(),
-                object.frame_of_reference.as_deref().unwrap_or("absent"),
+                shown_or(tags::FRAME_OF_REFERENCE_UID, object.frame_of_reference.as_deref(), "absent"),
                 member.path.display(),
-                member.frame_of_reference.as_deref().unwrap_or("absent")
+                shown_or(tags::FRAME_OF_REFERENCE_UID, member.frame_of_reference.as_deref(), "absent")
             ));
         }
     }

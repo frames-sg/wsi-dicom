@@ -4,7 +4,8 @@
 //!
 //! They are opt-in (`ValidationOptions::conventions`), each result names the
 //! profile and the source that states it, and they are reported apart from
-//! the DICOM checks: no convention result or advisory makes validation fail.
+//! the DICOM checks. A failed convention check makes validation fail only
+//! with `ValidationOptions::fail_on_conventions`; advisories never do.
 //! Where a source conflicts with DICOM normative text, the normative text is
 //! followed and the conflict is reported as an advisory of the profile.
 
@@ -17,13 +18,14 @@ mod specimen;
 mod tests;
 mod wg26;
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use dicom_dictionary_std::tags;
 use dicom_object::DefaultDicomObject;
 use serde::{Deserialize, Serialize};
 
 use super::ValidationStatus;
+use crate::validation::disclosure::shown;
 use facts::{Facts, SetIndex};
 
 /// A convention profile: requirements a community, an IHE profile or the
@@ -112,6 +114,9 @@ pub struct ConventionEntry {
 pub struct ConventionReport {
     /// The profiles that ran.
     pub profiles: Vec<ConventionProfile>,
+    /// Whether a failed convention check fails validation
+    /// (`ValidationOptions::fail_on_conventions`); advisories never do.
+    pub fail_on_conventions: bool,
     /// One result per check and object or set it applies to.
     pub checks: Vec<ConventionCheck>,
     /// The advisories that apply, each with its source.
@@ -127,6 +132,12 @@ impl ConventionReport {
     /// Whether any convention check failed.
     pub fn has_failures(&self) -> bool {
         self.count(ValidationStatus::Failed) > 0
+    }
+
+    /// Whether the conventions fail validation: a check failed and
+    /// `fail_on_conventions` is set.
+    pub fn fails_validation(&self) -> bool {
+        self.fail_on_conventions && self.has_failures()
     }
 
     /// Count convention checks with `status`.
@@ -198,7 +209,7 @@ const fn evaluable(profile: ConventionProfile, name: &'static str) -> Convention
         profile,
         name,
         "wsi-dicom",
-        "The file parses as DICOM and a VL WSI image names its Series Instance UID, so the profile's file and Series conventions can be evaluated for it; reported skipped otherwise.",
+        "The object holds what the profile reads: the file parses as DICOM, a VL WSI image names its Series Instance UID, and, for the advisories, a DICOM JSON Data Set's Transfer Syntax and encoded Pixel Data are known. Reported skipped, with what was not evaluated, otherwise.",
     )
 }
 
@@ -224,6 +235,29 @@ const EVALUABLE: &[&ConventionEntry] = &[
     &EVALUABLE_INTEROP,
 ];
 
+/// The report of the profiles `options` selects when nothing could be
+/// evaluated: each reports `subject` skipped, `reason`.
+pub(crate) fn not_evaluated(
+    options: &super::ValidationOptions,
+    subject: &Path,
+    reason: &str,
+) -> ConventionReport {
+    let mut run = ConventionRun::new(options);
+    run.skip_object(subject, reason);
+    run.finish()
+}
+
+/// What a source other than a PS3.10 file, such as a DICOM JSON Data Set,
+/// does not hold: each field says why, and the conventions that read it are
+/// reported skipped with that reason.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(in crate::validation) struct Gaps {
+    /// Why the Transfer Syntax is unknown.
+    pub(in crate::validation) transfer_syntax: Option<String>,
+    /// Why the encoded Pixel Data is unavailable.
+    pub(in crate::validation) pixel_data: Option<String>,
+}
+
 /// The convention profiles of one validation run: file results as each
 /// object is read, set results at the end.
 pub(in crate::validation) struct ConventionRun {
@@ -232,11 +266,13 @@ pub(in crate::validation) struct ConventionRun {
 }
 
 impl ConventionRun {
-    pub(in crate::validation) fn new(profiles: &BTreeSet<ConventionProfile>) -> Self {
+    /// The run of the profiles `options` selects.
+    pub(in crate::validation) fn new(options: &super::ValidationOptions) -> Self {
         Self {
             out: Out {
                 report: ConventionReport {
-                    profiles: profiles.iter().copied().collect(),
+                    profiles: options.conventions.iter().copied().collect(),
+                    fail_on_conventions: options.fail_on_conventions,
                     ..ConventionReport::default()
                 },
             },
@@ -244,12 +280,23 @@ impl ConventionRun {
         }
     }
 
-    /// The file results of `object`, and the facts the set results need.
+    /// The file results of the PS3.10 file `object`, and the facts the set
+    /// results need.
     pub(in crate::validation) fn observe(&mut self, path: &Path, object: &DefaultDicomObject) {
+        self.observe_with(path, object, Gaps::default());
+    }
+
+    /// `observe` for an object read from a source that lacks `gaps`.
+    pub(in crate::validation) fn observe_with(
+        &mut self,
+        path: &Path,
+        object: &DefaultDicomObject,
+        gaps: Gaps,
+    ) {
         if self.out.report.profiles.is_empty() {
             return;
         }
-        let facts = Facts::of(path, object);
+        let facts = Facts::of(path, object, gaps);
         let out = &mut self.out;
         if out.selected(ConventionProfile::Wg26) {
             wg26::file_checks(object, &facts, out);
@@ -271,10 +318,15 @@ impl ConventionRun {
 
     /// A file the parser could not read: each profile reports it skipped.
     pub(in crate::validation) fn unreadable(&mut self, path: &Path) {
-        self.out.not_evaluable(
+        self.skip_object(
             path,
             "the file could not be parsed as DICOM (intrinsic-pixel-structure reports why), so no convention of the profile was evaluated for it",
         );
+    }
+
+    /// An object none of whose conventions can be evaluated: `reason`.
+    pub(in crate::validation) fn skip_object(&mut self, path: &Path, reason: &str) {
+        self.out.not_evaluable(path, reason);
     }
 
     pub(in crate::validation) fn finish(mut self) -> ConventionReport {
@@ -324,7 +376,7 @@ impl Subject<'_> {
 
     fn series(self) -> Option<String> {
         match self {
-            Self::Series(uid) => Some(uid.to_string()),
+            Self::Series(uid) => Some(shown(tags::SERIES_INSTANCE_UID, uid).to_string()),
             Self::File(_) | Self::Set => None,
         }
     }

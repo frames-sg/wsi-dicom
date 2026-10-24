@@ -10,10 +10,11 @@ use super::dictionary::{DICTIONARY, DICTIONARY_REPEATING};
 use super::file_meta::long_length;
 use super::model::{DictionaryEntry, ValueMultiplicity};
 use super::recommendations;
-use super::report::{excerpt, tag_text, Advisories, Family};
+use super::report::{tag_text, Advisories, Family};
 use super::scope::{declared_length, is_private, raw_tag};
 use super::MAX_NESTING;
 use crate::uid::is_valid_dicom_uid;
+use crate::validation::disclosure::{Nesting, Shown};
 use dicom_core::dictionary::{DataDictionary, DataDictionaryEntry};
 
 const VM_1: ValueMultiplicity = ValueMultiplicity {
@@ -46,6 +47,10 @@ pub(super) struct ValueChecks<'f> {
 
 impl ValueChecks<'_> {
     pub(super) fn data_set(&mut self, object: &InMemDicomObject, path: &str, depth: usize) {
+        self.nested(object, path, depth, Nesting::default());
+    }
+
+    fn nested(&mut self, object: &InMemDicomObject, path: &str, depth: usize, nesting: Nesting) {
         for element in object.iter() {
             let tag = element.header().tag;
             let label = Label {
@@ -53,7 +58,7 @@ impl ValueChecks<'_> {
                 tag,
                 retired: false,
             };
-            self.element(element, label);
+            self.element(element, label, nesting);
             let Some(items) = element.items() else {
                 continue;
             };
@@ -65,12 +70,12 @@ impl ValueChecks<'_> {
             }
             for (index, item) in items.iter().enumerate() {
                 let item_path = format!("{label}[{}] > ", index + 1);
-                self.data_set(item, &item_path, depth + 1);
+                self.nested(item, &item_path, depth + 1, nesting.item(tag, item));
             }
         }
     }
 
-    fn element(&mut self, element: &InMemElement, label: Label<'_>) {
+    fn element(&mut self, element: &InMemElement, label: Label<'_>, nesting: Nesting) {
         let vr = element.vr();
         if let Some((allowed, vm, retired)) = expected(label.tag) {
             let label = Label { retired, ..label };
@@ -111,7 +116,7 @@ impl ValueChecks<'_> {
         }
         self.length(element, label);
         if let Value::Primitive(primitive) = element.value() {
-            self.format_values(vr, primitive, label);
+            self.format_values(vr, primitive, label, nesting);
         }
         self.value_rules(element, label);
     }
@@ -167,7 +172,13 @@ impl ValueChecks<'_> {
         }
     }
 
-    fn format_values(&mut self, vr: VR, primitive: &PrimitiveValue, label: Label<'_>) {
+    fn format_values(
+        &mut self,
+        vr: VR,
+        primitive: &PrimitiveValue,
+        label: Label<'_>,
+        nesting: Nesting,
+    ) {
         let values: &[String] = match primitive {
             PrimitiveValue::Strs(values) => values,
             PrimitiveValue::Str(value) => std::slice::from_ref(value),
@@ -180,16 +191,18 @@ impl ValueChecks<'_> {
             } else {
                 raw
             };
-            if let Err(reason) = check_value(vr, value, self.encoding.extended_characters) {
+            if let Err(defect) = check_value(vr, value, self.encoding.extended_characters) {
                 let which = if values.len() > 1 {
                     format!(" Value {}", index + 1)
                 } else {
                     String::new()
                 };
+                let shown = nesting.shown(label.tag, value);
                 self.format.push(|| {
                     format!(
-                        "{label}{which} {:?}: {reason} for VR {vr:?} (PS3.5 6.2)",
-                        excerpt(value, MAX_VALUE_EXCERPT)
+                        "{label}{which} {}: {} for VR {vr:?} (PS3.5 6.2)",
+                        shown.excerpt(MAX_VALUE_EXCERPT),
+                        defect.describe(shown)
                     )
                 });
             }
@@ -328,7 +341,51 @@ fn strip_padding(vr: VR, value: &str) -> &str {
     }
 }
 
-pub(super) fn check_value(vr: VR, value: &str, extended: bool) -> Result<(), String> {
+/// Why a Value breaks the format of its VR (PS3.5 6.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Defect {
+    /// Its form, length or range, which says nothing of its text.
+    Form(String),
+    /// Its `position`th character (1-based) is outside the repertoire
+    /// `repertoire` names.
+    Character {
+        c: char,
+        position: usize,
+        repertoire: &'static str,
+    },
+}
+
+impl Defect {
+    /// The reason as a message about `shown`, the Value, gives it: an
+    /// offending character of a withheld Value by position and class.
+    pub(super) fn describe(&self, shown: Shown<'_>) -> String {
+        match self {
+            Self::Form(reason) => reason.clone(),
+            Self::Character {
+                c,
+                position,
+                repertoire,
+            } => format!(
+                "character {} outside the {repertoire} repertoire",
+                shown.character(*c, *position)
+            ),
+        }
+    }
+}
+
+impl From<String> for Defect {
+    fn from(reason: String) -> Self {
+        Self::Form(reason)
+    }
+}
+
+impl From<&str> for Defect {
+    fn from(reason: &str) -> Self {
+        Self::Form(reason.to_string())
+    }
+}
+
+pub(super) fn check_value(vr: VR, value: &str, extended: bool) -> Result<(), Defect> {
     match vr {
         VR::AE => {
             max_bytes(value, 16)?;
@@ -388,38 +445,37 @@ pub(super) fn check_value(vr: VR, value: &str, extended: bool) -> Result<(), Str
     }
 }
 
-fn max_bytes(value: &str, limit: usize) -> Result<(), String> {
+fn max_bytes(value: &str, limit: usize) -> Result<(), Defect> {
     if value.len() > limit {
-        Err(format!(
-            "{} bytes exceed the {limit}-byte maximum",
-            value.len()
-        ))
+        Err(format!("{} bytes exceed the {limit}-byte maximum", value.len()).into())
     } else {
         Ok(())
     }
 }
 
-fn max_chars(value: &str, limit: usize) -> Result<(), String> {
+fn max_chars(value: &str, limit: usize) -> Result<(), Defect> {
     let count = value.chars().count();
     if count > limit {
-        Err(format!(
-            "{count} characters exceed the {limit}-character maximum"
-        ))
+        Err(format!("{count} characters exceed the {limit}-character maximum").into())
     } else {
         Ok(())
     }
 }
 
-fn repertoire(value: &str, allowed: impl Fn(char) -> bool) -> Result<(), String> {
-    match value.chars().find(|c| !allowed(*c)) {
-        Some(c) => Err(format!("character {c:?} outside the permitted repertoire")),
+fn repertoire(value: &str, allowed: impl Fn(char) -> bool) -> Result<(), Defect> {
+    match value.chars().enumerate().find(|(_, c)| !allowed(*c)) {
+        Some((index, c)) => Err(Defect::Character {
+            c,
+            position: index + 1,
+            repertoire: "permitted",
+        }),
         None => Ok(()),
     }
 }
 
 /// SH, LO, UC, ST, LT, UT: Default Repertoire unless Specific Character Set is
 /// present; control characters only as PS3.5 6.2 permits.
-fn text(value: &str, limit: usize, extended: bool, paragraphs: bool) -> Result<(), String> {
+fn text(value: &str, limit: usize, extended: bool, paragraphs: bool) -> Result<(), Defect> {
     // A Value with Code Extension is decoded by Value 1 of Specific Character
     // Set alone, so its escape sequences and multi-byte characters miscount
     // here; the encoding check counts it from the encoded bytes, without the
@@ -445,7 +501,7 @@ fn permitted_text_char(c: char, extended: bool, paragraphs: bool, person_name: b
     c.is_ascii() || extended
 }
 
-fn person_name(value: &str, extended: bool) -> Result<(), String> {
+fn person_name(value: &str, extended: bool) -> Result<(), Defect> {
     repertoire(value, |c| permitted_text_char(c, extended, false, true))?;
     // With Code Extension, "^" and "=" bytes may belong to multi-byte
     // characters; the encoding check finds the delimiters from the encoded
@@ -455,13 +511,13 @@ fn person_name(value: &str, extended: bool) -> Result<(), String> {
     }
     let groups: Vec<&str> = value.split('=').collect();
     if groups.len() > 3 {
-        return Err(format!("{} component groups exceed three", groups.len()));
+        return Err(format!("{} component groups exceed three", groups.len()).into());
     }
     for group in groups {
         max_chars(group, 64)?;
         let components = group.split('^').count();
         if components > 5 {
-            return Err(format!("{components} components exceed five"));
+            return Err(format!("{components} components exceed five").into());
         }
     }
     Ok(())
@@ -489,7 +545,7 @@ fn valid_date(year: u32, month: u32, day: u32) -> bool {
     (1..=days).contains(&day)
 }
 
-fn date(value: &str) -> Result<(), String> {
+fn date(value: &str) -> Result<(), Defect> {
     if value.len() != 8 || !digits(value) {
         return Err("not of the form YYYYMMDD".into());
     }
@@ -504,7 +560,7 @@ fn date(value: &str) -> Result<(), String> {
     }
 }
 
-fn time(value: &str) -> Result<(), String> {
+fn time(value: &str) -> Result<(), Defect> {
     max_bytes(value, 14)?;
     let (clock, fraction) = match value.split_once('.') {
         Some((clock, fraction)) => (clock, Some(fraction)),
@@ -521,7 +577,7 @@ fn time(value: &str) -> Result<(), String> {
     clock_ranges(clock)
 }
 
-fn clock_ranges(clock: &str) -> Result<(), String> {
+fn clock_ranges(clock: &str) -> Result<(), Defect> {
     let limits = [23, 59, 60];
     for (index, limit) in limits.iter().enumerate() {
         let start = index * 2;
@@ -532,7 +588,7 @@ fn clock_ranges(clock: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn date_time(value: &str) -> Result<(), String> {
+fn date_time(value: &str) -> Result<(), Defect> {
     let value = value.trim_end_matches(' ');
     max_bytes(value, 26)?;
     let (main, offset) = match value.get(4..).and_then(|rest| rest.find(['+', '-'])) {
@@ -570,7 +626,7 @@ fn date_time(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn utc_offset(offset: &str) -> Result<(), String> {
+fn utc_offset(offset: &str) -> Result<(), Defect> {
     let (sign, digits_part) = offset.split_at(1);
     if digits_part.len() != 4 || !digits(digits_part) {
         return Err("UTC offset is not &ZZXX".into());
@@ -588,7 +644,7 @@ fn utc_offset(offset: &str) -> Result<(), String> {
     }
 }
 
-fn decimal(value: &str) -> Result<(), String> {
+fn decimal(value: &str) -> Result<(), Defect> {
     max_bytes(value, 16)?;
     let number = value.trim_matches(' ');
     if number.is_empty() {
@@ -614,7 +670,7 @@ fn decimal(value: &str) -> Result<(), String> {
     }
 }
 
-fn integer(value: &str) -> Result<(), String> {
+fn integer(value: &str) -> Result<(), Defect> {
     max_bytes(value, 12)?;
     let number = value.trim_matches(' ');
     if number.is_empty() {
@@ -630,7 +686,7 @@ fn integer(value: &str) -> Result<(), String> {
     }
 }
 
-fn uri(value: &str) -> Result<(), String> {
+fn uri(value: &str) -> Result<(), Defect> {
     if value.starts_with(' ') {
         return Err("leading space".into());
     }
@@ -651,10 +707,12 @@ fn uri(value: &str) -> Result<(), String> {
         }
         let permitted = byte.is_ascii_alphanumeric() || b"-._~:/?#[]@!$&'()*+,;=".contains(&byte);
         if !permitted {
-            return Err(format!(
-                "character {:?} outside the RFC 3986 repertoire",
-                char::from(byte)
-            ));
+            return Err(Defect::Character {
+                c: char::from(byte),
+                // Every byte before it is ASCII.
+                position: index + 1,
+                repertoire: "RFC 3986",
+            });
         }
         index += 1;
     }

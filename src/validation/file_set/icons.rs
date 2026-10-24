@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use dicom_core::Tag;
 
 use super::records::{Record, Value, ICON_IMAGE_SEQUENCE};
+use crate::validation::disclosure::shown;
 use crate::validation::iod::Family;
 
 const SAMPLES_PER_PIXEL: Tag = Tag(0x0028, 0x0002);
@@ -52,10 +53,10 @@ fn check_icon(icon: &BTreeMap<Tag, Value>, place: &str, family: &mut Family) {
     {
         family.push(|| {
             format!(
-                "{place} has Photometric Interpretation (0028,0004) \"{}\", but only monochrome \
+                "{place} has Photometric Interpretation (0028,0004) {}, but only monochrome \
                  and palette color images (MONOCHROME1, MONOCHROME2, PALETTE COLOR) shall be \
                  used (PS3.3 F.7)",
-                photometric.escape_default()
+                shown(PHOTOMETRIC_INTERPRETATION, photometric)
             )
         });
     }
@@ -117,9 +118,9 @@ fn check_aspect_ratio(icon: &BTreeMap<Tag, Value>, place: &str, family: &mut Fam
     if !square {
         family.push(|| {
             format!(
-                "{place} has Pixel Aspect Ratio (0028,0034) \"{}\", but shall have a Value of \
+                "{place} has Pixel Aspect Ratio (0028,0034) {}, but shall have a Value of \
                  1:1 (PS3.3 F.7)",
-                values.join("\\").escape_default()
+                shown(PIXEL_ASPECT_RATIO, &values.join("\\"))
             )
         });
     }

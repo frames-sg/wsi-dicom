@@ -1175,7 +1175,7 @@ fn instances(
     let response = json(body);
     if remaining > 0 && !broken(Break::NoPagingWarning) {
         let agent = if broken(Break::PagingWarningNoUrl) {
-            "-:"
+            "PatientSentinel:"
         } else {
             &format!("{base}:")
         };
@@ -1489,7 +1489,7 @@ fn frames_response(
             None => return MockResponse::status(404),
         };
         let location = if broken(Break::FrameLocationForeign) {
-            Some(format!("{instance_base}.7/frames/{number}"))
+            Some(format!("{instance_base}.7/PatientSentinel/frames/{number}"))
         } else {
             (!broken(Break::NoContentLocation)).then(|| format!("{instance_base}/frames/{number}"))
         };

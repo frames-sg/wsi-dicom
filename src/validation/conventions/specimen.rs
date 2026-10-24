@@ -5,6 +5,7 @@ use dicom_dictionary_std::tags;
 use dicom_object::InMemDicomObject;
 
 use super::facts::{describe_code, is_code, text};
+use crate::validation::disclosure::shown;
 use crate::validation::iod::items;
 
 /// (111701, DCM, "Processing type").
@@ -156,8 +157,9 @@ impl Specimen<'_> {
     pub(super) fn describe(&self) -> String {
         match &self.identifier {
             Some(identifier) => format!(
-                "Specimen Description Sequence item {} (Specimen Identifier \"{identifier}\")",
-                self.number
+                "Specimen Description Sequence item {} (Specimen Identifier {})",
+                self.number,
+                shown(tags::SPECIMEN_IDENTIFIER, identifier)
             ),
             None => format!("Specimen Description Sequence item {}", self.number),
         }

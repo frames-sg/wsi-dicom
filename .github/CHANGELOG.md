@@ -50,6 +50,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused for want of stored bytes. PNG and BMP sources count as lossless.
 - Updates to annotations 0.2.1. Its `format_dicom_decimal` formats the
   writer's Decimal String values, so both crates write the same strings.
+- Intrinsic diagnostics withhold the Value of an Attribute that the PS3.15 Table E.1-1
+  Basic Profile removes or replaces (actions D, Z, X, U and their combinations),
+  nor identifying values inside such Sequences or SR Content Items. A message
+  gives the Value's length, and for a bad character its position and class.
+  SOP Class and Transfer Syntax UIDs remain visible. External-validator
+  diagnostic lines naming an identifying Attribute and their continuations
+  are withheld before they enter reports. DICOMweb reports withhold identifying
+  UIDs and server-provided URI references and Warning header text.
 
 ### Added
 
@@ -64,6 +72,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source, and never make validation fail. Conflicts between sources and DICOM
   are advisories. `requirements --json` lists them under `conventions`
   (`convention_catalog()`).
+- `validate-json` and `dicomweb` run the convention profiles too, and
+  `--fail-on-conventions` (`ValidationOptions::fail_on_conventions`) lets CI
+  fail on a failed convention check; advisories never fail.
 - `wsi-dicom validate-json` (`validate_dicom_json_path`) holds a DICOM JSON
   document, such as a saved Retrieve Metadata response, to PS3.18 Annex F and
   each Data Set to the checks of a file; checks that need Pixel Data, the
@@ -181,6 +192,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `wsi-dicom dicomweb` uses ureq 3.5.0 (ureq-proto 0.6.5). ureq-proto 0.5
   panicked on a status line with a code below 100, so a hostile server could
   abort the process.
+- The error that refuses a DICOMweb URL carrying userinfo no longer repeats
+  the userinfo, so credentials in the URL stay out of reports and logs.
 
 ## [0.8.0] - 2026-10-06
 

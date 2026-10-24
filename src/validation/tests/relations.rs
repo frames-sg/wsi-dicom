@@ -647,7 +647,7 @@ fn set_relations_fail_their_violations() {
                 object.put(text(tags::PATIENT_ID, VR::LO, "M1"));
                 object.put(text(tags::PATIENT_SEX, VR::CS, "F"));
             },
-            "with Patient's Sex (0010,0040) \"M\", but member M1 is \"F\"",
+            "with Patient's Sex (0010,0040) (value withheld: identifying; 1 character), but member (value withheld: identifying; 2 characters) is (value withheld: identifying; 1 character), first differing at character 1 in",
         ),
         (
             "lossy-version",
@@ -671,5 +671,85 @@ fn set_relations_fail_their_violations() {
         let (status, message) = rule_result(&pair(tmp.path(), name, original, edit), SERIES_SET);
         assert_eq!(status, ValidationStatus::Failed, "{name}: {message}");
         assert!(message.contains(expected), "{name}: {message}");
+    }
+}
+
+/// Specimen Identifier `identifier` of the first Specimen Description Item,
+/// and its Specimen UID `uid` when given.
+fn identify_specimen(
+    object: &mut dicom_object::DefaultDicomObject,
+    identifier: &str,
+    uid: Option<&str>,
+) {
+    let mut specimens = object.take(tags::SPECIMEN_DESCRIPTION_SEQUENCE).unwrap();
+    let specimen = &mut specimens.items_mut().unwrap()[0];
+    specimen.put(text(tags::SPECIMEN_IDENTIFIER, VR::LO, identifier));
+    if let Some(uid) = uid {
+        specimen.put(text(tags::SPECIMEN_UID, VR::UI, uid));
+    }
+    object.put(specimens);
+}
+
+/// The set relations compare Patient IDs, Patient Module Values, Container
+/// Identifiers and Specimen Identifiers, which PS3.15 Table E.1-1 removes or
+/// replaces: their messages, and the whole report, give the Values' lengths
+/// and never the planted name or ID.
+#[test]
+fn set_relation_messages_withhold_identifying_values() {
+    let cases: [(&str, Edit, Edit); 4] = [
+        (
+            "withheld-arrangement",
+            |object| {
+                object.put(group("MRN12345", [1, 1, 1]));
+            },
+            |object| {
+                object.put(group("MRN12345", [2, 1, 1]));
+            },
+        ),
+        (
+            "withheld-shared",
+            |object| {
+                object.put(group("MRN12345", [1, 1, 1]));
+                object.put(text(tags::PATIENT_SEX, VR::CS, "M"));
+            },
+            |object| {
+                object.put(text(tags::PATIENT_ID, VR::LO, "MRN12345"));
+                object.put(text(tags::PATIENT_SEX, VR::CS, "F"));
+            },
+        ),
+        (
+            "withheld-slide",
+            |object| {
+                object.put(text(tags::CONTAINER_IDENTIFIER, VR::LO, "DOE^JANE"));
+            },
+            |object| {
+                object.put(text(tags::CONTAINER_IDENTIFIER, VR::LO, "DOE^JOHN"));
+            },
+        ),
+        (
+            "withheld-specimen",
+            |object| identify_specimen(object, "MRN12345", None),
+            |object| identify_specimen(object, "MRN12345", Some("1.2.826.0.1.3680043.10.999.923")),
+        ),
+    ];
+    let tmp = tempfile::tempdir().unwrap();
+    for (name, original, edit) in cases {
+        let directory = pair(tmp.path(), name, original, edit);
+        let (status, message) = rule_result(&directory, SERIES_SET);
+        assert_eq!(status, ValidationStatus::Failed, "{name}: {message}");
+        assert!(
+            message.contains("(value withheld: identifying; 8 characters)"),
+            "{name}: {message}"
+        );
+        let report = validate_dicom_path_with_runner(
+            &directory,
+            &ValidationOptions::default(),
+            &FakeRunner::default(),
+        )
+        .unwrap();
+        let json = serde_json::to_string(&report).unwrap();
+        for planted in ["MRN12345", "DOE^JANE", "DOE^JOHN"] {
+            assert!(!json.contains(planted), "{name}: {planted} in {json}");
+        }
     }
 }

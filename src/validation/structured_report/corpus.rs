@@ -27,6 +27,7 @@ use super::{
     constraints, CITATION, KEY_OBJECT_SELECTION, KEY_OBJECT_SELECTION_RULE, MAX_NOTES,
     STRUCTURED_REPORT_RULE,
 };
+use crate::validation::disclosure::{shown, shown_all};
 use crate::validation::image_semantics::{integer, integers, numbers};
 use crate::validation::iod::{dicom_edition, items, string_value, Family, MAX_NESTING};
 use crate::validation::{intrinsic_check, ValidationCheck, ValidationStatus};
@@ -407,7 +408,7 @@ fn references(corpus: &StructuredReportCorpus, document: &Document, outcome: &mu
                     "{} {} references SOP Instance {} with Referenced SOP Class UID {class}, but {} has SOP Class UID {actual}; Referenced SOP Class UID uniquely identifies the referenced SOP Class ({CITATION} Table 10-11)",
                     document.path.display(),
                     reference.locator,
-                    reference.instance,
+                    shown(tags::REFERENCED_SOP_INSTANCE_UID, &reference.instance),
                     instance.path.display()
                 ));
             }
@@ -495,11 +496,18 @@ fn identical(corpus: &StructuredReportCorpus, document: &Document, outcome: &mut
             .filter(|uid| !duplicate.identical.contains(uid))
             .collect();
         if !missing.is_empty() {
-            outcome.violations.push(|| format!(
-                "{} lists {} in Identical Documents Sequence (0040,A525), but that duplicate's Identical Documents Sequence does not reference {missing:?}; the Identical Documents Sequence in each SOP Instance shall contain references to all other duplicate SOP Instances ({CITATION} C.17.2.2)",
-                document.path.display(),
-                duplicate.path.display()
-            ));
+            outcome.violations.push(|| {
+                format!(
+                    "{} lists {} in Identical Documents Sequence (0040,A525), but that duplicate's Identical Documents Sequence does not reference {}; the Identical Documents Sequence in each SOP Instance shall contain references to all other duplicate SOP Instances ({CITATION} C.17.2.2)",
+                    document.path.display(),
+                    duplicate.path.display(),
+                    shown_all(
+                        tags::REFERENCED_SOP_INSTANCE_UID,
+                        missing.iter().map(|uid| uid.as_str()),
+                        ", "
+                    )
+                )
+            });
         }
         // The pair's content and Studies once, from its lesser UID.
         if duplicate.instance.as_ref().is_some_and(|uid| uid < own)
@@ -512,7 +520,10 @@ fn identical(corpus: &StructuredReportCorpus, document: &Document, outcome: &mut
                 "{} and its duplicate {} are both in Study {}; identical copies of a document are duplicated for inclusion into different Studies ({CITATION} C.17.2.2)",
                 document.path.display(),
                 duplicate.path.display(),
-                document.study.as_deref().unwrap_or_default()
+                shown(
+                    tags::STUDY_INSTANCE_UID,
+                    document.study.as_deref().unwrap_or_default()
+                )
             ));
         }
         if document.content != duplicate.content {

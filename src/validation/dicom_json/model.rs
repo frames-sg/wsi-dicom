@@ -17,7 +17,8 @@ use dicom_dictionary_std::tags;
 use dicom_object::InMemDicomObject;
 
 use super::json::Json;
-use crate::validation::iod::{check_value_format, Family, EDITION, MAX_NESTING};
+use crate::validation::disclosure::{withheld, withholds_content, Nesting, Shown};
+use crate::validation::iod::{check_shown_value_format, Family, EDITION, MAX_NESTING};
 
 /// Where the document comes from, which decides whether PS3.18 10.4.1.1.2
 /// (no File Meta Information in Metadata) applies.
@@ -64,6 +65,8 @@ pub(super) struct Reader<'r> {
     pub(super) bulk: Vec<BulkReference>,
     /// Group 0002 Attributes the document holds, by tag.
     pub(super) file_meta: Vec<(Tag, String)>,
+    /// What messages withhold of the Values of the object being read.
+    pub(super) nesting: Nesting,
 }
 
 /// The value tokens of a VR the model writes as JSON Strings.
@@ -398,13 +401,22 @@ impl Reader<'_> {
             ));
         }
         Some(match vr {
-            VR::SQ => Value::from(DataSetSequence::from(self.items(elements, &here, depth))),
-            VR::PN => Value::Primitive(self.person_names(elements, &here)),
+            VR::SQ => Value::from(DataSetSequence::from(
+                self.items(tag, elements, &here, depth),
+            )),
+            VR::PN => Value::Primitive(self.person_names(tag, elements, &here)),
             _ => Value::Primitive(self.primitive(tag, vr, elements, &here)),
         })
     }
 
-    fn items(&mut self, elements: &[Json<'_>], here: &str, depth: usize) -> Vec<InMemDicomObject> {
+    /// The Items of Sequence `tag`, each read with its `Nesting`.
+    fn items(
+        &mut self,
+        tag: Tag,
+        elements: &[Json<'_>],
+        here: &str,
+        depth: usize,
+    ) -> Vec<InMemDicomObject> {
         if depth >= MAX_NESTING {
             self.violation(here, || {
                 format!("Sequence Items nest deeper than {MAX_NESTING} levels; deeper Items are not read")
@@ -416,7 +428,10 @@ impl Reader<'_> {
             let item_pointer = format!("{here}/{index}");
             match element {
                 Json::Object(members) => {
-                    items.push(self.data_set(members, &item_pointer, depth + 1))
+                    let outer = self.nesting;
+                    self.nesting = outer.below(tag).with_content(content_withheld(members));
+                    items.push(self.data_set(members, &item_pointer, depth + 1));
+                    self.nesting = outer;
                 }
                 other => {
                     self.violation(&item_pointer, || format!(
@@ -433,7 +448,7 @@ impl Reader<'_> {
 
     /// F.2.2: each PN Value is an object of the non-empty component groups
     /// "Alphabetic", "Ideographic" and "Phonetic"; an empty Value is null.
-    fn person_names(&mut self, elements: &[Json<'_>], here: &str) -> PrimitiveValue {
+    fn person_names(&mut self, tag: Tag, elements: &[Json<'_>], here: &str) -> PrimitiveValue {
         let mut names = SmallVec::<[String; 2]>::new();
         for (index, element) in elements.iter().enumerate() {
             let at = format!("{here}/{index}");
@@ -442,7 +457,7 @@ impl Reader<'_> {
                 Json::Object(members) => {
                     let name = self.person_name(members, &at);
                     if !name.is_empty() {
-                        self.encoding(VR::PN, &name, &at);
+                        self.encoding((tag, VR::PN), &name, &at);
                     }
                     names.push(name);
                 }
@@ -524,20 +539,25 @@ impl Reader<'_> {
 
     fn primitive(&mut self, tag: Tag, vr: VR, elements: &[Json<'_>], here: &str) -> PrimitiveValue {
         match vr {
-            VR::AT => self.tags(elements, here),
-            VR::DS | VR::IS => self.numeric_strings(vr, elements, here),
+            VR::AT => self.tags(tag, elements, here),
+            VR::DS | VR::IS => self.numeric_strings((tag, vr), elements, here),
             VR::US | VR::SS | VR::UL | VR::SL | VR::SV | VR::UV => {
-                self.integers(vr, elements, here)
+                self.integers((tag, vr), elements, here)
             }
-            VR::FL | VR::FD => self.floats(vr, elements, here),
+            VR::FL | VR::FD => self.floats((tag, vr), elements, here),
             _ => {
                 debug_assert!(STRING_VRS.contains(&vr), "{tag} {vr}");
-                self.strings(vr, elements, here)
+                self.strings((tag, vr), elements, here)
             }
         }
     }
 
-    fn strings(&mut self, vr: VR, elements: &[Json<'_>], here: &str) -> PrimitiveValue {
+    fn strings(
+        &mut self,
+        (tag, vr): (Tag, VR),
+        elements: &[Json<'_>],
+        here: &str,
+    ) -> PrimitiveValue {
         let mut values = SmallVec::<[String; 2]>::new();
         for (index, element) in elements.iter().enumerate() {
             let at = format!("{here}/{index}");
@@ -548,7 +568,7 @@ impl Reader<'_> {
                         self.empty_string(&at);
                     }
                     if !text.is_empty() {
-                        self.encoding(vr, text, &at);
+                        self.encoding((tag, vr), text, &at);
                     }
                     values.push(text.clone());
                 }
@@ -567,18 +587,30 @@ impl Reader<'_> {
     /// F.2.3: the encodings "shall conform to the Definition, Character
     /// Repertoire (if applicable) and Length of Value" of the VR (PS3.5
     /// 6.2), padding to even length aside.
-    fn encoding(&mut self, vr: VR, value: &str, at: &str) {
+    fn encoding(&mut self, (tag, vr): (Tag, VR), value: &str, at: &str) {
         let unpadded = match vr {
             VR::UI => value.strip_suffix('\0'),
             _ => value.strip_suffix(' '),
         }
         .unwrap_or(value);
-        if let Err(reason) = check_value_format(vr, unpadded) {
+        let shown = self.nesting.shown(tag, value);
+        if let Err(reason) = check_shown_value_format(vr, unpadded, shown) {
             self.violation(at, || format!(
-                "{vr} Value {value:?}: {reason}; a Value follows the Definition, Character Repertoire and Length of Value of its VR (PS3.5 {EDITION} 6.2, {})",
+                "{vr} Value {shown}: {reason}; a Value follows the Definition, Character Repertoire and Length of Value of its VR (PS3.5 {EDITION} 6.2, {})",
                 cite("F.1 and F.2.3")
             ));
         }
+    }
+
+    /// A Value of `tag` written as a JSON Number, as a message shows it:
+    /// as it is, unless `disclosure` withholds it.
+    fn number<'v>(&self, tag: Tag, text: &'v str) -> Number<'v> {
+        Number(
+            self.nesting
+                .withholds(tag)
+                .then(|| self.nesting.shown(tag, text)),
+            text,
+        )
     }
 
     fn empty_string(&mut self, at: &str) {
@@ -602,7 +634,7 @@ impl Reader<'_> {
 
     /// F.2.3: "Attributes with a Value Representation of AT shall be
     /// restricted to eight character uppercase hexadecimal representation".
-    fn tags(&mut self, elements: &[Json<'_>], here: &str) -> PrimitiveValue {
+    fn tags(&mut self, tag: Tag, elements: &[Json<'_>], here: &str) -> PrimitiveValue {
         let mut values = SmallVec::<[Tag; 2]>::new();
         for (index, element) in elements.iter().enumerate() {
             let at = format!("{here}/{index}");
@@ -622,10 +654,13 @@ impl Reader<'_> {
                     .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte));
             match u32::from_str_radix(text, 16) {
                 Ok(value) if valid => values.push(Tag((value >> 16) as u16, value as u16)),
-                _ => self.violation(&at, || format!(
-                    "AT Value {text:?} is not the eight character uppercase hexadecimal representation of a Tag ({})",
-                    cite("F.2.3")
-                )),
+                _ => {
+                    let shown = self.nesting.shown(tag, text);
+                    self.violation(&at, || format!(
+                        "AT Value {shown} is not the eight character uppercase hexadecimal representation of a Tag ({})",
+                        cite("F.2.3")
+                    ))
+                }
             }
         }
         PrimitiveValue::Tags(values)
@@ -633,7 +668,12 @@ impl Reader<'_> {
 
     /// DS and IS: a Number or a String (Table F.2.3-1); the String's format
     /// is the IOD value checks' to judge. An IS Number is an integer.
-    fn numeric_strings(&mut self, vr: VR, elements: &[Json<'_>], here: &str) -> PrimitiveValue {
+    fn numeric_strings(
+        &mut self,
+        (tag, vr): (Tag, VR),
+        elements: &[Json<'_>],
+        here: &str,
+    ) -> PrimitiveValue {
         let mut values = SmallVec::<[String; 2]>::new();
         for (index, element) in elements.iter().enumerate() {
             let at = format!("{here}/{index}");
@@ -644,14 +684,15 @@ impl Reader<'_> {
                         self.empty_string(&at);
                     }
                     if !text.is_empty() {
-                        self.encoding(vr, text, &at);
+                        self.encoding((tag, vr), text, &at);
                     }
                     values.push(text.clone());
                 }
                 Json::Number(text) => {
                     if vr == VR::IS && !is_integer_literal(text) {
+                        let number = self.number(tag, text);
                         self.violation(&at, || format!(
-                            "IS Number {text} is not an integer; an Integer String holds an integer (PS3.5 {EDITION} 6.2, {})",
+                            "IS Number {number} is not an integer; an Integer String holds an integer (PS3.5 {EDITION} 6.2, {})",
                             cite("F.2.3")
                         ));
                     }
@@ -664,7 +705,12 @@ impl Reader<'_> {
     }
 
     /// US, SS, UL, SL: Numbers. SV, UV: Numbers or decimal Strings.
-    fn integers(&mut self, vr: VR, elements: &[Json<'_>], here: &str) -> PrimitiveValue {
+    fn integers(
+        &mut self,
+        (tag, vr): (Tag, VR),
+        elements: &[Json<'_>],
+        here: &str,
+    ) -> PrimitiveValue {
         let (min, max): (i128, i128) = match vr {
             VR::US => (0, u16::MAX.into()),
             VR::SS => (i16::MIN.into(), i16::MAX.into()),
@@ -694,17 +740,18 @@ impl Reader<'_> {
                     continue;
                 }
             };
+            let number = self.number(tag, text);
             match integer_value(text) {
                 Some(value) if (min..=max).contains(&value) => values.push(value),
                 Some(_) => self.violation(&at, || {
                     format!(
-                        "{vr} Value {text} is outside {min} to {max} (PS3.5 {EDITION} 6.2, {})",
+                        "{vr} Value {number} is outside {min} to {max} (PS3.5 {EDITION} 6.2, {})",
                         cite("F.2.3")
                     )
                 }),
                 None => self.violation(&at, || {
                     format!(
-                        "{vr} Value {text} is not an integer (PS3.5 {EDITION} 6.2, {})",
+                        "{vr} Value {number} is not an integer (PS3.5 {EDITION} 6.2, {})",
                         cite("F.2.3")
                     )
                 }),
@@ -720,7 +767,12 @@ impl Reader<'_> {
         ));
     }
 
-    fn floats(&mut self, vr: VR, elements: &[Json<'_>], here: &str) -> PrimitiveValue {
+    fn floats(
+        &mut self,
+        (tag, vr): (Tag, VR),
+        elements: &[Json<'_>],
+        here: &str,
+    ) -> PrimitiveValue {
         let mut values = Vec::with_capacity(elements.len());
         for (index, element) in elements.iter().enumerate() {
             let at = format!("{here}/{index}");
@@ -732,8 +784,9 @@ impl Reader<'_> {
                     if finite {
                         values.push(value);
                     } else {
+                        let number = self.number(tag, text);
                         self.violation(&at, || format!(
-                            "{vr} Value {text} is outside the range of an IEEE 754 {} (PS3.5 {EDITION} 6.2, {})",
+                            "{vr} Value {number} is outside the range of an IEEE 754 {} (PS3.5 {EDITION} 6.2, {})",
                             if vr == VR::FL { "binary32" } else { "binary64" },
                             cite("F.2.3")
                         ));
@@ -835,7 +888,11 @@ impl Reader<'_> {
         };
         if let Err(reason) = bulk_uri_form(uri) {
             self.violation(&at, || {
-                format!("BulkDataURI {uri:?} {reason} ({})", cite("10.4.1.1.5.1"))
+                format!(
+                    "BulkDataURI {} {reason} ({})",
+                    withheld(uri),
+                    cite("10.4.1.1.5.1")
+                )
             });
         }
         let pixel_data = depth == 0 && PIXEL_DATA_TAGS.contains(&tag);
@@ -868,6 +925,57 @@ fn empty(vr: VR) -> Value<InMemDicomObject> {
 
 fn is_empty_value(element: &Json<'_>) -> bool {
     matches!(element, Json::Null) || matches!(element, Json::String(text) if text.is_empty())
+}
+
+/// A JSON Number as a message shows it (`Reader::number`): the withheld
+/// form, or the number's text.
+struct Number<'v>(Option<Shown<'v>>, &'v str);
+
+impl std::fmt::Display for Number<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(withheld) => withheld.fmt(f),
+            None => f.write_str(self.1),
+        }
+    }
+}
+
+/// Whether the Content Item a DICOM JSON Model object encodes has a Value
+/// messages withhold, from its Value Type (0040A040) and the first Item of
+/// its Concept Name Code Sequence (0040A043); `false` for another object.
+fn content_withheld(members: &[(String, Json<'_>)]) -> bool {
+    let member = |members: &'_ [(String, Json<'_>)], name: &str| -> Option<String> {
+        let (_, Json::Object(attribute)) = members.iter().find(|(own, _)| own == name)? else {
+            return None;
+        };
+        let (_, Json::Array(values)) = attribute.iter().find(|(own, _)| own == "Value")? else {
+            return None;
+        };
+        match values.first()? {
+            Json::String(text) => Some(text.trim_end().to_string()),
+            _ => None,
+        }
+    };
+    let Some(value_type) = member(members, "0040A040") else {
+        return false;
+    };
+    let concept = members
+        .iter()
+        .find(|(name, _)| name == "0040A043")
+        .and_then(|(_, attribute)| match attribute {
+            Json::Object(attribute) => attribute.iter().find(|(name, _)| name == "Value"),
+            _ => None,
+        })
+        .and_then(|(_, value)| match value {
+            Json::Array(items) => match items.first() {
+                Some(Json::Object(code)) => Some(code),
+                _ => None,
+            },
+            _ => None,
+        });
+    let scheme = concept.and_then(|code| member(code, "00080102"));
+    let value = concept.and_then(|code| member(code, "00080100"));
+    withholds_content(&value_type, scheme.as_deref().zip(value.as_deref()))
 }
 
 fn render(element: &Json<'_>) -> String {

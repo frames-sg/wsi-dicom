@@ -15,6 +15,7 @@ use dicom_object::InMemDicomObject;
 
 use super::tree::Tree;
 use super::{Findings, CITATION, KEY_OBJECT_SELECTION, PS3_16};
+use crate::validation::disclosure::{shown, shown_all, shown_in};
 use crate::validation::iod::structured_report::DocumentConstraints;
 use crate::validation::iod::{items, string_value};
 use crate::validation::transfer_syntaxes::smpte_st2110;
@@ -128,7 +129,10 @@ fn attestors(root: &InMemDicomObject, findings: &mut Findings) {
                 format!(
                     "Participant Sequence (0040,A07A)[{}], an Attestor, identifies {} who is also in Verifying Observer Sequence (0040,A073); an individual shall not be identified in both the Verifying Observer Sequence and in the Participant Sequence as an Attestor ({CITATION} C.17.2.5)",
                     position + 1,
-                    attestor.name.as_deref().map_or("the individual".to_string(), |name| format!("\"{name}\""))
+                    attestor.name.as_deref().map_or("the individual".to_string(), |name| format!(
+                        "the individual named {}",
+                        shown_in(tags::PARTICIPANT_SEQUENCE, tags::PERSON_NAME, name)
+                    ))
                 )
             });
         }
@@ -251,7 +255,8 @@ fn report_evidence(
     }) {
         findings.push(|| {
             format!(
-                "the Content Tree references SOP Instance {uid}, which neither {} nor {} lists; the Current Requested Procedure Evidence Sequence shall include all current evidence referenced in the Content Tree, and the Pertinent Other Evidence Sequence references the other evidence ({CITATION} C.17.2.3)",
+                "the Content Tree references SOP Instance {}, which neither {} nor {} lists; the Current Requested Procedure Evidence Sequence shall include all current evidence referenced in the Content Tree, and the Pertinent Other Evidence Sequence references the other evidence ({CITATION} C.17.2.3)",
+                shown(tags::REFERENCED_SOP_INSTANCE_UID, uid),
                 current.name, other.name
             )
         });
@@ -263,7 +268,8 @@ fn report_evidence(
     {
         findings.push(|| {
             format!(
-                "SOP Instance {uid} is in both {} and {}; the same SOP Instance shall not be referenced in both of these Sequences ({CITATION} C.17.2.3)",
+                "SOP Instance {} is in both {} and {}; the same SOP Instance shall not be referenced in both of these Sequences ({CITATION} C.17.2.3)",
+                shown(tags::REFERENCED_SOP_INSTANCE_UID, uid),
                 current.name, other.name
             )
         });
@@ -288,7 +294,8 @@ fn key_object_evidence(
         let at = tree.at(reference.node);
         findings.push(|| {
             format!(
-                "{at} references SOP Instance {uid}, which {} does not list; it is the list of all Composite SOP Instances referenced in the Content Sequence ({CITATION} Table C.17.6-2; {PS3_16} TID 2010)",
+                "{at} references SOP Instance {}, which {} does not list; it is the list of all Composite SOP Instances referenced in the Content Sequence ({CITATION} Table C.17.6-2; {PS3_16} TID 2010)",
+                shown(tags::REFERENCED_SOP_INSTANCE_UID, uid),
                 current.name
             )
         });
@@ -300,8 +307,8 @@ fn key_object_evidence(
     {
         findings.push(|| {
             format!(
-                "{}[{}] lists SOP Instance {uid}, which no Content Item references; no other instances than those referenced in the Content Sequence shall be included in this Sequence ({CITATION} Table C.17.6-2)",
-                current.name, listed.item
+                "{}[{}] lists SOP Instance {}, which no Content Item references; no other instances than those referenced in the Content Sequence shall be included in this Sequence ({CITATION} Table C.17.6-2)",
+                current.name, listed.item, shown(tags::REFERENCED_SOP_INSTANCE_UID, uid)
             )
         });
     }
@@ -316,7 +323,8 @@ fn key_object_evidence(
             let at = tree.at(entry.node);
             findings.push(|| {
                 format!(
-                    "{at}, an Image Library entry, references SOP Instance {uid}, which no IMAGE, WAVEFORM or COMPOSITE Content Item of the root references; the Image Library shall not include entries for instances not referenced in Rows 8, 9 and 10 ({PS3_16} TID 2010)"
+                    "{at}, an Image Library entry, references SOP Instance {}, which no IMAGE, WAVEFORM or COMPOSITE Content Item of the root references; the Image Library shall not include entries for instances not referenced in Rows 8, 9 and 10 ({PS3_16} TID 2010)",
+                    shown(tags::REFERENCED_SOP_INSTANCE_UID, uid)
                 )
             });
         }
@@ -354,7 +362,8 @@ fn classes(referenced: &References, current: &Evidence, findings: &mut Findings)
             if class != listed_class {
                 findings.push(|| {
                     format!(
-                        "the Content Tree references SOP Instance {uid} with Referenced SOP Class UID {class}, but {}[{}] lists it with {listed_class}; Referenced SOP Class UID identifies the referenced SOP Class ({CITATION} Table 10-11)",
+                        "the Content Tree references SOP Instance {} with Referenced SOP Class UID {class}, but {}[{}] lists it with {listed_class}; Referenced SOP Class UID identifies the referenced SOP Class ({CITATION} Table 10-11)",
+                        shown(tags::REFERENCED_SOP_INSTANCE_UID, uid),
                         current.name, listed.item
                     )
                 });
@@ -392,8 +401,9 @@ fn identical_studies(root: &InMemDicomObject, current: &Evidence, findings: &mut
     if !missing.is_empty() {
         findings.push(|| {
             format!(
-                "{} references SOP Instances in the document's Study and in Studies {missing:?}, for which Identical Documents Sequence (0040,A525) references no duplicate; this document shall be duplicated into each of those other Studies, and the duplicates shall be referenced in the Identical Documents Sequence ({CITATION} C.17.6.2.1)",
-                current.name
+                "{} references SOP Instances in the document's Study and in Studies {}, for which Identical Documents Sequence (0040,A525) references no duplicate; this document shall be duplicated into each of those other Studies, and the duplicates shall be referenced in the Identical Documents Sequence ({CITATION} C.17.6.2.1)",
+                current.name,
+                shown_all(tags::STUDY_INSTANCE_UID, missing.iter().map(|uid| uid.as_str()), ", ")
             )
         });
     }
@@ -416,8 +426,10 @@ fn manifest_study(root: &InMemDicomObject, current: &Evidence, findings: &mut Fi
     {
         findings.push(|| {
             format!(
-                "the Manifest with Description references SOP Instance {uid} in Study {}, not the KOS's Study {own}; when the Row 1 Concept Name is (131560, DCM, \"Manifest with Description\") then all referenced instances shall be in the same Study as the KOS ({PS3_16} TID 2010)",
-                listed.study.as_deref().unwrap_or_default()
+                "the Manifest with Description references SOP Instance {} in Study {}, not the KOS's Study {}; when the Row 1 Concept Name is (131560, DCM, \"Manifest with Description\") then all referenced instances shall be in the same Study as the KOS ({PS3_16} TID 2010)",
+                shown(tags::REFERENCED_SOP_INSTANCE_UID, uid),
+                shown(tags::STUDY_INSTANCE_UID, listed.study.as_deref().unwrap_or_default()),
+                shown(tags::STUDY_INSTANCE_UID, &own)
             )
         });
     }
@@ -448,14 +460,16 @@ fn predecessors(root: &InMemDicomObject, findings: &mut Findings) {
         if own.as_deref() == Some(uid.as_str()) {
             findings.push(|| {
                 format!(
-                    "Predecessor Documents Sequence (0040,A360) references this document itself, SOP Instance {uid}; it references the SR SOP Instances whose content this document includes ({CITATION} Table C.17-2)"
+                    "Predecessor Documents Sequence (0040,A360) references this document itself, SOP Instance {}; it references the SR SOP Instances whose content this document includes ({CITATION} Table C.17-2)",
+                    shown(tags::REFERENCED_SOP_INSTANCE_UID, &uid)
                 )
             });
         }
         if let Some(class) = class.filter(|class| !class.starts_with(SR_SOP_CLASS_ROOT)) {
             findings.push(|| {
                 format!(
-                    "Predecessor Documents Sequence (0040,A360) references SOP Instance {uid} of SOP Class {class}, which is not an SR SOP Class; it shall refer to SR SOP Instances ({CITATION} Table C.17-2)"
+                    "Predecessor Documents Sequence (0040,A360) references SOP Instance {} of SOP Class {class}, which is not an SR SOP Class; it shall refer to SR SOP Instances ({CITATION} Table C.17-2)",
+                    shown(tags::REFERENCED_SOP_INSTANCE_UID, &uid)
                 )
             });
         }
@@ -474,7 +488,8 @@ fn own_duplicate(root: &InMemDicomObject, findings: &mut Findings) {
     {
         findings.push(|| {
             format!(
-                "Identical Documents Sequence (0040,A525) references this document itself, SOP Instance {own}; it shall contain references to all other duplicate SOP Instances, which are stored with different SOP Instance UIDs ({CITATION} C.17.2.2)"
+                "Identical Documents Sequence (0040,A525) references this document itself, SOP Instance {}; it shall contain references to all other duplicate SOP Instances, which are stored with different SOP Instance UIDs ({CITATION} C.17.2.2)",
+                shown(tags::SOP_INSTANCE_UID, &own)
             )
         });
     }
@@ -513,8 +528,9 @@ fn hierarchical_references(root: &InMemDicomObject, findings: &mut Findings) {
                 if let Some(departure) = uri_departure(&uri) {
                     findings.push(|| {
                         format!(
-                            "{} > Display URI (0040,E012) \"{uri}\" {departure}; it shall include the fully specified scheme, authority, path, and query components in accordance with RFC 3986 ({CITATION} Table C.17-3)",
-                            place()
+                            "{} > Display URI (0040,E012) {} {departure}; it shall include the fully specified scheme, authority, path, and query components in accordance with RFC 3986 ({CITATION} Table C.17-3)",
+                            place(),
+                            shown_in(tag, DISPLAY_URI, &uri)
                         )
                     });
                 }

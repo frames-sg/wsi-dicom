@@ -15,9 +15,10 @@ use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
 use super::wsi_image::{is_code, sequence, string, strings, tag_values};
 use crate::validation::digital_signatures::excluded_from_signature;
+use crate::validation::disclosure::{difference, shown, Nesting};
 use crate::validation::iod::dicom_edition;
-use crate::validation::iod::{element_label, is_private};
-use crate::validation::{check_value_format, is_image_storage_sop_class, registered};
+use crate::validation::iod::{check_shown_value_format, element_label, is_private};
+use crate::validation::{is_image_storage_sop_class, registered};
 
 const CITATION: &str = concat!("PS3.3 ", dicom_edition!());
 /// DateTime of processing, TID 8001 Specimen Preparation.
@@ -78,7 +79,7 @@ const IDENTIFIED_NAMES: [(Tag, Tag, &str); 5] = [
 pub(super) fn validate_relations_rule(object: &DefaultDicomObject) -> Result<(), String> {
     let root: &InMemDicomObject = object;
     let mut violations = Vec::new();
-    walk(root, &mut Vec::new(), &mut violations);
+    walk(root, &mut Vec::new(), Nesting::default(), &mut violations);
     patient_orientation(root, &mut violations);
     image_laterality(root, &mut violations);
     references(root, &mut violations);
@@ -88,16 +89,23 @@ pub(super) fn validate_relations_rule(object: &DefaultDicomObject) -> Result<(),
 /// The Sequence Items enclosing a Data Set, outermost first.
 type Trail = Vec<(Tag, usize)>;
 
-/// Checks `data_set` and, recursively, every Item of its Sequences.
-fn walk(data_set: &InMemDicomObject, trail: &mut Trail, violations: &mut Vec<String>) {
-    item_relations(data_set, trail, violations);
+/// Checks `data_set`, whose Values `nesting` withholds, and, recursively,
+/// every Item of its Sequences.
+fn walk(
+    data_set: &InMemDicomObject,
+    trail: &mut Trail,
+    nesting: Nesting,
+    violations: &mut Vec<String>,
+) {
+    item_relations(data_set, trail, nesting, violations);
     for element in data_set.iter() {
         let Some(items) = element.items() else {
             continue;
         };
+        let tag = element.header().tag;
         for (index, item) in items.iter().enumerate() {
-            trail.push((element.header().tag, index));
-            walk(item, trail, violations);
+            trail.push((tag, index));
+            walk(item, trail, nesting.item(tag, item), violations);
             trail.pop();
         }
     }
@@ -116,11 +124,16 @@ fn path(trail: &Trail) -> String {
         .collect()
 }
 
-fn item_relations(data_set: &InMemDicomObject, trail: &Trail, violations: &mut Vec<String>) {
+fn item_relations(
+    data_set: &InMemDicomObject,
+    trail: &Trail,
+    nesting: Nesting,
+    violations: &mut Vec<String>,
+) {
     let within = trail.last().map(|(tag, _)| *tag);
     let mut found = Vec::new();
-    selector(data_set, &mut found);
-    context_identifier(data_set, &mut found);
+    selector(data_set, nesting, &mut found);
+    context_identifier(data_set, nesting, &mut found);
     referenced_frames(data_set, &mut found);
     identification_items(data_set, within, &mut found);
     calibration(data_set, &mut found);
@@ -131,7 +144,7 @@ fn item_relations(data_set: &InMemDicomObject, trail: &Trail, violations: &mut V
     original_attributes(data_set, &mut found);
     measured_value(data_set, &mut found);
     if within == Some(tags::PERSON_IDENTIFICATION_CODE_SEQUENCE) {
-        person_code(data_set, &mut found);
+        person_code(data_set, nesting, &mut found);
     }
     if !found.is_empty() {
         let path = path(trail);
@@ -157,7 +170,7 @@ fn multiplicity(data_set: &InMemDicomObject, tag: Tag) -> Option<u32> {
 
 /// Table 10-20 and 10.17.1.2: what the Selector Attribute and Selector
 /// Sequence Pointer may name, and the counts of their companion Attributes.
-fn selector(data_set: &InMemDicomObject, found: &mut Vec<String>) {
+fn selector(data_set: &InMemDicomObject, nesting: Nesting, found: &mut Vec<String>) {
     let attribute = tag_values(data_set, tags::SELECTOR_ATTRIBUTE);
     let pointers = tag_values(data_set, tags::SELECTOR_SEQUENCE_POINTER);
     for (what, tag) in attribute
@@ -224,7 +237,8 @@ fn selector(data_set: &InMemDicomObject, found: &mut Vec<String>) {
     for (pointer, creator) in pointers.iter().zip(&creators) {
         if !is_private(*pointer) && !creator.is_empty() {
             found.push(format!(
-                "Selector Sequence Pointer Private Creator (0072,0054) is \"{creator}\" for public {}; it shall be empty ({CITATION} Table 10-20)",
+                "Selector Sequence Pointer Private Creator (0072,0054) is {} for public {}; it shall be empty ({CITATION} Table 10-20)",
+                nesting.shown(tags::SELECTOR_SEQUENCE_POINTER_PRIVATE_CREATOR, creator),
                 label(*pointer)
             ));
         }
@@ -232,7 +246,7 @@ fn selector(data_set: &InMemDicomObject, found: &mut Vec<String>) {
 }
 
 /// 8.6: the Context Identifier of a PS3.16 Context Group is its number.
-fn context_identifier(data_set: &InMemDicomObject, found: &mut Vec<String>) {
+fn context_identifier(data_set: &InMemDicomObject, nesting: Nesting, found: &mut Vec<String>) {
     let Some(identifier) = string(data_set, tags::CONTEXT_IDENTIFIER) else {
         return;
     };
@@ -240,7 +254,8 @@ fn context_identifier(data_set: &InMemDicomObject, found: &mut Vec<String>) {
     let digits = identifier.bytes().all(|byte| byte.is_ascii_digit());
     if dcmr && (!digits || identifier.starts_with('0')) {
         found.push(format!(
-            "Context Identifier (0008,010F) \"{identifier}\" of a DCMR Context Group shall be its number in digits without leading zeros or \"CID\" ({CITATION} 8.6)"
+            "Context Identifier (0008,010F) {} of a DCMR Context Group shall be its number in digits without leading zeros or \"CID\" ({CITATION} 8.6)",
+            nesting.shown(tags::CONTEXT_IDENTIFIER, &identifier)
         ));
     }
 }
@@ -360,9 +375,12 @@ fn preparation_order(data_set: &InMemDicomObject, found: &mut Vec<String>) {
         let common = earlier_moment.len().min(later_moment.len());
         if earlier_offset == later_offset && later_moment[..common] < earlier_moment[..common] {
             found.push(format!(
-                "Specimen Preparation Sequence (0040,0610) Item {} (processed {later}) precedes Item {} (processed {earlier}); Items shall be in ascending chronological order ({CITATION} C.7.6.22.1.3)",
+                "Specimen Preparation Sequence (0040,0610) Item {}, processed at {}, precedes Item {}, processed at {}{}; Items shall be in ascending chronological order ({CITATION} C.7.6.22.1.3)",
                 later_index + 1,
-                earlier_index + 1
+                shown(tags::DATE_TIME, later),
+                earlier_index + 1,
+                shown(tags::DATE_TIME, earlier),
+                difference(tags::DATE_TIME, later, earlier)
             ));
         }
     }
@@ -508,16 +526,19 @@ fn measured_value(data_set: &InMemDicomObject, found: &mut Vec<String>) {
 }
 
 /// Table 10-1: a Code Meaning written as a person name follows the PN rules.
-fn person_code(data_set: &InMemDicomObject, found: &mut Vec<String>) {
+/// It names the person, so `nesting`, below Person Identification Code
+/// Sequence (D), withholds it.
+fn person_code(data_set: &InMemDicomObject, nesting: Nesting, found: &mut Vec<String>) {
     let Some(meaning) = string(data_set, tags::CODE_MEANING) else {
         return;
     };
     if !meaning.contains('^') {
         return; // a single name component is not a PN-form Code Meaning
     }
-    if let Err(reason) = check_value_format(VR::PN, &meaning) {
+    let shown = nesting.shown(tags::CODE_MEANING, &meaning);
+    if let Err(reason) = check_shown_value_format(VR::PN, &meaning, shown) {
         found.push(format!(
-            "Code Meaning (0008,0104) \"{meaning}\" is encoded as a person name but is not a valid PN Value: {reason} ({CITATION} Table 10-1)"
+            "Code Meaning (0008,0104) {shown} is encoded as a person name but is not a valid PN Value: {reason} ({CITATION} Table 10-1)"
         ));
     }
 }
@@ -534,7 +555,8 @@ fn patient_orientation(root: &InMemDicomObject, violations: &mut Vec<String>) {
     for value in orientation.iter().filter(|value| !value.is_empty()) {
         if !matches!(fewest_abbreviations(value, abbreviations), Some(1..=3)) {
             violations.push(format!(
-                "Patient Orientation (0020,0020) Value \"{value}\" is not one to three of the abbreviations {abbreviations:?} ({CITATION} C.7.6.1.1.1)"
+                "Patient Orientation (0020,0020) Value {} is not one to three of the abbreviations {abbreviations:?} ({CITATION} C.7.6.1.1.1)",
+                shown(tags::PATIENT_ORIENTATION, value)
             ));
         }
     }

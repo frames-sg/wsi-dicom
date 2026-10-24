@@ -8,6 +8,7 @@ use dicom_dictionary_std::tags;
 use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
 use super::VL_WSI;
+use crate::validation::disclosure::shown;
 use crate::validation::iod::dicom_edition;
 pub(super) use crate::validation::iod::{integer_value as integer, items as sequence, tag_values};
 use crate::validation::iod::{string_value, Coded};
@@ -107,7 +108,8 @@ fn slide_corner(object: &InMemDicomObject, violations: &mut Vec<String>) {
     if let Some(indicator) = string(object, tags::POSITION_REFERENCE_INDICATOR) {
         if indicator != "SLIDE_CORNER" {
             violations.push(format!(
-                "Position Reference Indicator (0020,1040) is \"{indicator}\"; a slide-related Frame of Reference is identified by SLIDE_CORNER ({CITATION} C.7.4.1.1.2)"
+                "Position Reference Indicator (0020,1040) is {}; a slide-related Frame of Reference is identified by SLIDE_CORNER ({CITATION} C.7.4.1.1.2)",
+                shown(tags::POSITION_REFERENCE_INDICATOR, &indicator)
             ));
         }
     }
@@ -243,7 +245,8 @@ fn specimen_references(
     }
     if let Some((path, uid)) = first {
         violations.push(format!(
-            "{path}Specimen Reference Sequence (0048,0110) > Specimen UID {uid} is not in the Specimen Description Sequence (0040,0560), which identifies each specimen imaged in the Pixel Data ({undescribed} reference(s); {CITATION} C.8.12.6.3 and C.7.6.22)"
+            "{path}Specimen Reference Sequence (0048,0110) > Specimen UID {} is not in the Specimen Description Sequence (0040,0560), which identifies each specimen imaged in the Pixel Data ({undescribed} reference(s); {CITATION} C.8.12.6.3 and C.7.6.22)",
+            shown(tags::SPECIMEN_UID, &uid)
         ));
     }
 }
@@ -272,8 +275,9 @@ fn optical_paths(
         if let Some(identifier) = string(item, tags::OPTICAL_PATH_IDENTIFIER) {
             if !identifiers.insert(identifier.clone()) {
                 violations.push(format!(
-                    "Optical Path Sequence[{}] > Optical Path Identifier (0048,0106) \"{identifier}\" repeats; it shall be unique within the Sequence ({CITATION} C.8.12.5)",
-                    index + 1
+                    "Optical Path Sequence[{}] > Optical Path Identifier (0048,0106) {} repeats; it shall be unique within the Sequence ({CITATION} C.8.12.5)",
+                    index + 1,
+                    shown(tags::OPTICAL_PATH_IDENTIFIER, &identifier)
                 ));
             }
         }
@@ -293,7 +297,8 @@ fn optical_paths(
     }
     if let Some((path, identifier)) = first {
         violations.push(format!(
-            "{path}Optical Path Identification Sequence > Optical Path Identifier \"{identifier}\" names no Optical Path Sequence Item ({unresolved} Frame group(s); {CITATION} C.8.12.6.2)"
+            "{path}Optical Path Identification Sequence > Optical Path Identifier {} names no Optical Path Sequence Item ({unresolved} Frame group(s); {CITATION} C.8.12.6.2)",
+            shown(tags::OPTICAL_PATH_IDENTIFIER, &identifier)
         ));
     }
 }

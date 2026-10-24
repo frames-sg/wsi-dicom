@@ -124,7 +124,7 @@ fn breaking_a_statement_of_each_document_rule_fails_it_in_each_document_iod() {
                 None,
             ),
             ValidationStatus::Failed,
-            &format!("UID {STUDY} is both a"),
+            "UID (value withheld: identifying; 31 characters) is both a",
         );
 
         // PS3.5 9: two documents of one SOP Instance UID and SOP Class, but

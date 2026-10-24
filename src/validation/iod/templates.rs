@@ -16,6 +16,7 @@ use super::model::{
 use super::report::Findings;
 use super::scope::{items as sequence_items, raw_tag, string_value};
 use super::value_sets::TEMPLATES;
+use crate::validation::disclosure::Nesting;
 
 /// Bound on INCLUDE nesting; the Templates the IOD reaches nest twice.
 const MAX_INCLUDE_DEPTH: usize = 8;
@@ -346,7 +347,8 @@ impl<'a> Matching<'a> {
 /// Template, advisories, and a Baseline Template makes its rows' Value Sets
 /// suggestions too. A required Content Item that PS3.15 Table E.3.4-1 removes
 /// from an object declaring the Clean Structured Content Option is an
-/// advisory citing both: the conflict is between the two Parts.
+/// advisory citing both: the conflict is between the two Parts. `nesting`
+/// is that of the Content Items (`disclosure::Nesting::below`).
 pub(super) fn check_items(
     findings: &mut Findings,
     label: &str,
@@ -354,6 +356,7 @@ pub(super) fn check_items(
     id: u32,
     objects: &[InMemDicomObject],
     object: &InMemDicomObject,
+    nesting: Nesting,
 ) {
     let Some(root) = find(id) else {
         return;
@@ -387,13 +390,18 @@ pub(super) fn check_items(
                 Strength::Baseline => Strength::Baseline,
                 Strength::Defined => row_strength,
             };
+            let codes = nesting
+                .content_item(item.object)
+                .below(tags::CONCEPT_CODE_SEQUENCE);
             codes::check_items(
                 findings,
-                &format!("{label}[{}] > Concept Code Sequence", position + 1),
-                raw_tag(tags::CONCEPT_CODE_SEQUENCE),
-                effective,
-                groups,
+                (
+                    &format!("{label}[{}] > Concept Code Sequence", position + 1),
+                    raw_tag(tags::CONCEPT_CODE_SEQUENCE),
+                ),
+                (effective, groups),
                 sequence_items(item.object, tags::CONCEPT_CODE_SEQUENCE),
+                codes,
             );
         }
     }

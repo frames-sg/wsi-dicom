@@ -448,11 +448,8 @@ pub(crate) struct ValidateArgs {
     pub(crate) max_input_bytes: u64,
     #[command(flatten)]
     pub(crate) conformance: ConformanceArgs,
-    /// Convention profiles to check as well, comma-separated or repeated:
-    /// wg26, ihe-dpia, ihe-dpia-draft, ihe-dpia-draft-jpeg, interop. They are
-    /// reported apart from the DICOM checks and never make validation fail.
-    #[arg(long, value_enum, value_delimiter = ',', value_name = "PROFILE")]
-    pub(crate) conventions: Vec<wsi_dicom::ConventionProfile>,
+    #[command(flatten)]
+    pub(crate) conventions: ConventionArgs,
     #[arg(long)]
     pub(crate) json: bool,
 }
@@ -480,6 +477,8 @@ pub(crate) struct ValidateJsonArgs {
     pub(crate) http: HttpArgs,
     #[arg(long, default_value_t = 256 * 1024 * 1024)]
     pub(crate) max_input_bytes: u64,
+    #[command(flatten)]
+    pub(crate) conventions: ConventionArgs,
     #[arg(long)]
     pub(crate) json: bool,
 }
@@ -522,6 +521,8 @@ pub(crate) struct DicomwebArgs {
     pub(crate) profile: wsi_dicom::ValidationProfile,
     #[command(flatten)]
     pub(crate) conformance: ConformanceArgs,
+    #[command(flatten)]
+    pub(crate) conventions: ConventionArgs,
     #[arg(long)]
     pub(crate) json: bool,
 }
@@ -567,6 +568,27 @@ fn validation_profile(value: &str) -> Result<wsi_dicom::ValidationProfile, Strin
     }
     <wsi_dicom::ValidationProfile as clap::ValueEnum>::from_str(value, false)
         .map_err(|_| format!("unknown profile {value}; possible values: general, core"))
+}
+
+/// `--conventions` and `--fail-on-conventions`.
+#[derive(Debug, Clone, Default, Args)]
+pub(crate) struct ConventionArgs {
+    /// Convention profiles to check as well, comma-separated or repeated:
+    /// wg26, ihe-dpia, ihe-dpia-draft, ihe-dpia-draft-jpeg, interop. They are
+    /// reported apart from the DICOM checks.
+    #[arg(long, value_enum, value_delimiter = ',', value_name = "PROFILE")]
+    pub(crate) conventions: Vec<wsi_dicom::ConventionProfile>,
+    /// Fail when a check of a selected convention profile fails, e.g. to
+    /// gate CI on a profile. Advisories never fail.
+    #[arg(long, requires = "conventions")]
+    pub(crate) fail_on_conventions: bool,
+}
+
+impl ConventionArgs {
+    pub(crate) fn apply(self, options: &mut wsi_dicom::ValidationOptions) {
+        options.conventions = self.conventions.into_iter().collect();
+        options.fail_on_conventions = self.fail_on_conventions;
+    }
 }
 
 /// `--optional` (the default) or `--required`.

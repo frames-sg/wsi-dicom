@@ -96,10 +96,12 @@ pub(super) struct Facts {
     /// A Key Object Selection titled (113034, DCM, "Complete Acquisition
     /// Content").
     pub(super) completion: bool,
+    /// What the source of the object does not hold.
+    pub(super) gaps: super::Gaps,
 }
 
 impl Facts {
-    pub(super) fn of(path: &Path, object: &DefaultDicomObject) -> Self {
+    pub(super) fn of(path: &Path, object: &DefaultDicomObject, gaps: super::Gaps) -> Self {
         let root: &InMemDicomObject = object;
         let kind = match text(root, tags::SOP_CLASS_UID).as_deref() {
             Some(crate::VL_WSI_SOP_CLASS_UID) => Kind::Wsi,
@@ -179,6 +181,7 @@ impl Facts {
                 && items(root, tags::CONCEPT_NAME_CODE_SEQUENCE)
                     .first()
                     .is_some_and(|code| is_code(code, "DCM", "113034")),
+            gaps,
         }
     }
 

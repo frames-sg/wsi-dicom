@@ -153,7 +153,8 @@ fn check_provider_url(object: &DefaultDicomObject, transfer_syntax: &str) -> Res
         scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
     }) {
         return Err(format!(
-            "Pixel Data Provider URL (0028,7FE0) {url:?} does not use HTTP or HTTPS; the JPIP transport protocol shall be HTTP or HTTPS (PS3.5 {EDITION} 8.4.1)"
+            "Pixel Data Provider URL (0028,7FE0) {} does not use HTTP or HTTPS; the JPIP transport protocol shall be HTTP or HTTPS (PS3.5 {EDITION} 8.4.1)",
+            crate::validation::disclosure::shown(tags::PIXEL_DATA_PROVIDER_URL, url)
         ));
     }
     Ok(())

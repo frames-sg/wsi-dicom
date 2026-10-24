@@ -10,8 +10,10 @@ use super::{
     code_is, code_text, describe, prefix, template_of, Count, Report,
     KEY_OBJECT_SELECTION_TEMPLATE, MAX_INCLUDE_DEPTH, MAX_WORK, UNSEALED,
 };
+use crate::validation::disclosure::withholds_item_content;
 use crate::validation::iod::structured_report::{
-    code_finding, CodeFinding, Concept, RowRequirement, Strength, Template, TemplateRow, ValueSet,
+    code_finding, code_finding_in, CodeFinding, Concept, RowRequirement, Strength, Template,
+    TemplateRow, ValueSet,
 };
 use crate::validation::iod::{items, string_value};
 use crate::validation::structured_report::tree::Tree;
@@ -605,11 +607,16 @@ impl<'t, 'a> Matcher<'t, 'a> {
         else {
             return;
         };
-        let Some(code) = self.tree.target(child).and_then(|target| {
-            items(self.tree.nodes[target].object, tags::CONCEPT_CODE_SEQUENCE).first()
-        }) else {
+        let Some(target) = self.tree.target(child) else {
             return;
         };
+        let item = self.tree.nodes[target].object;
+        let Some(code) = items(item, tags::CONCEPT_CODE_SEQUENCE).first() else {
+            return;
+        };
+        // The coded Value of a Content Item whose Concept Table E.3.4-1
+        // removes, such as Subject Sex, is withheld.
+        let withheld = withholds_item_content(item);
         let strength = if slot.baseline {
             Strength::Baseline
         } else {
@@ -617,7 +624,7 @@ impl<'t, 'a> Matcher<'t, 'a> {
         };
         let at = self.tree.at(child);
         let root = self.root;
-        match code_finding(strength, groups, code) {
+        match code_finding_in(strength, groups, code, withheld) {
             Some(CodeFinding::Violation(message)) => report.departure(false, &|| {
                 format!(
                     "{at} > Concept Code Sequence (0040,A168): {message}, which {}Row {} binds",

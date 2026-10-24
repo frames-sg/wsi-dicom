@@ -255,7 +255,8 @@ impl NoIod {
             Self::Unsupported(uid) => (
                 ValidationStatus::Skipped,
                 format!(
-                    "SOP Class UID \"{uid}\" ({}) is not a SOP Class of the pathology-slide IODs ({}); no IOD rules apply",
+                    "SOP Class UID {} ({}) is not a SOP Class of the pathology-slide IODs ({}); no IOD rules apply",
+                    super::disclosure::shown(tags::SOP_CLASS_UID, uid),
                     sop_class_name(uid),
                     iod_list()
                 ),
@@ -399,6 +400,7 @@ fn evaluate(
         },
     }
     .data_set(valued, "", 0);
+    codes::check_representations(&mut findings, valued);
     findings
 }
 
@@ -439,8 +441,21 @@ pub(in crate::validation) fn catalog() -> Vec<RequirementEntry> {
 
 /// PS3.5 6.2 Value format of one Value as the IOD value-format check applies
 /// it, with any repertoire permitted; the writer validates metadata with it.
+/// The Value's Attribute is not named, so the reason names an offending
+/// character by position and class, as for a withheld Value
+/// (`disclosure`): the writer's metadata is mostly identifying.
 pub(crate) fn check_value_format(vr: dicom_core::VR, value: &str) -> Result<(), String> {
-    values::check_value(vr, value, true)
+    check_shown_value_format(vr, value, crate::validation::disclosure::withheld(value))
+}
+
+/// `check_value_format` for a Value a message shows as `shown`: the reason
+/// names an offending character of a withheld Value by position and class.
+pub(in crate::validation) fn check_shown_value_format(
+    vr: dicom_core::VR,
+    value: &str,
+    shown: crate::validation::disclosure::Shown<'_>,
+) -> Result<(), String> {
+    values::check_value(vr, value, true).map_err(|defect| defect.describe(shown))
 }
 
 /// Whether `uid` is a PS3.6 Image Storage SOP Class.

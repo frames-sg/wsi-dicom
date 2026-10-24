@@ -249,7 +249,7 @@ fn optical_paths_tiles_and_specimens_are_described_where_frames_refer_to_them() 
     assert_fails(
         &undescribed,
         WSI_IMAGE,
-        "Specimen Reference Sequence (0048,0110) > Specimen UID 1.2.826.0.1.3680043.10.999.7.78.99 is not in the Specimen Description Sequence (0040,0560)",
+        "Specimen Reference Sequence (0048,0110) > Specimen UID (value withheld: identifying; 34 characters) is not in the Specimen Description Sequence (0040,0560)",
     );
 }
 

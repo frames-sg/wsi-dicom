@@ -152,7 +152,8 @@ fn check_with_validator(
     let base = Url::parse(options.base_url.trim_end_matches('/')).map_err(invalid)?;
     if base.has_query() {
         return Err(invalid(format!(
-            "base URL {base} has a query; the Base URI of a service has none (PS3.18 {EDITION} 8.2)"
+            "base URL {} has a query; the Base URI of a service has none (PS3.18 {EDITION} 8.2)",
+            crate::validation::disclosure::withheld(&base.to_string())
         )));
     }
     let client = Client::new(&options.http)?
@@ -166,6 +167,7 @@ fn check_with_validator(
         audit: Audit::default(),
         objects: Vec::new(),
         optional: Vec::new(),
+        conventions: None,
         files: Vec::new(),
         retrieved: false,
         validate_file,
@@ -226,14 +228,31 @@ fn check_with_validator(
         checks,
         objects,
         optional,
+        conventions,
         files,
         ..
     } = session;
+    let conventions = conventions.unwrap_or_else(|| {
+        crate::validation::conventions_not_evaluated(
+            &options.validation,
+            &PathBuf::from(base.to_string()),
+            "the run retrieved no Series Metadata, so no convention of the profile was evaluated",
+        )
+    });
     Ok(DicomWebReport {
         base_url: base.to_string(),
-        study: target.study,
-        series: target.series,
-        instance: target.instance,
+        study: target
+            .study
+            .as_deref()
+            .map(|value| crate::validation::disclosure::withheld(value).to_string()),
+        series: target
+            .series
+            .as_deref()
+            .map(|value| crate::validation::disclosure::withheld(value).to_string()),
+        instance: target
+            .instance
+            .as_deref()
+            .map(|value| crate::validation::disclosure::withheld(value).to_string()),
         checks,
         objects: ValidationReport {
             profile: options.validation.profile,
@@ -241,7 +260,7 @@ fn check_with_validator(
             files,
             checks: objects,
             optional,
-            conventions: crate::validation::ConventionReport::default(),
+            conventions,
         },
         exchanges: client.exchanges(),
     })
@@ -306,6 +325,8 @@ struct Session<'s> {
     /// The intrinsic checks of what was retrieved.
     objects: Vec<ValidationCheck>,
     optional: Vec<OptionalConformance>,
+    /// The convention profiles' results on the Series Metadata.
+    conventions: Option<crate::validation::ConventionReport>,
     /// The URLs whose payloads were validated as objects.
     files: Vec<PathBuf>,
     /// Whether a Retrieve of the Study's resources answered 200.
@@ -325,6 +346,15 @@ struct Session<'s> {
 impl Session<'_> {
     fn skipped(&self, transaction: DicomWebTransaction) -> bool {
         self.options.skip.contains(&transaction)
+    }
+
+    /// The validation of a retrieved or stored file: its DICOM checks only,
+    /// since the conventions run on the Series Metadata that lists it.
+    fn file_options(&self) -> ValidationOptions {
+        let mut options = self.options.validation.clone();
+        options.conventions.clear();
+        options.fail_on_conventions = false;
+        options
     }
 
     fn url(&self, path: &str, query: Option<&str>) -> Url {

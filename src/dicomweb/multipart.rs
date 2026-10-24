@@ -46,20 +46,22 @@ pub(crate) fn boundary_violation(boundary: &str) -> Option<String> {
     let bchar = |byte: u8| byte.is_ascii_alphanumeric() || b"'()+_,-./:=?".contains(&byte);
     if boundary.is_empty() || boundary.len() > 70 {
         return Some(format!(
-            "boundary {boundary:?} is {} characters; it has 1 to 70 ({})",
+            "the boundary is {} characters; it has 1 to 70 ({})",
             boundary.len(),
             cite()
         ));
     }
     if !boundary.bytes().all(|byte| bchar(byte) || byte == b' ') {
         return Some(format!(
-            "boundary {boundary:?} holds a character outside bchar ({})",
+            "the {}-character boundary holds a character outside bchar ({})",
+            boundary.chars().count(),
             cite()
         ));
     }
     boundary.ends_with(' ').then(|| {
         format!(
-            "boundary {boundary:?} ends with a space; its last character is a bchar ({})",
+            "the {}-character boundary ends with a space; its last character is a bchar ({})",
+            boundary.chars().count(),
             cite()
         )
     })
@@ -76,14 +78,15 @@ pub(crate) fn parse<'a>(body: &'a [u8], boundary: &str) -> Multipart<'a> {
     let delimiter = format!("\r\n--{boundary}").into_bytes();
     let Some(first) = find(body, &dash_boundary, 0) else {
         result.violations.push(format!(
-            "the payload holds no \"--{boundary}\" delimiter ({})",
+            "the payload holds no delimiter for its {}-character boundary ({})",
+            boundary.chars().count(),
             cite()
         ));
         return result;
     };
     if first > 0 {
         result.violations.push(format!(
-            "{first} bytes precede the first boundary; the payload begins with \"--{boundary}\" ({})",
+            "{first} bytes precede the first boundary; the payload begins with its boundary delimiter ({})",
             cite()
         ));
     }
@@ -220,7 +223,8 @@ fn header_fields(
     for line in text.split("\r\n") {
         if line.starts_with([' ', '\t']) {
             violations.push(format!(
-                "part {number}: header field line {line:?} is folded, which RFC 7230 3.2.4 forbids"
+                "part {number}: a {}-character header field line is folded, which RFC 7230 3.2.4 forbids",
+                line.chars().count()
             ));
             continue;
         }
@@ -234,7 +238,8 @@ fn header_fields(
                 fields.push((name.to_ascii_lowercase(), value.trim().to_string()));
             }
             _ => violations.push(format!(
-                "part {number}: {line:?} is not a header field ({})",
+                "part {number}: a {}-character line is not a header field ({})",
+                line.chars().count(),
                 cite()
             )),
         }
@@ -310,10 +315,20 @@ mod tests {
         let folded = payload(&[("Content-Type: a/b\r\n  folded", b"ab")], "x");
         assert!(parse(&folded, "x").violations[0].contains("folded"));
 
-        assert!(parse(b"no parts here", "x").violations[0].contains("no \"--x\""));
+        assert!(parse(b"no parts here", "x").violations[0].contains("no delimiter"));
         assert!(boundary_violation("ends ").is_some());
         assert!(boundary_violation(&"a".repeat(71)).is_some());
         assert!(boundary_violation("ok'()+_,-./:=? x").is_none());
+
+        const SENTINEL: &str = "PatientSentinel";
+        let body = format!(
+            "--{SENTINEL}\r\n{SENTINEL}\r\n folded-{SENTINEL}\r\n\r\nbody\r\n--{SENTINEL}--"
+        );
+        let report = parse(body.as_bytes(), SENTINEL).violations.join("\n");
+        assert!(!report.contains(SENTINEL), "{report}");
+        let report = boundary_violation(&format!("{SENTINEL}@"))
+            .expect("the boundary contains a character outside bchar");
+        assert!(!report.contains(SENTINEL), "{report}");
     }
 
     #[test]

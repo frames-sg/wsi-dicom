@@ -81,6 +81,57 @@ fn exported_wsi_passes_every_iod_check_in_both_profiles() {
 }
 
 #[test]
+fn code_identifiers_use_the_attribute_their_notation_and_length_require() {
+    let tmp = tempfile::tempdir().unwrap();
+    for (name, tag, vr, value, expected) in [
+        (
+            "long-in-code-value",
+            tags::CODE_VALUE,
+            VR::SH,
+            "EXAMPLE-HOSPITAL-1",
+            "encoded in Long Code Value (0008,0119)",
+        ),
+        (
+            "short-in-long-code-value",
+            tags::LONG_CODE_VALUE,
+            VR::UC,
+            "EX-HOSP-1",
+            "encoded in Code Value (0008,0100)",
+        ),
+        (
+            "urn-in-long-code-value",
+            tags::LONG_CODE_VALUE,
+            VR::UC,
+            "urn:oid:1.2.826.0.1.3680043.10.999.953",
+            "encoded in URN Code Value (0008,0120)",
+        ),
+        (
+            "long-in-urn-code-value",
+            tags::URN_CODE_VALUE,
+            VR::UR,
+            "EXAMPLEHOSPITAL01",
+            "encoded in Long Code Value (0008,0119)",
+        ),
+    ] {
+        let path = edited_wsi(tmp.path(), name, |object| {
+            object.put(sq(
+                tags::INSTITUTION_CODE_SEQUENCE,
+                vec![item(vec![
+                    DataElement::new(tag, vr, PrimitiveValue::from(value)),
+                    text(tags::CODING_SCHEME_DESIGNATOR, VR::SH, "99LOCAL"),
+                    text(tags::CODE_MEANING, VR::LO, "Example Hospital"),
+                ])],
+            ));
+        });
+        assert_iod_failure(
+            &path,
+            "intrinsic-wsi-dicom-iod-attribute-presence",
+            expected,
+        );
+    }
+}
+
+#[test]
 fn nested_type_one_deletion_names_the_path_and_table() {
     let tmp = tempfile::tempdir().unwrap();
     let path = edited_wsi(tmp.path(), "optical-path-identifier", |object| {
@@ -243,13 +294,73 @@ fn value_format_rejects_malformed_strings() {
     assert_iod_failure(
         &path,
         "intrinsic-wsi-dicom-iod-value-format",
-        "StudyDate (0008,0020) \"2024-01-01\": not of the form YYYYMMDD for VR DA (PS3.5 6.2)",
+        "StudyDate (0008,0020) (value withheld: identifying; 10 characters): not of the form YYYYMMDD for VR DA (PS3.5 6.2)",
     );
     assert_iod_failure(
         &path,
         "intrinsic-wsi-dicom-iod-value-format",
-        "FrameOfReferenceUID (0020,0052) \"1.2.04.5\"",
+        "FrameOfReferenceUID (0020,0052) (value withheld: identifying; 8 characters): not a UID",
     );
+}
+
+/// The value-format and Enumerated Value checks name each defect of an
+/// identifying Attribute without its Value (PS3.15 Table E.1-1): the
+/// Value's length and an offending character's position and class instead,
+/// and a Code Meaning below Person Identification Code Sequence (D), which
+/// names a person, is withheld as well.
+#[test]
+fn iod_value_messages_withhold_identifying_values() {
+    let tmp = tempfile::tempdir().unwrap();
+    let long_id = format!("MRN12345{}", "9".repeat(60));
+    let path = edited_wsi(tmp.path(), "withheld-values", |object| {
+        object.put(text(tags::PATIENT_NAME, VR::PN, "DOE^JANE\u{7}"));
+        object.put(text(tags::PATIENT_ID, VR::LO, &long_id));
+        object.put(text(tags::PATIENT_SEX, VR::CS, "MRN12345"));
+        object.put(text(tags::PATIENT_BIRTH_DATE, VR::DA, "DOE^JANE"));
+        object.put(sq(
+            tags::REFERRING_PHYSICIAN_IDENTIFICATION_SEQUENCE,
+            vec![item(vec![sq(
+                tags::PERSON_IDENTIFICATION_CODE_SEQUENCE,
+                vec![code("99LOCAL", "P1", "DOE^JANE\u{7}")],
+            )])],
+        ));
+    });
+    let report = iod_report(&path, ValidationProfile::General);
+    let format = named(&report, "intrinsic-wsi-dicom-iod-value-format");
+    let withheld = |count: usize| format!("(value withheld: identifying; {count} characters)");
+    for expected in [
+        format!(
+            "PatientName (0010,0010) {}: character 9 (control character U+0007) outside the permitted repertoire for VR PN",
+            withheld(9)
+        ),
+        format!(
+            "PatientID (0010,0020) {}: 68 characters exceed the 64-character maximum for VR LO",
+            withheld(68)
+        ),
+        format!(
+            "PatientBirthDate (0010,0030) {}: not of the form YYYYMMDD for VR DA",
+            withheld(8)
+        ),
+        format!(
+            "PersonIdentificationCodeSequence (0040,1101)[1] > CodeMeaning (0008,0104) {}: character 9 (control character U+0007)",
+            withheld(9)
+        ),
+    ] {
+        assert!(format.message.contains(&expected), "lacks {expected:?}: {}", format.message);
+    }
+    let enumerated = named(&report, "intrinsic-wsi-dicom-iod-enumerated-values");
+    assert!(
+        enumerated.message.contains(&format!(
+            "Patient's Sex (0010,0040) {} is not an Enumerated Value [M, F, O]",
+            withheld(8)
+        )),
+        "{}",
+        enumerated.message
+    );
+    let json = serde_json::to_string(&report).unwrap();
+    for planted in ["DOE^JANE", "MRN12345"] {
+        assert!(!json.contains(planted), "{planted} in {json}");
+    }
 }
 
 #[test]

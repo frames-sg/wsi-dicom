@@ -10,7 +10,8 @@ use rsa::{BigUint, RsaPublicKey};
 use x509_cert::spki::{ObjectIdentifier, SubjectPublicKeyInfoOwned};
 use x509_cert::Certificate;
 
-use super::{bytes, quoted, string_value, EDITION};
+use super::{bytes, string_value, EDITION};
+use crate::validation::disclosure::shown_or;
 
 /// rsaEncryption (RFC 8017 A.1).
 pub(super) const RSA_ENCRYPTION: ObjectIdentifier =
@@ -25,7 +26,7 @@ pub(super) fn signer_key(signature: &InMemDicomObject) -> Result<RsaPublicKey, S
     if certificate_type.as_deref() != Some("X509_1993_SIG") {
         return Err(format!(
             "Certificate Type (0400,0110) is {}; X509_1993_SIG is the certificate type of the Digital Signature Profiles, so Certificate of Signer (0400,0115) cannot be read (PS3.15 {EDITION} C.1)",
-            quoted(certificate_type.as_deref())
+            shown_or(tags::CERTIFICATE_TYPE, certificate_type.as_deref(), "absent")
         ));
     }
     let value = bytes(signature, tags::CERTIFICATE_OF_SIGNER).ok_or_else(|| {

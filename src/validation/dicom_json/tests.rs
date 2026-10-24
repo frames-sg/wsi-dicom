@@ -14,6 +14,27 @@ use crate::TransferSyntax;
 
 const JSON_MODEL: &str = "intrinsic-wsi-dicom-json-model";
 
+#[test]
+fn bulk_data_references_do_not_disclose_patient_values() {
+    for uri in [
+        "https://example.org/PatientSentinel/bulk",
+        "invalid PatientSentinel",
+    ] {
+        let text = document(&format!(
+            r#"{SOP},"00282000":{{"vr":"OB","BulkDataURI":"{uri}"}}"#
+        ));
+        let checks = checks_of(
+            &text,
+            Source::Metadata,
+            &DicomJsonOptions::default(),
+            &BTreeMap::new(),
+        );
+        let report = serde_json::to_string(&checks).unwrap();
+        assert!(!report.contains("PatientSentinel"), "{report}");
+        assert!(report.contains("BulkDataURI"), "{report}");
+    }
+}
+
 fn checks_of(
     document: &str,
     source: Source,
@@ -615,5 +636,42 @@ fn no_check_reads_the_document_label_as_a_file() {
             check.name,
             check.message
         );
+    }
+}
+
+/// The JSON Model check and the checks of the Data Set read from a
+/// document name each defect of an identifying Value without the Value
+/// (PS3.15 Table E.1-1): a Person Name and a Patient ID with a control
+/// character, and the out-of-range Floating Point Value of a Subject Age
+/// Content Item, whose Concept Table E.3.4-1 removes.
+#[test]
+fn json_messages_withhold_identifying_values() {
+    let content = r#""0040A730":{"vr":"SQ","Value":[{"0040A040":{"vr":"CS","Value":["NUM"]},"0040A043":{"vr":"SQ","Value":[{"00080100":{"vr":"SH","Value":["121033"]},"00080102":{"vr":"SH","Value":["DCM"]},"00080104":{"vr":"LO","Value":["Subject Age"]}}]},"0040A300":{"vr":"SQ","Value":[{"0040A161":{"vr":"FD","Value":[8675309e999]}}]}}]}"#;
+    let text = document(&format!(
+        r#"{SOP},"00100010":{{"vr":"PN","Value":[{{"Alphabetic":"DOE^JANE\u0007"}}]}},"00100020":{{"vr":"LO","Value":["MRN12345\u0007"]}},{content}"#
+    ));
+    let checks = checks_of(
+        &text,
+        Source::Metadata,
+        &DicomJsonOptions::default(),
+        &BTreeMap::new(),
+    );
+    let model = check(&checks, JSON_MODEL);
+    for expected in [
+        "/0/00100010/Value/0: PN Value (value withheld: identifying; 9 characters): character 9 (control character U+0007) outside the permitted repertoire",
+        "/0/00100020/Value/0: LO Value (value withheld: identifying; 9 characters): character 9 (control character U+0007)",
+        "/0040A161/Value/0: FD Value (value withheld: identifying; 11 characters) is outside the range of an IEEE 754 binary64",
+    ] {
+        assert!(model.message.contains(expected), "lacks {expected:?}: {}", model.message);
+    }
+    for check in &checks {
+        for planted in ["DOE^JANE", "MRN12345", "8675309"] {
+            assert!(
+                !check.message.contains(planted),
+                "{planted} in {}: {}",
+                check.name,
+                check.message
+            );
+        }
     }
 }

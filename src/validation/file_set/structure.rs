@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 
 use dicom_core::Tag;
 
-use super::records::{Directory, Record};
+use super::records::{Directory, Record, DIRECTORY_RECORD_TYPE};
+use crate::validation::disclosure::shown;
 use crate::validation::iod::file_set::{directory_record, root_directory_records};
 use crate::validation::iod::{Family, MAX_NESTING};
 
@@ -130,10 +131,10 @@ fn check_unique_keys(records: &[Record], family: &mut Family) {
             if let Some(earlier) = first.get(&value) {
                 family.push(|| {
                     format!(
-                        "{name} \"{}\" of the {record_type} record at byte {} is also that of \
+                        "{name} {} of the {record_type} record at byte {} is also that of \
                          the {record_type} record at byte {earlier}, but it shall have a unique \
                          Value in the File-set (PS3.3 {section})",
-                        value.escape_default(),
+                        shown(tag, &value),
                         record.offset
                     )
                 });
@@ -340,9 +341,10 @@ impl Walk<'_> {
         );
         self.family.push(|| {
             format!(
-                "the record at byte {} of Directory Record Type \"{child}\" sits below {place}, \
+                "the record at byte {} of Directory Record Type {} sits below {place}, \
                  which Table F.4-1 does not allow (PS3.3 F.4)",
-                record.offset
+                record.offset,
+                shown(DIRECTORY_RECORD_TYPE, &child)
             )
         });
     }
@@ -368,11 +370,11 @@ fn report_unreachable(records: &[Record], tree: &Tree, family: &mut Family) {
         if parent.is_none() {
             family.push(|| {
                 format!(
-                    "the record at byte {} (Directory Record Type \"{}\") is not reached from \
+                    "the record at byte {} (Directory Record Type {}) is not reached from \
                      the Root Directory Entity, so it belongs to no Directory Entity (PS3.3 \
                      F.2.1, F.3.2.2)",
                     record.offset,
-                    record.record_type()
+                    shown(DIRECTORY_RECORD_TYPE, &record.record_type())
                 )
             });
         }

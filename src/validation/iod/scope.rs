@@ -6,6 +6,8 @@ use dicom_core::{PrimitiveValue, Tag};
 use dicom_dictionary_std::tags;
 use dicom_object::InMemDicomObject;
 
+use crate::validation::disclosure::Nesting;
+
 /// Kleene logic: conditions that depend on facts absent from the object are `Unknown`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Tri {
@@ -115,6 +117,8 @@ pub(super) struct Scope<'a> {
     pub(super) parent: Option<&'a Scope<'a>>,
     pub(super) frame: Option<Frame<'a>>,
     pub(super) transfer_syntax: &'a str,
+    /// What messages withhold of the Values of `item`.
+    pub(super) nesting: Nesting,
 }
 
 impl<'a> Scope<'a> {
@@ -125,6 +129,7 @@ impl<'a> Scope<'a> {
             parent: None,
             frame: None,
             transfer_syntax,
+            nesting: Nesting::default(),
         }
     }
 
@@ -135,6 +140,7 @@ impl<'a> Scope<'a> {
             parent: Some(self),
             frame: self.frame,
             transfer_syntax: self.transfer_syntax,
+            nesting: self.nesting,
         }
     }
 

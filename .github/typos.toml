@@ -3,11 +3,11 @@ extend-exclude = [
     ".git",
     "target",
     # Generated from the DICOM DocBook; they keep the standard's own spelling.
-    "src/validation/iod/confidentiality.rs",
-    "src/validation/iod/dictionary.rs",
-    "src/validation/iod/requirements.rs",
-    "src/validation/iod/tables.rs",
-    "src/validation/iod/value_sets.rs",
+    "**/src/validation/iod/confidentiality.rs",
+    "**/src/validation/iod/dictionary.rs",
+    "**/src/validation/iod/requirements.rs",
+    "**/src/validation/iod/tables.rs",
+    "**/src/validation/iod/value_sets.rs",
 ]
 
 [default]

@@ -16,6 +16,7 @@ use super::specimen::{
     USING_SUBSTANCE,
 };
 use super::{advisory, check, ConventionEntry, ConventionProfile, Out, Subject, Violations};
+use crate::validation::disclosure::{difference, shown, shown_all, shown_in, shown_or};
 use crate::validation::iod::{dicom_edition, items};
 
 const P: ConventionProfile = ConventionProfile::IheDpia;
@@ -291,13 +292,24 @@ pub(super) fn set_checks(facts: &[Facts], out: &mut Out) {
     let mut found = Violations::default();
     for (study, numbers) in &studies {
         if numbers.len() > 1 {
-            found.push(|| format!("Study Instance UID {study} has Accession Numbers {numbers:?}"));
+            found.push(|| {
+                format!(
+                    "Study Instance UID {} has {} Accession Numbers, {}",
+                    shown(tags::STUDY_INSTANCE_UID, study),
+                    numbers.len(),
+                    shown_all(tags::ACCESSION_NUMBER, numbers.iter().copied(), " and ")
+                )
+            });
         }
     }
     for (accession, uids) in &accessions {
         if uids.len() > 1 {
             found.push(|| {
-                format!("Accession Number {accession:?} has Study Instance UIDs {uids:?}")
+                format!(
+                    "Accession Number {} has Study Instance UIDs {}",
+                    shown(tags::ACCESSION_NUMBER, accession),
+                    shown_all(tags::STUDY_INSTANCE_UID, uids.iter().copied(), ", ")
+                )
             });
         }
     }
@@ -347,10 +359,18 @@ fn request_attributes(root: &InMemDicomObject) -> Result<(), String> {
         ] {
             let (own, top) = (text(request, tag), text(root, tag));
             if own != top {
-                found.push(|| format!(
-                    "Request Attributes Sequence item {} has {what} {own:?}, but the top level has {top:?}",
-                    index + 1
-                ));
+                found.push(|| {
+                    format!(
+                    "Request Attributes Sequence item {} has {what} {}, but the top level has {}{}",
+                    index + 1,
+                    shown_or(tag, own.as_deref(), "absent"),
+                    shown_or(tag, top.as_deref(), "absent"),
+                    own.as_deref()
+                        .zip(top.as_deref())
+                        .map(|(own, top)| difference(tag, own, top).to_string())
+                        .unwrap_or_default()
+                )
+                });
             }
         }
         if issuer(request) != issuer(root) {
@@ -389,7 +409,8 @@ fn patient_sex(facts: &Facts) -> Result<(), String> {
     match facts.patient.sex.as_deref() {
         None | Some("F") | Some("M") => Ok(()),
         Some(other) => Err(format!(
-            "Patient's Sex (0010,0040) is {other}, but PID-8 holds only F, M or U (Unknown, which maps to an empty Value)"
+            "Patient's Sex (0010,0040) is {}, but PID-8 holds only F, M or U (Unknown, which maps to an empty Value)",
+            shown(tags::PATIENT_SEX, other)
         )),
     }
 }
@@ -486,10 +507,11 @@ fn step_identifiers(specimen: &Specimen<'_>) -> Result<(), String> {
             .and_then(|item| item.text.clone());
         if identifier.is_none() || identifier != specimen.identifier {
             found.push(|| format!(
-                "{} {} has (121041, DCM, \"Specimen Identifier\") {identifier:?}, but the Specimen Identifier is {:?}",
+                "{} {} has (121041, DCM, \"Specimen Identifier\") {}, but the Specimen Identifier is {}",
                 specimen.describe(),
                 step.describe(),
-                specimen.identifier
+                shown_or(tags::TEXT_VALUE, identifier.as_deref(), "absent"),
+                shown_or(tags::SPECIMEN_IDENTIFIER, specimen.identifier.as_deref(), "absent")
             ));
         }
         if specimen.issuer.is_none() {
@@ -499,11 +521,22 @@ fn step_identifiers(specimen: &Specimen<'_>) -> Result<(), String> {
             .find(ISSUER_OF_SPECIMEN_IDENTIFIER)
             .and_then(|item| item.text.clone());
         if issuer != specimen.issuer {
+            let named = specimen.issuer.as_deref().map_or_else(
+                || "none".to_string(),
+                |named| {
+                    shown_in(
+                        tags::ISSUER_OF_THE_SPECIMEN_IDENTIFIER_SEQUENCE,
+                        tags::LOCAL_NAMESPACE_ENTITY_ID,
+                        named,
+                    )
+                    .to_string()
+                },
+            );
             found.push(|| format!(
-                "{} {} has (111724, DCM, \"Issuer of Specimen Identifier\") {issuer:?}, but the Issuer of the Specimen Identifier Sequence names {:?}",
+                "{} {} has (111724, DCM, \"Issuer of Specimen Identifier\") {}, but the Issuer of the Specimen Identifier Sequence names {named}",
                 specimen.describe(),
                 step.describe(),
-                specimen.issuer
+                shown_or(tags::TEXT_VALUE, issuer.as_deref(), "absent")
             ));
         }
     }
@@ -570,7 +603,10 @@ fn label_advisories(root: &InMemDicomObject, facts: &Facts, out: &mut Out) {
                 &BARCODE_CONTAINER,
                 file,
                 format!(
-                    "Barcode Value {barcode:?} differs from Container Identifier {container:?}; DPIA Open Issue 32 notes barcodes may add delimiter characters to the slide ID"
+                    "Barcode Value {} differs from Container Identifier {}{}; DPIA Open Issue 32 notes barcodes may add delimiter characters to the slide ID",
+                    shown(tags::BARCODE_VALUE, barcode),
+                    shown(tags::CONTAINER_IDENTIFIER, container),
+                    difference(tags::CONTAINER_IDENTIFIER, barcode, container)
                 ),
             );
         }

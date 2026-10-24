@@ -138,7 +138,7 @@ fn a_synchronized_series_of_a_parametric_map_and_an_sr_document_shares_one_frame
                 assert_eq!(check.status, ValidationStatus::Failed, "{}", check.message);
                 assert!(
                     check.message.contains(&format!(
-                        "{} has a Synchronization Frame of Reference UID and Frame of Reference UID 1.2.826.0.1.3680043.10.999.7.61, but 1 other Instance(s) of its Series have another, {} with absent",
+                        "{} has a Synchronization Frame of Reference UID and Frame of Reference UID (value withheld: identifying; 31 characters), but 1 other Instance(s) of its Series have another, {} with absent",
                         map.display(),
                         report.display()
                     )),

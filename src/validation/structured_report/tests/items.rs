@@ -518,3 +518,109 @@ fn record_violations_are_bounded() {
     assert_eq!(violations.len(), 51);
     assert_eq!(violations[50], "and 10 more Content Item violations");
 }
+
+/// No external validator: the report holds the crate's own checks alone.
+struct NoTools;
+
+impl crate::validation::ValidationCommandRunner for NoTools {
+    fn find_command(&self, _name: &str) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    fn run(
+        &self,
+        _program: &std::path::Path,
+        _args: &[std::ffi::OsString],
+        _timeout: std::time::Duration,
+        _max_output_bytes: usize,
+    ) -> Result<crate::validation::CommandOutcome, std::io::Error> {
+        Err(std::io::Error::other("no external validator"))
+    }
+}
+
+/// Content Item Values that identify are withheld from every message by
+/// Value Type and Concept (PS3.15 E.3.4): TEXT, PNAME and DATETIME Values,
+/// and the measured value of a NUM and the code of a CODE whose Concepts
+/// Table E.3.4-1 removes (Subject Age, Subject Sex). The SR rule and the
+/// IOD checks that judge them name their defects without them.
+#[test]
+fn identifying_content_item_values_are_withheld_from_every_message() {
+    let mut object = measurement_report(COMPREHENSIVE_SR);
+    object.remove_element(tags::CONTENT_TEMPLATE_SEQUENCE);
+    let subject_age = item(vec![
+        text(tags::NUMERIC_VALUE, VR::DS, "8675309"),
+        DataElement::new(
+            tags::FLOATING_POINT_VALUE,
+            VR::FD,
+            PrimitiveValue::F64([8675400.0].into_iter().collect()),
+        ),
+        sq(
+            tags::MEASUREMENT_UNITS_CODE_SEQUENCE,
+            vec![code("UCUM", "a", "year")],
+        ),
+    ]);
+    object.put(sq(
+        tags::CONTENT_SEQUENCE,
+        vec![
+            content(
+                "CONTAINS",
+                "TEXT",
+                Some(code("DCM", "121071", "Finding")),
+                vec![text(tags::TEXT_VALUE, VR::UT, "DOE^JANE\u{7}")],
+            ),
+            content(
+                "CONTAINS",
+                "PNAME",
+                Some(code("DCM", "121008", "Person Observer Name")),
+                vec![text(tags::PERSON_NAME, VR::PN, "DOE^JANE\u{7}")],
+            ),
+            content(
+                "CONTAINS",
+                "DATETIME",
+                Some(code("DCM", "111702", "DateTime of processing")),
+                vec![text(tags::DATE_TIME, VR::DT, "DOE^JANE")],
+            ),
+            content(
+                "CONTAINS",
+                "NUM",
+                Some(code("DCM", "121033", "Subject Age")),
+                vec![sq(tags::MEASURED_VALUE_SEQUENCE, vec![subject_age])],
+            ),
+            content(
+                "CONTAINS",
+                "CODE",
+                Some(code("DCM", "121032", "Subject Sex")),
+                vec![sq(
+                    tags::CONCEPT_CODE_SEQUENCE,
+                    vec![code("99LOCAL", "MRN12345", "DOE^JANE\u{7}")],
+                )],
+            ),
+        ],
+    ));
+    let check = super::check(object.clone());
+    assert!(
+        check.message.contains("Text Value (0040,A160) holds the control character U+0007 at character 9")
+            && check.message.contains(
+                "Floating Point Value (0040,A161) (value withheld: identifying; 7 characters) is not the floating point representation of Numeric Value (0040,A30A) (value withheld: identifying; 7 characters)"
+            ),
+        "{}",
+        check.message
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("document.dcm");
+    file(object).write_to_file(&path).unwrap();
+    let report = crate::validation::validate_dicom_path_with_runner(
+        &path,
+        &crate::validation::ValidationOptions::default(),
+        &NoTools,
+    )
+    .unwrap();
+    let json = serde_json::to_string(&report).unwrap();
+    assert!(
+        json.contains("TextValue (0040,A160) (value withheld: identifying; 9 characters): character 9 (control character U+0007)"),
+        "{json}"
+    );
+    for planted in ["DOE^JANE", "MRN12345", "8675309", "8675400"] {
+        assert!(!json.contains(planted), "{planted} in {json}");
+    }
+}

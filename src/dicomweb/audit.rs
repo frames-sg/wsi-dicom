@@ -194,7 +194,8 @@ impl Audit {
                 if length.trim().parse::<usize>().ok() != Some(exchange.body.len()) =>
             {
                 self.payload.fail(format!(
-                    "{line}: Content-Length {length} but the payload holds {} bytes ({})",
+                    "{line}: the {}-character Content-Length does not describe the payload's {} bytes ({})",
+                    length.chars().count(),
                     exchange.body.len(),
                     sec("8.4.3 Table 8.4.3-1")
                 ))
@@ -242,7 +243,8 @@ impl Audit {
         });
         if let Some(value) = unquoted {
             self.payload.fail(format!(
-                "{line}: {what} has charset={value}, a Defined Term with a space that is not enclosed in double quotes ({})",
+                "{line}: {what} has an unquoted {}-character charset value with a space; a Defined Term with a space is enclosed in double quotes ({})",
+                value.chars().count(),
                 sec("8.8")
             ));
         }
@@ -307,7 +309,8 @@ impl Audit {
             };
             if identifiers.contains(&identifier) {
                 self.payload.advise(format!(
-                    "{line}: Content-ID {identifier} names more than one part; a content identifier should be unique for each part ({})",
+                    "{line}: the same {}-character Content-ID names more than one part; a content identifier should be unique for each part ({})",
+                    identifier.chars().count(),
                     sec("8.7.1")
                 ));
                 break;

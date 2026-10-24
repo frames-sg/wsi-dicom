@@ -14,6 +14,7 @@ use super::super::ValidationCheck;
 use super::corpus::advised_check;
 use super::rule_check;
 use super::wsi_image::{functional_group_items, integer, is_code, sequence, string, tag_values};
+use crate::validation::disclosure::{difference, shown};
 use crate::validation::iod::{dicom_edition, EDITION};
 
 pub(super) const SERIES_SET_RULE: &str = "intrinsic-wsi-dicom-series-set";
@@ -74,7 +75,7 @@ pub(super) struct SeriesFacts {
     instance_number: Option<i64>,
     number_of_frames: Option<i64>,
     /// Identifying UIDs by the role they play.
-    uids: Vec<(&'static str, String)>,
+    uids: Vec<(&'static str, dicom_core::Tag, String)>,
     concatenation: Option<Concatenation>,
     /// Dimension Organization UID and the (pointer, group pointer) it indexes.
     dimensions: Vec<(String, String)>,
@@ -123,12 +124,16 @@ impl SeriesFacts {
             ("Concatenation UID", tags::CONCATENATION_UID),
         ] {
             if let Some(uid) = string(root, tag) {
-                uids.push((role, uid));
+                uids.push((role, tag, uid));
             }
         }
         for item in sequence(root, tags::DIMENSION_ORGANIZATION_SEQUENCE) {
             if let Some(uid) = string(item, tags::DIMENSION_ORGANIZATION_UID) {
-                uids.push(("Dimension Organization UID", uid));
+                uids.push((
+                    "Dimension Organization UID",
+                    tags::DIMENSION_ORGANIZATION_UID,
+                    uid,
+                ));
             }
         }
         let mut specimens = Vec::new();
@@ -136,7 +141,7 @@ impl SeriesFacts {
             let Some(uid) = string(item, tags::SPECIMEN_UID) else {
                 continue;
             };
-            uids.push(("Specimen UID", uid.clone()));
+            uids.push(("Specimen UID", tags::SPECIMEN_UID, uid.clone()));
             if let Some(identifier) = string(item, tags::SPECIMEN_IDENTIFIER) {
                 let issuer = sequence(item, tags::ISSUER_OF_THE_SPECIMEN_IDENTIFIER_SEQUENCE)
                     .first()
@@ -361,9 +366,13 @@ fn frames_of_reference(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
         };
         match slides.get(frame.as_str()) {
             Some((existing, path)) if existing != container => violations.push(format!(
-                "Frame of Reference UID {frame} is shared by images of slides {existing} ({}) and {container} ({}); images sharing a slide-related Frame of Reference are spatially related to one slide (PS3.3 {EDITION} C.7.4.1.1.1 and C.8.12.2.1)",
+                "Frame of Reference UID {} is shared by images of slides {} ({}) and {} ({}){}; images sharing a slide-related Frame of Reference are spatially related to one slide (PS3.3 {EDITION} C.7.4.1.1.1 and C.8.12.2.1)",
+                shown(tags::FRAME_OF_REFERENCE_UID, frame),
+                shown(tags::CONTAINER_IDENTIFIER, existing),
                 path.display(),
-                object.path.display()
+                shown(tags::CONTAINER_IDENTIFIER, container),
+                object.path.display(),
+                difference(tags::CONTAINER_IDENTIFIER, existing, container)
             )),
             Some(_) => {}
             None => {
@@ -378,8 +387,11 @@ fn frames_of_reference(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
         };
         match series.get(uid.as_str()) {
             Some((existing, path)) if existing != frame => violations.push(format!(
-                "Series {uid} has Frame of Reference UIDs {existing} ({}) and {frame} ({}); each Series has a single one (PS3.3 {EDITION} C.7.4.1.1.1)",
+                "Series {} has Frame of Reference UIDs {} ({}) and {} ({}); each Series has a single one (PS3.3 {EDITION} C.7.4.1.1.1)",
+                shown(tags::SERIES_INSTANCE_UID, uid),
+                shown(tags::FRAME_OF_REFERENCE_UID, existing),
                 path.display(),
+                shown(tags::FRAME_OF_REFERENCE_UID, frame),
                 object.path.display()
             )),
             Some(_) => {}
@@ -396,11 +408,12 @@ fn uid_roles(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
     let mut roles = BTreeMap::<&str, (&str, &Path)>::new();
     let mut reported = BTreeSet::new();
     for object in facts {
-        for (role, uid) in &object.uids {
+        for (role, tag, uid) in &object.uids {
             match roles.get(uid.as_str()) {
                 Some((existing, path)) if existing != role && reported.insert(uid.as_str()) => {
                     violations.push(format!(
-                        "UID {uid} is both a {existing} ({}) and a {role} ({}); UIDs identify one entity (PS3.5 {EDITION} 9)",
+                        "UID {} is both a {existing} ({}) and a {role} ({}); UIDs identify one entity (PS3.5 {EDITION} 9)",
+                        shown(*tag, uid),
                         path.display(),
                         object.path.display()
                     ));
@@ -420,7 +433,10 @@ fn uid_roles(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
         if let Some(existing) = studies.insert(series, study) {
             if existing != study {
                 violations.push(format!(
-                    "Series {series} belongs to Studies {existing} and {study} (PS3.3 {EDITION} C.7.3.1)"
+                    "Series {} belongs to Studies {} and {} (PS3.3 {EDITION} C.7.3.1)",
+                    shown(tags::SERIES_INSTANCE_UID, series),
+                    shown(tags::STUDY_INSTANCE_UID, existing),
+                    shown(tags::STUDY_INSTANCE_UID, study)
                 ));
             }
         }
@@ -441,9 +457,10 @@ fn instance_numbers(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
             .map(|concatenation| concatenation.uid.as_str());
         match owners.get(&(series.as_str(), number)) {
             Some((existing, path)) if owner.is_none() || existing != &owner => violations.push(format!(
-                "Instance Number {number} is used by {} and {} in Series {series}; it is shared only within a Concatenation (PS3.3 {EDITION} C.7.6.16.1)",
+                "Instance Number {number} is used by {} and {} in Series {}; it is shared only within a Concatenation (PS3.3 {EDITION} C.7.6.16.1)",
                 path.display(),
-                object.path.display()
+                object.path.display(),
+                shown(tags::SERIES_INSTANCE_UID, series)
             )),
             Some(_) => {}
             None => {
@@ -473,6 +490,7 @@ fn concatenations(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
         }
     }
     for (uid, members) in groups {
+        let shown_uid = shown(tags::CONCATENATION_UID, uid);
         let (first, reference) = members[0];
         for (object, concatenation) in &members[1..] {
             for (differs, what) in [
@@ -499,7 +517,7 @@ fn concatenations(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
             ] {
                 if differs {
                     violations.push(format!(
-                        "Concatenation {uid}: {what} differs between {} and {} (PS3.3 {EDITION} C.7.6.16.2.2.4)",
+                        "Concatenation {shown_uid}: {what} differs between {} and {} (PS3.3 {EDITION} C.7.6.16.2.2.4)",
                         first.path.display(),
                         object.path.display()
                     ));
@@ -514,7 +532,7 @@ fn concatenations(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
                     .is_some_and(|(number, total)| number > total)
             {
                 violations.push(format!(
-                    "Concatenation {uid}: {} has In-concatenation Number {:?} outside 1..{:?} (PS3.3 {EDITION} C.7.6.16.1)",
+                    "Concatenation {shown_uid}: {} has In-concatenation Number {:?} outside 1..{:?} (PS3.3 {EDITION} C.7.6.16.1)",
                     object.path.display(),
                     concatenation.number,
                     concatenation.total
@@ -526,7 +544,7 @@ fn concatenations(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
                     .is_some_and(|frame_offset| frame_offset != 0)
             {
                 violations.push(format!(
-                    "Concatenation {uid}: {} is In-concatenation Number 1 but has Concatenation Frame Offset Number {:?} instead of 0 (PS3.3 {EDITION} C.7.6.16.1)",
+                    "Concatenation {shown_uid}: {} is In-concatenation Number 1 but has Concatenation Frame Offset Number {:?} instead of 0 (PS3.3 {EDITION} C.7.6.16.1)",
                     object.path.display(),
                     concatenation.frame_offset
                 ));
@@ -540,7 +558,7 @@ fn concatenations(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
                 .is_some_and(|(frame_offset, minimum)| frame_offset < minimum)
             {
                 violations.push(format!(
-                    "Concatenation {uid}: {} has In-concatenation Number {:?} but Concatenation Frame Offset Number {:?}; each earlier member has at least one Frame (PS3.3 {EDITION} C.7.6.16.1)",
+                    "Concatenation {shown_uid}: {} has In-concatenation Number {:?} but Concatenation Frame Offset Number {:?}; each earlier member has at least one Frame (PS3.3 {EDITION} C.7.6.16.1)",
                     object.path.display(),
                     concatenation.number,
                     concatenation.frame_offset
@@ -559,7 +577,7 @@ fn concatenations(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
             let (after, after_number, after_offset) = pair[1];
             if after_number <= before_number || after_offset <= before_offset {
                 violations.push(format!(
-                    "Concatenation {uid}: In-concatenation Numbers and Concatenation Frame Offset Numbers are not strictly increasing between {} and {} (PS3.3 {EDITION} C.7.6.16.1)",
+                    "Concatenation {shown_uid}: In-concatenation Numbers and Concatenation Frame Offset Numbers are not strictly increasing between {} and {} (PS3.3 {EDITION} C.7.6.16.1)",
                     before.path.display(),
                     after.path.display()
                 ));
@@ -570,7 +588,7 @@ fn concatenations(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
             };
             let Some(after_known_frames) = before_offset.checked_add(frames) else {
                 violations.push(format!(
-                    "Concatenation {uid}: {} has Number of Frames {frames}, which cannot be added to Concatenation Frame Offset Number {before_offset} (PS3.3 {EDITION} C.7.6.16.1)",
+                    "Concatenation {shown_uid}: {} has Number of Frames {frames}, which cannot be added to Concatenation Frame Offset Number {before_offset} (PS3.3 {EDITION} C.7.6.16.1)",
                     before.path.display()
                 ));
                 continue;
@@ -581,7 +599,7 @@ fn concatenations(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
             if number_gap == 1 {
                 if after_offset != after_known_frames {
                     violations.push(format!(
-                        "Concatenation {uid}: {} has Concatenation Frame Offset Number {after_offset}, inconsistent with adjacent member {} (PS3.3 {EDITION} C.7.6.16.1)",
+                        "Concatenation {shown_uid}: {} has Concatenation Frame Offset Number {after_offset}, inconsistent with adjacent member {} (PS3.3 {EDITION} C.7.6.16.1)",
                         after.path.display(),
                         before.path.display()
                     ));
@@ -592,7 +610,7 @@ fn concatenations(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
                     .and_then(|missing_members| after_known_frames.checked_add(missing_members))
                 else {
                     violations.push(format!(
-                        "Concatenation {uid}: the Frame ranges implied by {} and {} overflow (PS3.3 {EDITION} C.7.6.16.1)",
+                        "Concatenation {shown_uid}: the Frame ranges implied by {} and {} overflow (PS3.3 {EDITION} C.7.6.16.1)",
                         before.path.display(),
                         after.path.display()
                     ));
@@ -600,7 +618,7 @@ fn concatenations(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
                 };
                 if after_offset < minimum_offset {
                     violations.push(format!(
-                        "Concatenation {uid}: {} has Concatenation Frame Offset Number {after_offset}, which overlaps the Frames of {} or the intervening members (PS3.3 {EDITION} C.7.6.16.1)",
+                        "Concatenation {shown_uid}: {} has Concatenation Frame Offset Number {after_offset}, which overlaps the Frames of {} or the intervening members (PS3.3 {EDITION} C.7.6.16.1)",
                         after.path.display(),
                         before.path.display()
                     ));
@@ -622,7 +640,8 @@ fn dimension_organizations(facts: &[&SeriesFacts], violations: &mut Vec<String>)
         for (uid, pointers) in mine {
             match seen.get(uid) {
                 Some((existing, path)) if existing != &pointers => violations.push(format!(
-                    "Dimension Organization UID {uid} indexes different Attributes in {} and {}; shared indices shall have the same meaning (PS3.3 {EDITION} C.7.6.17.2)",
+                    "Dimension Organization UID {} indexes different Attributes in {} and {}; shared indices shall have the same meaning (PS3.3 {EDITION} C.7.6.17.2)",
+                    shown(tags::DIMENSION_ORGANIZATION_UID, uid),
                     path.display(),
                     object.path.display()
                 )),
@@ -652,8 +671,9 @@ fn localizers(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
             if let Some(frame) = frames.get(localizer.as_str()) {
                 if *frame != object.frame_of_reference.as_deref() {
                     violations.push(format!(
-                        "{} references localizer {localizer} with a different Frame of Reference UID (PS3.3 {EDITION} C.7.6.16.2.5.1)",
-                        object.path.display()
+                        "{} references localizer {} with a different Frame of Reference UID (PS3.3 {EDITION} C.7.6.16.2.5.1)",
+                        object.path.display(),
+                        shown(tags::REFERENCED_SOP_INSTANCE_UID, localizer)
                     ));
                 }
             }
@@ -672,10 +692,13 @@ fn specimen_identifiers(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
         for (identifier, uid) in &object.specimens {
             match specimens.get(&(study.as_str(), identifier)) {
                 Some((existing, path)) if existing != uid => violations.push(format!(
-                    "Specimen Identifier {} names Specimen UIDs {existing} ({}) and {uid} ({}) in Study {study} (PS3.3 {EDITION} C.7.6.22.1.2)",
-                    identifier.0,
+                    "Specimen Identifier {} names Specimen UIDs {} ({}) and {} ({}) in Study {} (PS3.3 {EDITION} C.7.6.22.1.2)",
+                    shown(tags::SPECIMEN_IDENTIFIER, &identifier.0),
+                    shown(tags::SPECIMEN_UID, existing),
                     path.display(),
-                    object.path.display()
+                    shown(tags::SPECIMEN_UID, uid),
+                    object.path.display(),
+                    shown(tags::STUDY_INSTANCE_UID, study)
                 )),
                 Some(_) => {}
                 None => {
@@ -735,7 +758,7 @@ fn arrangements(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
         match seen.get(&key) {
             Some((positions, path)) if *positions != &arrangement.positions => violations.push(format!(
                 "Patient ID {} names a group arranged differently in {} and {}; a different arrangement of the same organisms uses a different Patient ID (PS3.3 {EDITION} C.7.1.4.1.1.1)",
-                arrangement.group,
+                shown(tags::PATIENT_ID, &arrangement.group),
                 path.display(),
                 object.path.display()
             )),
@@ -771,11 +794,15 @@ fn group_attributes(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
             })
         });
         if let Some((member, index, value, own, path)) = differing {
+            let (tag, name) = GROUP_SHARED[index];
             violations.push(format!(
-                "{} images the group {} with {} \"{value}\", but member {member} is \"{own}\" in {}; the Patient Module Attributes of a group are those its entire group shares (PS3.3 {EDITION} C.7.1.4.1.1)",
+                "{} images the group {} with {name} {}, but member {} is {}{} in {}; the Patient Module Attributes of a group are those its entire group shares (PS3.3 {EDITION} C.7.1.4.1.1)",
                 object.path.display(),
-                arrangement.group,
-                GROUP_SHARED[index].1,
+                shown(tags::PATIENT_ID, &arrangement.group),
+                shown(tag, value),
+                shown(tags::PATIENT_ID, member),
+                shown(tag, own),
+                difference(tag, value, own),
                 path.display()
             ));
         }
@@ -793,7 +820,8 @@ fn lossy_versions(facts: &[SeriesFacts], violations: &mut Vec<String>) {
         };
         match seen.get(uid.as_str()) {
             Some((existing, path)) if *existing != lossy.as_str() => violations.push(format!(
-                "SOP Instance {uid} has Lossy Image Compression (0028,2110) {existing} in {} and {lossy} in {}; once 01 it is not reset, and a lossy compressed version of an image is a new SOP Instance (PS3.3 {EDITION} C.7.6.1.1.5)",
+                "SOP Instance {} has Lossy Image Compression (0028,2110) {existing} in {} and {lossy} in {}; once 01 it is not reset, and a lossy compressed version of an image is a new SOP Instance (PS3.3 {EDITION} C.7.6.1.1.5)",
+                shown(tags::SOP_INSTANCE_UID, uid),
                 path.display(),
                 object.path.display()
             )),
@@ -833,10 +861,10 @@ fn lossy_sources(
         else {
             continue;
         };
-        let own = object
-            .lossy
-            .as_deref()
-            .map_or_else(|| "absent".to_string(), |value| format!("\"{value}\""));
+        let own = object.lossy.as_deref().map_or_else(
+            || "absent".to_string(),
+            |value| shown(tags::LOSSY_IMAGE_COMPRESSION, value).to_string(),
+        );
         let derived = match object.iod {
             "A.51" => Some(("Segmentation", "C.8.20.2.2")),
             "A.75" => Some(("Parametric Map", "C.8.32.2.1")),
@@ -844,14 +872,16 @@ fn lossy_sources(
         };
         match derived {
             Some((what, section)) => violations.push(format!(
-                "{}: Lossy Image Compression (0028,2110) is {own}, but its source image {source} ({}) is \"01\"; the Value shall be \"01\" for a {what} Instance whose source images are (PS3.3 {EDITION} {section})",
+                "{}: Lossy Image Compression (0028,2110) is {own}, but its source image {} ({}) is \"01\"; the Value shall be \"01\" for a {what} Instance whose source images are (PS3.3 {EDITION} {section})",
                 object.path.display(),
+                shown(tags::REFERENCED_SOP_INSTANCE_UID, source),
                 source_path.display()
             )),
             None => advisories.push((
                 object.path.clone(),
                 format!(
-                    "Lossy Image Compression (0028,2110) is {own}, but its source image {source} ({}) is \"01\"; the Attribute records lossy compression of the Image \"at a point in its lifetime\" (PS3.3 {EDITION} C.7.6.1.1.5), which is ambiguous for a derived image, so this is not a failure",
+                    "Lossy Image Compression (0028,2110) is {own}, but its source image {} ({}) is \"01\"; the Attribute records lossy compression of the Image \"at a point in its lifetime\" (PS3.3 {EDITION} C.7.6.1.1.5), which is ambiguous for a derived image, so this is not a failure",
+                    shown(tags::REFERENCED_SOP_INSTANCE_UID, source),
                     source_path.display()
                 ),
             )),

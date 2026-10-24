@@ -5,6 +5,7 @@ use dicom_dictionary_std::tags;
 use dicom_object::InMemDicomObject;
 
 use super::client::{Exchange, Redirects, Request};
+use super::media::MediaType;
 use super::multipart;
 use super::report::Verdict;
 use super::response::{expect_media_type, expect_status, integer, sec};
@@ -83,15 +84,16 @@ fn jph(session: &mut Session<'_>, verdict: &mut Verdict, path: &str) {
         return;
     };
     let line = exchange.request_line();
-    let essence = exchange
-        .media_type()
-        .and_then(Result::ok)
-        .map(|media| media.essence);
-    if exchange.status != 200 || essence.as_deref() != Some("image/jph") {
+    let media = exchange.media_type().and_then(Result::ok);
+    if exchange.status != 200
+        || media.as_ref().map(|media| media.essence.as_str()) != Some("image/jph")
+    {
+        let shown = media
+            .as_ref()
+            .map_or("without Content-Type", MediaType::reported_essence);
         verdict.note(format!(
             "{line} answered {} {}: image/jph is not offered, which is Optional (Table 8.7.4-1)",
-            exchange.status,
-            essence.unwrap_or_default()
+            exchange.status, shown
         ));
         return;
     }
@@ -121,7 +123,7 @@ fn single_part(verdict: &mut Verdict, exchange: &Exchange) {
         verdict.fail(format!(
             "{}: the payload is one image, not multipart, yet its Content-Type is {}; a single part payload has a single part media type ({})",
             exchange.request_line(),
-            media.essence,
+            media.reported_essence(),
             sec("8.6.1.1")
         ));
     }

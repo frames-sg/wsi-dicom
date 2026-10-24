@@ -8,13 +8,16 @@ use dicom_dictionary_std::{tags, uids};
 use dicom_object::InMemDicomObject;
 
 use super::client::{Exchange, Request};
-use super::media::{any_frame_accept, bulk_media_type, media_type_of, MediaType};
+use super::media::{
+    any_frame_accept, bulk_media_type, media_type_of, reported_transfer_syntax, MediaType,
+};
 use super::report::Verdict;
 use super::response::{expect_multipart, expect_status, integer, sec};
 use super::url::Url;
 use super::{DicomWebTransaction, Session, Target};
 use crate::lossy::method_for_lossy_transfer_syntax;
 use crate::validation::check_retrieved_frames;
+use crate::validation::disclosure::withheld;
 
 const NAME: &str = "dicomweb-retrieve-frames";
 const SECTIONS: &str =
@@ -114,7 +117,7 @@ fn native(
         None => any_frame_accept(),
     };
     let url = session.url(&format!("{path}/frames/{}", list(numbers)), None);
-    let label = PathBuf::from(url.to_string());
+    let label = PathBuf::from(url.reported());
     let asked = Asked {
         numbers,
         known: known.as_deref(),
@@ -154,7 +157,7 @@ fn part_syntax(
     let Some(row) = bulk_media_type(&media.essence) else {
         verdict.fail(format!(
             "{line}: part {number} is {}, which is not a Bulk Data media type of Table 8.7.3-4 or 8.7.3-5 ({})",
-            media.essence,
+            media.reported_essence(),
             sec("8.7.3.3")
         ));
         return None;
@@ -172,8 +175,9 @@ fn part_syntax(
         .to_string();
     if !row.syntaxes.contains(&syntax.as_str()) {
         verdict.fail(format!(
-            "{line}: part {number} is {} with transfer-syntax={syntax}, which Table 8.7.3-5 assigns {} ({})",
-            media.essence,
+            "{line}: part {number} is {} with Transfer Syntax {}, which Table 8.7.3-5 assigns {} ({})",
+            media.reported_essence(),
+            reported_transfer_syntax(&syntax),
             media_type_of(&syntax).unwrap_or("no Bulk Data media type"),
             sec("8.7.3.3.2 Table 8.7.3-5")
         ));
@@ -206,7 +210,7 @@ fn frame_parts(
     let root = media
         .parameter("type")
         .and_then(|value| MediaType::parse(value).ok())
-        .map(|kind| kind.essence);
+        .map(|kind| (kind.essence.clone(), kind.reported_essence().to_string()));
     let mut frames: Vec<(usize, &[u8])> = Vec::new();
     let mut syntaxes: Vec<String> = Vec::new();
     for (index, part) in parts.iter().enumerate() {
@@ -218,19 +222,28 @@ fn frame_parts(
         else {
             continue;
         };
-        if index == 0 && root.as_deref().is_some_and(|root| root != found.essence) {
+        if index == 0
+            && root
+                .as_ref()
+                .is_some_and(|(essence, _)| *essence != found.essence)
+        {
             verdict.fail(format!(
                 "{line}: the \"type\" parameter names {}, but the root part is {} ({})",
-                root.as_deref().unwrap_or_default(),
-                found.essence,
+                root.as_ref()
+                    .map(|(_, shown)| shown.as_str())
+                    .unwrap_or_default(),
+                MediaType::parse(&found.essence)
+                    .expect("part_syntax accepts a parsed media type")
+                    .reported_essence(),
                 sec("8.6.1.2")
             ));
         }
         if let Some(known) = known.filter(|known| *known != found.syntax) {
             verdict.fail(format!(
-                "{line}: part {} is in Transfer Syntax {}, but the request accepted only {known} ({})",
+                "{line}: part {} is in Transfer Syntax {}, but the request accepted only {} ({})",
                 index + 1,
-                found.syntax,
+                reported_transfer_syntax(&found.syntax),
+                reported_transfer_syntax(known),
                 sec("8.7.8.2")
             ));
         }
@@ -257,7 +270,11 @@ fn frame_parts(
         verdict.note(format!(
             "the parts came in {} Transfer Syntaxes ({}); their codestreams are not checked",
             syntaxes.len(),
-            syntaxes.join(", ")
+            syntaxes
+                .iter()
+                .map(|syntax| reported_transfer_syntax(syntax))
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     syntaxes.into_iter().next()
@@ -279,7 +296,8 @@ fn corresponding_location(
         Ok(resolved) => resolved.to_string(),
         Err(reason) => {
             verdict.fail(format!(
-                "{line}: part {part}'s Content-Location {location:?} is not a URI reference: {reason} ({})",
+                "{line}: part {part}'s Content-Location {} is not a URI reference: {reason} ({})",
+                withheld(location),
                 sec("10.4.3.3.6")
             ));
             return;
@@ -292,8 +310,8 @@ fn corresponding_location(
     }
     if !corresponding.contains(&resolved) {
         verdict.fail(format!(
-            "{line}: part {part}'s Content-Location is {resolved}; it corresponds to the Pixel Data of the Instance in the Metadata, such as {} ({})",
-            corresponding.join(" or "),
+            "{line}: part {part}'s Content-Location is {}; it corresponds to the Pixel Data of the Instance in the Metadata ({})",
+            withheld(&resolved),
             sec("10.4.3.3.6")
         ));
     }
@@ -401,8 +419,10 @@ fn uncompressed_part(
     {
         verdict.fail(format!(
             "{line}: the part is {} in {}; the request accepted application/octet-stream in {} only ({})",
-            found.essence,
-            found.syntax,
+            MediaType::parse(&found.essence)
+                .expect("part_syntax accepts a parsed media type")
+                .reported_essence(),
+            reported_transfer_syntax(&found.syntax),
             uids::EXPLICIT_VR_LITTLE_ENDIAN,
             sec("8.7.8.2")
         ));

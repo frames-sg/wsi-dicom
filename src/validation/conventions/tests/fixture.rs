@@ -732,6 +732,14 @@ pub(super) fn completion(slide: &Slide, images: &[Image]) -> DefaultDicomObject 
     ] {
         put(&mut object, tag, vr, value);
     }
+    // The root is constructed from TID 2010 Key Object Selection.
+    object.put(sq(
+        tags::CONTENT_TEMPLATE_SEQUENCE,
+        vec![item(vec![
+            text(tags::MAPPING_RESOURCE, VR::CS, "DCMR"),
+            text(tags::TEMPLATE_IDENTIFIER, VR::CS, "2010"),
+        ])],
+    ));
     object.put(sq(
         tags::CONCEPT_NAME_CODE_SEQUENCE,
         vec![code("DCM", "113034", "Complete Acquisition Content")],

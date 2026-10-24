@@ -309,7 +309,12 @@ fn a_series_with_two_slides_or_scans_fails_the_one_series_check() {
         &["convention-wg26-one-series-per-scan"],
         &[],
     );
-    assert!(failure_message(&report, "convention-wg26-one-series-per-scan").contains("SLIDE-2"));
+    let message = failure_message(&report, "convention-wg26-one-series-per-scan");
+    assert!(
+        message.contains("mixes 2 values of Container Identifier (0040,0512) ((value withheld"),
+        "{message}"
+    );
+    assert!(!message.contains("SLIDE-2"), "{message}");
 
     // One scan split over two Series.
     let first = Scan::conformant(25).without(ANNOTATION).without(COMPLETION);
@@ -476,9 +481,12 @@ fn annotations_are_two_dimensional_and_share_the_patient() {
         &["convention-wg26-annotation-identity"],
         &[],
     );
+    let message = failure_message(&report, "convention-wg26-annotation-identity");
     assert!(
-        failure_message(&report, "convention-wg26-annotation-identity").contains("SOMEONE-ELSE")
+        message.contains("Patient ID is (value withheld: identifying; 12 characters)"),
+        "{message}"
     );
+    assert!(!message.contains("SOMEONE-ELSE"), "{message}");
     let other_study = Scan::conformant(38).edit(ANNOTATION, |object| {
         object.put(text(
             tags::STUDY_INSTANCE_UID,

@@ -280,8 +280,16 @@ fn the_completion_document_is_a_new_series_with_the_images_identity() {
         &[KOS_NOTE],
     );
     let message = failure_message(&report, "convention-ihe-dpia-draft-completion-identity");
+    // The differing Patient ID and Container Identifier are named, their
+    // Values withheld (PS3.15 Table E.1-1).
     assert!(
-        message.contains("SOMEONE-ELSE") && message.contains("SLIDE-9"),
+        message.contains("Patient ID is (value withheld: identifying; 12 characters) in the KOS")
+            && message
+                .contains("Container Identifier is (value withheld: identifying; 7 characters)"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("SOMEONE-ELSE") && !message.contains("SLIDE-9"),
         "{message}"
     );
     // Without Specimen Attributes the KOS still passes; the conflict is noted.

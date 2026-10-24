@@ -515,7 +515,8 @@ pub(super) fn motion_departures(
         .unwrap_or_default();
     if !motion.photometric.contains(&photometric.as_str()) {
         departures.push(format!(
-            "Photometric Interpretation {photometric:?} (shall be {})",
+            "Photometric Interpretation {} (shall be {})",
+            crate::validation::disclosure::shown(tags::PHOTOMETRIC_INTERPRETATION, &photometric),
             motion.photometric.join(" or ")
         ));
     }

@@ -13,6 +13,7 @@ use super::pixel_syntax::{
 };
 use super::VL_WSI;
 use crate::icc::validate_dicom_icc_profile;
+use crate::validation::disclosure::shown;
 use crate::validation::iod::EDITION;
 
 pub(super) fn validate_core_image_profile_rule(object: &DefaultDicomObject) -> Result<(), String> {
@@ -229,7 +230,9 @@ pub(super) fn validate_optical_path_structure_rule(
         )?;
         if referenced != identifier {
             return Err(format!(
-                "referenced Optical Path Identifier {referenced:?} does not match {identifier:?}"
+                "referenced Optical Path Identifier {} does not match {}",
+                shown(tags::OPTICAL_PATH_IDENTIFIER, &referenced),
+                shown(tags::OPTICAL_PATH_IDENTIFIER, &identifier)
             ));
         }
     }
@@ -308,7 +311,8 @@ pub(super) fn validate_monochrome_rule(object: &DefaultDicomObject) -> Result<()
     )?;
     if shape != "IDENTITY" {
         return Err(format!(
-            "Presentation LUT Shape is {shape:?}, expected IDENTITY"
+            "Presentation LUT Shape is {}, expected IDENTITY",
+            shown(tags::PRESENTATION_LUT_SHAPE, &shape)
         ));
     }
     require_numeric_value(object, tags::RESCALE_INTERCEPT, "Rescale Intercept", 0.0)?;
@@ -351,7 +355,8 @@ pub(super) fn validate_lossy_rule(object: &DefaultDicomObject, iod: &str) -> Res
             lossy_history(object, iod, encoding, false)
         }
         Some(flag) => Err(format!(
-            "Lossy Image Compression is {flag:?}, expected 00 or 01"
+            "Lossy Image Compression is {}, expected 00 or 01",
+            shown(tags::LOSSY_IMAGE_COMPRESSION, flag)
         )),
     }
 }
@@ -421,7 +426,8 @@ fn lossy_history(
     if actual_method != expected_method {
         let _ = iod;
         return Err(format!(
-            "the Frames are {evidence}, so the last Lossy Image Compression Method is {expected_method}, but it is {actual_method:?}"
+            "the Frames are {evidence}, so the last Lossy Image Compression Method is {expected_method}, but it is {}",
+            shown(tags::LOSSY_IMAGE_COMPRESSION_METHOD, &actual_method)
         ));
     }
     Ok(())

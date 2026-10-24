@@ -557,6 +557,55 @@ fn command_output_limit_is_reported_as_failed_check() {
 }
 
 #[test]
+fn external_diagnostics_withhold_identifying_values_without_changing_the_verdict() {
+    let runner = FakeRunner::default().with_command("dciodvfy").with_outcome(
+        "dciodvfy one.dcm",
+        CommandOutcome {
+            return_code: Some(0),
+            elapsed_millis: 7,
+            success: true,
+            timed_out: false,
+            stdout: "Warning - Patient's Name = PatientSentinel\n  continued PatientSentinel\nWarning - StudyInstanceUID = 1.2.987654321\nWarning - (0029,1001) = PrivateSentinel\n".into(),
+            stderr: "Error - </PatientID(0010,0020)[1]> - Value invalid for VR [LO] = <PatientSentinel>\nError - </PersonIdentificationCodeSequence(0040,1101)[1]/CodeMeaning(0008,0104)> - Value = <PersonSentinel>\nError - SOP Class UID (0008,0016) = 1.2.840.10008.5.1.4.1.1.77.1.6\nWarning - Transfer Syntax UID = 1.2.840.10008.1.2.1\nWarning - (0029,0010) = ACME\n".into(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+        },
+    );
+    let check = run_named_command_check(
+        &runner,
+        CommandCheckRequest {
+            check_name: "dciodvfy",
+            command_name: "dciodvfy",
+            args: vec![OsString::from("one.dcm")],
+            path: None,
+            required: true,
+            error_line_is_failure: true,
+            timeout: Duration::from_secs(1),
+            max_output_bytes: 4096,
+        },
+    );
+    assert_eq!(check.status, ValidationStatus::Failed);
+    assert_eq!(check.execution.as_ref().unwrap().return_code, Some(0));
+    let report = serde_json::to_string(&check).unwrap();
+    for value in [
+        "PatientSentinel",
+        "PersonSentinel",
+        "PrivateSentinel",
+        "1.2.987654321",
+    ] {
+        assert!(!report.contains(value), "{value} in {report}");
+    }
+    for value in [
+        "Patient",
+        "1.2.840.10008.5.1.4.1.1.77.1.6",
+        "1.2.840.10008.1.2.1",
+        "ACME",
+    ] {
+        assert!(report.contains(value), "missing {value} in {report}");
+    }
+}
+
+#[test]
 fn validation_options_use_seconds_for_json_and_runtime_timeout() {
     let options = ValidationOptions {
         profile: super::ValidationProfile::General,
@@ -570,6 +619,7 @@ fn validation_options_use_seconds_for_json_and_runtime_timeout() {
         max_pixel_frame_bytes: 512 * 1024 * 1024,
         conformance: crate::ConformanceLevel::Optional,
         conventions: Default::default(),
+        fail_on_conventions: false,
     };
 
     let json = serde_json::to_string(&options).expect("serialize validation options");

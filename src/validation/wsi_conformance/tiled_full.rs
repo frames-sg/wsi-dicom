@@ -9,6 +9,7 @@ use dicom_dictionary_std::tags;
 use dicom_object::InMemDicomObject;
 
 use super::wsi_image::{integer, sequence, string, strings};
+use crate::validation::disclosure::shown;
 use crate::validation::iod::dicom_edition;
 
 const CITATION: &str = concat!("PS3.3 ", dicom_edition!(), " C.7.6.17.3");
@@ -213,10 +214,10 @@ fn explicit_positions(
             let actual = string(identification, tags::OPTICAL_PATH_IDENTIFIER);
             if actual.is_some() && expected.is_some() && actual != expected {
                 misplaced.push(format!(
-                    "Frame {} has Optical Path Identifier \"{}\", not \"{}\" of Optical Path Sequence Item {}",
+                    "Frame {} has Optical Path Identifier {}, not {} of Optical Path Sequence Item {}",
                     index + 1,
-                    actual.unwrap_or_default(),
-                    expected.unwrap_or_default(),
+                    shown(tags::OPTICAL_PATH_IDENTIFIER, &actual.unwrap_or_default()),
+                    shown(tags::OPTICAL_PATH_IDENTIFIER, &expected.unwrap_or_default()),
                     path + 1
                 ));
             }

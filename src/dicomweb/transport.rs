@@ -191,15 +191,18 @@ mod enabled {
             fault: Some(fault),
         };
         match err {
+            ureq::Error::StatusCode(status) => {
+                Failure::other(format!("HTTP request failed with status {status}"))
+            }
             ureq::Error::BodyExceedsLimit(_) => Failure::other(too_large(max_response_bytes)),
             ureq::Error::Timeout(which) => Failure::other(format!("timed out ({which:?})")),
-            ureq::Error::Protocol(err) => fault(
+            ureq::Error::Protocol(_) => fault(
                 Fault::Malformed,
-                format!("the response is not an HTTP/1.1 response message: {err}"),
+                "the response is not an HTTP/1.1 response message".into(),
             ),
-            ureq::Error::Http(err) => fault(
+            ureq::Error::Http(_) => fault(
                 Fault::Malformed,
-                format!("the response is not an HTTP/1.1 response message: {err}"),
+                "the response is not an HTTP/1.1 response message".into(),
             ),
             ureq::Error::Io(err)
                 if matches!(
@@ -212,10 +215,29 @@ mod enabled {
             {
                 fault(
                     Fault::Closed,
-                    format!("the connection closed before a complete response: {err}"),
+                    "the connection closed before a complete response".into(),
                 )
             }
-            other => Failure::other(other.to_string()),
+            ureq::Error::Io(err) => Failure::other(format!(
+                "the request failed with an I/O error ({:?})",
+                err.kind()
+            )),
+            ureq::Error::BadUri(_) => Failure::other("the request URI is invalid"),
+            ureq::Error::HostNotFound => Failure::other("the request host was not found"),
+            ureq::Error::RedirectFailed => Failure::other("the redirect failed"),
+            ureq::Error::InvalidProxyUrl => Failure::other("the proxy URL is invalid"),
+            ureq::Error::ConnectionFailed => Failure::other("the connection failed"),
+            ureq::Error::TooManyRedirects => Failure::other("too many redirects"),
+            ureq::Error::Tls(_) => Failure::other("the TLS request failed"),
+            ureq::Error::RequireHttpsOnly(_) => Failure::other("the request requires HTTPS"),
+            ureq::Error::LargeResponseHeader(_, _) => {
+                Failure::other("the response header is too large")
+            }
+            ureq::Error::ConnectProxyFailed(_) => Failure::other("the proxy connection failed"),
+            ureq::Error::TlsRequired => {
+                Failure::other("the connection did not provide required TLS")
+            }
+            _ => Failure::other("the request failed"),
         }
     }
 

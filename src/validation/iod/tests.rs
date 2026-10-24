@@ -1194,6 +1194,7 @@ fn unidentified_step(methods: &[(&str, &str)]) -> super::report::Findings {
         8001,
         &[step],
         &object,
+        crate::validation::disclosure::Nesting::default(),
     );
     findings
 }

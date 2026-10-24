@@ -14,7 +14,7 @@ use crate::ValidationStatus;
 const BREAKS: &[(Break, &str, &str)] = &[
     // 8.1.2 and 8.1.2.1; 10.4.3, 10.6.3.
     (Break::NoResponse, "dicomweb-response-messages", "/thumbnail: the connection closed before a complete response"),
-    (Break::StatusInvalid, "dicomweb-response-messages", "invalid status code: 099"),
+    (Break::StatusInvalid, "dicomweb-response-messages", "response is not an HTTP/1.1 response message"),
     (Break::RetrieveStatusMalformed, "dicomweb-response-messages", "/thumbnail: the response is not an HTTP/1.1 response message"),
     (Break::SearchStatusOutOfClass, "dicomweb-response-messages", "answered 600, which is not a valid 3-digit status code"),
     // 8.4.3, 8.6, 8.7.9, 8.8, 10.4.4.
@@ -22,13 +22,13 @@ const BREAKS: &[(Break, &str, &str)] = &[
     (Break::EmptyPayloadUnframed, "dicomweb-payload-headers", "Content-Length is present even if the payload is empty"),
     (Break::NoContentWithLength, "dicomweb-payload-headers", "a 204 response has no payload, yet it has Content-Length"),
     (Break::NoContentWithType, "dicomweb-payload-headers", "yet it has a Content-Type, which is only present when a payload is"),
-    (Break::UnquotedDefinedTerm, "dicomweb-payload-headers", "charset=ISO_IR 192, a Defined Term with a space"),
+    (Break::UnquotedDefinedTerm, "dicomweb-payload-headers", "unquoted 10-character charset value with a space"),
     (Break::FramesAsDicom, "dicomweb-payload-headers", "only used for an individual Instance resource"),
     // 8.5.
     (Break::UnauthorizedNoChallenge, "dicomweb-error-responses", "answered 401 without a WWW-Authenticate"),
     (Break::NotAllowedNoAllow, "dicomweb-error-responses", "answered 405 without an Allow"),
     // 8.6.1.1.
-    (Break::RangeMalformed, "dicomweb-range-requests", "206 with Content-Range \"\""),
+    (Break::RangeMalformed, "dicomweb-range-requests", "206 with an invalid 0-character Content-Range"),
     // 8.8, 8.9.3.2 and Annex H.
     (Break::CapabilitiesNoCharset, "dicomweb-capabilities", "documents no character set"),
     (Break::CapabilitiesNotApplication, "dicomweb-capabilities", "holds 0 \"application\" elements"),
@@ -39,10 +39,10 @@ const BREAKS: &[(Break, &str, &str)] = &[
     (Break::NonIdempotent, "dicomweb-search-paging", "sent twice returned"),
     (Break::PagingWarningNoUrl, "dicomweb-search-paging", "where the URL of the service is required"),
     // 8.3.4.1.1, 8.3.4.4.1, 10.6.2.
-    (Break::HierarchyIgnored, "dicomweb-search-matching", "2.25.299792458299792458299792458299792458/series: no Series matches"),
+    (Break::HierarchyIgnored, "dicomweb-search-matching", "(value withheld: identifying; 41 characters)/series: no Series matches"),
     (Break::DateTimeSeparate, "dicomweb-search-matching", "combined date-time matching returns it"),
     (Break::XmlEmptyNotNative, "dicomweb-search-matching", "not an empty NativeDicomModel root element"),
-    (Break::MatchIgnored, "dicomweb-search-matching", "SeriesInstanceUID=2.25.299792458299792458299792458299792458: no Series matches"),
+    (Break::MatchIgnored, "dicomweb-search-matching", "SeriesInstanceUID=(value withheld: identifying; 41 characters): no Series matches"),
     // 8.3.4, 8.3.4.2, 8.3.4.5, 8.3.4.6, 10.6.1.2.
     (Break::SearchParameterRejected, "dicomweb-search-matching-parameters", "multiplevaluematching=false answered 400"),
     (Break::FuzzyDespiteFalse, "dicomweb-search-matching-parameters", "fuzzymatching=false, so the search is performed without Fuzzy Matching"),
@@ -196,7 +196,7 @@ const ADVISORIES: &[(Break, &str, &str, bool)] = &[
     (Break::StoreConflictEmpty, "dicomweb-error-responses", "POST /dicomweb/studies answered 409 with no payload", true),
     (Break::Store202Empty, "dicomweb-error-responses", "answered 202 with no payload; the payload of a 202 should contain a Status Report", true),
     (Break::TypeQuoted, "dicomweb-payload-headers", "quote the \"type\" parameter, which should not contain quote marks", false),
-    (Break::DuplicateContentId, "dicomweb-payload-headers", "Content-ID <frame@mock> names more than one part", false),
+    (Break::DuplicateContentId, "dicomweb-payload-headers", "the same 12-character Content-ID names more than one part", false),
     (Break::IncludefieldIgnored, "dicomweb-search-matching-parameters", "includefield=00081030: the Study result lacks StudyDescription (0008,1030)", false),
     (Break::IncludefieldAllIgnored, "dicomweb-search-matching-parameters", "includefield=all: the Study result lacks StudyDescription (0008,1030)", false),
     (Break::StoreWarningWithoutStatus, "dicomweb-store", "holds no DICOM Status Code", true),
@@ -314,7 +314,10 @@ fn a_metadata_value_outside_its_vr_fails_the_json_model_check() {
     let check = run.object_check("intrinsic-wsi-dicom-json-model");
     assert_eq!(check.status, ValidationStatus::Failed, "{}", check.message);
     assert!(
-        check.message.contains("DA Value \"2026-01-01\"")
+        // Study Date is withheld (PS3.15 Table E.1-1): its length is given.
+        check.message.contains(
+            "DA Value (value withheld: identifying; 10 characters): not of the form YYYYMMDD"
+        ) && !check.message.contains("2026-01-01")
             && check.message.contains("F.1 and F.2.3"),
         "{}",
         check.message
@@ -400,4 +403,59 @@ fn a_header_value_of_obs_text_is_read() {
         .find(|check| check.name == "dicomweb-response-messages")
         .unwrap();
     assert_eq!(check.status, DicomWebStatus::Passed, "{}", check.message);
+}
+
+/// The searches match on the slide's Patient's Name, Patient ID, Accession
+/// Number and Study Date, which PS3.15 Table E.1-1 removes or replaces: the
+/// failures they bring, the request lines and the exchanges of the report
+/// withhold those Values (`disclosure`), so no part of it shows them.
+#[test]
+fn search_reports_withhold_the_identifying_values_they_match_on() {
+    let (_root, slide) = slide();
+    let run = run(
+        Arc::clone(&slide),
+        &[
+            Break::FuzzyDespiteFalse,
+            Break::MatchingKeyIgnored,
+            Break::DateTimeSeparate,
+        ],
+        |_| {},
+    );
+    for name in [
+        "dicomweb-search-matching-parameters",
+        "dicomweb-search-matching-attributes",
+        "dicomweb-search-matching",
+    ] {
+        assert_eq!(run.status(name), DicomWebStatus::Failed, "{name}");
+    }
+    let fuzzy = &run.check("dicomweb-search-matching-parameters").message;
+    assert!(
+        fuzzy.contains("PatientName=(value withheld: identifying; 23 characters)")
+            && fuzzy.contains("whose PatientName is (value withheld: identifying; 20 characters)"),
+        "{fuzzy}"
+    );
+    let json = serde_json::to_string(&run.report).unwrap();
+    for planted in ["RESEARCH", "Research placeholder", "19700101", "Mock Study"] {
+        assert!(!json.contains(planted), "{planted} in {json}");
+    }
+}
+
+#[test]
+fn reports_withhold_patient_values_in_server_headers() {
+    let (_root, slide) = slide();
+    let run = run(
+        Arc::clone(&slide),
+        &[Break::PagingWarningNoUrl, Break::FrameLocationForeign],
+        |_| {},
+    );
+    assert_eq!(run.status("dicomweb-search-paging"), DicomWebStatus::Failed);
+    assert_eq!(
+        run.status("dicomweb-retrieve-frames"),
+        DicomWebStatus::Failed
+    );
+    let report = serde_json::to_string(&run.report).unwrap();
+    assert!(!report.contains("PatientSentinel"), "{report}");
+    for uid in [&slide.study, &slide.series, &slide.instance] {
+        assert!(!report.contains(uid), "identifying UID in {report}");
+    }
 }

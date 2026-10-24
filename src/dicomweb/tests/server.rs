@@ -156,8 +156,8 @@ fn a_conforming_origin_server_passes_every_required_check() {
         );
     }
     assert_eq!(
-        run.report.instance.as_deref(),
-        Some(slide.instance.as_str())
+        run.report.instance,
+        Some(crate::validation::disclosure::withheld(&slide.instance).to_string())
     );
     assert!(!run.report.has_failures());
     // Each frames request names the Frames' own media type and syntax.

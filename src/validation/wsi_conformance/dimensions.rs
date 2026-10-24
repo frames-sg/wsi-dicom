@@ -12,6 +12,7 @@ use dicom_object::mem::InMemElement;
 use dicom_object::InMemDicomObject;
 
 use super::wsi_image::{sequence, string, tag_values};
+use crate::validation::disclosure::{shown, withholds};
 use crate::validation::iod::{dicom_edition, EDITION};
 use crate::validation::iod::{raw_tag, tag_text};
 
@@ -130,9 +131,10 @@ fn private_creator(
         .collect();
     if !reserved.is_empty() && !reserved.contains(&declared) {
         violations.push(format!(
-            "{label} > {} \"{declared}\" is not the Private Creator \"{}\" that reserves the block of {} ({CITATION})",
+            "{label} > {} {} is not the Private Creator {} that reserves the block of {} ({CITATION})",
             tag_text(raw_tag(creator_tag)),
-            reserved[0],
+            shown(creator_tag, &declared),
+            shown(block, &reserved[0]),
             tag_text(raw_tag(pointer))
         ));
     }
@@ -194,7 +196,7 @@ fn frame_indices(
             continue;
         }
         let scale = || physical_scale(dimension.pointer, object, shared, per_frame);
-        if let Some(departure) = departure(map, scale) {
+        if let Some(departure) = departure(map, dimension.pointer, scale) {
             violations.push(format!(
                 "{departure} for {name}; Frames assigned the same index shall contain nominally the same Value ({CITATION})"
             ));
@@ -258,19 +260,25 @@ impl Seen {
 /// Position in Total Image Pixel Matrix whatever their VR), text and Sequence
 /// content are discrete, so they are compared exactly; decimal Values (DS, FL,
 /// FD) are physical coordinates, which `decimal_departure` compares.
-fn departure(map: &BTreeMap<u32, Seen>, scale: impl FnOnce() -> Option<Scale>) -> Option<String> {
+/// The Values of `pointer`, the indexed Attribute, are shown as
+/// `disclosure` allows.
+fn departure(
+    map: &BTreeMap<u32, Seen>,
+    pointer: Tag,
+    scale: impl FnOnce() -> Option<Scale>,
+) -> Option<String> {
     if map.values().all(Seen::all_decimal) {
-        decimal_departure(map, scale)
+        decimal_departure(map, pointer, scale)
     } else {
-        exact_departure(map)
+        exact_departure(map, pointer)
     }
 }
 
 /// The first index whose Frames hold two different Values.
-fn exact_departure(map: &BTreeMap<u32, Seen>) -> Option<String> {
+fn exact_departure(map: &BTreeMap<u32, Seen>, pointer: Tag) -> Option<String> {
     map.iter().find_map(|(index, seen)| {
         let (first, unlike) = (seen.first.as_ref()?, seen.unlike.as_ref()?);
-        Some(match (first.shown(), unlike.shown()) {
+        Some(match (first.shown(pointer), unlike.shown(pointer)) {
             (Some(first), Some(unlike)) => {
                 format!("Frames with index {index} have different Values, {first} and {unlike},")
             }
@@ -288,6 +296,7 @@ fn exact_departure(map: &BTreeMap<u32, Seen>) -> Option<String> {
 /// Attribute, where one is known, and are otherwise compared exactly.
 fn decimal_departure(
     map: &BTreeMap<u32, Seen>,
+    pointer: Tag,
     scale: impl FnOnce() -> Option<Scale>,
 ) -> Option<String> {
     let points: Vec<(u32, &[Vec<f64>])> = map
@@ -304,12 +313,12 @@ fn decimal_departure(
             .iter()
             .all(|(_, values)| values.iter().all(|value| value.len() == width));
     match points.as_slice() {
-        _ if !uniform => exact_departure(map),
+        _ if !uniform => exact_departure(map, pointer),
         [(index, values)] => match scale() {
-            Some(scale) => spread_beyond(*index, values, &scale),
-            None => exact_departure(map),
+            Some(scale) => spread_beyond(*index, values, pointer, &scale),
+            None => exact_departure(map, pointer),
         },
-        _ => nearer_another_index(&points),
+        _ => nearer_another_index(&points, pointer),
     }
 }
 
@@ -362,7 +371,7 @@ fn physical_scale(
 }
 
 /// The Values of a lone index that spread, in some component, beyond `scale`.
-fn spread_beyond(index: u32, values: &[Vec<f64>], scale: &Scale) -> Option<String> {
+fn spread_beyond(index: u32, values: &[Vec<f64>], pointer: Tag, scale: &Scale) -> Option<String> {
     let width = values.first().map_or(0, Vec::len);
     (0..width).find_map(|component| {
         let (low, high) = values.iter().map(|value| value[component]).fold(
@@ -371,8 +380,11 @@ fn spread_beyond(index: u32, values: &[Vec<f64>], scale: &Scale) -> Option<Strin
         );
         (high - low > scale.extent).then(|| {
             format!(
-                "Frames with index {index} have Values from {low} to {high}, which spread more than {}, {}, although no other index competes with it,",
-                scale.what, scale.extent
+                "Frames with index {index} have Values from {} to {}, which spread more than {}, {}, although no other index competes with it,",
+                number(pointer, &low.to_string()),
+                number(pointer, &high.to_string()),
+                scale.what,
+                scale.extent
             )
         })
     })
@@ -383,7 +395,7 @@ fn spread_beyond(index: u32, values: &[Vec<f64>], scale: &Scale) -> Option<Strin
 /// Typical Values are searched in order of their first component, so only
 /// those within twice a Frame's distance from its own typical Value are
 /// compared.
-fn nearer_another_index(points: &[(u32, &[Vec<f64>])]) -> Option<String> {
+fn nearer_another_index(points: &[(u32, &[Vec<f64>])], pointer: Tag) -> Option<String> {
     let mut typical: Vec<(u32, Vec<f64>)> = points
         .iter()
         .map(|(index, values)| (*index, median(values)))
@@ -409,9 +421,9 @@ fn nearer_another_index(points: &[(u32, &[Vec<f64>])]) -> Option<String> {
                 if other_index != index && distance(value, other) < gap / 2.0 {
                     return Some(format!(
                         "a Frame with index {index} has Value {}, nearer to the typical Value {} of index {other_index} than half the gap from the typical Value {} of index {index}, so the two indices cannot be told apart",
-                        shown(value),
-                        shown(other),
-                        shown(center)
+                        number(pointer, &joined(value)),
+                        number(pointer, &joined(other)),
+                        number(pointer, &joined(center))
                     ));
                 }
             }
@@ -444,12 +456,22 @@ fn distance(left: &[f64], right: &[f64]) -> f64 {
         .sqrt()
 }
 
-fn shown<T: ToString>(value: &[T]) -> String {
+fn joined<T: ToString>(value: &[T]) -> String {
     value
         .iter()
         .map(T::to_string)
         .collect::<Vec<_>>()
         .join("\\")
+}
+
+/// A numeric Value of `pointer` as a message shows it: as it is, or
+/// withheld (`disclosure`).
+fn number(pointer: Tag, value: &str) -> String {
+    if withholds(pointer) {
+        shown(pointer, value).to_string()
+    } else {
+        value.to_string()
+    }
 }
 
 /// The indexed Attribute of one Frame, from its Per-Frame Item or else the
@@ -464,12 +486,13 @@ enum Indexed {
 }
 
 impl Indexed {
-    /// The Value as a message shows it; Sequence content is not shown.
-    fn shown(&self) -> Option<String> {
+    /// The Value of `pointer` as a message shows it; Sequence content is
+    /// not shown.
+    fn shown(&self, pointer: Tag) -> Option<String> {
         match self {
-            Indexed::Decimals(numbers) => Some(shown(numbers)),
-            Indexed::Integers(numbers) => Some(shown(numbers)),
-            Indexed::Text(text) => Some(format!("\"{text}\"")),
+            Indexed::Decimals(numbers) => Some(number(pointer, &joined(numbers))),
+            Indexed::Integers(numbers) => Some(number(pointer, &joined(numbers))),
+            Indexed::Text(text) => Some(shown(pointer, text).to_string()),
             Indexed::Items(_) => None,
         }
     }

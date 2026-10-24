@@ -26,6 +26,7 @@ mod matcher;
 
 use super::tree::Tree;
 use super::{Findings, CITATION, KEY_OBJECT_SELECTION};
+use crate::validation::disclosure::shown;
 use crate::validation::iod::structured_report::{template, DocumentConstraints, Template};
 use crate::validation::iod::{items, string_value};
 use matcher::Matcher;
@@ -131,7 +132,8 @@ fn declaration(
         let identifier = declared.identifier.clone();
         findings.push(|| {
             format!(
-                "{at} > Content Template Sequence > Template Identifier (0040,DB00) is \"{identifier}\"; the DICOM Template Identifier is a string of digits, without leading zeroes, and does not include the string \"TID\" ({CITATION} C.18.8.1.2)"
+                "{at} > Content Template Sequence > Template Identifier (0040,DB00) is {}; the DICOM Template Identifier is a string of digits, without leading zeroes, and does not include the string \"TID\" ({CITATION} C.18.8.1.2)",
+                shown(tags::TEMPLATE_IDENTIFIER, &identifier)
             )
         });
     }

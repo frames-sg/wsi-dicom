@@ -9,6 +9,7 @@ use super::report::Verdict;
 use super::response::{expect_json, expect_multipart, expect_status, integer, sec, tag_text, text};
 use super::url::Url;
 use super::{DicomWebTransaction, Session, Target};
+use crate::validation::disclosure::{shown_or, withheld};
 use crate::validation::is_image_storage_sop_class;
 
 pub(super) const JSON: &str = "application/dicom+json";
@@ -133,7 +134,8 @@ fn studies(session: &mut Session<'_>, target: &mut Target) {
                     .count();
                 if results.len() != 1 || matching != 1 {
                     verdict.fail(format!(
-                        "matching Study Instance UID {study} returned {} results, {matching} with that UID; single value matching returns the one Study ({})",
+                        "matching Study Instance UID {} returned {} results, {matching} with that UID; single value matching returns the one Study ({})",
+                        withheld(&study),
                         results.len(),
                         sec("8.3.4.1.1")
                     ));
@@ -227,7 +229,8 @@ fn series(session: &mut Session<'_>, target: &mut Target, study: &str) -> Vec<In
         .collect();
     match target.series.clone() {
         Some(series) if !uids.contains(&series) && !verdict.failed() => verdict.fail(format!(
-            "Series {series} is not among the {} Series the search returned ({})",
+            "Series {} is not among the {} Series the search returned ({})",
+            withheld(&series),
             uids.len(),
             sec("10.6.1.1")
         )),
@@ -332,7 +335,8 @@ fn choose_instance(target: &mut Target, results: &[InMemDicomObject], verdict: &
         });
         if !listed && !results.is_empty() {
             verdict.fail(format!(
-                "Instance {instance} is not among the {} Instances the search returned ({})",
+                "Instance {} is not among the {} Instances the search returned ({})",
+                withheld(instance),
                 results.len(),
                 sec("10.6.1.1")
             ));
@@ -395,6 +399,13 @@ fn paging(
         }
     };
     let expected: Vec<Option<String>> = listed.iter().map(|found| text(found, key)).collect();
+    let shown_values = |values: &[Option<String>]| {
+        values
+            .iter()
+            .map(|value| shown_or(key, value.as_deref(), "absent"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let again = session.url(&path, Some(query));
     if let Some(exchange) = session.send(&mut verdict, &Request::get(again, JSON)) {
         if let Some(results) = search_results(&mut verdict, &exchange) {
@@ -402,10 +413,10 @@ fn paging(
                 results.iter().map(|result| text(result, key)).collect();
             if returned != expected {
                 verdict.fail(format!(
-                    "{} sent twice returned {:?} and then {:?}; two identical searches return the same ordered list of matches ({})",
+                    "{} sent twice returned [{}] and then [{}]; two identical searches return the same ordered list of matches ({})",
                     exchange.request_line(),
-                    expected,
-                    returned,
+                    shown_values(&expected),
+                    shown_values(&returned),
                     sec("8.3.4.4.1")
                 ));
             }
@@ -425,9 +436,9 @@ fn paging(
             results.iter().map(|result| text(result, key)).collect();
         if returned.len() != 1 || returned[0] != expected[offset] {
             verdict.fail(format!(
-                "{line} returned {:?}; the unpaged search lists {:?} at offset {offset} of the same ordered list ({})",
-                returned,
-                expected[offset],
+                "{line} returned [{}]; the unpaged search lists {} at offset {offset} of the same ordered list ({})",
+                shown_values(&returned),
+                shown_or(key, expected[offset].as_deref(), "absent"),
                 sec("8.3.4.4.1")
             ));
         }
@@ -466,7 +477,9 @@ pub(super) fn warning_agent(verdict: &mut Verdict, line: &str, value: &str) {
         .unwrap_or_default();
     if Url::parse(agent).is_err() {
         verdict.fail(format!(
-            "{line}: Warning {value:?} names {agent:?} where the URL of the service is required ({})",
+            "{line}: Warning {} names {} where the URL of the service is required ({})",
+            withheld(value),
+            withheld(agent),
             sec("8.3.4.4.1 and 10.6.3.1 Table 10.6.3-1")
         ));
     }
@@ -541,8 +554,9 @@ fn modality_matches(
         let modality = text(result, tags::MODALITY);
         if modality.as_deref() != Some("SM") {
             verdict.fail(format!(
-                "{}: a result has Modality {modality:?}, which does not match SM ({})",
+                "{}: a result has Modality {}, which does not match SM ({})",
                 exchange.request_line(),
+                shown_or(tags::MODALITY, modality.as_deref(), "absent"),
                 sec("8.3.4.1.1")
             ));
         }
@@ -665,9 +679,16 @@ fn empty_result(verdict: &mut Verdict, exchange: &Exchange) {
     }
     let body = String::from_utf8_lossy(&exchange.body);
     if body.trim() != "[]" {
-        let shown: String = body.chars().take(80).collect();
+        // A JSON array or object may hold the DICOM JSON of a match, whose
+        // Values messages withhold (`disclosure`): it is described, not
+        // quoted.
+        let shown = match body.trim_start().as_bytes().first() {
+            Some(b'[') => format!("a JSON array of {} bytes", body.len()),
+            Some(b'{') => format!("a JSON object of {} bytes", body.len()),
+            _ => format!("a non-JSON payload of {} bytes", body.len()),
+        };
         verdict.fail(format!(
-            "{line}: no Series matches, and the payload is {shown:?}; it is an empty JSON array ([]) ({})",
+            "{line}: no Series matches, and the payload is {shown}; it is an empty JSON array ([]) ({})",
             sec("8.3.4.4.1")
         ));
     }
@@ -727,15 +748,14 @@ fn accept_required(session: &mut Session<'_>, study: &str) {
     };
     if let Some(exchange) = session.send(&mut verdict, &request) {
         expect_status(&mut verdict, &exchange, &[406], "8.7.5");
-        let essence = exchange
-            .media_type()
-            .and_then(Result::ok)
-            .map(|media| media.essence);
-        if !exchange.body.is_empty() && essence.as_deref() != Some("text/html") {
+        let media = exchange.media_type().and_then(Result::ok);
+        if !exchange.body.is_empty()
+            && media.as_ref().map(|media| media.essence.as_str()) != Some("text/html")
+        {
             verdict.advise(format!(
                 "{}: the Status Report of a request without an Acceptable Media Type is {}; it should be text/html, the default Media Type of the Text Resource Category ({})",
                 exchange.request_line(),
-                essence.as_deref().unwrap_or("without Content-Type"),
+                media.as_ref().map_or("without Content-Type", |media| media.reported_essence()),
                 sec("8.6.3")
             ));
         }

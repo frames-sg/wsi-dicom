@@ -49,6 +49,7 @@ use std::path::{Path, PathBuf};
 
 use dicom_core::Tag;
 
+use super::disclosure::shown;
 use super::iod::file_set::basic_directory_sop_class;
 use super::iod::{Family, EDITION};
 use super::{intrinsic_check, ValidationCheck, ValidationOptions, ValidationStatus};
@@ -257,7 +258,10 @@ fn check_media_storage(directory: &Directory, family: &mut Family) {
             format!(
                 "Media Storage SOP Class UID (0002,0002) of the DICOMDIR is {}, but shall be the \
                  Media Storage Directory Storage SOP Class {expected} (PS3.10 8.6)",
-                class.map_or_else(|| "absent".to_string(), |class| format!("\"{class}\""))
+                class.map_or_else(
+                    || "absent".to_string(),
+                    |class| shown(MEDIA_STORAGE_SOP_CLASS, &class).to_string()
+                )
             )
         });
     }
@@ -286,16 +290,17 @@ fn check_file_set_id(directory: &Directory, family: &mut Family) {
     let length = id.chars().count();
     let outside = id
         .chars()
-        .find(|character| !file_id::in_repertoire(*character));
+        .enumerate()
+        .find(|(_, character)| !file_id::in_repertoire(*character));
     if length > 16 || outside.is_some() {
+        let shown = shown(FILE_SET_ID, &id);
         family.push(|| {
             format!(
-                "File-set ID (0004,1130) \"{}\" has {length} characters{}, but a File-set ID is \
+                "File-set ID (0004,1130) {shown} has {length} characters{}, but a File-set ID is \
                  zero to 16 characters of uppercase A-Z, 0-9 and _ (PS3.10 8.1, 8.5)",
-                id.escape_default(),
-                outside.map_or_else(String::new, |character| format!(
-                    " including '{}'",
-                    character.escape_default()
+                outside.map_or_else(String::new, |(index, character)| format!(
+                    " including {}",
+                    shown.character(character, index + 1)
                 ))
             )
         });

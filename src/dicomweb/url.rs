@@ -3,6 +3,12 @@
 
 use std::fmt;
 
+use dicom_core::dictionary::{DataDictionary, DataDictionaryEntry};
+use dicom_core::Tag;
+use dicom_dictionary_std::StandardDataDictionary;
+
+use crate::validation::disclosure::{shown, withheld, Nesting};
+
 /// An absolute `http` or `https` URL without userinfo or fragment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Url {
@@ -13,6 +19,8 @@ pub(crate) struct Url {
     /// The path, starting with `/` (or empty).
     path: String,
     query: Option<String>,
+    /// A server-provided reference can contain identifiers in any component.
+    server_reference: bool,
 }
 
 /// `value` percent-encoded for a query component: unreserved characters as
@@ -34,20 +42,22 @@ impl Url {
     /// be logged with every request, so a token is passed by environment
     /// variable instead.
     pub(crate) fn parse(text: &str) -> Result<Self, String> {
+        let shown = || shown_reference(text);
         if text.bytes().any(|byte| byte <= b' ' || byte >= 0x7F) {
             return Err(format!(
-                "URL {text:?} contains whitespace, control or non-ASCII characters"
+                "URL {:?} contains whitespace, control or non-ASCII characters",
+                shown()
             ));
         }
         let (scheme, rest) = text
             .split_once("://")
-            .ok_or_else(|| format!("URL {text:?} is not absolute (scheme://host/path)"))?;
+            .ok_or_else(|| format!("URL {:?} is not absolute (scheme://host/path)", shown()))?;
         let scheme = scheme.to_ascii_lowercase();
         if scheme != "http" && scheme != "https" {
-            return Err(format!("URL {text:?} is not http or https"));
+            return Err(format!("URL {:?} is not http or https", shown()));
         }
         if rest.contains('#') {
-            return Err(format!("URL {text:?} has a fragment"));
+            return Err(format!("URL {:?} has a fragment", shown()));
         }
         let (before_query, query) = match rest.split_once('?') {
             Some((before, query)) => (before, Some(query.to_string())),
@@ -59,17 +69,19 @@ impl Url {
         };
         if authority.contains('@') {
             return Err(format!(
-                "URL {text:?} carries userinfo; pass credentials with --bearer-token-env instead"
+                "URL {:?} carries userinfo; pass credentials with --bearer-token-env instead",
+                shown()
             ));
         }
         if authority.is_empty() {
-            return Err(format!("URL {text:?} has no host"));
+            return Err(format!("URL {:?} has no host", shown()));
         }
         Ok(Self {
             scheme,
             authority: authority.to_ascii_lowercase(),
             path: path.to_string(),
             query,
+            server_reference: false,
         })
     }
 
@@ -137,15 +149,49 @@ impl Url {
             authority: self.authority.clone(),
             path: format!("{}{suffix}", self.path.trim_end_matches('/')),
             query: query.map(str::to_string),
+            server_reference: self.server_reference,
         }
     }
 
-    /// The path and query, for reports.
-    pub(crate) fn target(&self) -> String {
-        match &self.query {
-            Some(query) => format!("{}?{query}", self.path_or_root()),
-            None => self.path_or_root().to_string(),
+    /// The URL for reports: `target`'s path and query after the origin.
+    pub(crate) fn reported(&self) -> String {
+        if self.server_reference {
+            return withheld(&self.to_string()).to_string();
         }
+        format!("{}://{}{}", self.scheme, self.authority, self.target())
+    }
+
+    /// The path and query, for reports. The value of a query key naming an
+    /// Attribute that messages withhold (`disclosure`), such as
+    /// PatientID=... or 00100010=..., is shown as messages show that
+    /// Attribute's Values: by its length.
+    pub(crate) fn target(&self) -> String {
+        if self.server_reference {
+            return withheld(&self.to_string()).to_string();
+        }
+        let path = self
+            .path_or_root()
+            .split('/')
+            .scan(false, |identifier, segment| {
+                let shown = if *identifier && !segment.is_empty() {
+                    withheld(segment).to_string()
+                } else {
+                    segment.to_string()
+                };
+                *identifier = matches!(segment, "studies" | "series" | "instances");
+                Some(shown)
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        match &self.query {
+            Some(query) => format!("{path}?{}", shown_query(query)),
+            None => path,
+        }
+    }
+
+    pub(crate) fn server_reference(mut self) -> Self {
+        self.server_reference = true;
+        self
     }
 
     fn path_or_root(&self) -> &str {
@@ -159,10 +205,10 @@ impl Url {
     /// Resolves an RFC 3986 URI-reference against this URL (RFC 3986 5.2.2).
     pub(crate) fn resolve(&self, reference: &str) -> Result<Url, String> {
         if reference.contains("://") {
-            return Url::parse(reference);
+            return Url::parse(reference).map(Url::server_reference);
         }
         if reference.starts_with("//") {
-            return Url::parse(&format!("{}:{reference}", self.scheme));
+            return Url::parse(&format!("{}:{reference}", self.scheme)).map(Url::server_reference);
         }
         let reference = reference.split('#').next().unwrap_or_default();
         let (path, query) = match reference.split_once('?') {
@@ -172,6 +218,7 @@ impl Url {
         let merged = if path.is_empty() {
             return Ok(Url {
                 query: query.or_else(|| self.query.clone()),
+                server_reference: true,
                 ..self.clone()
             });
         } else if path.starts_with('/') {
@@ -186,8 +233,77 @@ impl Url {
             authority: self.authority.clone(),
             path: remove_dot_segments(&merged),
             query,
+            server_reference: true,
         })
     }
+}
+
+/// Untrusted URI references can carry identifiers or credentials in any component.
+pub(crate) fn shown_reference(text: &str) -> String {
+    withheld(text).to_string()
+}
+
+/// `query` with the values of its parameters that name withheld Attributes
+/// withheld.
+fn shown_query(query: &str) -> String {
+    query
+        .split('&')
+        .map(|parameter| match parameter.split_once('=') {
+            Some((key, value)) if !value.is_empty() => match withheld_key(key) {
+                Some(tag) => format!("{key}={}", shown(tag, &percent_decoded(value))),
+                None => parameter.to_string(),
+            },
+            _ => parameter.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// The Attribute a query key names (PS3.18 8.3.4.1: a keyword or tag, or a
+/// dotted path of them into Sequences), when messages withhold its Values.
+fn withheld_key(key: &str) -> Option<Tag> {
+    let mut tags = key.split('.').map(|part| {
+        let hex = part.len() == 8 && part.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if hex {
+            let value = u32::from_str_radix(part, 16).ok()?;
+            Some(Tag((value >> 16) as u16, value as u16))
+        } else {
+            StandardDataDictionary
+                .by_name(part)
+                .map(|entry| entry.tag())
+        }
+    });
+    let mut nesting = Nesting::default();
+    let mut last = tags.next()??;
+    for tag in tags {
+        nesting = nesting.below(last);
+        last = tag?;
+    }
+    nesting.withholds(last).then_some(last)
+}
+
+/// `value` with its %XX escapes decoded (RFC 3986 2.1), as text.
+fn percent_decoded(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let escaped = (bytes[index] == b'%')
+            .then(|| value.get(index + 1..index + 3))
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match escaped {
+            Some(byte) => {
+                decoded.push(byte);
+                index += 3;
+            }
+            None => {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 impl fmt::Display for Url {
@@ -249,6 +365,28 @@ mod tests {
     }
 
     #[test]
+    fn reports_withhold_instance_uids_and_server_supplied_references() {
+        let base = Url::parse("https://example.org/dicomweb").unwrap();
+        let url = base.join(
+            "/studies/1.2.987/series/1.2.988/instances/1.2.989/frames/1",
+            None,
+        );
+        assert!(!url.reported().contains("1.2.98"));
+        assert!(url.target().ends_with("/frames/1"));
+        assert!(url.to_string().contains("1.2.989"));
+        for uri in [
+            "/PatientSentinel/bulk",
+            "https://example.org/PatientSentinel?token=SecretSentinel",
+        ] {
+            let resolved = base.resolve(uri).unwrap();
+            assert!(!resolved.reported().contains("Sentinel"));
+            assert!(resolved.to_string().contains("PatientSentinel"));
+        }
+        let error = Url::parse("https://example.org/PatientSentinel bad").unwrap_err();
+        assert!(!error.contains("PatientSentinel"));
+    }
+
+    #[test]
     fn references_resolve_per_rfc_3986() {
         let base = Url::parse("https://Example.org:443/dicomweb/studies/1.2/metadata").unwrap();
         for (reference, expected) in [
@@ -278,6 +416,33 @@ mod tests {
             base.join("/studies", Some("limit=1")).target(),
             "/dicomweb/studies?limit=1"
         );
+    }
+
+    /// A reported request line withholds the query values that match on
+    /// identifying Attributes, by keyword, by tag or through a Sequence,
+    /// while the request sent keeps them.
+    #[test]
+    fn reported_targets_withhold_identifying_query_values() {
+        let base = Url::parse("https://example.org/dicomweb").unwrap();
+        let url = base.join(
+            "/studies",
+            Some("StudyInstanceUID=1.2.3&PatientName=DOE%5EJANE&00100020=MRN12345&RequestAttributesSequence.AccessionNumber=A9&StudyDate=20260102-&includefield=00100010&limit=1&PatientID="),
+        );
+        let withheld = |count: usize| format!("(value withheld: identifying; {count} characters)");
+        assert_eq!(
+            url.target(),
+            format!(
+                "/dicomweb/studies?StudyInstanceUID={}&PatientName={}&00100020={}&RequestAttributesSequence.AccessionNumber={}&StudyDate={}&includefield=00100010&limit=1&PatientID=",
+                withheld(5),
+                withheld(8),
+                withheld(8),
+                withheld(2),
+                withheld(9)
+            )
+        );
+        assert!(url
+            .to_string()
+            .contains("PatientName=DOE%5EJANE&00100020=MRN12345"));
     }
 
     #[test]

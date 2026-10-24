@@ -4,9 +4,11 @@
 
 #[cfg(feature = "dicomweb")]
 mod breaks;
+#[cfg(feature = "dicomweb")]
+mod conventions;
 pub(crate) mod fixture;
 #[cfg(feature = "dicomweb")]
-mod mock;
+pub(super) mod mock;
 #[cfg(feature = "dicomweb")]
 mod origin;
 #[cfg(feature = "dicomweb")]

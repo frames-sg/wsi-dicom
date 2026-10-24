@@ -3,6 +3,7 @@ use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
 use super::fields::{optional_string, required_string, required_type_two_string, sequence_items};
 use crate::uid::is_valid_dicom_uid;
+use crate::validation::disclosure::shown;
 
 pub(super) fn validate_specimen_container_rule(object: &DefaultDicomObject) -> Result<(), String> {
     required_string(object, tags::CONTAINER_IDENTIFIER, "Container Identifier")?;
@@ -157,16 +158,31 @@ pub(super) fn clinical_identity(object: &DefaultDicomObject) -> Result<ClinicalI
     let study_uid = required_string(object, tags::STUDY_INSTANCE_UID, "Study Instance UID")?;
     let series_uid = required_string(object, tags::SERIES_INSTANCE_UID, "Series Instance UID")?;
     let frame_of_reference_uid = optional_string(object, tags::FRAME_OF_REFERENCE_UID)?;
-    for (name, value) in [
-        ("Study Instance UID", Some(&study_uid)),
-        ("Series Instance UID", Some(&series_uid)),
-        ("Frame of Reference UID", frame_of_reference_uid.as_ref()),
+    for (tag, name, value) in [
+        (
+            tags::STUDY_INSTANCE_UID,
+            "Study Instance UID",
+            Some(&study_uid),
+        ),
+        (
+            tags::SERIES_INSTANCE_UID,
+            "Series Instance UID",
+            Some(&series_uid),
+        ),
+        (
+            tags::FRAME_OF_REFERENCE_UID,
+            "Frame of Reference UID",
+            frame_of_reference_uid.as_ref(),
+        ),
     ] {
         let Some(value) = value else {
             continue;
         };
         if !is_valid_dicom_uid(value) {
-            return Err(format!("{name} is not a valid DICOM UID: {value:?}"));
+            return Err(format!(
+                "{name} is not a valid DICOM UID: {}",
+                shown(tag, value)
+            ));
         }
     }
     Ok(ClinicalIdentity {
@@ -208,7 +224,8 @@ pub(super) fn specimen_identities(
             let uid = required_string(item, tags::SPECIMEN_UID, "Specimen UID")?;
             if !is_valid_dicom_uid(&uid) {
                 return Err(format!(
-                    "Specimen Description item {index} has invalid Specimen UID {uid:?}"
+                    "Specimen Description item {index} has invalid Specimen UID {}",
+                    shown(tags::SPECIMEN_UID, &uid)
                 ));
             }
             let issuer = specimen_issuer(item, index)?;

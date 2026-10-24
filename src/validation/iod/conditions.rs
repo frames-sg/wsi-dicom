@@ -1847,7 +1847,7 @@ fn code_identifier(item: &InMemDicomObject) -> Option<String> {
     .find_map(|tag| string_value(item, tag, 1))
 }
 
-fn is_urn_or_url(value: &str) -> bool {
+pub(super) fn is_urn_or_url(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
     lower.starts_with("urn:") || lower.contains("://")
 }

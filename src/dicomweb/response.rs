@@ -24,17 +24,7 @@ fn status_report(exchange: &Exchange) -> String {
     if exchange.body.is_empty() {
         return String::new();
     }
-    let text: String = String::from_utf8_lossy(&exchange.body[..exchange.body.len().min(160)])
-        .chars()
-        .map(|character| {
-            if character.is_control() {
-                ' '
-            } else {
-                character
-            }
-        })
-        .collect();
-    format!(" ({:?})", text.trim())
+    format!(" ({} byte Status Report payload)", exchange.body.len())
 }
 
 /// Whether the status is one of `statuses`; records a violation otherwise.
@@ -87,7 +77,7 @@ pub(crate) fn expect_media_type(
         Some(Ok(media)) if media.essence != essence => {
             verdict.fail(format!(
                 "{line}: Content-Type is {}; {essence} is required ({})",
-                media.essence,
+                media.reported_essence(),
                 sec(reference)
             ));
             None
@@ -143,7 +133,7 @@ pub(crate) fn expect_multipart<'e>(
             if let Some(root) = root.filter(|root| *root != kind.essence) {
                 verdict.fail(format!(
                     "{line}: the \"type\" parameter is {}; {root} is required ({})",
-                    kind.essence,
+                    kind.reported_essence(),
                     sec(reference)
                 ));
             }

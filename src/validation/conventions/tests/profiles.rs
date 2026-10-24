@@ -259,3 +259,49 @@ fn a_result_shows_twenty_violations_and_counts_the_rest_unformatted() {
     assert!(message.ends_with("violation 19; and 5 more"), "{message}");
     assert_eq!(super::super::Violations::default().result(), Ok(()));
 }
+
+fn gated_report(scan: &Scan, name: &str, fail_on_conventions: bool) -> ValidationReport {
+    let dir = FixtureDir::new(name);
+    let options = ValidationOptions {
+        conventions: [ConventionProfile::Wg26].into(),
+        fail_on_conventions,
+        ..ValidationOptions::default()
+    };
+    validate_dicom_path_with_runner(scan.write(&dir.path), &options, &NoTools)
+        .expect("validation report")
+}
+
+#[test]
+fn fail_on_conventions_fails_validation_on_a_failed_check() {
+    // Type 3 in DICOM, Type 1 under WG26SP2025.
+    let scan = Scan::conformant(9).edit(VOLUME_1, |object| {
+        super::wg26::edit_specimen(object, |specimen| {
+            specimen
+                .remove_element(dicom_dictionary_std::tags::PRIMARY_ANATOMIC_STRUCTURE_SEQUENCE);
+        });
+    });
+    let ungated = gated_report(&scan, "gate-off", false);
+    assert!(ungated.conventions.has_failures());
+    assert!(!ungated.has_failures(), "{:#?}", dicom_failures(&ungated));
+    assert!(!ungated.conventions.fail_on_conventions);
+    let gated = gated_report(&scan, "gate-on", true);
+    assert!(gated.has_failures());
+    assert!(gated.conventions.fails_validation());
+    assert_eq!(gated.failed_checks(), 0, "the DICOM checks still pass");
+    let json = serde_json::to_value(&gated).expect("report JSON");
+    assert_eq!(json["conventions"]["fail_on_conventions"], true);
+}
+
+#[test]
+fn fail_on_conventions_ignores_advisories() {
+    // Two pyramid layers: an advisory, not a failed check.
+    let scan = Scan::conformant(10).without(VOLUME_3);
+    let gated = gated_report(&scan, "gate-advisory", true);
+    assert!(
+        advised(&gated).contains("convention-wg26-pyramid-layers"),
+        "{}",
+        describe(&gated)
+    );
+    assert!(!gated.conventions.has_failures(), "{}", describe(&gated));
+    assert!(!gated.has_failures(), "{:#?}", dicom_failures(&gated));
+}

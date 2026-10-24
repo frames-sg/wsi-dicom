@@ -5,7 +5,8 @@
 
 use std::collections::BTreeMap;
 
-use super::records::Record;
+use super::records::{Record, DIRECTORY_RECORD_TYPE};
+use crate::validation::disclosure::shown;
 use crate::validation::iod::file_set::directory_record;
 
 /// The Directory Record Types of the pathology-slide objects and their
@@ -54,9 +55,9 @@ impl Notes {
             };
             self.lines.insert(
                 format!(
-                    "{count} record{} of Directory Record Type \"{}\" not validated: {why}",
+                    "{count} record{} of Directory Record Type {} not validated: {why}",
                     if count == 1 { "" } else { "s" },
-                    record_type.escape_default()
+                    shown(DIRECTORY_RECORD_TYPE, &record_type)
                 ),
                 1,
             );

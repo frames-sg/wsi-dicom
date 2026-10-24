@@ -140,7 +140,7 @@ fn a_segmentation_shares_the_frame_of_reference_of_its_image() {
         &[segmentation(None), slide()],
         SEGMENTATION,
         ValidationStatus::Failed,
-        "whose Frame of Reference UID is 1.2.826.0.1.3680043.10.999.7.5, but the Segmentation's is absent; it shall have the same Frame of Reference (PS3.3 2026d A.51.1)",
+        "whose Frame of Reference UID is (value withheld: identifying; 30 characters), but the Segmentation's is absent; it shall have the same Frame of Reference (PS3.3 2026d A.51.1)",
     );
     assert_set(
         &[segmentation(Some(SLIDE_FRAME))],
@@ -304,6 +304,6 @@ fn a_synchronized_parametric_map_series_shares_one_frame_of_reference() {
         &[first, other, third],
         SYNCHRONIZATION,
         ValidationStatus::Failed,
-        "object-0.dcm has a Synchronization Frame of Reference UID and Frame of Reference UID 1.2.826.0.1.3680043.10.999.7.96, but 2 other Instance(s) of its Series have another, object-1.dcm with 1.2.826.0.1.3680043.10.999.7.98; all SOP Instances in the Series shall share the same Frame of Reference (PS3.3 2026d C.7.4.2.1.1)",
+        "object-0.dcm has a Synchronization Frame of Reference UID and Frame of Reference UID (value withheld: identifying; 31 characters), but 2 other Instance(s) of its Series have another, object-1.dcm with (value withheld: identifying; 31 characters); all SOP Instances in the Series shall share the same Frame of Reference (PS3.3 2026d C.7.4.2.1.1)",
     );
 }

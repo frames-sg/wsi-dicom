@@ -15,6 +15,7 @@ mod conventions;
 mod deidentification;
 mod dicom_json;
 mod digital_signatures;
+pub(crate) mod disclosure;
 mod discovery;
 mod doctor;
 mod encoding;
@@ -31,6 +32,7 @@ mod wsi_conformance;
 
 pub(crate) use codestream::check_retrieved_frames;
 use command_checks::*;
+pub(crate) use conventions::not_evaluated as conventions_not_evaluated;
 pub use conventions::{
     convention_catalog, ConventionAdvisory, ConventionCheck, ConventionEntry, ConventionKind,
     ConventionProfile, ConventionReport,
@@ -101,11 +103,13 @@ pub struct ValidationOptions {
     /// `Optional` (the default) also lists the optional VL WSI modules and
     /// attributes each object lacks; they are not failures.
     pub conformance: crate::ConformanceLevel,
-    /// Convention profiles to check as well (none by default). Their results
-    /// go to `ValidationReport::conventions`, never to `checks`, so they do
-    /// not make validation fail. `validate_dicom_path` runs them;
-    /// `validate_dicom_json_path` and `check_dicomweb_server` do not yet.
+    /// Convention profiles to check as well (none by default), on files,
+    /// DICOM JSON documents and DICOMweb objects alike. Their results go to
+    /// `ValidationReport::conventions`, never to `checks`.
     pub conventions: BTreeSet<ConventionProfile>,
+    /// Make a failed check of the selected convention profiles fail
+    /// validation (`ValidationReport::has_failures`). Advisories never do.
+    pub fail_on_conventions: bool,
 }
 
 impl Default for ValidationOptions {
@@ -122,6 +126,7 @@ impl Default for ValidationOptions {
             max_pixel_frame_bytes: 512 * 1024 * 1024,
             conformance: crate::ConformanceLevel::Optional,
             conventions: BTreeSet::new(),
+            fail_on_conventions: false,
         }
     }
 }
@@ -350,11 +355,13 @@ pub fn requirement_catalog() -> Vec<RequirementEntry> {
 }
 
 impl ValidationReport {
-    /// Whether any validation check failed.
+    /// Whether any validation check failed, or a convention check with
+    /// `ValidationOptions::fail_on_conventions` set.
     pub fn has_failures(&self) -> bool {
         self.checks
             .iter()
             .any(|check| check.status == ValidationStatus::Failed)
+            || self.conventions.fails_validation()
     }
 
     /// Count validation checks that passed.
@@ -525,7 +532,7 @@ pub(crate) fn validate_dicom_path_with_runner(
     let mut checks = Vec::new();
     let mut optional = Vec::new();
     let mut corpus = SetCorpus::default();
-    let mut convention_run = conventions::ConventionRun::new(&options.conventions);
+    let mut convention_run = conventions::ConventionRun::new(options);
     let origin = Origin::File {
         max_input_bytes: options.max_input_bytes,
     };

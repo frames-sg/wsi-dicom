@@ -5,6 +5,14 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use dicom_core::Tag;
+
+use crate::validation::disclosure::shown;
+
+/// Referenced File ID (0004,1500), whose Components messages show as the
+/// File-set Descriptor File ID's (0004,1141): Table E.1-1 lists neither.
+const FILE_ID: Tag = Tag(0x0004, 0x1500);
+
 /// PS3.10 8.2: at most eight Components per File ID.
 const MAX_COMPONENTS: usize = 8;
 /// PS3.10 8.2: one to eight characters per Component.
@@ -28,17 +36,21 @@ pub(super) fn defects(components: &[String]) -> Vec<String> {
         let length = component.chars().count();
         if length == 0 || length > MAX_COMPONENT_CHARS {
             defects.push(format!(
-                "Component \"{}\" has {length} characters, but a Component has one to \
+                "Component {} has {length} characters, but a Component has one to \
                  {MAX_COMPONENT_CHARS} (PS3.10 8.2)",
-                component.escape_default()
+                shown(FILE_ID, component)
             ));
         }
-        if let Some(character) = component.chars().find(|c| !in_repertoire(*c)) {
+        let outside = component
+            .chars()
+            .enumerate()
+            .find(|(_, c)| !in_repertoire(*c));
+        if let Some((index, character)) = outside {
+            let shown = shown(FILE_ID, component);
             defects.push(format!(
-                "Component \"{}\" contains '{}', outside the File ID repertoire of uppercase \
+                "Component {shown} contains {}, outside the File ID repertoire of uppercase \
                  A-Z, 0-9 and _ (PS3.10 8.5)",
-                component.escape_default(),
-                character.escape_default()
+                shown.character(character, index + 1)
             ));
         }
     }
@@ -78,10 +90,10 @@ pub(super) fn resolve(
     for (index, component) in components.iter().enumerate() {
         if !is_plain_segment(component) {
             return Err(Unresolved::Escape(format!(
-                "refused: Component \"{}\" is not a plain path segment, so the File ID could \
+                "refused: Component {} is not a plain path segment, so the File ID could \
                  leave the File-set root (path traversal; PS3.10 8.6 forbids referencing Files \
                  outside the File-set)",
-                component.escape_default()
+                shown(FILE_ID, component)
             )));
         }
         path.push(component);

@@ -48,7 +48,7 @@ pub(super) fn retrieve(session: &mut Session<'_>, target: &Target, held: &Held<'
     };
     let mut verdict = Verdict::default();
     let url = session.url(&path, None);
-    let label = PathBuf::from(url.to_string());
+    let label = PathBuf::from(url.reported());
     let accept = "multipart/related; type=\"application/dicom\"; transfer-syntax=*";
     if let Some(exchange) = session.send(&mut verdict, &Request::get(url, accept)) {
         if expect_status(&mut verdict, &exchange, &[200], "10.4.3.1") {
@@ -154,8 +154,11 @@ fn validate_file(
         let uid = meta.media_storage_sop_instance_uid.trim_end_matches('\0');
         if target.instance.as_deref() != Some(uid) {
             verdict.fail(format!(
-                "the retrieved Instance is {uid:?}, not {} ({})",
-                target.instance.as_deref().unwrap_or_default(),
+                "the retrieved Instance is {}, not {} ({})",
+                crate::validation::disclosure::withheld(uid),
+                crate::validation::disclosure::withheld(
+                    target.instance.as_deref().unwrap_or_default()
+                ),
                 sec("10.4.3.3.1")
             ));
         }
@@ -171,7 +174,7 @@ fn validate_file(
             ));
         }
     }
-    match (session.validate_file)(file.path(), &session.options.validation) {
+    match (session.validate_file)(file.path(), &session.file_options()) {
         Ok(report) => {
             let staged_path = file.path().to_path_buf();
             session

@@ -2,6 +2,9 @@
 //! C.12.1.1.2 Tables C.12-2 to C.12-5) and the repertoire they put in force
 //! for the text of a Data Set (PS3.5 6.1.2.5.4).
 
+use dicom_dictionary_std::tags;
+
+use crate::validation::disclosure::shown;
 use crate::validation::iod::Family;
 
 /// A graphic character set that Specific Character Set can designate.
@@ -278,10 +281,11 @@ pub(super) fn specific_character_set(raw: &[u8], label: &str, findings: &mut Fam
             let first = *first;
             findings.push(|| {
                 format!(
-                    "{label}: Value {} \"{value}\" names the character set of Value {} \"{}\" again; a character set shall not be used more than once (PS3.3 C.12.1.1.2)",
+                    "{label}: Value {} {} names the character set of Value {} {} again; a character set shall not be used more than once (PS3.3 C.12.1.1.2)",
                     index + 1,
+                    shown(tags::SPECIFIC_CHARACTER_SET, value),
                     first + 1,
-                    values[first]
+                    shown(tags::SPECIFIC_CHARACTER_SET, &values[first])
                 )
             });
         } else {

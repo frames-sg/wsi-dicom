@@ -12,6 +12,7 @@ use super::charset::{specific_character_set, Repertoire};
 use super::private::{is_creator, PrivateBlocks};
 use super::reader::{Failure, Source};
 use super::text::TextScanner;
+use crate::validation::disclosure::Nesting;
 use crate::validation::iod::{
     dictionary_vrs, element_label, is_private, item_admits_specific_character_set, long_length,
     raw_tag as raw, tag_text, Family, MAX_NESTING,
@@ -127,6 +128,8 @@ struct Context {
     group_length: Option<GroupLength>,
     private: PrivateBlocks,
     image: Image,
+    /// What messages withhold of the Values of this Data Set.
+    nesting: Nesting,
 }
 
 impl Context {
@@ -143,6 +146,7 @@ impl Context {
             group_length: None,
             private: PrivateBlocks::default(),
             image: Image::default(),
+            nesting: Nesting::default(),
         }
     }
 
@@ -156,6 +160,8 @@ impl Context {
             layout,
             repertoire: self.repertoire.clone(),
             in_private_sequence: self.in_private_sequence || is_private(sequence),
+            // Streamed, the Item's Value Type is not known yet.
+            nesting: self.nesting.below(sequence),
             ..Self::top(layout)
         }
     }
@@ -915,7 +921,9 @@ impl Walker<'_> {
         let length = u64::from(length);
         let label = || context.label(tag);
         let repertoire = context.repertoire.clone();
-        let mut scanner = vr.and_then(|vr| TextScanner::new(&repertoire, vr));
+        let mut scanner = vr
+            .and_then(|vr| TextScanner::new(&repertoire, vr))
+            .map(|scanner| scanner.withholding(context.nesting.withholds(tag)));
         let captured = tag == tags::SPECIFIC_CHARACTER_SET
             || tag.element() == 0x0000
             || is_creator(tag)

@@ -19,6 +19,7 @@ use std::ops::Range;
 use dicom_core::{Tag, VR};
 use dicom_encoding::text::{SpecificCharacterSet, TextCodec};
 
+use crate::validation::disclosure::shown;
 use crate::validation::iod::{long_length, MAX_NESTING};
 
 const PREAMBLE: usize = 128;
@@ -32,6 +33,8 @@ pub(super) const DIRECTORY_RECORD_SEQUENCE: Tag = Tag(0x0004, 0x1220);
 pub(super) const MAX_RECORDS: usize = 1_000_000;
 pub(super) const ICON_IMAGE_SEQUENCE: Tag = Tag(0x0088, 0x0200);
 pub(super) const REFERENCED_FILE_ID: Tag = Tag(0x0004, 0x1500);
+pub(super) const DIRECTORY_RECORD_TYPE: Tag = Tag(0x0004, 0x1430);
+const TRANSFER_SYNTAX_UID: Tag = Tag(0x0002, 0x0010);
 const SPECIFIC_CHARACTER_SET: Tag = Tag(0x0008, 0x0005);
 
 /// One Data Element of a Data Set or Directory Record. A Sequence keeps its
@@ -110,7 +113,7 @@ impl Record {
 
     /// Directory Record Type (0004,1430), or "" when absent.
     pub(super) fn record_type(&self) -> String {
-        self.get(Tag(0x0004, 0x1430))
+        self.get(DIRECTORY_RECORD_TYPE)
             .map(Value::text)
             .unwrap_or_default()
     }
@@ -148,13 +151,14 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Directory, String> {
     }
     let syntax = directory
         .meta
-        .get(&Tag(0x0002, 0x0010))
+        .get(&TRANSFER_SYNTAX_UID)
         .map(Value::text)
         .unwrap_or_default();
     if syntax != "1.2.840.10008.1.2.1" {
         return Err(format!(
-            "Transfer Syntax UID (0002,0010) is \"{syntax}\", but the DICOMDIR File shall use \
-             Explicit VR Little Endian 1.2.840.10008.1.2.1 (PS3.10 8.6); its records are not read"
+            "Transfer Syntax UID (0002,0010) is {}, but the DICOMDIR File shall use \
+             Explicit VR Little Endian 1.2.840.10008.1.2.1 (PS3.10 8.6); its records are not read",
+            shown(TRANSFER_SYNTAX_UID, &syntax)
         ));
     }
     while !reader.at_end() {

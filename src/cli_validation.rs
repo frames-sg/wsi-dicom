@@ -52,14 +52,13 @@ pub(crate) fn handle_validate(arguments: crate::cli_args::ValidateArgs) -> Resul
     let mut options = ValidationOptions::default();
     options.profile = profile;
     options.conformance = conformance.level();
-    options.conventions = conventions.into_iter().collect();
+    conventions.apply(&mut options);
     options.max_input_bytes = max_input_bytes;
     options.strict = strict;
     options.dcmvalidate_iod = dcmvalidate_iod;
     options.command_timeout_secs = command_timeout_secs;
     let report = validate_dicom_path(&path, &options)?;
     let has_failures = report.has_failures();
-    let failed_checks = report.failed_checks();
     let cli_report = ValidationCliReport {
         schema_version: VALIDATION_REPORT_SCHEMA,
         rule_set_id: rule_set_id(options.profile),
@@ -71,17 +70,31 @@ pub(crate) fn handle_validate(arguments: crate::cli_args::ValidateArgs) -> Resul
     })?;
     if has_failures {
         Err(Error::Validation {
-            reason: format!("{failed_checks} validation check(s) failed"),
+            reason: failure_reason(&report),
         })
     } else {
         Ok(())
     }
 }
 
+/// The failed validation checks, and the failed convention checks when
+/// `--fail-on-conventions` makes them count.
+fn failure_reason(report: &ValidationReport) -> String {
+    let mut reason = format!("{} validation check(s) failed", report.failed_checks());
+    if report.conventions.fails_validation() {
+        reason.push_str(&format!(
+            "; {} convention check(s) failed, and --fail-on-conventions is set",
+            report.conventions.count(ValidationStatus::Failed)
+        ));
+    }
+    reason
+}
+
 pub(crate) fn handle_validate_json(arguments: ValidateJsonArgs) -> Result<(), Error> {
     let mut options = DicomJsonOptions::default();
     options.validation.profile = arguments.profile;
     options.validation.conformance = arguments.conformance.level();
+    arguments.conventions.apply(&mut options.validation);
     options.validation.max_input_bytes = arguments.max_input_bytes;
     options.transfer_syntax = arguments.transfer_syntax;
     options.bulkdata_base_url = arguments.bulkdata_base_url;
@@ -100,7 +113,7 @@ pub(crate) fn handle_validate_json(arguments: ValidateJsonArgs) -> Result<(), Er
     })?;
     if report.has_failures() {
         Err(Error::Validation {
-            reason: format!("{} validation check(s) failed", report.failed_checks()),
+            reason: failure_reason(&report),
         })
     } else {
         Ok(())
@@ -117,6 +130,7 @@ fn format_json_validation_summary(report: &ValidationReport) -> String {
         report.skipped_checks()
     );
     append_unpassed(&mut summary, &report.checks);
+    append_conventions(&mut summary, &report.conventions);
     summary
 }
 
@@ -161,6 +175,7 @@ pub(crate) fn handle_dicomweb(arguments: DicomwebArgs) -> Result<(), Error> {
     options.http = arguments.http.options()?;
     options.validation.profile = arguments.profile;
     options.validation.conformance = arguments.conformance.level();
+    arguments.conventions.apply(&mut options.validation);
     let report = check_dicomweb_server(&options)?;
     let cli_report = DicomWebCliReport {
         schema_version: DICOMWEB_REPORT_SCHEMA,
@@ -173,9 +188,9 @@ pub(crate) fn handle_dicomweb(arguments: DicomwebArgs) -> Result<(), Error> {
     if report.has_failures() {
         Err(Error::Validation {
             reason: format!(
-                "{} DICOMweb check(s) and {} check(s) of the retrieved objects failed",
+                "{} DICOMweb check(s) failed; of the retrieved objects, {}",
                 report.failed_checks(),
-                report.objects.failed_checks()
+                failure_reason(&report.objects)
             ),
         })
     } else {
@@ -215,6 +230,7 @@ fn format_dicomweb_summary(report: &DicomWebReport) -> String {
         }
     }
     append_unpassed(&mut summary, &report.objects.checks);
+    append_conventions(&mut summary, &report.objects.conventions);
     summary
 }
 
@@ -450,8 +466,13 @@ fn append_conventions(summary: &mut String, conventions: &ConventionReport) {
         .map(|profile| profile.name())
         .collect::<Vec<_>>()
         .join(", ");
+    let gate = if conventions.fail_on_conventions {
+        "--fail-on-conventions: a failed check fails validation"
+    } else {
+        "not DICOM failures"
+    };
     summary.push_str(&format!(
-        "\nconventions {profiles} (not DICOM failures): checks passed={} failed={} skipped={}; advisories={}",
+        "\nconventions {profiles} ({gate}): checks passed={} failed={} skipped={}; advisories={}",
         conventions.count(ValidationStatus::Passed),
         conventions.count(ValidationStatus::Failed),
         conventions.count(ValidationStatus::Skipped),

@@ -13,11 +13,11 @@ const MAX_SHOWN: usize = 24;
 pub struct DicomWebReport {
     /// The Base URI of the Studies Service checked.
     pub base_url: String,
-    /// The Study, Series and Instance the transactions targeted.
+    /// Whether a Study was targeted, with its identifying UID withheld.
     pub study: Option<String>,
-    /// See `study`.
+    /// Whether a Series was targeted, with its identifying UID withheld.
     pub series: Option<String>,
-    /// See `study`.
+    /// Whether an Instance was targeted, with its identifying UID withheld.
     pub instance: Option<String>,
     /// One result per PS3.18 requirement family exercised.
     pub checks: Vec<DicomWebCheck>,

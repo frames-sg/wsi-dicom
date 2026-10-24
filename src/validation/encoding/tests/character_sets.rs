@@ -110,7 +110,8 @@ fn text_beyond_the_default_repertoire_needs_specific_character_set() {
         PATIENT_ID,
         b"LO",
         b"\xC9A",
-        "PatientID (0010,0020): byte C9H at byte 0 is outside the Default Character Repertoire, but Specific Character Set (0008,0005) is absent (PS3.5 6.1.2.2)",
+        // Patient ID's byte is withheld (PS3.15 Table E.1-1); its offset is given.
+        "PatientID (0010,0020): a byte (value withheld: identifying) at byte 0 is outside the Default Character Repertoire, but Specific Character Set (0008,0005) is absent (PS3.5 6.1.2.2)",
     );
     conformant(Some("ISO_IR 100"), PATIENT_ID, b"LO", b"\xC9A");
 }
@@ -229,7 +230,7 @@ fn the_value_1_set_is_active_at_value_line_and_delimiter_boundaries() {
         PATIENT_NAME,
         b"PN",
         b"Hong=\x1b$)C\xFB\xF3^\xD1\xCE",
-        "PatientName (0010,0010): GR byte D1H at byte 12 with no character set designated to G1",
+        "PatientName (0010,0010): a GR byte (value withheld: identifying) at byte 12 with no character set designated to G1",
     );
     // A set designated in one line is designated again in the next.
     violation(
@@ -237,7 +238,7 @@ fn the_value_1_set_is_active_at_value_line_and_delimiter_boundaries() {
         COMMENTS,
         b"LT",
         b"\x1b$)C\xB0\xA1\r\n\xB0\xA1",
-        "PatientComments (0010,4000): GR byte B0H at byte 8 with no character set designated to G1",
+        "PatientComments (0010,4000): a GR byte (value withheld: identifying) at byte 8 with no character set designated to G1",
     );
 }
 
@@ -272,7 +273,7 @@ fn the_alphabetic_component_group_uses_value_1_without_escapes() {
         PATIENT_NAME,
         b"PN",
         "中^A".as_bytes(),
-        "PatientName (0010,0010): U+4E2D at byte 2 in the alphabetic component group, outside U+0020-U+1FFF and the permitted Japanese punctuation and kana (PS3.5 6.2.1.2)",
+        "PatientName (0010,0010): a character (value withheld: identifying) at byte 2 in the alphabetic component group, outside U+0020-U+1FFF and the permitted Japanese punctuation and kana (PS3.5 6.2.1.2)",
     );
     conformant(
         Some("ISO_IR 192"),
@@ -285,7 +286,7 @@ fn the_alphabetic_component_group_uses_value_1_without_escapes() {
         PATIENT_NAME,
         b"PN",
         b"\xD6\xD0^A",
-        "U+4E2D at byte",
+        "a character (value withheld: identifying) at byte",
     );
     conformant(
         Some("GB18030"),
@@ -382,7 +383,7 @@ fn text_in_items_follows_the_item_character_set() {
     assert!(check.message.contains("1 violation:"), "{}", check.message);
     assert!(
         check.message.contains(
-            "(4008,0300): byte C9H at byte 0 is outside the Default Character Repertoire"
+            "(4008,0300): a byte (value withheld: identifying) at byte 0 is outside the Default Character Repertoire"
         ),
         "{}",
         check.message

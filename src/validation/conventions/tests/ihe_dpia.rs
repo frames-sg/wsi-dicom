@@ -59,7 +59,13 @@ fn request_attributes_repeat_the_accession_and_study() {
         &[],
     );
     let message = failure_message(&report, "convention-ihe-dpia-request-attributes");
-    assert!(message.contains("\"A9\""), "{message}");
+    assert!(
+        message.contains(
+            "has Accession Number (0008,0050) (value withheld: identifying; 2 characters)"
+        ),
+        "{message}"
+    );
+    assert!(!message.contains("A9"), "{message}");
     assert!(message.contains("Study Instance UID"), "{message}");
     assert!(message.contains("Issuer of Accession Number"), "{message}");
     let absent = Scan::conformant(51).edit(LABEL, |object| {
@@ -194,9 +200,11 @@ fn every_step_names_the_specimen_and_its_issuer() {
     );
     let message = failure_message(&report, "convention-ihe-dpia-step-specimen-identifier");
     assert!(
-        message.contains("SPECIMEN-9") && message.contains("111724"),
+        message.contains("(value withheld: identifying; 10 characters)")
+            && message.contains("111724"),
         "{message}"
     );
+    assert!(!message.contains("SPECIMEN-9"), "{message}");
 }
 
 #[test]
@@ -327,7 +335,9 @@ fn a_study_maps_one_to_one_to_an_accession() {
         &["convention-ihe-dpia-accession-study"],
         &[],
     );
-    assert!(failure_message(&report, "convention-ihe-dpia-accession-study").contains("\"A2\""));
+    let message = failure_message(&report, "convention-ihe-dpia-accession-study");
+    assert!(message.contains("has 2 Accession Numbers"), "{message}");
+    assert!(!message.contains("A2"), "{message}");
 }
 
 #[test]

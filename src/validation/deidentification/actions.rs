@@ -14,6 +14,7 @@ use dicom_object::mem::InMemElement;
 use dicom_object::InMemDicomObject;
 
 use super::{is_empty, Declaration, Findings};
+use crate::validation::disclosure::shown;
 use crate::validation::iod::deidentification::{
     confidentiality_attribute, structured_content_concept, ConfidentialityOption,
     DeidentificationAction,
@@ -419,7 +420,8 @@ impl PrivateBreach<'_> {
     fn describe(&self) -> String {
         match self {
             Self::Uncharacterized { creator, status } => format!(
-                "is retained although Private Data Element Characteristics Sequence (0008,0300) gives its block of \"{creator}\" Block Identifying Information Status {status} without marking it safe or giving a Deidentification Action (0008,0307); E.3.10 requires it removed"
+                "is retained although Private Data Element Characteristics Sequence (0008,0300) gives its block of {} Block Identifying Information Status {status} without marking it safe or giving a Deidentification Action (0008,0307); E.3.10 requires it removed",
+                shown(tags::PRIVATE_CREATOR_REFERENCE, creator)
             ),
             Self::Retained => "is retained although its Deidentification Action (0008,0307) is X; E.3.10 requires it processed as recommended, here removed"
                 .to_string(),

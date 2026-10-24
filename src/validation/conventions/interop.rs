@@ -11,6 +11,7 @@ use dicom_object::{DefaultDicomObject, InMemDicomObject};
 use super::facts::{text, Facts, Kind, SetIndex};
 use super::wg26::has_bytes;
 use super::{advisory, ConventionEntry, ConventionProfile, Out, Subject};
+use crate::validation::disclosure::{shown, withholds};
 use crate::validation::iod::{dicom_edition, integer_value, items, MAX_NESTING};
 
 const P: ConventionProfile = ConventionProfile::Interop;
@@ -265,11 +266,17 @@ pub(super) fn file_advisories(object: &DefaultDicomObject, facts: &Facts, out: &
     }
     let root: &InMemDicomObject = object;
     let file = Subject::File(&facts.path);
+    unevaluated(facts, out);
+    // The Transfer Syntax, when the source names it.
+    let syntax = facts
+        .gaps
+        .transfer_syntax
+        .is_none()
+        .then_some(facts.transfer_syntax.as_str());
     if facts.flavor_is(&["VOLUME", "LABEL", "OVERVIEW", "THUMBNAIL"]) {
-        openslide(root, facts, out);
+        openslide(root, facts, syntax, out);
     }
-    let syntax = facts.transfer_syntax.as_str();
-    if !SLIM_SYNTAXES.contains(&syntax) {
+    if let Some(syntax) = syntax.filter(|syntax| !SLIM_SYNTAXES.contains(syntax)) {
         out.advise(
             &SLIM_TRANSFER_SYNTAX,
             file,
@@ -294,7 +301,9 @@ pub(super) fn file_advisories(object: &DefaultDicomObject, facts: &Facts, out: &
         idc_index(facts, out);
         icc_first_path(root, facts, out);
     }
-    offset_table(object, facts, out);
+    if facts.gaps.pixel_data.is_none() {
+        offset_table(object, facts, out);
+    }
     dciodvfy(root, facts, out);
     if integer_value(root, tags::NUMBER_OF_FOCAL_PLANES).is_some_and(|planes| planes > 1) {
         out.advise(
@@ -324,20 +333,20 @@ pub(super) fn set_advisories(index: &SetIndex<'_>, out: &mut Out) {
             .copied()
             .filter(|fact| fact.is_volume())
             .collect();
-        for (entry, what, values) in [
+        for (entry, (tag, what), values) in [
             (
                 &DMV_FRAME_OF_REFERENCE,
-                "Frame of Reference UIDs",
+                (tags::FRAME_OF_REFERENCE_UID, "Frame of Reference UIDs"),
                 distinct(&volumes, |fact| fact.frame_of_reference_uid.clone()),
             ),
             (
                 &DMV_CONTAINER,
-                "Container Identifiers",
+                (tags::CONTAINER_IDENTIFIER, "Container Identifiers"),
                 distinct(&volumes, |fact| fact.container_identifier.clone()),
             ),
             (
                 &DMV_CHANNELS,
-                "Number of Optical Paths",
+                (tags::NUMBER_OF_OPTICAL_PATHS, "Number of Optical Paths"),
                 distinct(&volumes, |fact| {
                     fact.optical_paths.map(|paths| paths.to_string())
                 }),
@@ -350,7 +359,11 @@ pub(super) fn set_advisories(index: &SetIndex<'_>, out: &mut Out) {
                     format!(
                         "the VOLUME images have {} {what}: {}",
                         values.len(),
-                        values.into_iter().collect::<Vec<_>>().join(", ")
+                        values
+                            .iter()
+                            .map(|value| listed(tag, value))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ),
                 );
             }
@@ -363,6 +376,16 @@ pub(super) fn set_advisories(index: &SetIndex<'_>, out: &mut Out) {
     }
 }
 
+/// A `distinct` value of `tag` as a message lists it: as it is, unless
+/// `disclosure` withholds it.
+fn listed(tag: dicom_core::Tag, value: &str) -> String {
+    if value != "absent" && withholds(tag) {
+        shown(tag, value).to_string()
+    } else {
+        value.to_string()
+    }
+}
+
 /// The distinct values, with absence as "absent".
 fn distinct(facts: &[&Facts], value: impl Fn(&Facts) -> Option<String>) -> BTreeSet<String> {
     facts
@@ -371,10 +394,36 @@ fn distinct(facts: &[&Facts], value: impl Fn(&Facts) -> Option<String>) -> BTree
         .collect()
 }
 
-fn openslide(root: &InMemDicomObject, facts: &Facts, out: &mut Out) {
+/// The advisories a source without the Transfer Syntax or the encoded
+/// Pixel Data cannot evaluate, reported as one skipped result.
+fn unevaluated(facts: &Facts, out: &mut Out) {
+    let mut missing = Vec::new();
+    if let Some(reason) = &facts.gaps.transfer_syntax {
+        missing.push(format!(
+            "{reason}, so {}, {} and {} were not evaluated",
+            OPENSLIDE_TRANSFER_SYNTAX.name, OPENSLIDE_PHOTOMETRIC.name, SLIM_TRANSFER_SYNTAX.name
+        ));
+    }
+    if let Some(reason) = &facts.gaps.pixel_data {
+        missing.push(format!(
+            "{reason}, so {} was not evaluated",
+            HIGHDICOM_OFFSET_TABLE.name
+        ));
+    }
+    if !missing.is_empty() {
+        out.skip(
+            &super::EVALUABLE_INTEROP,
+            Subject::File(&facts.path),
+            missing.join("; "),
+        );
+    }
+}
+
+/// OpenSlide's file requirements; those of the Transfer Syntax only when
+/// `syntax` is known.
+fn openslide(root: &InMemDicomObject, facts: &Facts, syntax: Option<&str>, out: &mut Out) {
     let file = Subject::File(&facts.path);
-    let syntax = facts.transfer_syntax.as_str();
-    if !OPENSLIDE_SYNTAXES.contains(&syntax) {
+    if let Some(syntax) = syntax.filter(|syntax| !OPENSLIDE_SYNTAXES.contains(syntax)) {
         out.advise(
             &OPENSLIDE_TRANSFER_SYNTAX,
             file,
@@ -409,6 +458,9 @@ fn openslide(root: &InMemDicomObject, facts: &Facts, out: &mut Out) {
     if !format.is_empty() {
         out.advise(&OPENSLIDE_PIXEL_FORMAT, file, format.join("; "));
     }
+    let Some(syntax) = syntax else {
+        return;
+    };
     let photometric = facts.photometric.as_deref().unwrap_or("");
     let supported: &[&str] = match syntax {
         uids::JPEG2000 => &["YBR_ICT", "YBR_RCT", "RGB"],
@@ -571,7 +623,10 @@ fn dciodvfy(root: &InMemDicomObject, facts: &Facts, out: &mut Out) {
             format!(
                 "Pyramid UID present in LABEL or OVERVIEW image: the {} image has Pyramid UID {}",
                 facts.flavor.as_deref().unwrap_or_default(),
-                facts.pyramid_uid.as_deref().unwrap_or_default()
+                shown(
+                    tags::PYRAMID_UID,
+                    facts.pyramid_uid.as_deref().unwrap_or_default()
+                )
             ),
         );
     }

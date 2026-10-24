@@ -18,7 +18,8 @@ use x509_cert::spki::AlgorithmIdentifierOwned;
 use x509_cert::Certificate;
 
 use super::keys::{der_encoding, rsa_key, RSA_ENCRYPTION};
-use super::{bytes, quoted, string_value, MacAlgorithm, EDITION};
+use super::{bytes, string_value, MacAlgorithm, EDITION};
+use crate::validation::disclosure::shown_or;
 
 pub(super) const SIGNED_DATA: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.2");
@@ -77,7 +78,7 @@ pub(super) fn check(item: &InMemDicomObject, signature: &[u8]) -> Result<Timesta
     if kind.as_deref() != Some("CMS_TSP") {
         return Err(format!(
             "Certified Timestamp Type (0400,0305) is {}; CMS_TSP, the RFC 3161 token of PS3.15 {EDITION} C.1, is the type whose Certified Timestamp (0400,0310) can be read (PS3.3 {EDITION} Table C.12-6)",
-            quoted(kind.as_deref())
+            shown_or(tags::CERTIFIED_TIMESTAMP_TYPE, kind.as_deref(), "absent")
         ));
     }
     let (signed, tst_info) = token(&value).map_err(|reason| {

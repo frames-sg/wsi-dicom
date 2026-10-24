@@ -10,6 +10,7 @@ use dicom_core::VR;
 use dicom_encoding::text::{SpecificCharacterSet, TextCodec};
 
 use super::charset::{Element, Repertoire, Set, Unextendable};
+use crate::validation::disclosure::WITHHELD;
 use crate::validation::iod::Family;
 
 const ESC: u8 = 0x1B;
@@ -246,6 +247,8 @@ pub(super) struct TextScanner<'r> {
     trailing_space: bool,
     groups: Vec<Group>,
     alphabetic: Vec<u8>,
+    /// Messages withhold the Value's bytes and characters (`disclosure`).
+    withheld: bool,
 }
 
 impl<'r> TextScanner<'r> {
@@ -276,7 +279,24 @@ impl<'r> TextScanner<'r> {
             trailing_space: false,
             groups: vec![Group::default()],
             alphabetic: Vec::new(),
+            withheld: false,
         })
+    }
+
+    /// This scanner, its messages withholding the bytes and characters of
+    /// the Value when `withheld`: they give the offset alone.
+    pub(super) fn withholding(self, withheld: bool) -> Self {
+        Self { withheld, ..self }
+    }
+
+    /// "byte E9H", or a withheld byte, as an offending byte of the Value;
+    /// `kind` is "" or "GR ".
+    fn byte_text(&self, kind: &str, byte: u8) -> String {
+        if self.withheld {
+            format!("a {kind}byte {WITHHELD}")
+        } else {
+            format!("{kind}byte {byte:02X}H")
+        }
     }
 
     pub(super) fn feed(&mut self, bytes: &[u8]) {
@@ -438,9 +458,9 @@ impl<'r> TextScanner<'r> {
                 self.left(byte);
             }
             _ if *self.repertoire == Repertoire::Absent => {
-                let offset = self.offset;
+                let (offset, shown) = (self.offset, self.byte_text("", byte));
                 self.issue(Issue::OutsideRepertoire, || format!(
-                    ": byte {byte:02X}H at byte {offset} is outside the Default Character Repertoire, but Specific Character Set (0008,0005) is absent (PS3.5 6.1.2.2)"
+                    ": {shown} at byte {offset} is outside the Default Character Repertoire, but Specific Character Set (0008,0005) is absent (PS3.5 6.1.2.2)"
                 ));
                 self.trailing_space = false;
                 self.character();
@@ -471,12 +491,14 @@ impl<'r> TextScanner<'r> {
     fn no_g1(&mut self, byte: u8) {
         let offset = self.offset;
         if let Repertoire::Single { term, .. } = self.repertoire {
+            let shown = self.byte_text("", byte);
             self.issue(Issue::OutsideRepertoire, || format!(
-                ": byte {byte:02X}H at byte {offset} is outside the repertoire of Specific Character Set \"{term}\" (PS3.5 6.1.2.3)"
+                ": {shown} at byte {offset} is outside the repertoire of Specific Character Set \"{term}\" (PS3.5 6.1.2.3)"
             ));
         } else {
+            let shown = self.byte_text("GR ", byte);
             self.issue(Issue::NoG1, || format!(
-                ": GR byte {byte:02X}H at byte {offset} with no character set designated to G1; Value 1 of Specific Character Set designates none, so an escape sequence shall designate one before its first use in each Value, line, page and name component (PS3.5 6.1.2.3 and 6.1.2.5.3)"
+                ": {shown} at byte {offset} with no character set designated to G1; Value 1 of Specific Character Set designates none, so an escape sequence shall designate one before its first use in each Value, line, page and name component (PS3.5 6.1.2.3 and 6.1.2.5.3)"
             ));
         }
     }
@@ -714,8 +736,13 @@ impl<'r> TextScanner<'r> {
         // Control characters are the value-format check's finding.
         if !permitted && code_point >= 0x20 {
             let offset = self.offset;
+            let shown = if self.withheld {
+                format!("a character {WITHHELD}")
+            } else {
+                format!("U+{code_point:04X}")
+            };
             self.issue(Issue::AlphabeticCodePoint, || format!(
-                ": U+{code_point:04X} at byte {offset} in the alphabetic component group, outside U+0020-U+1FFF and the permitted Japanese punctuation and kana (PS3.5 6.2.1.2)"
+                ": {shown} at byte {offset} in the alphabetic component group, outside U+0020-U+1FFF and the permitted Japanese punctuation and kana (PS3.5 6.2.1.2)"
             ));
         }
     }

@@ -17,6 +17,7 @@ use dicom_dictionary_std::tags;
 use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
 use super::{report, Declaration};
+use crate::validation::disclosure::{shown, shown_or};
 use crate::validation::iod::deidentification::ConfidentialityOption;
 use crate::validation::iod::{items, string_value, Family};
 use crate::validation::wsi_conformance::iod_of;
@@ -69,11 +70,28 @@ enum Field {
 }
 
 impl Field {
+    fn tag(self) -> Tag {
+        match self {
+            Self::Tag(tag, _) => tag,
+            Self::SpecimenUids => tags::SPECIMEN_UID,
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
             Self::Tag(_, name) => name,
             Self::SpecimenUids => "the Specimen UIDs (0040,0554)",
         }
+    }
+
+    /// A Value of the Field as a message shows it (`disclosure`); "none"
+    /// when absent.
+    fn shown(self, value: &Option<String>) -> String {
+        shown_or(self.tag(), value.as_deref(), "none")
+    }
+
+    fn shown_value(self, value: &str) -> String {
+        shown(self.tag(), value).to_string()
     }
 
     fn value(self, object: &InMemDicomObject) -> Option<String> {
@@ -217,12 +235,13 @@ fn inconsistent_dummies(protected: &[&Facts], violations: &mut Family) {
                 if here != there {
                     violations.push(|| {
                         format!(
-                            "E.1.1: the de-identified instances of {} {uid} disagree on {}: {} in {} and {} in {}; the de-identifier keeps dummy values consistent across related instances",
+                            "E.1.1: the de-identified instances of {} {} disagree on {}: {} in {} and {} in {}; the de-identifier keeps dummy values consistent across related instances",
                             key.name(),
+                            key.shown_value(uid),
                             field.name(),
-                            quoted(there),
+                            field.shown(there),
                             earlier.path.display(),
-                            quoted(here),
+                            field.shown(here),
                             facts.path.display()
                         )
                     });
@@ -230,12 +249,6 @@ fn inconsistent_dummies(protected: &[&Facts], violations: &mut Family) {
             }
         }
     }
-}
-
-fn quoted(value: &Option<String>) -> String {
-    value
-        .as_deref()
-        .map_or_else(|| "none".to_string(), |value| format!("\"{value}\""))
 }
 
 /// E.1.1 and Table E.1-1 action U: a de-identified object whose SOP
@@ -259,7 +272,8 @@ fn retained_instance_uids(corpus: &DeidentificationCorpus, violations: &mut Fami
     for (facts, uid, original) in retained {
         violations.push(|| {
             format!(
-                "E.1.1 and Table E.1-1: SOP Instance UID (0008,0018) {uid} of de-identified {} is the UID of non-de-identified {}, so action U did not replace it and the Retain UIDs Option is not declared",
+                "E.1.1 and Table E.1-1: SOP Instance UID (0008,0018) {} of de-identified {} is the UID of non-de-identified {}, so action U did not replace it and the Retain UIDs Option is not declared",
+                shown(tags::SOP_INSTANCE_UID, uid),
                 facts.path.display(),
                 original.display()
             )
@@ -291,7 +305,8 @@ fn partly_protected(corpus: &DeidentificationCorpus) -> Vec<(PathBuf, String)> {
                 (
                     facts.path.clone(),
                     format!(
-                        "Pyramid UID (0008,0019) {uid} has de-identified instances, but this one claims no de-identification (PS3.15 E.1.1 protects related instances together)"
+                        "Pyramid UID (0008,0019) {} has de-identified instances, but this one claims no de-identification (PS3.15 E.1.1 protects related instances together)",
+                        shown(tags::PYRAMID_UID, uid)
                     ),
                 )
             })

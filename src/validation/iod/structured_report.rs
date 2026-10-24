@@ -15,7 +15,9 @@ use super::tables::{DOCUMENT_CONSTRAINTS, IODS};
 use super::templates;
 use super::value_sets::TEMPLATES;
 
-pub(in crate::validation) use super::codes::{code_finding, context_group_name, CodeFinding};
+pub(in crate::validation) use super::codes::{
+    code_finding, code_finding_in, context_group_name, CodeFinding,
+};
 
 pub(in crate::validation) use super::model::{
     Concept, RowRequirement, Strength, Template, TemplateCondition, TemplateRow, ValueSet,

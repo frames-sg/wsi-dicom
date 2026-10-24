@@ -111,6 +111,82 @@ fn shipped_binary_reports_conventions_apart_from_dicom_checks() {
 }
 
 #[test]
+fn shipped_binary_gates_on_conventions_only_when_asked() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let dicom = self_test_output(&temporary.path().join("self-test"));
+    let (ungated, _) = validate(&dicom, &["--conventions", "wg26"]);
+    assert!(ungated.status.success());
+    let (gated, report) = validate(&dicom, &["--conventions", "wg26", "--fail-on-conventions"]);
+    assert!(!gated.status.success());
+    assert_eq!(report["conventions"]["fail_on_conventions"], true);
+    let stderr = String::from_utf8_lossy(&gated.stderr);
+    assert!(
+        stderr.contains("0 validation check(s) failed")
+            && stderr.contains("convention check(s) failed, and --fail-on-conventions is set"),
+        "{stderr}"
+    );
+    // Advisories alone never fail: interop has no checks to fail.
+    let (advised, report) = validate(
+        &dicom,
+        &["--conventions", "interop", "--fail-on-conventions"],
+    );
+    assert!(
+        advised.status.success(),
+        "{}",
+        String::from_utf8_lossy(&advised.stderr)
+    );
+    assert!(report["conventions"]["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .all(|check| check["status"] != "failed"));
+    // The flag needs a profile to gate on.
+    let lone = wsi_dicom()
+        .args(["validate", "--fail-on-conventions"])
+        .arg(&dicom)
+        .output()
+        .expect("execute validate");
+    assert!(!lone.status.success());
+    assert!(String::from_utf8_lossy(&lone.stderr).contains("--conventions"));
+}
+
+#[test]
+fn shipped_binary_runs_conventions_on_dicom_json() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let document = temporary.path().join("metadata.json");
+    // A VL WSI Data Set without a Specimen Description Sequence.
+    std::fs::write(
+        &document,
+        r#"[{"00080016":{"vr":"UI","Value":["1.2.840.10008.5.1.4.1.1.77.1.6"]},"00080018":{"vr":"UI","Value":["1.2.826.0.1.3680043.10.999.8.200.1"]},"0020000E":{"vr":"UI","Value":["1.2.826.0.1.3680043.10.999.8.200.2"]}}]"#,
+    )
+    .expect("write document");
+    let run = |extra: &[&str]| {
+        wsi_dicom()
+            .args(["validate-json", "--json", "--conventions", "wg26"])
+            .args(extra)
+            .arg(&document)
+            .output()
+            .expect("execute validate-json")
+    };
+    let output = run(&[]);
+    let report: Value = serde_json::from_slice(&output.stdout).expect("validate-json JSON");
+    let checks = report["conventions"]["checks"].as_array().expect("checks");
+    assert!(checks.iter().any(|check| {
+        check["name"] == "convention-wg26-sp2025-specimen-type" && check["status"] == "failed"
+    }));
+    assert!(checks.iter().any(|check| {
+        check["name"] == "convention-wg26-transfer-syntax"
+            && check["status"] == "skipped"
+            && check["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("needs the Transfer Syntax"))
+    }));
+    let gated = run(&["--fail-on-conventions"]);
+    assert!(!gated.status.success());
+    assert!(String::from_utf8_lossy(&gated.stderr).contains("--fail-on-conventions is set"));
+}
+
+#[test]
 fn shipped_binary_rejects_an_unknown_convention_profile() {
     let output = wsi_dicom()
         .args(["validate", "--conventions", "wg25", "."])

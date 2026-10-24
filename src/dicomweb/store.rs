@@ -197,7 +197,8 @@ fn store_response(verdict: &mut Verdict, exchange: &Exchange, staged: &Staged) -
             .any(|word| word.len() == 4 && word.bytes().all(|byte| byte.is_ascii_hexdigit()));
         if !coded {
             verdict.advise(format!(
-                "{line}: Warning {warning:?} holds no DICOM Status Code; the text returned in the Warning Header Field should contain one and a descriptive reason ({})",
+                "{line}: the {}-character Warning holds no DICOM Status Code; the text returned in the Warning Header Field should contain one and a descriptive reason ({})",
+                warning.chars().count(),
                 sec("10.5.3.2")
             ));
         }
@@ -515,7 +516,7 @@ fn conforms(session: &mut Session<'_>, verdict: &mut Verdict, path: &str) {
 
 /// The names of the checks `path` fails as a file.
 fn failed_checks(session: &Session<'_>, path: &Path) -> Result<BTreeSet<String>, crate::Error> {
-    let report = (session.validate_file)(path, &session.options.validation)?;
+    let report = (session.validate_file)(path, &session.file_options())?;
     Ok(report
         .checks
         .into_iter()

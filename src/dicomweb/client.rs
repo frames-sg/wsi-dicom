@@ -14,7 +14,7 @@ use super::media::MediaType;
 use super::multipart;
 use super::report::DicomWebExchange;
 use super::transport::{Failure, Outgoing, RawResponse, Transport};
-use super::url::Url;
+use super::url::{shown_reference, Url};
 use super::EDITION;
 use crate::Error;
 
@@ -250,19 +250,21 @@ impl Client {
                 return Ok(exchange);
             };
             let next = url.resolve(&location);
+            let shown = shown_reference(&location);
             let reason = match &next {
                 _ if !allowed => Some(format!(
-                    "{} to {location} is not followed: PS3.18 {EDITION} Table 8.5-1 names 301 and 303{}",
+                    "{} to {shown} is not followed: PS3.18 {EDITION} Table 8.5-1 names 301 and 303{}",
                     exchange.status,
                     if request.redirects == Redirects::Thumbnail { ", and 10.4.3.3.4 302 for a Thumbnail" } else { "" }
                 )),
-                Err(err) => Some(format!("{} Location {location:?} is not a URL: {err}", exchange.status)),
+                Err(err) => Some(format!("{} Location {shown:?} is not a URL: {err}", exchange.status)),
                 Ok(next) if !next.same_origin(&request.url) => Some(format!(
-                    "{} to {next} is not followed: it leaves the origin of the request",
-                    exchange.status
+                    "{} to {} is not followed: it leaves the origin of the request",
+                    exchange.status,
+                    next.reported()
                 )),
                 Ok(_) if followed.len() == MAX_REDIRECTS => Some(format!(
-                    "more than {MAX_REDIRECTS} redirects; {} to {location} is not followed",
+                    "more than {MAX_REDIRECTS} redirects; {} to {shown} is not followed",
                     exchange.status
                 )),
                 Ok(_) => None,
@@ -272,7 +274,7 @@ impl Client {
                 return Ok(exchange);
             }
             let next = next.map_err(Failure::other)?;
-            followed.push(format!("{} {next}", exchange.status));
+            followed.push(format!("{} {}", exchange.status, next.reported()));
             if exchange.status == 303 {
                 method = Method::Get;
             }
@@ -300,23 +302,34 @@ impl Client {
         let record = match &result {
             Ok((status, headers, body)) => DicomWebExchange {
                 method: method.name().to_string(),
-                url: url.to_string(),
+                url: url.reported(),
                 status: Some(*status),
-                content_type: headers
-                    .iter()
-                    .find(|(name, _)| name == "content-type")
-                    .map(|(_, value)| value.clone()),
+                content_type: headers.iter().find(|(name, _)| name == "content-type").map(
+                    |(_, value)| {
+                        MediaType::parse(value).map_or_else(
+                            |_| {
+                                format!(
+                                    "invalid Content-Type ({} characters)",
+                                    value.chars().count()
+                                )
+                            },
+                            |media| media.reported(),
+                        )
+                    },
+                ),
                 body_bytes: body.len() as u64,
                 elapsed_millis,
                 error: None,
             },
             Err(failure) => DicomWebExchange {
                 method: method.name().to_string(),
-                url: url.to_string(),
+                url: url.reported(),
                 status: None,
                 content_type: None,
                 body_bytes: 0,
                 elapsed_millis,
+                // `Failure` maps transport errors to stable categories and URL
+                // parsing errors already withhold server-provided references.
                 error: Some(failure.reason.clone()),
             },
         };
@@ -372,7 +385,7 @@ impl Client {
     /// type="application/octet-stream" (Table 10.4.4-1).
     pub(crate) fn fetch_bulkdata(&self, base: Option<&str>, uri: &str) -> Result<Vec<u8>, String> {
         let url = if uri.contains("://") {
-            Url::parse(uri)?
+            Url::parse(uri)?.server_reference()
         } else {
             let base = base.ok_or_else(|| {
                 "a relative BulkDataURI needs the URL of the Metadata request (--bulkdata-base-url)"
@@ -408,7 +421,7 @@ pub(crate) fn single_bulk_value(exchange: &Exchange) -> Result<Vec<u8>, String> 
     if media_type.essence != "multipart/related" {
         return Err(format!(
             "the response is {}, not multipart/related",
-            media_type.essence
+            media_type.reported_essence()
         ));
     }
     let boundary = media_type
@@ -429,5 +442,57 @@ fn read_token(name: &str) -> Result<String, String> {
         Ok(token) if !token.trim().is_empty() => Ok(token.trim().to_string()),
         Ok(_) => Err(format!("environment variable {name} is empty")),
         Err(_) => Err(format!("environment variable {name} is not set")),
+    }
+}
+
+#[cfg(all(test, feature = "dicomweb"))]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use super::{Client, DicomWebHttpOptions, Request};
+    use crate::dicomweb::report::Verdict;
+    use crate::dicomweb::response::expect_status;
+    use crate::dicomweb::tests::mock::{MockResponse, MockServer};
+    use crate::dicomweb::url::Url;
+
+    #[test]
+    fn report_does_not_repeat_untrusted_response_or_transport_text() {
+        const SENTINEL: &str = "PatientSentinel";
+        let sent = Arc::new(AtomicUsize::new(0));
+        let server = MockServer::start(move |_| {
+            if sent.fetch_add(1, Ordering::SeqCst) == 0 {
+                MockResponse::new(
+                    500,
+                    "application/PatientSentinel; boundary=PatientSentinel",
+                    SENTINEL,
+                )
+            } else {
+                MockResponse {
+                    status: 200,
+                    status_line: Some(format!("HTTP/1.1 {SENTINEL}")),
+                    ..MockResponse::default()
+                }
+            }
+        });
+        let client = Client::new(&DicomWebHttpOptions::default()).unwrap();
+        let url = Url::parse(&server.url("/dicomweb")).unwrap();
+        let exchange = client
+            .send(&Request::get(url.clone(), "application/dicom+json"))
+            .unwrap();
+        assert_eq!(exchange.body, SENTINEL.as_bytes());
+        let mut verdict = Verdict::default();
+        assert!(!expect_status(&mut verdict, &exchange, &[200], "8.5"));
+        let check = verdict.finish("dicomweb-test", "PS3.18".into(), "passed");
+
+        let failure = client
+            .send(&Request::get(url, "application/dicom+json"))
+            .unwrap_err();
+
+        let report = serde_json::to_string(&(check, client.exchanges(), failure.reason)).unwrap();
+        assert!(!report.contains(SENTINEL), "{report}");
+        assert!(report.contains("an unrecognized media type"), "{report}");
+        assert!(report.contains("Status Report payload"), "{report}");
+        assert!(report.contains("not an HTTP/1.1 response"), "{report}");
     }
 }

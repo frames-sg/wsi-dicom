@@ -386,6 +386,14 @@ external tools are reported as skipped unless `--strict` is set. Directory
 validation is bounded by file count, depth, timeout, and child
 output capture limits; symlink traversal is refused.
 
+Diagnostics withhold identifying Attribute Values, including Study, Series
+and Instance UIDs, using PS3.15 Table E.1-1. SOP Class and Transfer Syntax
+UIDs remain visible. External-validator lines that name an identifying
+Attribute and their continuations are withheld; DICOMweb reports also
+withhold server-provided URI references and Warning text. This filtering
+does not de-identify input paths, command arguments or unrecognized external
+text.
+
 `wsi-dicom validate-json metadata.json` holds a DICOM JSON document (PS3.18
 Annex F), such as a saved Retrieve Metadata response, to the JSON Model and
 each Data Set to the same checks as a file; checks that need Pixel Data, the
@@ -435,8 +443,8 @@ wsi-dicom validate slide-dir --conventions wg26,ihe-dpia --conventions interop -
 | `ihe-dpia-draft-jpeg` | JPEG Storage Option: baseline JPEG pyramid layers | IHE PaLM CP-LAB-279, draft (CP under ballot) |
 | `interop` | advisories only: what dicom-microscopy-viewer 0.49.5, OpenSlide 4.0.1, Slim 0.46.10, the Orthanc WSI plugin 4.0, wsidicom 0.36.1, highdicom 0.28.2, the IDC index, the Google Cloud Healthcare API and dciodvfy's base checks reject or warn about | each advisory names the tool, version and source lines |
 
-Convention results never enter `checks` and never make validation fail; the
-exit status still reports DICOM conformance alone. The JSON report adds a
+Convention results never enter `checks` and do not make validation fail
+unless `--fail-on-conventions` asks them to. The JSON report adds a
 `conventions` object (absent when no profile is selected) with the selected
 `profiles`, one `checks` entry per check and object or Series it applies to
 (`passed`, `failed`, or `skipped` with the reason when the object lacks what
@@ -448,7 +456,12 @@ requirements --json` lists every convention, with its kind, source and what
 it requires, under `conventions`, apart from the DICOM `requirements`;
 `wsi_dicom::convention_catalog()` returns the same entries, and
 `ValidationOptions::conventions` selects profiles from the Rust API.
-`validate-json` and `dicomweb` do not run conventions yet. The connectathon's
+`validate-json` and `dicomweb` (on the Series Metadata) take `--conventions`
+and `--fail-on-conventions` too, and report skipped the checks that need the
+Transfer Syntax or encoded Pixel Data the Metadata lacks;
+`--fail-on-conventions` (`ValidationOptions::fail_on_conventions`) makes a
+failed convention check, never an advisory, fail validation. The
+connectathon's
 Patient's Name scheme (`26CN^...`) is event logistics and is not checked; its
 DIMSE, DICOMweb and HL7 requirements need a transaction, not an object.
 

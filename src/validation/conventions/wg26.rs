@@ -11,6 +11,7 @@ use dicom_object::{DefaultDicomObject, InMemDicomObject};
 use super::facts::{describe_code, is_code, text, volume_layers, Facts, Kind, SetIndex};
 use super::specimen::{specimens, EMBEDDING_MEDIUM, STAINING, TISSUE_FIXATIVE, USING_SUBSTANCE};
 use super::{advisory, check, ConventionEntry, ConventionProfile, Out, Subject, Violations};
+use crate::validation::disclosure::{difference, shown, shown_all, shown_or};
 use crate::validation::iod::{integer_value, items};
 
 const P: ConventionProfile = ConventionProfile::Wg26;
@@ -285,7 +286,8 @@ pub(super) fn file_checks(object: &DefaultDicomObject, facts: &Facts, out: &mut 
         match &facts.concatenation_uid {
             None => Ok(()),
             Some(uid) => Err(format!(
-                "Concatenation UID (0020,9161) is present ({uid}), but the profile's Condition for it is Never"
+                "Concatenation UID (0020,9161) is present ({}), but the profile's Condition for it is Never",
+                shown(tags::CONCATENATION_UID, uid)
             )),
         },
     );
@@ -608,30 +610,37 @@ fn distinct<'a>(
 fn one_series_per_scan(index: &SetIndex<'_>, position: usize) -> Result<(), String> {
     let series = &index.series[position];
     let mut found = Violations::default();
-    let mut mixed = |what: &str, values: &BTreeSet<&str>| {
+    let mut mixed = |(tag, what): (dicom_core::Tag, &str), values: &BTreeSet<&str>| {
         if values.len() > 1 {
             found.push(|| format!(
                 "the Series mixes {} values of {what} ({}), so it holds more than one slide or scan",
                 values.len(),
-                values.iter().copied().collect::<Vec<_>>().join(", ")
+                shown_all(tag, values.iter().copied(), ", ")
             ));
         }
     };
     mixed(
-        "Container Identifier (0040,0512)",
+        (
+            tags::CONTAINER_IDENTIFIER,
+            "Container Identifier (0040,0512)",
+        ),
         &distinct(&series.members, |fact| fact.container_identifier.as_deref()),
     );
     mixed(
-        "Barcode Value (2200,0005)",
+        (tags::BARCODE_VALUE, "Barcode Value (2200,0005)"),
         &distinct(&series.members, |fact| fact.barcode_value.as_deref()),
     );
-    mixed("Acquisition UID (0008,0017)", &series.acquisitions);
+    mixed(
+        (tags::ACQUISITION_UID, "Acquisition UID (0008,0017)"),
+        &series.acquisitions,
+    );
     for (other, shared) in index.shared_acquisitions(position) {
         found.push(|| {
             format!(
-            "Acquisition UID {} also occurs in Series {other}, so one scan is split over Series",
-            shared.join(", ")
-        )
+                "Acquisition UID {} also occurs in Series {}, so one scan is split over Series",
+                shown_all(tags::ACQUISITION_UID, shared.iter().copied(), ", "),
+                shown(tags::SERIES_INSTANCE_UID, other)
+            )
         });
     }
     found.result()
@@ -651,6 +660,14 @@ fn transfer_syntaxes(members: &[&Facts], out: &mut Out) {
     let top = apex(members);
     for fact in members {
         let file = Subject::File(&fact.path);
+        if let Some(reason) = &fact.gaps.transfer_syntax {
+            out.skip(
+                &TRANSFER_SYNTAX,
+                file,
+                format!("{reason}, so neither this check nor convention-wg26-lossy-layers was evaluated"),
+            );
+            continue;
+        }
         let syntax = fact.transfer_syntax.as_str();
         let may_be_uncompressed =
             !fact.is_volume() || top.is_some_and(|top| top.area() == fact.area());
@@ -794,19 +811,31 @@ fn annotation_identity(annotation: &Facts, index: &SetIndex<'_>, out: &mut Out) 
     };
     let mut found = Violations::default();
     for image in &images {
-        for (what, own, theirs) in [
+        for (tag, what, own, theirs) in [
             (
+                tags::PATIENT_NAME,
                 "Patient's Name",
                 &annotation.patient.name,
                 &image.patient.name,
             ),
-            ("Patient ID", &annotation.patient.id, &image.patient.id),
+            (
+                tags::PATIENT_ID,
+                "Patient ID",
+                &annotation.patient.id,
+                &image.patient.id,
+            ),
         ] {
             if own != theirs {
+                let (own, theirs) = (own.as_deref(), theirs.as_deref());
                 found.push(|| {
                     format!(
-                        "{what} is {own:?}, but the referenced image {} has {theirs:?}",
-                        image.path.display()
+                        "{what} is {}, but the referenced image {} has {}{}",
+                        shown_or(tag, own, "absent"),
+                        image.path.display(),
+                        shown_or(tag, theirs, "absent"),
+                        own.zip(theirs)
+                            .map(|(own, theirs)| difference(tag, own, theirs).to_string())
+                            .unwrap_or_default()
                     )
                 });
             }

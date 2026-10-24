@@ -27,6 +27,8 @@ use std::path::{Path, PathBuf};
 use dicom_object::InMemDicomObject;
 use serde::{Deserialize, Serialize};
 
+use super::conventions::{ConventionRun, Gaps};
+use super::disclosure::withheld;
 use super::iod::{Family, EDITION, MAX_NESTING};
 use super::wsi_conformance::Origin;
 use super::{
@@ -109,7 +111,7 @@ pub fn validate_dicom_json_path(
         files: vec![path.to_path_buf()],
         checks: outcome.checks,
         optional: outcome.optional,
-        conventions: super::ConventionReport::default(),
+        conventions: outcome.conventions,
     })
 }
 
@@ -164,7 +166,7 @@ fn fetch_bulk_values(
         if fetched.len() + notes.len() == MAX_BULK_FETCHES {
             notes.push(format!(
                 "{}: more than {MAX_BULK_FETCHES} distinct BulkDataURIs; the rest are not fetched",
-                reference.uri
+                withheld(&reference.uri)
             ));
             break;
         }
@@ -172,7 +174,7 @@ fn fetch_bulk_values(
             Ok(value) => {
                 fetched.insert(reference.uri.clone(), value);
             }
-            Err(reason) => notes.push(format!("{}: {reason}", reference.uri)),
+            Err(reason) => notes.push(format!("{}: {reason}", withheld(&reference.uri))),
         }
     }
     Ok((fetched, notes))
@@ -198,6 +200,8 @@ pub(crate) struct JsonRun<'r> {
 pub(crate) struct JsonOutcome {
     pub(crate) checks: Vec<ValidationCheck>,
     pub(crate) optional: Vec<OptionalConformance>,
+    /// The results of the selected convention profiles.
+    pub(crate) conventions: super::ConventionReport,
 }
 
 /// Every BulkDataURI of a DICOM JSON document, in document order; `None`
@@ -295,6 +299,7 @@ fn reader<'r>(
         violations,
         bulk: Vec::new(),
         file_meta: Vec::new(),
+        nesting: crate::validation::disclosure::Nesting::default(),
     }
 }
 
@@ -372,14 +377,23 @@ fn cite(section: &str) -> String {
 /// Validates the bytes of one DICOM JSON document.
 pub(crate) fn validate_json_bytes(bytes: &[u8], run: &JsonRun<'_>) -> JsonOutcome {
     let label = run.label.display().to_string();
-    let failed = |message: String| JsonOutcome {
-        checks: vec![intrinsic_check(
-            JSON_MODEL_RULE,
-            Some(run.label.clone()),
-            ValidationStatus::Failed,
-            message,
-        )],
-        optional: Vec::new(),
+    let mut conventions = ConventionRun::new(&run.options.validation);
+    let failed = |message: String| {
+        let mut conventions = ConventionRun::new(&run.options.validation);
+        conventions.skip_object(
+            &run.label,
+            &format!("the document could not be read as DICOM JSON ({JSON_MODEL_RULE} reports why), so no convention of the profile was evaluated for it"),
+        );
+        JsonOutcome {
+            checks: vec![intrinsic_check(
+                JSON_MODEL_RULE,
+                Some(run.label.clone()),
+                ValidationStatus::Failed,
+                message,
+            )],
+            optional: Vec::new(),
+            conventions: conventions.finish(),
+        }
     };
     let text = match std::str::from_utf8(bytes) {
         Ok(text) => text,
@@ -413,8 +427,15 @@ pub(crate) fn validate_json_bytes(bytes: &[u8], run: &JsonRun<'_>) -> JsonOutcom
         let evaluated = evaluate::instance(&path, &pointer, members, run);
         checks.extend(evaluated.checks);
         optional.extend(evaluated.notes);
-        if let Some(object) = &evaluated.reference {
-            corpus.observe(&path, object, copy_origin(members, &repeated));
+        match &evaluated.reference {
+            Some(object) => {
+                corpus.observe(&path, object, copy_origin(members, &repeated));
+                conventions.observe_with(&path, object, gaps(evaluated.transfer_syntax_known));
+            }
+            None => conventions.skip_object(
+                &path,
+                "the Data Set could not be read, so no convention of the profile was evaluated for it",
+            ),
         }
         bulk_seen.extend(evaluated.bulk);
     }
@@ -422,7 +443,28 @@ pub(crate) fn validate_json_bytes(bytes: &[u8], run: &JsonRun<'_>) -> JsonOutcom
     checks.extend(set.checks);
     add_set_advisories(&mut optional, set.advisories);
     checks.extend(bulk_check(&run.label, &bulk_seen, run));
-    JsonOutcome { checks, optional }
+    JsonOutcome {
+        checks,
+        optional,
+        conventions: conventions.finish(),
+    }
+}
+
+/// What a Data Set of DICOM JSON does not hold for the conventions: the
+/// encoded Pixel Data, and the Transfer Syntax unless it is known.
+fn gaps(transfer_syntax_known: bool) -> Gaps {
+    Gaps {
+        transfer_syntax: (!transfer_syntax_known).then(|| {
+            format!(
+                "needs the Transfer Syntax, which DICOM JSON Metadata does not name ({}) and neither --transfer-syntax nor a Frames response supplied",
+                cite("10.4.1.1.2")
+            )
+        }),
+        pixel_data: Some(format!(
+            "needs the encoded Pixel Data, which DICOM JSON conveys only as a BulkDataURI ({})",
+            cite("F.2.6")
+        )),
+    }
 }
 
 /// F.2.1: the document is an Array of DICOM JSON Model objects; a saved
@@ -481,7 +523,7 @@ fn bulk_check(label: &Path, bulk: &[BulkReference], run: &JsonRun<'_>) -> Option
     let listed: Vec<String> = missing
         .iter()
         .take(8)
-        .map(|reference| format!("{} {}", reference.pointer, reference.uri))
+        .map(|reference| format!("{} {}", reference.pointer, withheld(&reference.uri)))
         .collect();
     let more = missing.len() - listed.len();
     let why = if run.fetch_requested {

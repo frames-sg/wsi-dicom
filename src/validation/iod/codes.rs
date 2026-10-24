@@ -7,6 +7,82 @@ use super::model::{Code, ContextGroup, Strength};
 use super::report::{tag_text, Findings};
 use super::scope::string_value;
 use super::value_sets::CONTEXT_GROUPS;
+use crate::validation::disclosure::{Nesting, WITHHELD};
+
+/// Checks every coded entry in `root`, including optional Code Sequences
+/// outside the selected IOD's module tables.
+pub(super) fn check_representations(findings: &mut Findings, root: &InMemDicomObject) {
+    check_representations_at(findings, root, "", Nesting::default(), 0);
+}
+
+fn check_representations_at(
+    findings: &mut Findings,
+    object: &InMemDicomObject,
+    path: &str,
+    nesting: Nesting,
+    depth: usize,
+) {
+    for element in object.iter() {
+        let Some(items) = element.items() else {
+            continue;
+        };
+        let tag = element.header().tag;
+        let label = super::values::element_label(path, tag);
+        check_representation(findings, &label, items, nesting.below(tag));
+        if depth >= super::MAX_NESTING {
+            continue;
+        }
+        for (index, item) in items.iter().enumerate() {
+            let item_path = format!("{label}[{}] > ", index + 1);
+            check_representations_at(
+                findings,
+                item,
+                &item_path,
+                nesting.item(tag, item),
+                depth + 1,
+            );
+        }
+    }
+}
+
+/// Checks which of Code Value, Long Code Value and URN Code Value carries
+/// the coded entry's identifier (PS3.3 8.1 and Table 8.8-1a).
+fn check_representation(
+    findings: &mut Findings,
+    label: &str,
+    items: &[InMemDicomObject],
+    nesting: Nesting,
+) {
+    for (index, item) in items.iter().enumerate() {
+        for (tag, name) in [
+            (tags::CODE_VALUE, "Code Value (0008,0100)"),
+            (tags::LONG_CODE_VALUE, "Long Code Value (0008,0119)"),
+            (tags::URN_CODE_VALUE, "URN Code Value (0008,0120)"),
+        ] {
+            let Some(value) = string_value(item, tag, 1) else {
+                continue;
+            };
+            let (expected_tag, expected) = if super::conditions::is_urn_or_url(&value) {
+                (tags::URN_CODE_VALUE, "URN Code Value (0008,0120)")
+            } else if value.chars().count() <= 16 {
+                (tags::CODE_VALUE, "Code Value (0008,0100)")
+            } else {
+                (tags::LONG_CODE_VALUE, "Long Code Value (0008,0119)")
+            };
+            if tag == expected_tag {
+                continue;
+            }
+            let shown = nesting.shown(tag, &value);
+            findings.presence.push(|| {
+                format!(
+                    "{label}[{}] > {name} {shown} is present, but this identifier is encoded in {expected} (PS3.3 {} 8.1 and Table 8.8-1a)",
+                    index + 1,
+                    super::tables::EDITION
+                )
+            });
+        }
+    }
+}
 
 /// A coded entry as encoded: the one Code Value Attribute present (Code, Long
 /// Code or URN Code Value) and its Coding Scheme Designator when present.
@@ -44,7 +120,12 @@ impl Coded {
         self.scheme.as_deref() == Some(scheme) && self.value == value
     }
 
-    fn describe(&self) -> String {
+    /// The entry as a message names it; `withheld` when it sits below a
+    /// Sequence whose Values messages withhold (`disclosure::Nesting`).
+    fn describe(&self, withheld: bool) -> String {
+        if withheld {
+            return format!("a coded entry {WITHHELD}");
+        }
         match &self.scheme {
             Some(scheme) => format!("({}, {}, \"{}\")", self.value, scheme, self.meaning),
             None => format!(
@@ -86,14 +167,14 @@ pub(super) fn contains(group: &ContextGroup, coded: &Coded) -> bool {
 }
 
 /// Checks that each Code Sequence Item holds `code`, which the IOD Content
-/// Constraint of PS3.3 `section` requires.
+/// Constraint of PS3.3 `section` requires; `nesting` is the Items'.
 pub(super) fn check_code(
     findings: &mut Findings,
-    label: &str,
-    tag: u32,
+    (label, tag): (&str, u32),
     code: Code,
     section: &str,
     items: &[InMemDicomObject],
+    nesting: Nesting,
 ) {
     for (index, item) in items.iter().enumerate() {
         let Some(coded) = Coded::of(item) else {
@@ -105,7 +186,7 @@ pub(super) fn check_code(
                     "{label} {}[{}]: {} is not ({}, {}, \"{}\"), which PS3.3 {section} requires",
                     tag_text(tag),
                     index + 1,
-                    coded.describe(),
+                    coded.describe(nesting.withholds_every_value()),
                     code.value,
                     code.scheme,
                     code.meaning
@@ -135,6 +216,16 @@ pub(in crate::validation) fn code_finding(
     groups: &[u32],
     item: &InMemDicomObject,
 ) -> Option<CodeFinding> {
+    code_finding_in(strength, groups, item, false)
+}
+
+/// `code_finding`, the code withheld (`disclosure`) when `withheld`.
+pub(in crate::validation) fn code_finding_in(
+    strength: Strength,
+    groups: &[u32],
+    item: &InMemDicomObject,
+    withheld: bool,
+) -> Option<CodeFinding> {
     let groups: Vec<&ContextGroup> = groups.iter().filter_map(|id| group(*id)).collect();
     let coded = Coded::of(item)?;
     if groups.iter().any(|group| contains(group, &coded)) {
@@ -147,7 +238,7 @@ pub(in crate::validation) fn code_finding(
         .join(" or ");
     let message = format!(
         "{} is not in {} {names} (PS3.16 {})",
-        coded.describe(),
+        coded.describe(withheld),
         match strength {
             Strength::Baseline => "Baseline",
             Strength::Defined => "Defined",
@@ -168,18 +259,17 @@ pub(in crate::validation) fn code_finding(
 }
 
 /// Checks the coded entry of each Code Sequence Item against `groups`
-/// (`code_finding`).
+/// (`code_finding`); `nesting` is the Items'.
 pub(super) fn check_items(
     findings: &mut Findings,
-    label: &str,
-    tag: u32,
-    strength: Strength,
-    groups: &[u32],
+    (label, tag): (&str, u32),
+    (strength, groups): (Strength, &[u32]),
     items: &[InMemDicomObject],
+    nesting: Nesting,
 ) {
     for (index, item) in items.iter().enumerate() {
         let at = || format!("{label} {}[{}]", tag_text(tag), index + 1);
-        match code_finding(strength, groups, item) {
+        match code_finding_in(strength, groups, item, nesting.withholds_every_value()) {
             Some(CodeFinding::Violation(message)) => {
                 findings.value_sets.push(|| format!("{}: {message}", at()));
             }

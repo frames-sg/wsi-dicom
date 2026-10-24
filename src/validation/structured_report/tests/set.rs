@@ -15,6 +15,13 @@ use crate::validation::{ValidationCheck, ValidationStatus};
 
 const DUPLICATE: &str = "1.2.826.0.1.3680043.10.999.60.70";
 
+fn withheld(value: &str) -> String {
+    format!(
+        "(value withheld: identifying; {} characters)",
+        value.chars().count()
+    )
+}
+
 /// The slide image: a tiled VL WSI Instance of 4 Frames of 64 x 64 in a
 /// 128 x 128 Total Pixel Matrix.
 fn slide() -> InMemDicomObject {
@@ -100,7 +107,7 @@ fn a_reference_names_the_referenced_instances_sop_class() {
     assert_set_fails(
         vec![key_object_selection(), image],
         KOS_RULE,
-        &format!("object-0.dcm Content Item 1.2 references SOP Instance {IMAGE} with Referenced SOP Class UID {WSI}, but object-1.dcm has SOP Class UID 1.2.840.10008.5.1.4.1.1.66.4; Referenced SOP Class UID uniquely identifies the referenced SOP Class (PS3.3 2026d Table 10-11)"),
+        &format!("object-0.dcm Content Item 1.2 references SOP Instance {} with Referenced SOP Class UID {WSI}, but object-1.dcm has SOP Class UID 1.2.840.10008.5.1.4.1.1.66.4; Referenced SOP Class UID uniquely identifies the referenced SOP Class (PS3.3 2026d Table 10-11)", withheld(IMAGE)),
     );
 }
 
@@ -207,7 +214,7 @@ fn identical_documents_list_each_other() {
     assert_set_fails(
         vec![first, silent],
         KOS_RULE,
-        &format!("object-0.dcm lists object-1.dcm in Identical Documents Sequence (0040,A525), but that duplicate's Identical Documents Sequence does not reference [\"{DOCUMENT}\"]; the Identical Documents Sequence in each SOP Instance shall contain references to all other duplicate SOP Instances (PS3.3 2026d C.17.2.2)"),
+        &format!("object-0.dcm lists object-1.dcm in Identical Documents Sequence (0040,A525), but that duplicate's Identical Documents Sequence does not reference {}; the Identical Documents Sequence in each SOP Instance shall contain references to all other duplicate SOP Instances (PS3.3 2026d C.17.2.2)", withheld(DOCUMENT)),
     );
 }
 
@@ -228,6 +235,6 @@ fn identical_documents_are_the_entire_document_in_another_study() {
     assert_set_fails(
         vec![first, second],
         KOS_RULE,
-        &format!("object-0.dcm and its duplicate object-1.dcm are both in Study {STUDY}; identical copies of a document are duplicated for inclusion into different Studies"),
+        &format!("object-0.dcm and its duplicate object-1.dcm are both in Study {}; identical copies of a document are duplicated for inclusion into different Studies", withheld(STUDY)),
     );
 }

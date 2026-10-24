@@ -16,6 +16,7 @@ use super::report::{tag_text, Family, Findings};
 use super::scope::{raw_tag, string_value, Scope};
 use super::tables::FILE_META;
 use super::values::{Encoding, ValueChecks};
+use crate::validation::disclosure::shown;
 use crate::validation::transfer_syntaxes::is_jpip_referenced;
 
 const PREAMBLE: usize = 128;
@@ -72,11 +73,12 @@ pub(super) fn check_file_meta(
         let declared = string_value(&meta, meta_tag, 1);
         let actual = string_value(object, data_set_tag, 1);
         if declared.is_some() && declared != actual {
+            let (declared, actual) = (declared.unwrap_or_default(), actual.unwrap_or_default());
             family.push(|| {
                 format!(
-                    "{meta_name} {:?} does not match {name} {:?} of the Data Set ({CITATION})",
-                    declared.unwrap_or_default(),
-                    actual.unwrap_or_default()
+                    "{meta_name} {} does not match {name} {} of the Data Set ({CITATION})",
+                    shown(meta_tag, &declared),
+                    shown(data_set_tag, &actual)
                 )
             });
         }
@@ -232,7 +234,7 @@ fn check_encoded_group(path: &Path, family: &mut Family) -> Option<InMemDicomObj
             continue;
         };
         if let Err(reason) = presentation_address(&address) {
-            family.push(|| format!("{name} \"{address}\" {reason} (PS3.10 7.1.1.1)"));
+            family.push(|| format!("{name} {} {reason} (PS3.10 7.1.1.1)", shown(tag, &address)));
         }
     }
     Some(meta)

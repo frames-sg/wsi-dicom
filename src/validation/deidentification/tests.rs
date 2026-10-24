@@ -594,7 +594,7 @@ fn dummy_values_stay_consistent_across_a_pyramid() {
         let (check, _) = set_check(&set).expect("set check");
         assert_fails(
             &check,
-            &format!("Pyramid UID (0008,0019) 2.25.5001 disagree on {name}"),
+            &format!("Pyramid UID (0008,0019) (value withheld: identifying; 9 characters) disagree on {name}"),
         );
     }
 }

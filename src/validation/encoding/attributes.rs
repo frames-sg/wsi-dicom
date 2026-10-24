@@ -8,6 +8,7 @@ use dicom_object::mem::InMemElement;
 use dicom_object::InMemDicomObject;
 
 use super::EXPLICIT_VR_BIG_ENDIAN;
+use crate::validation::disclosure::{shown, Nesting, Shown};
 use crate::validation::iod::{element_label, Family, MAX_NESTING};
 
 /// PS3.5 9.1: the root of the UIDs that DICOM itself defines.
@@ -60,17 +61,23 @@ pub(super) struct Attributes<'f> {
 
 impl Attributes<'_> {
     pub(super) fn check(&mut self, root: &InMemDicomObject) {
-        self.data_set(root, "", 0);
+        self.data_set(root, "", (0, Nesting::default()));
         self.veterinary_name(root);
     }
 
-    fn data_set(&mut self, object: &InMemDicomObject, path: &str, depth: usize) {
+    /// `object` at `depth`, whose Values `nesting` withholds.
+    fn data_set(
+        &mut self,
+        object: &InMemDicomObject,
+        path: &str,
+        (depth, nesting): (usize, Nesting),
+    ) {
         self.private_definition(object, path);
         if self.explicit_vr {
             self.waveform(object, path);
         }
         for element in object.iter() {
-            self.element(element, path);
+            self.element(element, path, nesting);
             let Some(items) = element.items() else {
                 continue;
             };
@@ -78,14 +85,16 @@ impl Attributes<'_> {
             if depth >= MAX_NESTING {
                 continue;
             }
-            let label = element_label(path, element.header().tag);
+            let tag = element.header().tag;
+            let label = element_label(path, tag);
             for (index, item) in items.iter().enumerate() {
-                self.data_set(item, &format!("{label}[{}] > ", index + 1), depth + 1);
+                let nested = (depth + 1, nesting.item(tag, item));
+                self.data_set(item, &format!("{label}[{}] > ", index + 1), nested);
             }
         }
     }
 
-    fn element(&mut self, element: &InMemElement, path: &str) {
+    fn element(&mut self, element: &InMemElement, path: &str, nesting: Nesting) {
         let tag = element.header().tag;
         let label = || element_label(path, tag);
         // Only the text Attributes below are read as text.
@@ -93,7 +102,7 @@ impl Attributes<'_> {
         match tag {
             tags::TIMEZONE_OFFSET_FROM_UTC => {
                 if let Some(value) = first() {
-                    self.timezone_offset(&label(), &value);
+                    self.timezone_offset(&label(), &value, nesting.shown(tag, &value));
                 }
             }
             tags::DIGITAL_SIGNATURE_DATE_TIME => {
@@ -102,8 +111,9 @@ impl Attributes<'_> {
                 let offset = value.get(4..).is_some_and(|rest| rest.contains(['+', '-']));
                 if !value.is_empty() && !offset {
                     self.findings.push(|| format!(
-                        "{} \"{value}\": no &ZZXX offset from UTC; the time shall include one (PS3.3 Table C.12-6)",
-                        label()
+                        "{} {}: no &ZZXX offset from UTC; the time shall include one (PS3.3 Table C.12-6)",
+                        label(),
+                        nesting.shown(tag, value)
                     ));
                 }
             }
@@ -145,8 +155,9 @@ impl Attributes<'_> {
                         && uid.starts_with(WELL_KNOWN_FRAMES_OF_REFERENCE);
                     if uid.starts_with(DICOM_ROOT) && !well_known {
                         self.findings.push(|| format!(
-                            "{} {uid}: the root 1.2.840.10008 is reserved for DICOM defined items and shall not be used for privately defined items (PS3.5 9)",
-                            label()
+                            "{} {}: the root 1.2.840.10008 is reserved for DICOM defined items and shall not be used for privately defined items (PS3.5 9)",
+                            label(),
+                            nesting.shown(tag, uid)
                         ));
                     }
                 }
@@ -158,7 +169,8 @@ impl Attributes<'_> {
     }
 
     /// PS3.3 C.12.1.1.8: "&ZZXX", no leading spaces, and +0000 for UTC.
-    fn timezone_offset(&mut self, label: &str, value: &str) {
+    /// `shown` is `value` as a message shows it.
+    fn timezone_offset(&mut self, label: &str, value: &str, shown: Shown<'_>) {
         let offset = value.trim_end_matches(' ');
         let reason = if offset.starts_with(' ') {
             "leading space characters shall not be present"
@@ -173,7 +185,7 @@ impl Attributes<'_> {
             return;
         };
         self.findings
-            .push(|| format!("{label} \"{value}\": {reason} (PS3.3 C.12.1.1.8)"));
+            .push(|| format!("{label} {shown}: {reason} (PS3.3 C.12.1.1.8)"));
     }
 
     /// PS3.3 C.12.1.1.7: Private Data Element Value Multiplicity and Number
@@ -327,8 +339,9 @@ impl Attributes<'_> {
             {
                 let components = group.matches('^').count() + 1;
                 self.findings.push(|| format!(
-                    "{} \"{value}\": component group {} of a veterinary Patient's Name has {components} components; only the responsible party and patient name are used and the remaining components shall not be present (PS3.5 6.2)",
+                    "{} {}: component group {} of a veterinary Patient's Name has {components} components; only the responsible party and patient name are used and the remaining components shall not be present (PS3.5 6.2)",
                     element_label("", tags::PATIENT_NAME),
+                    shown(tags::PATIENT_NAME, value),
                     index + 1
                 ));
             }

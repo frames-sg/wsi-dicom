@@ -15,6 +15,7 @@ use super::identity::{
 use super::series_set::{self, SeriesFacts};
 use super::{iod_of, rule_check, VL_WSI};
 use crate::uid::is_valid_dicom_uid;
+use crate::validation::disclosure::shown;
 use crate::validation::iod::dicom_edition;
 use crate::validation::{intrinsic_check, ValidationProfile};
 
@@ -194,7 +195,8 @@ fn run_slide_coordinate_set_check(corpus: &WsiConformanceCorpus) -> Option<Valid
             compared = true;
             if !coordinates_equal(existing, coordinate, pixel.max(*existing_pixel)) {
                 failure = Some(format!(
-                    "Pyramid UID {uid} has conflicting total-matrix origin or orientation in {} and {}",
+                    "Pyramid UID {} has conflicting total-matrix origin or orientation in {} and {}",
+                    shown(tags::PYRAMID_UID, uid),
                     existing_path.display(),
                     facts.path.display()
                 ));
@@ -257,7 +259,7 @@ fn run_clinical_identity_set_check(corpus: &WsiConformanceCorpus) -> Option<Vali
             if (name, id) != (&patient.0, &patient.1) {
                 failure = Some(format!(
                     "Study Instance UID {} maps to conflicting patient identities in {} and {}",
-                    identity.study_uid,
+                    shown(tags::STUDY_INSTANCE_UID, &identity.study_uid),
                     path.display(),
                     facts.path.display()
                 ));
@@ -279,7 +281,7 @@ fn run_clinical_identity_set_check(corpus: &WsiConformanceCorpus) -> Option<Vali
             if study_uid != &identity.study_uid || frames_differ {
                 failure = Some(format!(
                     "Series Instance UID {} maps to conflicting Study or Frame of Reference UIDs in {} and {}",
-                    identity.series_uid,
+                    shown(tags::SERIES_INSTANCE_UID, &identity.series_uid),
                     path.display(),
                     facts.path.display()
                 ));
@@ -309,7 +311,7 @@ fn run_clinical_identity_set_check(corpus: &WsiConformanceCorpus) -> Option<Vali
             {
                 failure = Some(format!(
                     "Frame of Reference UID {} maps to conflicting study, patient, or container identity in {} and {}",
-                    frame_of_reference_uid,
+                    shown(tags::FRAME_OF_REFERENCE_UID, frame_of_reference_uid),
                     path.display(),
                     facts.path.display()
                 ));
@@ -416,7 +418,8 @@ fn run_identity_set_check(
             Ok(uid) if is_valid_dicom_uid(uid) => uid.as_str(),
             Ok(uid) => {
                 violations.push(format!(
-                    "invalid SOP Instance UID {uid:?} in {}",
+                    "invalid SOP Instance UID {} in {}",
+                    shown(tags::SOP_INSTANCE_UID, uid),
                     facts.path.display()
                 ));
                 continue;
@@ -434,7 +437,8 @@ fn run_identity_set_check(
             continue;
         };
         let pair = format!(
-            "SOP Instance UID {uid} occurs in both {} and {}",
+            "SOP Instance UID {} occurs in both {} and {}",
+            shown(tags::SOP_INSTANCE_UID, uid),
             original.path.display(),
             facts.path.display()
         );
@@ -487,7 +491,7 @@ fn run_specimen_uid_set_check(corpus: &WsiConformanceCorpus) -> Option<Validatio
                         if existing != specimen {
                             failure = Some(format!(
                                 "Specimen UID {} maps to conflicting identifiers or issuers in {} and {}",
-                                specimen.uid,
+                                shown(tags::SPECIMEN_UID, &specimen.uid),
                                 existing_path.display(),
                                 facts.path.display()
                             ));
@@ -553,7 +557,8 @@ fn run_pyramid_geometry_set_check(corpus: &WsiConformanceCorpus) -> Option<Valid
     'pyramids: for (uid, levels) in &pyramids {
         if !is_valid_dicom_uid(uid) {
             failure = Some(format!(
-                "invalid Pyramid UID {uid:?} in {}",
+                "invalid Pyramid UID {} in {}",
+                shown(tags::PYRAMID_UID, uid),
                 levels[0].path.display()
             ));
             break;
@@ -586,7 +591,8 @@ fn run_pyramid_geometry_set_check(corpus: &WsiConformanceCorpus) -> Option<Valid
                 || (reference.height_mm - level.height_mm).abs() > height_tolerance
             {
                 failure = Some(format!(
-                        "Pyramid UID {uid} has inconsistent physical extents: {} is {}x{} mm and {} is {}x{} mm",
+                        "Pyramid UID {} has inconsistent physical extents: {} is {}x{} mm and {} is {}x{} mm",
+                        shown(tags::PYRAMID_UID, uid),
                         reference.path.display(),
                         reference.width_mm,
                         reference.height_mm,
@@ -686,7 +692,7 @@ fn run_source_relationship_set_check(corpus: &WsiConformanceCorpus) -> Option<Va
                     failure = Some(format!(
                         "{} references {} with SOP Class UID {}, but {} declares {}",
                         owner_path.display(),
-                        reference.instance_uid,
+                        shown(tags::REFERENCED_SOP_INSTANCE_UID, &reference.instance_uid),
                         reference.class_uid,
                         target_path.display(),
                         actual_class

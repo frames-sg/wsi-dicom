@@ -56,7 +56,8 @@ pub(super) fn range(session: &mut Session<'_>, target: &Target) {
                 ];
                 if !valid.iter().any(|form| form == content_range.trim()) {
                     verdict.fail(format!(
-                        "{line}: 206 with Content-Range {content_range:?}; the partial response to Range: {range} has Content-Range {:?} (RFC 7233 4.1, {})",
+                        "{line}: 206 with an invalid {}-character Content-Range; the partial response to Range: {range} has Content-Range {:?} (RFC 7233 4.1, {})",
+                        content_range.chars().count(),
                         valid[0],
                         sec(RANGE_SECTIONS)
                     ));

@@ -165,9 +165,17 @@ fn description(verdict: &mut Verdict, body: &[u8], content_type: Option<&str>) -
             false
         }
         other => {
+            let shown = other
+                .map(|essence| {
+                    super::media::MediaType::parse(essence)
+                        .expect("the essence was parsed from a media type")
+                        .reported_essence()
+                        .to_string()
+                })
+                .unwrap_or_else(|| "without Content-Type".to_string());
             verdict.fail(format!(
                 "the Capabilities Description is {}; it is application/vnd.sun.wadl+xml or application/json ({})",
-                other.unwrap_or("without Content-Type"),
+                shown,
                 sec("8.9.4")
             ));
             false

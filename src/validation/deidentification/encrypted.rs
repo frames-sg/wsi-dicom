@@ -16,6 +16,7 @@ use dicom_dictionary_std::tags;
 use dicom_object::InMemDicomObject;
 
 use super::Findings;
+use crate::validation::disclosure::shown_or;
 use crate::validation::encoding::defines_data_set_encoding;
 use crate::validation::iod::{check_value_format, items, string_value};
 
@@ -67,7 +68,11 @@ fn check_transfer_syntax(item: &InMemDicomObject, index: usize, findings: &mut F
         format!(
             "{}EncryptedContentTransferSyntaxUID (0400,0510) is {}, not a Transfer Syntax that PS3.6 Annex A registers and whose Data Set encoding PS3.5 Annex A defines; E.1.1 encodes the Encrypted Attributes Data Set with a DICOM Transfer Syntax",
             item_label(index),
-            uid.map_or_else(|| "absent".to_string(), |uid| format!("\"{uid}\""))
+            shown_or(
+                tags::ENCRYPTED_CONTENT_TRANSFER_SYNTAX_UID,
+                uid.as_deref(),
+                "absent"
+            )
         )
     });
 }

@@ -17,6 +17,7 @@ use dicom_core::{PrimitiveValue, Tag};
 use dicom_dictionary_std::{tags, uids};
 use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
+use super::disclosure::shown;
 use super::iod::{
     dicom_edition, element_label, items, raw_tag, string_value, tag_text, Coded, Family,
 };
@@ -464,7 +465,8 @@ fn ntp_source_address(object: &InMemDicomObject, findings: &mut Findings) {
     };
     if !well_formed {
         findings.push(|| format!(
-            "NTP Source Address (0018,1803) \"{address}\" is neither an IPv4 address in dotted decimal (e.g., 192.168.1.1) nor an IPv6 address in colon separated hexadecimal ({CITATION} Table C.7-7)"
+            "NTP Source Address (0018,1803) {} is neither an IPv4 address in dotted decimal (e.g., 192.168.1.1) nor an IPv6 address in colon separated hexadecimal ({CITATION} Table C.7-7)",
+            shown(tags::NTP_SOURCE_ADDRESS, &address)
         ));
     }
 }
@@ -696,8 +698,9 @@ pub(super) fn patient_planes(
             for (index, (value, cosine)) in orientation.iter().zip([row, column]).enumerate() {
                 if let Some(reason) = orientation_mismatch(value, cosine, quadruped) {
                     findings.push(|| format!(
-                        "{path}Patient Orientation (0020,0020) Value {} \"{value}\" {reason} of Image Orientation (Patient) {cosine:?}; it shall be consistent with Image Orientation (Patient) ({CITATION} C.7.6.1.1.1)",
-                        index + 1
+                        "{path}Patient Orientation (0020,0020) Value {} {} {reason} of Image Orientation (Patient) {cosine:?}; it shall be consistent with Image Orientation (Patient) ({CITATION} C.7.6.1.1.1)",
+                        index + 1,
+                        shown(tags::PATIENT_ORIENTATION, value)
                     ));
                 }
             }

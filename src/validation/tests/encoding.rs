@@ -140,7 +140,7 @@ fn signature_and_encryption_attributes_follow_their_encoding_rules() {
     });
     assert_encoding_failure(
         &path,
-        "DigitalSignatureDateTime (0400,0105) \"20240101120000\": no &ZZXX offset from UTC",
+        "DigitalSignatureDateTime (0400,0105) (value withheld: identifying; 14 characters): no &ZZXX offset from UTC",
     );
     assert_encoding_failure(
         &path,
@@ -237,7 +237,7 @@ fn privately_defined_items_do_not_use_the_dicom_root() {
     });
     assert_encoding_failure(
         &path,
-        "SeriesInstanceUID (0020,000E) 1.2.840.10008.99.1: the root 1.2.840.10008 is reserved for DICOM defined items",
+        "SeriesInstanceUID (0020,000E) (value withheld: identifying; 18 characters): the root 1.2.840.10008 is reserved for DICOM defined items",
     );
     // A well-known Frame of Reference of PS3.6 Annex A is DICOM defined.
     let atlas = edited_wsi(tmp.path(), "atlas", |object| {
@@ -274,7 +274,7 @@ fn a_veterinary_patient_name_has_two_components() {
     });
     assert_encoding_failure(
         &dog,
-        "\"Smith^Fluffy^Middle\": component group 1 of a veterinary Patient's Name has 3 components",
+        "PatientName (0010,0010) (value withheld: identifying; 19 characters): component group 1 of a veterinary Patient's Name has 3 components",
     );
     let human = edited_wsi(tmp.path(), "human", |object| {
         object.put(species("337915000"));

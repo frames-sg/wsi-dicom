@@ -10,6 +10,7 @@ use dicom_object::{DefaultDicomObject, InMemDicomObject};
 use super::facts::{text, volume_layers, Facts, Kind, SetIndex};
 use super::wg26::UNCOMPRESSED;
 use super::{advisory, check, ConventionEntry, ConventionProfile, Out, Subject, Violations};
+use crate::validation::disclosure::{difference, shown, shown_all, shown_or};
 
 const P: ConventionProfile = ConventionProfile::IheDpiaDraft;
 const JPEG: ConventionProfile = ConventionProfile::IheDpiaDraftJpeg;
@@ -177,12 +178,13 @@ pub(super) fn file_checks(object: &DefaultDicomObject, facts: &Facts, out: &mut 
 
 /// The JPEG Storage Option, which constrains each image alone.
 pub(super) fn jpeg_file_checks(facts: &Facts, out: &mut Out) {
-    if facts.kind == Kind::Wsi {
-        out.check(
-            &JPEG_BASELINE,
-            Subject::File(&facts.path),
-            jpeg_baseline(facts),
-        );
+    if facts.kind != Kind::Wsi {
+        return;
+    }
+    let file = Subject::File(&facts.path);
+    match &facts.gaps.transfer_syntax {
+        Some(reason) => out.skip(&JPEG_BASELINE, file, reason.clone()),
+        None => out.check(&JPEG_BASELINE, file, jpeg_baseline(facts)),
     }
 }
 
@@ -239,6 +241,10 @@ fn tiled_full(root: &InMemDicomObject) -> Result<(), String> {
 
 fn offset_table(object: &DefaultDicomObject, facts: &Facts, out: &mut Out) {
     let file = Subject::File(&facts.path);
+    if let Some(reason) = &facts.gaps.pixel_data {
+        out.skip(&OFFSET_TABLE, file, reason.clone());
+        return;
+    }
     let Some(element) = object.get(tags::PIXEL_DATA) else {
         out.skip(
             &OFFSET_TABLE,
@@ -300,7 +306,7 @@ fn single_z_plane(members: &[&Facts]) -> Result<(), String> {
             format!(
                 "the Series holds {} pyramids (Pyramid UIDs {})",
                 pyramids.len(),
-                pyramids.into_iter().collect::<Vec<_>>().join(", ")
+                shown_all(tags::PYRAMID_UID, pyramids.into_iter(), ", ")
             )
         });
     }
@@ -343,14 +349,15 @@ fn one_series_per_scan(index: &SetIndex<'_>, position: usize) -> Result<(), Stri
             format!(
                 "the Series has {} Acquisition UIDs ({}), but the images of one scan share one",
                 acquisitions.len(),
-                acquisitions.iter().copied().collect::<Vec<_>>().join(", ")
+                shown_all(tags::ACQUISITION_UID, acquisitions.iter().copied(), ", ")
             )
         });
     }
     for (other, shared) in index.shared_acquisitions(position) {
         found.push(|| format!(
-            "Acquisition UID {} also occurs in Series {other}, but all images of one scan are in a single Series",
-            shared.join(", ")
+            "Acquisition UID {} also occurs in Series {}, but all images of one scan are in a single Series",
+            shown_all(tags::ACQUISITION_UID, shared.iter().copied(), ", "),
+            shown(tags::SERIES_INSTANCE_UID, other)
         ));
     }
     found.result()
@@ -373,7 +380,7 @@ fn pyramid_identity(members: &[&Facts]) -> Result<(), String> {
                 "the pyramid images have different Frame of Reference UIDs ({})",
                 frames
                     .into_iter()
-                    .map(|uid| uid.unwrap_or("absent"))
+                    .map(|uid| shown_or(tags::FRAME_OF_REFERENCE_UID, uid, "absent"))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -384,7 +391,7 @@ fn pyramid_identity(members: &[&Facts]) -> Result<(), String> {
         found.push(|| {
             format!(
                 "the pyramid images have different Pyramid UIDs ({})",
-                pyramids.into_iter().collect::<Vec<_>>().join(", ")
+                shown_all(tags::PYRAMID_UID, pyramids.into_iter(), ", ")
             )
         });
     }
@@ -533,53 +540,87 @@ fn references(document: &Facts, index: &SetIndex<'_>) -> Result<(), String> {
     found.result()
 }
 
+/// "`what` is <own> in the KOS, but <theirs> in <image>", the Values of
+/// `tag` shown as `disclosure` allows.
+fn differing(
+    tag: dicom_core::Tag,
+    what: &str,
+    own: Option<&str>,
+    theirs: Option<&str>,
+    image: &Facts,
+) -> String {
+    format!(
+        "{what} is {} in the KOS, but {} in {}{}",
+        shown_or(tag, own, "absent"),
+        shown_or(tag, theirs, "absent"),
+        image.path.display(),
+        own.zip(theirs)
+            .map(|(own, theirs)| difference(tag, own, theirs).to_string())
+            .unwrap_or_default()
+    )
+}
+
 fn identity(document: &Facts, referenced: &[&Facts]) -> Result<(), String> {
     let mut found = Violations::default();
     for image in referenced {
-        for (what, own, theirs) in [
+        for (tag, what, own, theirs) in [
             (
+                tags::PATIENT_NAME,
                 "Patient's Name",
                 &document.patient.name,
                 &image.patient.name,
             ),
-            ("Patient ID", &document.patient.id, &image.patient.id),
             (
+                tags::PATIENT_ID,
+                "Patient ID",
+                &document.patient.id,
+                &image.patient.id,
+            ),
+            (
+                tags::PATIENT_BIRTH_DATE,
                 "Patient's Birth Date",
                 &document.patient.birth_date,
                 &image.patient.birth_date,
             ),
-            ("Patient's Sex", &document.patient.sex, &image.patient.sex),
-            ("Accession Number", &document.accession, &image.accession),
+            (
+                tags::PATIENT_SEX,
+                "Patient's Sex",
+                &document.patient.sex,
+                &image.patient.sex,
+            ),
+            (
+                tags::ACCESSION_NUMBER,
+                "Accession Number",
+                &document.accession,
+                &image.accession,
+            ),
+            (
+                tags::CONTAINER_IDENTIFIER,
+                "Container Identifier",
+                &document.container_identifier,
+                &image.container_identifier,
+            ),
         ] {
-            if own != theirs {
-                found.push(|| {
-                    format!(
-                        "{what} is {own:?} in the KOS, but {theirs:?} in {}",
-                        image.path.display()
-                    )
-                });
+            let compared = tag != tags::CONTAINER_IDENTIFIER || own.is_some();
+            if compared && own != theirs {
+                found.push(|| differing(tag, what, own.as_deref(), theirs.as_deref(), image));
             }
-        }
-        if document.container_identifier.is_some()
-            && document.container_identifier != image.container_identifier
-        {
-            found.push(|| {
-                format!(
-                    "Container Identifier is {:?} in the KOS, but {:?} in {}",
-                    document.container_identifier,
-                    image.container_identifier,
-                    image.path.display()
-                )
-            });
         }
         if !document.specimen_identifiers.is_empty()
             && document.specimen_identifiers != image.specimen_identifiers
         {
             found.push(|| {
+                let list = |identifiers: &[String]| {
+                    shown_all(
+                        tags::SPECIMEN_IDENTIFIER,
+                        identifiers.iter().map(String::as_str),
+                        ", ",
+                    )
+                };
                 format!(
-                    "the Specimen Identifiers are {:?} in the KOS, but {:?} in {}",
-                    document.specimen_identifiers,
-                    image.specimen_identifiers,
+                    "the Specimen Identifiers are [{}] in the KOS, but [{}] in {}",
+                    list(&document.specimen_identifiers),
+                    list(&image.specimen_identifiers),
                     image.path.display()
                 )
             });

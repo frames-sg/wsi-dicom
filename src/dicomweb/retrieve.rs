@@ -15,6 +15,7 @@ use super::report::Verdict;
 use super::response::{expect_multipart, expect_status, integer, sec, text};
 use super::url::Url;
 use super::{DicomWebTransaction, Session, Target};
+use crate::validation::disclosure::withheld;
 use crate::validation::{
     bulk_references, read_json_data_sets, validate_json_bytes, DicomJsonOptions, JsonRun,
     JsonSource,
@@ -129,8 +130,10 @@ fn read_metadata(
         let found = text(object, tags::SERIES_INSTANCE_UID).unwrap_or_default();
         if found != series {
             verdict.fail(format!(
-                "{line}: Instance {} has Series Instance UID {found:?}; Series Metadata holds the Instances of Series {series} ({})",
+                "{line}: Instance {} has Series Instance UID {}; Series Metadata holds the Instances of Series {} ({})",
                 index + 1,
+                withheld(&found),
+                withheld(&series),
                 sec("10.4.1.1.2")
             ));
         }
@@ -142,7 +145,8 @@ fn read_metadata(
             });
             if !present {
                 verdict.fail(format!(
-                    "{line}: the Series Metadata holds no Instance {uid} ({})",
+                    "{line}: the Series Metadata holds no Instance {} ({})",
+                    withheld(&uid),
                     sec("10.4.1.1.2")
                 ));
             }
@@ -221,8 +225,9 @@ pub(super) fn bulkdata(
             Ok(url) => url,
             Err(reason) => {
                 verdict.fail(format!(
-                    "BulkDataURI {uri:?} does not resolve against {}: {reason} ({})",
-                    metadata.url,
+                    "BulkDataURI {} does not resolve against {}: {reason} ({})",
+                    withheld(uri),
+                    metadata.url.reported(),
                     sec("10.4.1.1.5.1")
                 ));
                 continue;
@@ -275,15 +280,24 @@ fn bulk_value(
         .and_then(|value| MediaType::parse(value).ok())
         .map(|media| media.essence);
     if essence.as_deref() != Some("application/octet-stream") {
+        let shown = essence
+            .as_deref()
+            .and_then(|essence| MediaType::parse(essence).ok())
+            .map_or_else(
+                || "without Content-Type".to_string(),
+                |media| media.reported_essence().to_string(),
+            );
         verdict.fail(format!(
             "{line}: the part is {}; uncompressed Bulk Data is application/octet-stream ({})",
-            essence.unwrap_or_else(|| "without Content-Type".into()),
+            shown,
             sec("8.7.3.3.1")
         ));
     }
     match part.header("content-location").map(|location| exchange.url.resolve(location)) {
         Some(Ok(location)) if location.to_string() != requested.to_string() => verdict.fail(format!(
-            "{line}: the part's Content-Location is {location}; it is the BulkDataURI {requested} of the Metadata ({})",
+            "{line}: the part's Content-Location is {}; it is the BulkDataURI {} of the Metadata ({})",
+            location.reported(),
+            requested.reported(),
             sec("10.4.3.3.5")
         )),
         Some(Err(reason)) => verdict.fail(format!(
@@ -312,7 +326,7 @@ pub(super) fn validate_metadata(
         fetch_bulkdata: None,
         bulkdata_base_url: Some(metadata.url.to_string()),
     };
-    let label = PathBuf::from(metadata.url.to_string());
+    let label = PathBuf::from(metadata.url.reported());
     let run = JsonRun {
         label: label.clone(),
         source: JsonSource::Metadata,
@@ -325,6 +339,7 @@ pub(super) fn validate_metadata(
     let outcome = validate_json_bytes(&metadata.bytes, &run);
     session.objects.extend(outcome.checks);
     session.optional.extend(outcome.optional);
+    session.conventions = Some(outcome.conventions);
     session.files.push(label);
 }
 
@@ -423,8 +438,13 @@ fn instance_json(
     };
     if text(object, tags::SOP_INSTANCE_UID).as_deref() != Some(uid) {
         verdict.fail(format!(
-            "{line}: SOP Instance UID is {:?}, not {uid} ({})",
-            text(object, tags::SOP_INSTANCE_UID),
+            "{line}: SOP Instance UID is {}, not {} ({})",
+            crate::validation::disclosure::shown_or(
+                tags::SOP_INSTANCE_UID,
+                text(object, tags::SOP_INSTANCE_UID).as_deref(),
+                "absent"
+            ),
+            withheld(uid),
             sec("10.4.1.1.2")
         ));
     }
@@ -477,10 +497,17 @@ fn instance_xml(session: &mut Session<'_>, verdict: &mut Verdict, exchange: &Exc
             .and_then(|value| MediaType::parse(value).ok())
             .map(|media| media.essence);
         if essence.as_deref() != Some("application/dicom+xml") {
+            let shown = essence
+                .as_deref()
+                .and_then(|essence| MediaType::parse(essence).ok())
+                .map_or_else(
+                    || "without Content-Type".to_string(),
+                    |media| media.reported_essence().to_string(),
+                );
             verdict.fail(format!(
                 "{line}: part {} is {}, not application/dicom+xml ({})",
                 index + 1,
-                essence.unwrap_or_else(|| "without Content-Type".into()),
+                shown,
                 sec("8.7.3.2 Table 8.7.3-3")
             ));
         }

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use dicom_core::Tag;
 
+use crate::validation::disclosure::shown;
 use crate::validation::iod::{element_label, Family};
 
 /// The Private Creators and used blocks of one Data Set; an Item keeps its
@@ -90,9 +91,9 @@ impl PrivateBlocks {
             {
                 let block = *block;
                 findings.push(|| format!(
-                    "{}: identification code \"{}\" already reserves block ({group:04X},00{block:02X}); a Private Creator identifier may be used only once within a Group (PS3.5 7.8.1)",
+                    "{}: identification code {} already reserves block ({group:04X},00{block:02X}); a Private Creator identifier may be used only once within a Group (PS3.5 7.8.1)",
                     label(),
-                    String::from_utf8_lossy(&identifier)
+                    shown(tag, &String::from_utf8_lossy(&identifier))
                 ));
             }
         }

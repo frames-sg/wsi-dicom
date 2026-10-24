@@ -13,6 +13,7 @@ use dicom_object::InMemDicomObject;
 
 use super::tree::{At, Tree};
 use super::{Findings, CITATION};
+use crate::validation::disclosure::Nesting;
 use crate::validation::image_semantics::{integer, integers, multiplicity, numbers, strings};
 use crate::validation::iod::{items, string_value};
 
@@ -99,6 +100,11 @@ fn control_name(character: char) -> String {
 /// integer or real number, and its floating point and rational
 /// representations represent Numeric Value.
 fn numeric(object: &InMemDicomObject, at: At<'_, '_>, findings: &mut Findings) {
+    // The measured values of a Concept Table E.3.4-1 removes, such as
+    // Subject Age, are withheld.
+    let nesting = Nesting::default()
+        .content_item(object)
+        .below(tags::MEASURED_VALUE_SEQUENCE);
     for (position, value) in items(object, tags::MEASURED_VALUE_SEQUENCE)
         .iter()
         .enumerate()
@@ -128,11 +134,26 @@ fn numeric(object: &InMemDicomObject, at: At<'_, '_>, findings: &mut Findings) {
                 });
             }
         }
-        measured_value(value, &place, findings);
+        measured_value(value, (&place, nesting), findings);
     }
 }
 
-fn measured_value(value: &InMemDicomObject, place: &dyn Fn() -> String, findings: &mut Findings) {
+/// A measured value of `tag` as a message shows it: as it is, or withheld
+/// (`disclosure`).
+fn number(nesting: Nesting, tag: Tag, value: &dyn std::fmt::Display) -> String {
+    let value = value.to_string();
+    if nesting.withholds(tag) {
+        nesting.shown(tag, &value).to_string()
+    } else {
+        value
+    }
+}
+
+fn measured_value(
+    value: &InMemDicomObject,
+    (place, nesting): (&dyn Fn() -> String, Nesting),
+    findings: &mut Findings,
+) {
     let decimal = strings(value, tags::NUMERIC_VALUE)
         .and_then(|values| values.into_iter().next())
         .and_then(|text| Some((text.trim().parse::<f64>().ok()?, text)));
@@ -142,16 +163,19 @@ fn measured_value(value: &InMemDicomObject, place: &dyn Fn() -> String, findings
         if !floating.is_finite() {
             findings.push(|| {
                 format!(
-                    "{} > Floating Point Value (0040,A161) is {floating}, which is not an integer or real number; the Measured Value Sequence shall convey measured values that represent integers or real numbers, and Numeric Value Qualifier Code Sequence (0040,A301) conveys a value that is not ({CITATION} Table C.18.1-1)",
-                    place()
+                    "{} > Floating Point Value (0040,A161) is {}, which is not an integer or real number; the Measured Value Sequence shall convey measured values that represent integers or real numbers, and Numeric Value Qualifier Code Sequence (0040,A301) conveys a value that is not ({CITATION} Table C.18.1-1)",
+                    place(),
+                    number(nesting, tags::FLOATING_POINT_VALUE, &floating)
                 )
             });
         } else if let Some((numeric, text)) = &decimal {
             if (floating - numeric).abs() > resolution(text) {
                 findings.push(|| {
                     format!(
-                        "{} > Floating Point Value (0040,A161) {floating} is not the floating point representation of Numeric Value (0040,A30A) {text} ({CITATION} Table C.18.1-1)",
-                        place()
+                        "{} > Floating Point Value (0040,A161) {} is not the floating point representation of Numeric Value (0040,A30A) {} ({CITATION} Table C.18.1-1)",
+                        place(),
+                        number(nesting, tags::FLOATING_POINT_VALUE, &floating),
+                        number(nesting, tags::NUMERIC_VALUE, text)
                     )
                 });
             }
@@ -173,8 +197,11 @@ fn measured_value(value: &InMemDicomObject, place: &dyn Fn() -> String, findings
                 if (rational - numeric).abs() > resolution(text) {
                     findings.push(|| {
                         format!(
-                            "{} > Rational Numerator Value (0040,A162) / Rational Denominator Value (0040,A163) {numerator}/{denominator} is not a rational representation of Numeric Value (0040,A30A) {text} ({CITATION} Table C.18.1-1)",
-                            place()
+                            "{} > Rational Numerator Value (0040,A162) / Rational Denominator Value (0040,A163) {}/{} is not a rational representation of Numeric Value (0040,A30A) {} ({CITATION} Table C.18.1-1)",
+                            place(),
+                            number(nesting, tags::RATIONAL_NUMERATOR_VALUE, &numerator),
+                            number(nesting, tags::RATIONAL_DENOMINATOR_VALUE, &denominator),
+                            number(nesting, tags::NUMERIC_VALUE, text)
                         )
                     });
                 }

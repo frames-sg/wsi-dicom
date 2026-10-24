@@ -640,10 +640,57 @@ fn record_keys_must_match_the_file() {
     assert_fails(&check, "Instance Number (0020,0013) of the IMAGE record");
 }
 
+/// The record Keys a File contradicts are named with their Values withheld
+/// (PS3.15 Table E.1-1): the message gives their lengths and where they
+/// differ, never the planted name or ID.
+#[test]
+fn record_key_messages_withhold_patient_names_and_ids() {
+    let planted = Instance {
+        patient_name: "DOE^JANE",
+        patient_id: "MRN12345",
+        ..FIRST
+    };
+    let file_set = FileSet::with(std::slice::from_ref(&planted));
+    assert_passes(&file_set.check());
+    let changed = Instance {
+        patient_name: "DOE^JOHN",
+        patient_id: "MRN12399",
+        ..planted
+    };
+    write_instance(
+        &file_set.member("SC1"),
+        &changed,
+        uids::EXPLICIT_VR_LITTLE_ENDIAN,
+    );
+    let check = file_set.check();
+    let offset = file_set.record("PATIENT").offset;
+    let withheld = "(value withheld: identifying; 8 characters)";
+    for (name, at) in [
+        ("Patient's Name (0010,0010)", 6),
+        ("Patient ID (0010,0020)", 7),
+    ] {
+        assert_fails(
+            &check,
+            &format!("{name} of the PATIENT record at byte {offset} is {withheld}, but "),
+        );
+        assert_fails(
+            &check,
+            &format!("SC1 has {withheld}, first differing at character {at} (PS3.3 F.5)"),
+        );
+    }
+    for planted in ["DOE^J", "MRN123"] {
+        assert!(
+            !check.message.contains(planted),
+            "{planted}: {}",
+            check.message
+        );
+    }
+}
+
 /// Writes `instance` as SC1 alone, then checks that the File-set dcmmkdir
 /// makes of it passes with `patient_id` decoded from its records, and that
 /// a Patient ID differing from the record's only in a non-ASCII character
-/// fails.
+/// fails, the message giving where the withheld Values differ.
 #[track_caller]
 fn assert_keys_compare_in(instance: Instance, encoded_id: &[u8], differing_id: &'static str) {
     let file_set = FileSet::with(std::slice::from_ref(&instance));
@@ -680,13 +727,20 @@ fn assert_keys_compare_in(instance: Instance, encoded_id: &[u8], differing_id: &
         &differing,
         uids::EXPLICIT_VR_LITTLE_ENDIAN,
     );
+    let check = file_set.check();
     assert_fails(
-        &file_set.check(),
+        &check,
         &format!(
-            "Patient ID (0010,0020) of the PATIENT record at byte {} is \"{}\"",
+            "Patient ID (0010,0020) of the PATIENT record at byte {} is (value withheld: identifying; {} characters), but ",
             patient.offset,
-            instance.patient_id.escape_default()
+            instance.patient_id.chars().count()
         ),
+    );
+    assert_fails(&check, "first differing at character 4 (PS3.3 F.5)");
+    assert!(
+        !check.message.contains(instance.patient_id),
+        "{}",
+        check.message
     );
 }
 
@@ -872,8 +926,9 @@ fn patient_study_and_series_keys_are_unique_in_the_file_set() {
     let check = file_set.check();
     assert_fails(
         &check,
-        "Patient ID (0010,0020) \"PAT1\" of the PATIENT record",
+        "Patient ID (0010,0020) (value withheld: identifying; 4 characters) of the PATIENT record",
     );
+    assert!(!check.message.contains("PAT1"), "{}", check.message);
     assert_fails(&check, "unique Value in the File-set (PS3.3 F.5.1)");
     assert_fails(&check, "(PS3.3 F.5.2)");
     assert_fails(&check, "(PS3.3 F.5.3)");

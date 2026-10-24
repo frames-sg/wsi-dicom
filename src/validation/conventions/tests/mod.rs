@@ -5,10 +5,12 @@
 //! Set `WSI_DICOM_CONVENTION_FIXTURES` to a directory to keep every variant
 //! there, e.g. to run `dciodvfy -profile WG26SP2025` on them.
 
+mod disclosure;
 mod fixture;
 mod ihe_dpia;
 mod ihe_dpia_draft;
 mod interop;
+mod json;
 mod profiles;
 mod wg26;
 
@@ -194,6 +196,16 @@ fn advised(report: &ValidationReport) -> BTreeSet<String> {
         .advisories
         .iter()
         .map(|advisory| advisory.name.clone())
+        .collect()
+}
+
+/// The DICOM checks of `report` that failed, for failure messages.
+fn dicom_failures(report: &ValidationReport) -> Vec<String> {
+    report
+        .checks
+        .iter()
+        .filter(|check| check.status == ValidationStatus::Failed)
+        .map(|check| format!("{} {:?}: {}", check.name, check.path, check.message))
         .collect()
 }
 

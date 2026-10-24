@@ -26,6 +26,7 @@ use dicom_encoding::text::SpecificCharacterSet;
 use dicom_object::mem::InMemElement;
 use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
+use super::disclosure::shown_or;
 use super::encoding::explicit_little_endian;
 use super::iod::{
     element_label, integer_value, items, string_value, tag_values, Family, EDITION, MAX_NESTING,
@@ -293,7 +294,7 @@ fn mac_algorithm(parameters: &InMemDicomObject) -> Result<MacAlgorithm, String> 
     term.as_deref().and_then(MacAlgorithm::of_term).ok_or_else(|| {
         format!(
             "MAC Algorithm (0400,0015) is {}, not a Defined Term of PS3.3 {EDITION} Table C.12.1.1.3.1.2-1, so its MAC cannot be computed",
-            quoted(term.as_deref())
+            shown_or(tags::MAC_ALGORITHM, term.as_deref(), "absent")
         )
     })
 }
@@ -308,9 +309,4 @@ fn character_set(data_set: &InMemDicomObject) -> Option<SpecificCharacterSet> {
 /// The bytes of a binary Attribute's Value.
 fn bytes(object: &InMemDicomObject, tag: Tag) -> Option<Cow<'_, [u8]>> {
     object.get(tag).and_then(|element| element.to_bytes().ok())
-}
-
-/// `"value"`, or `absent`.
-fn quoted(value: Option<&str>) -> String {
-    value.map_or_else(|| "absent".to_string(), |value| format!("\"{value}\""))
 }

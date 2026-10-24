@@ -14,6 +14,45 @@ pub(crate) struct MediaType {
 }
 
 impl MediaType {
+    /// The essence as a report shows it: only media types this checker knows
+    /// are repeated from an untrusted response header.
+    pub(crate) fn reported_essence(&self) -> &str {
+        match self.essence.as_str() {
+            "application/dicom"
+            | "application/dicom+json"
+            | "application/dicom+xml"
+            | "application/json"
+            | "application/octet-stream"
+            | "application/vnd.sun.wadl+xml"
+            | "application/x-deflate"
+            | "multipart/related"
+            | "text/html"
+            | "image/dicom-rle"
+            | "image/jls"
+            | "image/jp2"
+            | "image/jpeg"
+            | "image/jph"
+            | "image/jphc"
+            | "image/jpx"
+            | "image/jxl"
+            | "image/png" => self.essence.as_str(),
+            _ => "an unrecognized media type",
+        }
+    }
+
+    /// A Content-Type as a report records it, without arbitrary parameter
+    /// values. A registered Transfer Syntax remains useful and safe to show.
+    pub(crate) fn reported(&self) -> String {
+        let mut result = self.reported_essence().to_string();
+        if let Some(syntax) = self
+            .parameter("transfer-syntax")
+            .filter(|syntax| media_type_of(syntax).is_some())
+        {
+            result.push_str(&format!("; transfer-syntax={syntax}"));
+        }
+        result
+    }
+
     /// Parses one media type (RFC 7231 3.1.1.1).
     pub(crate) fn parse(text: &str) -> Result<Self, String> {
         let mut rest = text.trim();
@@ -23,7 +62,10 @@ impl MediaType {
             .split_once('/')
             .is_some_and(|(kind, subtype)| is_token(kind) && is_token(subtype));
         if !valid {
-            return Err(format!("{text:?} is not a media type (type/subtype)"));
+            return Err(format!(
+                "the {}-character value is not a media type (type/subtype)",
+                text.chars().count()
+            ));
         }
         rest = &rest[end..];
         let mut parameters = Vec::new();
@@ -32,21 +74,27 @@ impl MediaType {
             if after.is_empty() {
                 break;
             }
-            let equals = after
-                .find('=')
-                .ok_or_else(|| format!("parameter {after:?} of {text:?} has no value"))?;
+            let equals = after.find('=').ok_or_else(|| {
+                format!(
+                    "a {}-character parameter has no value",
+                    after.chars().count()
+                )
+            })?;
             let name = after[..equals].trim().to_ascii_lowercase();
             if !is_token(&name) {
                 return Err(format!(
-                    "parameter name {name:?} of {text:?} is not a token"
+                    "a {}-character parameter name is not a token",
+                    name.chars().count()
                 ));
             }
-            let (value, remainder) = parameter_value(after[equals + 1..].trim_start())
-                .ok_or_else(|| format!("parameter {name} of {text:?} has a malformed value"))?;
+            let (value, remainder) =
+                parameter_value(after[equals + 1..].trim_start()).ok_or_else(|| {
+                    format!("parameter {name} has a malformed value whose text is withheld")
+                })?;
             parameters.push((name, value));
             rest = remainder.trim_start();
             if !rest.is_empty() && !rest.starts_with(';') {
-                return Err(format!("{text:?} has text after a parameter value"));
+                return Err("Content-Type has text after a parameter value (text withheld)".into());
             }
         }
         Ok(Self {
@@ -171,6 +219,16 @@ pub(crate) fn media_type_of(syntax: &str) -> Option<&'static str> {
         .map(|row| row.essence)
 }
 
+/// A response's Transfer Syntax parameter as a report shows it. Only the
+/// registered values this checker knows are repeated from an untrusted header.
+pub(crate) fn reported_transfer_syntax(syntax: &str) -> &str {
+    if media_type_of(syntax).is_some() {
+        syntax
+    } else {
+        "an unrecognized Transfer Syntax"
+    }
+}
+
 /// An Accept value naming every image Bulk Data media type of Table
 /// 8.7.3-5 with any Transfer Syntax, preferred over uncompressed bytes.
 pub(crate) fn any_frame_accept() -> String {
@@ -215,6 +273,23 @@ mod tests {
         for bad in ["image", "image/", "image/jpeg; q", "image/jpeg; a=\"x"] {
             assert!(MediaType::parse(bad).is_err(), "{bad}");
         }
+        const SENTINEL: &str = "PatientSentinel";
+        for text in [
+            "PatientSentinel",
+            "image/jpeg; PatientSentinel",
+            "image/jpeg; name=\"PatientSentinel",
+        ] {
+            let reason = MediaType::parse(text).unwrap_err();
+            assert!(!reason.contains(SENTINEL), "{reason}");
+        }
+
+        let media = MediaType::parse(
+            "application/PatientSentinel; boundary=PatientSentinel; transfer-syntax=PatientSentinel",
+        )
+        .unwrap();
+        let reported = media.reported();
+        assert_eq!(reported, "an unrecognized media type");
+        assert!(!reported.contains(SENTINEL));
     }
 
     #[test]

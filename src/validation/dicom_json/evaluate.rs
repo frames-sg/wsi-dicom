@@ -65,6 +65,9 @@ pub(super) struct Evaluated {
     /// checks.
     pub(super) reference: Option<DefaultDicomObject>,
     pub(super) bulk: Vec<BulkReference>,
+    /// Whether the Transfer Syntax is known, from the options, the run, the
+    /// document or a single Available Transfer Syntax UID.
+    pub(super) transfer_syntax_known: bool,
 }
 
 /// Checks the Data Set `members` at JSON Pointer `pointer`: the JSON Model,
@@ -161,6 +164,7 @@ pub(super) fn instance(
         }),
         reference,
         bulk,
+        transfer_syntax_known: known.is_some(),
     }
 }
 
@@ -381,7 +385,12 @@ fn override_unencoded(
     let pixel = bulk
         .iter()
         .find(|reference| reference.pixel_data)
-        .map(|reference| format!("gives Pixel Data only as BulkDataURI {}", reference.uri))
+        .map(|reference| {
+            format!(
+                "gives Pixel Data only as BulkDataURI {}",
+                crate::validation::disclosure::withheld(&reference.uri)
+            )
+        })
         .unwrap_or_else(|| "holds no Pixel Data Value".to_string());
     let frames = cite("10.4.1.1.6");
     let replacements = [

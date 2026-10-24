@@ -18,6 +18,7 @@ use super::search::{
 };
 use super::url::encode_query_value;
 use super::{DicomWebTransaction, Session, Target};
+use crate::validation::disclosure::{shown, withheld};
 
 const PARAMETERS_NAME: &str = "dicomweb-search-matching-parameters";
 const PARAMETERS_SECTIONS: &str = "8.3.4 Table 8.3.4-1, 8.3.4.2, 8.3.4.5, 8.3.4.6 and 10.6.1.2";
@@ -139,7 +140,8 @@ fn warns_unsupported(verdict: &mut Verdict, exchange: &Exchange, flag: &Flag) ->
     warning_agent(verdict, &line, value);
     if !value.trim_start().starts_with("299") || !value.contains(flag.unsupported) {
         verdict.fail(format!(
-            "{line}: Warning {value:?} is not \"299 <service>: {}. ...\" ({})",
+            "{line}: Warning {} is not \"299 <service>: {}. ...\" ({})",
+            withheld(value),
             flag.unsupported,
             sec(flag.section)
         ));
@@ -192,7 +194,7 @@ fn matching_parameters(
     }
     let study_result = target.study_result.as_ref();
     match study_result.and_then(person_name) {
-        Some((keyword, name)) => fuzzy(session, &mut verdict, &study, keyword, &name),
+        Some((attribute, name)) => fuzzy(session, &mut verdict, &study, attribute, &name),
         None => verdict.note("the Study has no Person Name to match fuzzily"),
     }
     match study_result.and_then(empty_attribute) {
@@ -257,8 +259,8 @@ fn includefields(
 }
 
 /// The Study's Patient's Name, else its Referring Physician's Name: the
-/// Alphabetic component group.
-fn person_name(result: &InMemDicomObject) -> Option<(&'static str, String)> {
+/// Attribute and the Alphabetic component group.
+fn person_name(result: &InMemDicomObject) -> Option<((Tag, &'static str), String)> {
     [
         (tags::PATIENT_NAME, "PatientName"),
         (tags::REFERRING_PHYSICIAN_NAME, "ReferringPhysicianName"),
@@ -266,15 +268,22 @@ fn person_name(result: &InMemDicomObject) -> Option<(&'static str, String)> {
     .into_iter()
     .find_map(|(tag, keyword)| {
         let alphabetic = text(result, tag)?.split('=').next()?.trim().to_string();
-        (!alphabetic.is_empty()).then_some((keyword, alphabetic))
+        (!alphabetic.is_empty()).then_some(((tag, keyword), alphabetic))
     })
 }
 
 /// 8.3.4.2: with "false" the search is literal, so a name with letters
 /// added does not match; with "true" it is fuzzy, or warned unsupported and
 /// literal.
-fn fuzzy(session: &mut Session<'_>, verdict: &mut Verdict, study: &str, keyword: &str, name: &str) {
+fn fuzzy(
+    session: &mut Session<'_>,
+    verdict: &mut Verdict,
+    study: &str,
+    (tag, keyword): (Tag, &str),
+    name: &str,
+) {
     let variant = encode_query_value(&format!("{name}{NAME_SUFFIX}"));
+    let shown = shown(tag, name);
     for value in ["false", "true"] {
         let query = format!("StudyInstanceUID={study}&{keyword}={variant}&fuzzymatching={value}");
         let Some((exchange, results)) = search(session, verdict, "/studies", &query) else {
@@ -284,7 +293,7 @@ fn fuzzy(session: &mut Session<'_>, verdict: &mut Verdict, study: &str, keyword:
         let literal = value == "false" || warns_unsupported(verdict, &exchange, &FUZZY);
         if literal && !results.is_empty() {
             verdict.fail(format!(
-                "{line} returned the Study, whose {keyword} is {name:?}; {}, so the search is performed without Fuzzy Matching and {name:?} with {NAME_SUFFIX:?} added does not match ({})",
+                "{line} returned the Study, whose {keyword} is {shown}; {}, so the search is performed without Fuzzy Matching and {shown} with {NAME_SUFFIX:?} added does not match ({})",
                 if value == "false" { "fuzzymatching=false" } else { "fuzzymatching is warned unsupported" },
                 sec("8.3.4.2 and PS3.4 C.2.2.2.1.1")
             ));
@@ -530,10 +539,11 @@ fn matching_attributes(session: &mut Session<'_>, target: &Target) {
             };
             if !results.is_empty() {
                 verdict.fail(format!(
-                    "{} returned {} results, though the {} holds {keyword} {held:?}; {keyword} is a Required Matching Attribute, so a value it does not hold matches nothing ({})",
+                    "{} returned {} results, though the {} holds {keyword} {}; {keyword} is a Required Matching Attribute, so a value it does not hold matches nothing ({})",
                     exchange.request_line(),
                     results.len(),
                     level.name,
+                    shown(*tag, &held),
                     sec("10.6.1.2.3 Table 10.6.1-5 and 8.3.4.1.1")
                 ));
             }
@@ -682,9 +692,14 @@ fn resources(session: &mut Session<'_>, target: &Target) {
         };
         if uids(&results, key) != [uid.clone()] {
             verdict.fail(format!(
-                "{} returned {:?}; matching on the IE Levels of the resource returns {uid} alone ({})",
+                "{} returned [{}]; matching on the IE Levels of the resource returns {} alone ({})",
                 exchange.request_line(),
-                uids(&results, key),
+                crate::validation::disclosure::shown_all(
+                    key,
+                    uids(&results, key).iter().map(String::as_str),
+                    ", "
+                ),
+                withheld(&uid),
                 sec("10.6.1.2.3 Table 10.6.1-4")
             ));
             continue;

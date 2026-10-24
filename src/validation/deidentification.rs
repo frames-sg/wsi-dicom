@@ -20,6 +20,7 @@ use dicom_dictionary_std::tags;
 use dicom_object::mem::InMemElement;
 use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
+use super::disclosure::{shown, shown_or};
 use super::iod::deidentification::{ConfidentialityOption, BASIC_PROFILE};
 use super::iod::{dicom_edition, items, string_value, Coded, Family};
 use super::wsi_conformance::rule_path;
@@ -203,7 +204,8 @@ fn check_declaration(declaration: &Declaration, findings: &mut Findings) {
         }),
         Some(other) => findings.violations.push(|| {
             format!(
-                "Patient Identity Removed (0012,0062) is \"{other}\" while a De-identification Method is named; E.1.1 requires YES"
+                "Patient Identity Removed (0012,0062) is {} while a De-identification Method is named; E.1.1 requires YES",
+                shown(tags::PATIENT_IDENTITY_REMOVED, other)
             )
         }),
         None => findings.violations.push(|| {
@@ -276,7 +278,7 @@ fn check_option_attributes(
                 format!(
                     "{} is {}; E.2 and E.3.6 add it with REMOVED, MODIFIED or UNMODIFIED whichever Options apply",
                     temporal.1,
-                    shown_value(value.as_deref())
+                    shown_or(temporal.0, value.as_deref(), "absent")
                 )
             });
         }
@@ -373,14 +375,10 @@ fn require_value(
         findings.violations.push(|| {
             format!(
                 "{name} is {}; {clause} adds it with the Value {required}",
-                shown_value(value.as_deref())
+                shown_or(tag, value.as_deref(), "absent")
             )
         });
     }
-}
-
-fn shown_value(value: Option<&str>) -> String {
-    value.map_or_else(|| "absent".to_string(), |value| format!("\"{value}\""))
 }
 
 /// PS3.15 E.2 Note: unless the Clean Pixel Data Option is specified, the

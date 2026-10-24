@@ -387,9 +387,10 @@ impl Walk<'_> {
                     } else {
                         String::new()
                     };
+                    let shown = scope.nesting.shown(tag_of(tag), value);
                     self.findings.enumerated.push(|| {
                         format!(
-                            "{path}{} {}{which} \"{value}\" is not an Enumerated Value [{}] ({})",
+                            "{path}{} {}{which} {shown} is not an Enumerated Value [{}] ({})",
                             definition.attribute.name,
                             tag_text(tag),
                             enumeration.values.join(", "),
@@ -420,8 +421,10 @@ impl Walk<'_> {
         if children.rows.is_empty() && children.dynamic.is_empty() {
             return;
         }
+        let sequence = tag_of(group[0].attribute.tag);
         for (index, item) in items.iter().enumerate() {
-            let child = scope.child(item);
+            let mut child = scope.child(item);
+            child.nesting = scope.nesting.item(sequence, item);
             let item_path = format!("{path}{name}[{}] > ", index + 1);
             self.data_set(&child, &item_path, &children, Presence::Evaluate, depth + 1);
         }
@@ -439,15 +442,15 @@ impl Walk<'_> {
         for definition in group {
             let attribute = definition.attribute;
             let label = format!("{path}{}", attribute.name);
+            let nesting = scope.nesting.below(tag_of(attribute.tag));
             match definition.value_set {
                 Some(ValueSet::ContextGroups(strength, groups)) => {
                     codes::check_items(
                         self.findings,
-                        &label,
-                        attribute.tag,
-                        strength,
-                        groups,
+                        (&label, attribute.tag),
+                        (strength, groups),
                         items,
+                        nesting,
                     );
                 }
                 Some(ValueSet::Template(strength, template)) => {
@@ -458,10 +461,12 @@ impl Walk<'_> {
                         template,
                         items,
                         scope.root,
+                        nesting,
                     );
                 }
                 Some(ValueSet::Code(code, section)) => {
-                    codes::check_code(self.findings, &label, attribute.tag, code, section, items);
+                    let at = (label.as_str(), attribute.tag);
+                    codes::check_code(self.findings, at, code, section, items, nesting);
                 }
                 None => {}
             }

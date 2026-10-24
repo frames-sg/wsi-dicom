@@ -19,6 +19,7 @@ use super::scope::{
 };
 use super::tables::{self, ConditionId};
 use super::values;
+use crate::validation::disclosure::shown;
 
 /// The groups of the repeating Overlay Plane Attributes (60xx,eeee), PS3.5 7.6.
 const FIRST_OVERLAY_GROUP: u16 = 0x6000;
@@ -433,7 +434,7 @@ fn private_creator(item: &InMemDicomObject, tag: dicom_core::Tag) -> String {
     let creator = dicom_core::Tag(tag.group(), tag.element() >> 8);
     string_value(item, creator, 1).map_or_else(
         || format!("{} absent", tag_text(raw_tag(creator))),
-        |name| format!("\"{name}\""),
+        |name| shown(creator, &name).to_string(),
     )
 }
 

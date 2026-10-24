@@ -13,6 +13,13 @@ use super::{assert_fails, assert_passes};
 const OTHER_IMAGE: &str = "1.2.826.0.1.3680043.10.999.60.50";
 const OTHER_SERIES: &str = "1.2.826.0.1.3680043.10.999.60.51";
 
+fn withheld(value: &str) -> String {
+    format!(
+        "(value withheld: identifying; {} characters)",
+        value.chars().count()
+    )
+}
+
 fn report() -> InMemDicomObject {
     measurement_report(COMPREHENSIVE_SR)
 }
@@ -65,7 +72,7 @@ fn a_verifying_observer_is_not_also_an_attestor() {
     object.put(sq(tags::PARTICIPANT_SEQUENCE, vec![participant("ATTEST")]));
     assert_fails(
         object,
-        "Participant Sequence (0040,A07A)[1], an Attestor, identifies \"Pathologist^Test\" who is also in Verifying Observer Sequence (0040,A073); an individual shall not be identified in both",
+        "Participant Sequence (0040,A07A)[1], an Attestor, identifies the individual named (value withheld: identifying; 16 characters) who is also in Verifying Observer Sequence (0040,A073); an individual shall not be identified in both",
     );
 }
 
@@ -82,7 +89,7 @@ fn a_report_lists_every_instance_its_tree_references_as_evidence() {
     object.remove_element(tags::CURRENT_REQUESTED_PROCEDURE_EVIDENCE_SEQUENCE);
     assert_fails(
         object,
-        &format!("the Content Tree references SOP Instance {IMAGE}, which neither Current Requested Procedure Evidence Sequence (0040,A375) nor Pertinent Other Evidence Sequence (0040,A385) lists; the Current Requested Procedure Evidence Sequence shall include all current evidence referenced in the Content Tree"),
+        &format!("the Content Tree references SOP Instance {}, which neither Current Requested Procedure Evidence Sequence (0040,A375) nor Pertinent Other Evidence Sequence (0040,A385) lists; the Current Requested Procedure Evidence Sequence shall include all current evidence referenced in the Content Tree", withheld(IMAGE)),
     );
 }
 
@@ -113,7 +120,10 @@ fn presentation_states_an_image_references_are_evidence_too() {
     );
     assert_fails(
         object,
-        &format!("the Content Tree references SOP Instance {OTHER_IMAGE}, which neither"),
+        &format!(
+            "the Content Tree references SOP Instance {}, which neither",
+            withheld(OTHER_IMAGE)
+        ),
     );
 }
 
@@ -129,7 +139,7 @@ fn a_kos_lists_exactly_the_instances_its_content_references() {
     ));
     assert_fails(
         object,
-        &format!("Current Requested Procedure Evidence Sequence (0040,A375)[2] lists SOP Instance {OTHER_IMAGE}, which no Content Item references; no other instances than those referenced in the Content Sequence shall be included in this Sequence (PS3.3 2026d Table C.17.6-2)"),
+        &format!("Current Requested Procedure Evidence Sequence (0040,A375)[2] lists SOP Instance {}, which no Content Item references; no other instances than those referenced in the Content Sequence shall be included in this Sequence (PS3.3 2026d Table C.17.6-2)", withheld(OTHER_IMAGE)),
     );
     let mut object = key_object_selection();
     push_child(
@@ -147,7 +157,7 @@ fn a_kos_lists_exactly_the_instances_its_content_references() {
     );
     assert_fails(
         object,
-        &format!("Content Sequence[3] references SOP Instance {OTHER_IMAGE}, which Current Requested Procedure Evidence Sequence (0040,A375) does not list"),
+        &format!("Content Sequence[3] references SOP Instance {}, which Current Requested Procedure Evidence Sequence (0040,A375) does not list", withheld(OTHER_IMAGE)),
     );
 }
 
@@ -165,7 +175,7 @@ fn the_tree_and_the_evidence_name_an_instance_by_one_sop_class() {
     ));
     assert_fails(
         object,
-        &format!("the Content Tree references SOP Instance {IMAGE} with Referenced SOP Class UID {WSI}, but Current Requested Procedure Evidence Sequence (0040,A375)[1] lists it with 1.2.840.10008.5.1.4.1.1.66.4"),
+        &format!("the Content Tree references SOP Instance {} with Referenced SOP Class UID {WSI}, but Current Requested Procedure Evidence Sequence (0040,A375)[1] lists it with 1.2.840.10008.5.1.4.1.1.66.4", withheld(IMAGE)),
     );
 }
 
@@ -209,7 +219,7 @@ fn a_kos_of_two_studies_is_duplicated_into_the_other() {
     ));
     assert_fails(
         object,
-        &format!("references SOP Instances in the document's Study and in Studies [\"{OTHER_STUDY}\"], for which Identical Documents Sequence (0040,A525) references no duplicate; this document shall be duplicated into each of those other Studies, and the duplicates shall be referenced in the Identical Documents Sequence (PS3.3 2026d C.17.6.2.1)"),
+        &format!("references SOP Instances in the document's Study and in Studies {}, for which Identical Documents Sequence (0040,A525) references no duplicate; this document shall be duplicated into each of those other Studies, and the duplicates shall be referenced in the Identical Documents Sequence (PS3.3 2026d C.17.6.2.1)", withheld(OTHER_STUDY)),
     );
     let mut object = two_studies(OTHER_STUDY);
     object.put(sq(
@@ -243,7 +253,7 @@ fn a_manifest_with_description_references_its_own_study() {
     push_child(&mut object, &[], image_library(&[IMAGE]));
     assert_fails(
         object,
-        &format!("the Manifest with Description references SOP Instance {OTHER_IMAGE} in Study {OTHER_STUDY}, not the KOS's Study {STUDY}"),
+        &format!("the Manifest with Description references SOP Instance {} in Study {}, not the KOS's Study {}", withheld(OTHER_IMAGE), withheld(OTHER_STUDY), withheld(STUDY)),
     );
 }
 
@@ -295,7 +305,7 @@ fn the_image_library_describes_only_the_referenced_instances() {
     ));
     assert_fails(
         object,
-        &format!("an Image Library entry, references SOP Instance {OTHER_IMAGE}, which no IMAGE, WAVEFORM or COMPOSITE Content Item of the root references; the Image Library shall not include entries for instances not referenced in Rows 8, 9 and 10"),
+        &format!("an Image Library entry, references SOP Instance {}, which no IMAGE, WAVEFORM or COMPOSITE Content Item of the root references; the Image Library shall not include entries for instances not referenced in Rows 8, 9 and 10", withheld(OTHER_IMAGE)),
     );
 }
 
@@ -313,7 +323,7 @@ fn predecessors_are_other_sr_documents() {
     ));
     let check = assert_fails(
         object,
-        &format!("Predecessor Documents Sequence (0040,A360) references this document itself, SOP Instance {DOCUMENT}"),
+        &format!("Predecessor Documents Sequence (0040,A360) references this document itself, SOP Instance {}", withheld(DOCUMENT)),
     );
     assert!(
         check.message.contains(&format!(
@@ -333,7 +343,7 @@ fn a_document_is_not_its_own_duplicate() {
     ));
     assert_fails(
         object,
-        &format!("Identical Documents Sequence (0040,A525) references this document itself, SOP Instance {DOCUMENT}; it shall contain references to all other duplicate SOP Instances"),
+        &format!("Identical Documents Sequence (0040,A525) references this document itself, SOP Instance {}; it shall contain references to all other duplicate SOP Instances", withheld(DOCUMENT)),
     );
 }
 
@@ -362,7 +372,9 @@ fn a_display_uri_has_a_scheme_authority_path_and_query() {
     ] {
         assert_fails(
             with_uri(uri),
-            &format!("Current Requested Procedure Evidence Sequence (0040,A375)[1] > Display URI (0040,E012) \"{uri}\" {departure}; it shall include the fully specified scheme, authority, path, and query components in accordance with RFC 3986 (PS3.3 2026d Table C.17-3)"),
+            // The Basic Profile removes Display URI (PS3.15 Table E.1-1,
+            // X), so its Value is withheld and its length given.
+            &format!("Current Requested Procedure Evidence Sequence (0040,A375)[1] > Display URI (0040,E012) (value withheld: identifying; {} characters) {departure}; it shall include the fully specified scheme, authority, path, and query components in accordance with RFC 3986 (PS3.3 2026d Table C.17-3)", uri.chars().count()),
         );
     }
 }

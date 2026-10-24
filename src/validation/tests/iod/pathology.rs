@@ -196,7 +196,7 @@ const COMMON_BREAKAGES: [Breakage; 7] = [
     },
     Breakage {
         check: "intrinsic-wsi-dicom-iod-enumerated-values",
-        expected: "Patient's Sex (0010,0040) \"X\" is not an Enumerated Value [M, F, O]",
+        expected: "Patient's Sex (0010,0040) (value withheld: identifying; 1 character) is not an Enumerated Value [M, F, O]",
         edit: |object| {
             object.put(text(tags::PATIENT_SEX, VR::CS, "X"));
         },
