@@ -12,6 +12,12 @@ ignore = [
     # 0.9.1. No safe upstream upgrade exists yet; revisit when dicom-rs
     # replaces it.
     "RUSTSEC-2021-0153",
+    # RUSTSEC-2023-0071: the Marvin timing side channel in `rsa` leaks
+    # private-key operations (decryption and signing). Digital Signature
+    # validation only verifies with the public key in Certificate of Signer;
+    # no private key exists outside the tests that sign their own fixtures.
+    # No patched release exists; revisit when one does.
+    "RUSTSEC-2023-0071",
 ]
 
 [licenses]

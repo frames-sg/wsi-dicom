@@ -313,8 +313,11 @@ from its bytes: element order and uniqueness, VR and reserved bytes, Value
 Lengths and trailing bytes, the encapsulated Pixel Data VR, Fragment Item
 lengths and delimiters, Group Lengths, private blocks and Private Creators,
 Specific Character Set and the repertoire of text Values, Person Name
-component groups and deflated Data Sets. VL Whole Slide Microscopy Image objects additionally
-run stable `intrinsic-wsi-dicom-2026c-*` checks for ICC profiles, monochrome
+component groups and deflated Data Sets. The `digital-signatures` check
+recomputes each Digital Signature's MAC and verifies its RSA signature and
+Certified Timestamp; whether its certificate is trusted is not checked. VL
+Whole Slide Microscopy Image objects additionally run stable
+`intrinsic-wsi-dicom-2026c-*` checks for ICC profiles, monochrome
 presentation attributes, lossy declarations, specimen identity, dimension
 indices and ordering, the WSI image constraints the tables cannot express
 (`wsi-image`: four-valued Image and Frame Type, Specimen Label in Image, Tiles

@@ -97,6 +97,24 @@ fn encoding(transfer_syntax: &str) -> Option<Encoding> {
     })
 }
 
+/// Whether `transfer_syntax` encodes Data Elements in Explicit VR Little
+/// Endian, as a MAC is calculated (PS3.3 Table C.12-6), and if so whether it
+/// encapsulates Pixel Data; otherwise what it is instead. A deflated syntax
+/// compresses the Data Set, not the Data Elements a MAC is calculated over.
+pub(super) fn explicit_little_endian(transfer_syntax: &str) -> Result<bool, &'static str> {
+    let Some(encoding) = encoding(transfer_syntax) else {
+        return Err("not a Transfer Syntax whose Data Set encoding PS3.5 Annex A defines");
+    };
+    let layout = encoding.syntax.layout;
+    if !layout.explicit_vr {
+        Err("an Implicit VR Transfer Syntax")
+    } else if layout.big_endian {
+        Err("a Big Endian Transfer Syntax")
+    } else {
+        Ok(encoding.syntax.encapsulated)
+    }
+}
+
 fn citation() -> String {
     format!(
         "DICOM PS3.5 {EDITION} 6.1, 6.2, 7, 9 and Annex A, PS3.3 {EDITION} C.12.1 and PS3.10 {EDITION} 7"

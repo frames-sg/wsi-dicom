@@ -9,6 +9,7 @@ use crate::Error;
 
 mod codestream;
 mod command_checks;
+mod digital_signatures;
 mod discovery;
 mod doctor;
 mod encoding;
@@ -513,6 +514,9 @@ pub(crate) fn validate_dicom_path_with_runner(
             file,
             Some(&object),
             options.max_input_bytes,
+        ));
+        checks.push(digital_signatures::run_digital_signatures_check(
+            file, &object,
         ));
         let (wsi_checks, notes) = run_intrinsic_wsi_conformance_checks(
             file,

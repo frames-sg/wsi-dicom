@@ -5,7 +5,7 @@
 
 use super::requirements::Requirement::{self, *};
 use crate::validation::RequirementDisposition::{
-    self, Behavior, Checked, OutsideScope, Unchecked, Undecidable,
+    self, Behavior, Checked, OutsideScope, Undecidable,
 };
 
 impl Requirement {
@@ -1118,29 +1118,28 @@ impl Requirement {
             Ps10_7_2_f911da => Checked("intrinsic-wsi-dicom-2026c-encoding"),
             // A UI Value under the DICOM root that PS3.6 Annex A does not register fails; private roots are undecidable
             Ps5_9_2_b903b5 => Checked("intrinsic-wsi-dicom-2026c-iod-value-format"),
-            // ---- Decidable from the encoded objects; the check family they await. ----
-            // Needs MAC recomputation over the signed elements
-            Ps3_C_12_1_1_3_1_1_b3d0ca => Unchecked("digital-signatures"),
-            // Needs MAC recomputation over the signed elements
-            Ps3_C_12_1_1_3_1_1_9cd4e0 => Unchecked("digital-signatures"),
-            // Needs MAC recomputation over the signed elements
-            Ps3_C_12_1_1_3_1_1_5a8e43 => Unchecked("digital-signatures"),
-            // Needs MAC recomputation over the signed elements
-            Ps3_C_12_1_1_3_1_1_88f6d4 => Unchecked("digital-signatures"),
-            // Needs MAC recomputation over the signed elements
-            Ps3_C_12_1_1_3_1_2_793fd1 => Unchecked("digital-signatures"),
-            // Needs MAC recomputation over the signed elements
-            Ps3_C_12_1_1_3_1_2_e64d07 => Unchecked("digital-signatures"),
-            // Needs MAC recomputation over the signed elements
-            Ps3_C_12_1_1_3_1_2_f55b08 => Unchecked("digital-signatures"),
-            // Needs MAC recomputation over the signed elements
-            Ps3_C_12_1_1_3_1_2_974e7a => Unchecked("digital-signatures"),
-            // Needs MAC recomputation over the signed elements
-            Ps3_C_12_1_1_3_1_2_725031 => Unchecked("digital-signatures"),
-            // Needs MAC recomputation over the signed elements
-            Ps3_C_12_1_1_3_1_2_e3cab5 => Unchecked("digital-signatures"),
-            // Needs RFC 3161 timestamp verification against the Signature
-            Ps3_C_12_6_CertifiedTimestamp_bedcdd => Unchecked("digital-signatures"),
+            // The MAC is recomputed over the listed Data Elements; a Signature that does not verify fails
+            Ps3_C_12_1_1_3_1_1_b3d0ca => Checked("intrinsic-wsi-dicom-2026c-digital-signatures"),
+            // A signed Sequence enters the MAC with every Item's Data Elements but the excluded ones
+            Ps3_C_12_1_1_3_1_1_9cd4e0 => Checked("intrinsic-wsi-dicom-2026c-digital-signatures"),
+            // Item Tags and a Sequence Delimitation Item Tag enter the MAC of a signed Sequence
+            Ps3_C_12_1_1_3_1_1_5a8e43 => Checked("intrinsic-wsi-dicom-2026c-digital-signatures"),
+            // Encapsulated Pixel Data enters the MAC with an Item Tag before each Fragment
+            Ps3_C_12_1_1_3_1_1_88f6d4 => Checked("intrinsic-wsi-dicom-2026c-digital-signatures"),
+            // A MAC Calculation Transfer Syntax that is not Explicit VR Little Endian, or one encoding the Pixel Data otherwise than the file, fails
+            Ps3_C_12_1_1_3_1_2_793fd1 => Checked("intrinsic-wsi-dicom-2026c-digital-signatures"),
+            // The stream is hashed with MAC Algorithm; a term outside Table C.12.1.1.3.1.2-1 fails
+            Ps3_C_12_1_1_3_1_2_e64d07 => Checked("intrinsic-wsi-dicom-2026c-digital-signatures"),
+            // Other Data Elements enter the MAC whole, with their Value Length
+            Ps3_C_12_1_1_3_1_2_f55b08 => Checked("intrinsic-wsi-dicom-2026c-digital-signatures"),
+            // SQ and undefined-length OB enter the MAC without their Value Length
+            Ps3_C_12_1_1_3_1_2_974e7a => Checked("intrinsic-wsi-dicom-2026c-digital-signatures"),
+            // A Sequence Delimitation Item Tag follows every signed Sequence and encapsulated Pixel Data
+            Ps3_C_12_1_1_3_1_2_725031 => Checked("intrinsic-wsi-dicom-2026c-digital-signatures"),
+            // The signature Item's Attributes but certificate, Signature and timestamp follow; verified with the RSA key of Certificate of Signer, whose trust is undecidable
+            Ps3_C_12_1_1_3_1_2_e3cab5 => Checked("intrinsic-wsi-dicom-2026c-digital-signatures"),
+            // A CMS_TSP token whose messageImprint is not the Signature's hash, or whose embedded TSA signature fails, fails; when it was obtained is undecidable
+            Ps3_C_12_6_CertifiedTimestamp_bedcdd => Checked("intrinsic-wsi-dicom-2026c-digital-signatures"),
             // ---- Bind IODs, encodings or contexts a VL WSI object cannot carry. ----
             Ps10_7_4_fb6b0c => OutsideScope("Secure DICOM File is a CMS envelope, not a Part 10 WSI file; encrypted content unreadable"),
             Ps10_8_1_02c223 => OutsideScope("Binds media format mapping of File ID namespace (PS3.12)"),

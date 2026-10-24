@@ -695,7 +695,7 @@ fn references_to_other_instances_must_be_listed_in_the_common_instance_reference
 
 /// Statements decidable from the encoded objects that no check enforces yet.
 /// It only falls; a release has none.
-const UNCHECKED_LIMIT: usize = 11;
+const UNCHECKED_LIMIT: usize = 0;
 
 #[test]
 fn requirement_catalog_names_only_emitted_rules_and_unchecked_statements_only_fall() {
@@ -745,14 +745,13 @@ fn requirement_catalog_names_only_emitted_rules_and_unchecked_statements_only_fa
             RequirementDisposition::Tables => {}
         }
     }
-    assert!(
-        unchecked <= UNCHECKED_LIMIT,
-        "{unchecked} unchecked statements exceed the limit of {UNCHECKED_LIMIT}"
-    );
-    assert!(
-        unchecked == UNCHECKED_LIMIT,
-        "lower UNCHECKED_LIMIT to {unchecked}"
-    );
+    match unchecked.cmp(&UNCHECKED_LIMIT) {
+        std::cmp::Ordering::Greater => {
+            panic!("{unchecked} unchecked statements exceed the limit of {UNCHECKED_LIMIT}")
+        }
+        std::cmp::Ordering::Less => panic!("lower UNCHECKED_LIMIT to {unchecked}"),
+        std::cmp::Ordering::Equal => {}
+    }
 }
 
 #[test]

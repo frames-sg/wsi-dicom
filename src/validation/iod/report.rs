@@ -43,6 +43,11 @@ impl Family {
         }
     }
 
+    /// Whether no violation was counted.
+    pub(in crate::validation) fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+
     pub(super) fn undetermined(&mut self, condition: ConditionId) {
         *self.undetermined.entry(condition).or_insert(0) += 1;
     }

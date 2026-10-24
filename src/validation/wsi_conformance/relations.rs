@@ -14,16 +14,13 @@ use dicom_object::mem::InMemElement;
 use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
 use super::wsi_image::{is_code, sequence, string, strings, tag_values};
+use crate::validation::digital_signatures::excluded_from_signature;
 use crate::validation::iod::{element_label, is_private};
 use crate::validation::{check_value_format, is_image_storage_sop_class, registered};
 
 const CITATION: &str = "PS3.3 2026c";
 /// DateTime of processing, TID 8001 Specimen Preparation.
 const PROCESSING_DATETIME: (&str, &str) = ("DCM", "111702");
-/// Length to End (retired) and the Item Delimitation Item, which a signature
-/// excludes (C.12.1.1.3.1.1).
-const LENGTH_TO_END: Tag = Tag(0x0008, 0x0001);
-const ITEM_DELIMITATION: Tag = Tag(0xFFFE, 0xE00D);
 /// Root of the HL7 OID registry, which assigns the Hierarchical Message
 /// Description Object Identifiers (C.12.1.1.6).
 const HL7_ROOT: &str = "2.16.840.1.113883.";
@@ -416,35 +413,6 @@ fn signed_elements(data_set: &InMemDicomObject, found: &mut Vec<String>) {
             }
         }
     }
-}
-
-fn excluded_from_signature(tag: Tag, element: Option<&InMemElement>) -> Option<&'static str> {
-    if tag == LENGTH_TO_END || tag.element() == 0x0000 {
-        return Some("Length to End and group lengths");
-    }
-    if tag.group() < 0x0008 {
-        return Some("a Tag with a group below 0008");
-    }
-    if tag.group() == 0xFFFA
-        || [
-            tags::MAC_PARAMETERS_SEQUENCE,
-            tags::DATA_SET_TRAILING_PADDING,
-            ITEM_DELIMITATION,
-        ]
-        .contains(&tag)
-    {
-        return Some("the signature, MAC Parameters, padding and Item delimitation elements");
-    }
-    element
-        .is_some_and(contains_unknown)
-        .then_some("a Data Element whose VR is UN, or a Sequence holding one,")
-}
-
-fn contains_unknown(element: &InMemElement) -> bool {
-    element.vr() == VR::UN
-        || element
-            .items()
-            .is_some_and(|items| items.iter().any(|item| item.iter().any(contains_unknown)))
 }
 
 /// C.12.1.1.9.1 and C.12.1.1.9.2: a nonconforming Attribute is identified by a

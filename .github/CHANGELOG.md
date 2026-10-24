@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   codestream agreeing with the Image Pixel Attributes), and `encoding` (the
   Data Set as encoded in the file's bytes). Reports declare rule sets
   `wsi-dicom-general-v3` and `wsi-dicom-core-profile-2026c-v4`.
+- `digital-signatures` recomputes each Digital Signature's MAC and verifies
+  its RSA signature and Certified Timestamp (PS3.3 C.12.1.1.3, PS3.15 Annex C).
 - `wsi-dicom requirements [--json]` lists every normative statement of the
   pinned edition in the VL WSI scope, with a stable `id` and how validation
   holds an object to it; `RequirementEntry` gains `id`.
