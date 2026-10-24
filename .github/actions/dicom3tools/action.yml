@@ -29,7 +29,8 @@ runs:
         cd "${source_dir}"
         ./Configure
         imake -I./config -DInstallInTopDir
-        make -j"$(nproc)" World
+        # dicom3tools generates headers during the build, which a parallel make races.
+        make World
         mkdir -p "${RUNNER_TEMP}/dicom3tools-dcfile"
         cp appsrc/dcfile/dciodvfy appsrc/dcfile/dcentvfy "${RUNNER_TEMP}/dicom3tools-dcfile/"
     - shell: bash

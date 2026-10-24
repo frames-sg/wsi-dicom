@@ -116,7 +116,7 @@ jobs:
         if: runner.os == 'Linux'
       - run: cargo test --workspace --no-default-features --all-targets --locked
       - name: Test the DICOMweb checks against the in-process origin server
-        run: cargo test --no-default-features --features dicomweb --lib --locked -- dicomweb:: validation::dicom_json::
+        run: "cargo test --no-default-features --features dicomweb --lib --locked -- dicomweb:: validation::dicom_json::"
 
   external-conformance:
     runs-on: ubuntu-latest
