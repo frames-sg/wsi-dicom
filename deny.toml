@@ -93,12 +93,11 @@ skip = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# First-party J2K, wsi-rs and wsi-dicom-annotations from Cargo.toml
-# [patch.crates-io], and the JXR main branch that wsi-rs main names; remove
-# together with that patch once they are on crates.io.
+# First-party J2K and wsi-rs from Cargo.toml [patch.crates-io], and the JXR
+# main branch that wsi-rs main names; remove together with that patch once
+# they are on crates.io.
 allow-git = [
     "https://github.com/frames-sg/j2k",
     "https://github.com/frames-sg/jxr",
     "https://github.com/frames-sg/wsi-rs",
-    "https://github.com/frames-sg/wsi-dicom-annotations",
 ]

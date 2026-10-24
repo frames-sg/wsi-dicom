@@ -48,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of being copied under Bits Stored equal to Bits Allocated.
 - A raw read that wsi-rs refuses for memory takes the decode route, like one
   refused for want of stored bytes. PNG and BMP sources count as lossless.
+- Updates to annotations 0.2.1. Its `format_dicom_decimal` formats the
+  writer's Decimal String values, so both crates write the same strings.
 
 ### Added
 
