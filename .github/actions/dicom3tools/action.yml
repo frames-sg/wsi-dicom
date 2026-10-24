@@ -10,12 +10,12 @@ runs:
       uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
       with:
         path: ${{ runner.temp }}/dicom3tools-dcfile
-        key: dicom3tools-${{ runner.os }}-669b0c5e28535327ed0c0375491901bc553c2493923cc55e71a09eba07e7bdd2
+        key: dicom3tools-${{ runner.os }}-a78040922ed52008280fab06fcadcff03f40926784d8b129948d4ffac8c0b09e
     - if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
-        DICOM3TOOLS_VERSION: 1.00.snapshot.20260320044638
-        DICOM3TOOLS_SHA256: 669b0c5e28535327ed0c0375491901bc553c2493923cc55e71a09eba07e7bdd2
+        DICOM3TOOLS_VERSION: 1.00.snapshot.20260927113651
+        DICOM3TOOLS_SHA256: a78040922ed52008280fab06fcadcff03f40926784d8b129948d4ffac8c0b09e
       run: |
         sudo apt-get update
         sudo apt-get install -y xutils-dev libx11-dev libxext-dev
