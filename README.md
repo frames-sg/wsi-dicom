@@ -25,10 +25,13 @@ decoding, public RGB/RGBA display buffers, and image saving.
 
 ## Validation benchmark
 
-The current WSI validation challenge is maintained in
-[`wsi-dicom-bench`](https://github.com/frames-sg/wsi-dicom-bench): 69 authored
-defects and 14 controls covering 18 selected rule families. Earlier sealed
-studies remain historical evidence; this challenge does not claim exhaustive
+The validation challenge is maintained in
+[`wsi-dicom-bench`](https://github.com/frames-sg/wsi-dicom-bench). Its v7 suite
+contains 66 controls and 861 file, JSON, HTTP and advisory cases, with witnesses
+for all 886 cataloged checked statements. Seven requirements remain unimplemented
+across 16 IOD scope pairs, so the full-coverage acceptance policy fails even when
+the implemented checks satisfy every case. Earlier sealed studies remain
+historical evidence; this challenge does not claim certification or exhaustive
 normative DICOM coverage.
 
 ## Install
@@ -287,20 +290,31 @@ wsi-dicom coverage slide.ndpi --json
 wsi-dicom requirements --json
 ```
 
-For the complete cataloged DICOM-side evaluation and one unified per-slide evidence bundle, install
+For the cataloged DICOM checks and one per-slide evidence bundle, install
 the independently versioned [WSI-DICOM Bench](https://github.com/frames-sg/wsi-dicom-bench) package:
 
 ```sh
 python -m pip wheel \
-  "git+https://github.com/frames-sg/wsi-dicom-bench@968b25ded082a7e7e0a20d4ca5b3283fb636588b" \
+  "git+https://github.com/frames-sg/wsi-dicom-bench@08f848d217849dbf5013eb429e7a6a129fc14eda" \
   --wheel-dir .benchmark-wheel
 python -m pip install .benchmark-wheel/wsi_dicom_bench-*.whl
-profile="$(python -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("rules/wsi-dicom-core-profile-2026c-v4.json"))')"
+catalog="$(python -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("rules/wsi-dicom-bench-rules-v7.json"))')"
 wsi-dicom-bench-workbench dicom-out \
   --output evidence/slide-id \
   --wsi-dicom target/release/wsi-dicom \
-  --profile "${profile}"
+  --catalog "${catalog}"
 ```
+
+To run the locked v7 challenge from this checkout, select its manifest explicitly:
+
+```sh
+suite="$(python -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("negative_bench/manifest-v7.json"))')"
+cargo xtask benchmark --suite "${suite}" --output evidence/challenge-v7
+```
+
+The command builds the candidate with DICOMweb support. The current v7 completeness
+policy returns exit code 1 for the seven documented unchecked requirements, even when
+all implemented checks meet the locked expectations.
 
 Validation never runs an external codec. Every validation run performs
 intrinsic checks before the optional external DICOM conformance validators

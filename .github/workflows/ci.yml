@@ -340,7 +340,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: frames-sg/wsi-dicom-bench
-          ref: 968b25ded082a7e7e0a20d4ca5b3283fb636588b
+          ref: 08f848d217849dbf5013eb429e7a6a129fc14eda
           path: wsi-dicom-bench
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -369,11 +369,13 @@ jobs:
         env:
           WSI_DICOM_BENCH: ${{ runner.temp }}/wsi-dicom-bench/bin/wsi-dicom-bench
         run: |
-          suite="$("${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("negative_bench/manifest-v6.json"))')"
-          cargo xtask benchmark --suite "${suite}" --output "${RUNNER_TEMP}/controlled-failure-evidence"
+          suite="$("${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("negative_bench/manifest-v7.json"))')"
+          benchmark_status=0
+          cargo xtask benchmark --suite "${suite}" --output "${RUNNER_TEMP}/controlled-failure-evidence" || benchmark_status=$?
           candidate_sha256="$(sha256sum target/release/wsi-dicom | cut -d ' ' -f 1)"
-          recorded_sha256="$("${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -c 'import json, os; from pathlib import Path; report=json.loads((Path(os.environ["RUNNER_TEMP"]) / "controlled-failure-evidence/observed-results/run-summary.json").read_text()); print(report["environment"]["wsi_dicom_sha256"])')"
+          recorded_sha256="$("${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -c 'import json, os; from pathlib import Path; report=json.loads((Path(os.environ["RUNNER_TEMP"]) / "controlled-failure-evidence/observed-results/run-summary.json").read_text()); assert report["candidate_sha256_before"] == report["candidate_sha256_after"]; print(report["candidate_sha256_after"])')"
           test "${recorded_sha256}" = "${candidate_sha256}"
+          exit "${benchmark_status}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
