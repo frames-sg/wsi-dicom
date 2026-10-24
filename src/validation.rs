@@ -38,6 +38,9 @@ use wsi_conformance::{
     run_source_relationship_set_check, run_specimen_uid_set_check, WsiConformanceCorpus,
 };
 
+/// The DICOM edition validation holds objects to, e.g. `2026d`.
+pub const DICOM_EDITION: &str = iod::EDITION;
+
 /// Intrinsic validation contract; general checks remain compatible with legacy catalogs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -46,10 +49,9 @@ pub enum ValidationProfile {
     /// Selected reusable WSI checks, without the restricted core scope.
     #[default]
     General,
-    /// DICOM 2026c single-path, single-plane, non-concatenated TILED_FULL VOLUME profile.
-    #[value(name = "core-2026c")]
-    #[serde(rename = "core-2026c")]
-    Core2026c,
+    /// Single-path, single-plane, non-concatenated TILED_FULL VOLUME profile
+    /// of the pinned DICOM edition ([`DICOM_EDITION`]).
+    Core,
 }
 
 /// Options for validating generated DICOM files with external tools.
@@ -545,7 +547,7 @@ pub(crate) fn validate_dicom_path_with_runner(
     if let Some(check) = run_series_set_check(&corpus) {
         checks.push(check);
     }
-    if options.profile == ValidationProfile::Core2026c {
+    if options.profile == ValidationProfile::Core {
         if let Some(check) = run_clinical_identity_set_check(&corpus) {
             checks.push(check);
         }
@@ -595,7 +597,7 @@ pub(crate) fn validate_dicom_path_with_runner(
         runner,
         &files,
         SetLevelCommandCheckRequest {
-            prefix_args: vec![OsString::from("--edition"), OsString::from("2026c")],
+            prefix_args: vec![OsString::from("--edition"), OsString::from(DICOM_EDITION)],
             check_name: VALIDATE_IODS_TOOL.name,
             command_name: VALIDATE_IODS_TOOL.name,
             required: options.strict && VALIDATE_IODS_TOOL.required,

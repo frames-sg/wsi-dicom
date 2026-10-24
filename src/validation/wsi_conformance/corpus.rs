@@ -14,12 +14,13 @@ use super::rule_check;
 use super::series_set::{self, SeriesFacts};
 use crate::uid::is_valid_dicom_uid;
 use crate::validation::iod::declares_vl_wsi;
+use crate::validation::iod::dicom_edition;
 
-const SPECIMEN_SET_RULE: &str = "intrinsic-wsi-dicom-2026c-specimen-uid-set";
-const IDENTITY_SET_RULE: &str = "intrinsic-wsi-dicom-2026c-identity-set";
-const PYRAMID_GEOMETRY_RULE: &str = "intrinsic-wsi-dicom-2026c-pyramid-geometry";
-const SOURCE_RELATIONSHIP_RULE: &str = "intrinsic-wsi-dicom-2026c-source-relationship";
-const CLINICAL_IDENTITY_SET_RULE: &str = "intrinsic-wsi-dicom-2026c-clinical-identity-set";
+const SPECIMEN_SET_RULE: &str = "intrinsic-wsi-dicom-specimen-uid-set";
+const IDENTITY_SET_RULE: &str = "intrinsic-wsi-dicom-identity-set";
+const PYRAMID_GEOMETRY_RULE: &str = "intrinsic-wsi-dicom-pyramid-geometry";
+const SOURCE_RELATIONSHIP_RULE: &str = "intrinsic-wsi-dicom-source-relationship";
+const CLINICAL_IDENTITY_SET_RULE: &str = "intrinsic-wsi-dicom-clinical-identity-set";
 
 #[derive(Debug, Default)]
 pub(in crate::validation) struct WsiConformanceCorpus {
@@ -106,8 +107,8 @@ pub(in crate::validation) fn run_slide_coordinate_set_check(
     compared.then(|| {
         rule_check(
             Path::new(""),
-            "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
-            "DICOM PS3.3 2026c C.8.12.14",
+            "intrinsic-wsi-dicom-slide-coordinate-system",
+            concat!("DICOM PS3.3 ", dicom_edition!(), " C.8.12.14"),
             failure.map_or(Ok(()), Err),
         )
     })
@@ -214,7 +215,11 @@ pub(in crate::validation) fn run_clinical_identity_set_check(
         rule_check(
             Path::new(""),
             CLINICAL_IDENTITY_SET_RULE,
-            "DICOM PS3.3 2026c A.32.8, C.7.1, C.7.2, C.7.3, C.7.4.1, and C.7.6.22",
+            concat!(
+                "DICOM PS3.3 ",
+                dicom_edition!(),
+                " A.32.8, C.7.1, C.7.2, C.7.3, C.7.4.1, and C.7.6.22"
+            ),
             failure.map_or(Ok(()), Err),
         )
     })
@@ -299,7 +304,7 @@ pub(in crate::validation) fn run_identity_set_check(
         rule_check(
             Path::new(""),
             IDENTITY_SET_RULE,
-            "DICOM PS3.3 2026c C.12.1",
+            concat!("DICOM PS3.3 ", dicom_edition!(), " C.12.1"),
             failure.map_or(Ok(()), Err),
         )
     })
@@ -347,7 +352,7 @@ pub(in crate::validation) fn run_specimen_uid_set_check(
     Some(rule_check(
         Path::new(""),
         SPECIMEN_SET_RULE,
-        "DICOM PS3.3 2026c C.7.6.22",
+        concat!("DICOM PS3.3 ", dicom_edition!(), " C.7.6.22"),
         failure.map_or(Ok(()), Err),
     ))
 }
@@ -435,7 +440,7 @@ pub(in crate::validation) fn run_pyramid_geometry_set_check(
     Some(rule_check(
         Path::new(""),
         PYRAMID_GEOMETRY_RULE,
-        "DICOM PS3.3 2026c C.8.12.6",
+        concat!("DICOM PS3.3 ", dicom_edition!(), " C.8.12.6"),
         failure.map_or(Ok(()), Err),
     ))
 }
@@ -535,7 +540,7 @@ pub(in crate::validation) fn run_source_relationship_set_check(
     Some(rule_check(
         Path::new(""),
         SOURCE_RELATIONSHIP_RULE,
-        "DICOM PS3.3 2026c C.7.6.1 and Table 10-11",
+        concat!("DICOM PS3.3 ", dicom_edition!(), " C.7.6.1 and Table 10-11"),
         failure.map_or(Ok(()), Err),
     ))
 }

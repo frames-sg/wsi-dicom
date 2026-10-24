@@ -253,7 +253,7 @@ jobs:
           echo "${RUNNER_TEMP}/dicom-validator/bin" >> "$GITHUB_PATH"
           # Prepare the standard cache before per-file validation's 15s limit.
           mkdir -p "${RUNNER_TEMP}/empty-dicom"
-          "${RUNNER_TEMP}/dicom-validator/bin/validate_iods" --edition 2026c "${RUNNER_TEMP}/empty-dicom"
+          "${RUNNER_TEMP}/dicom-validator/bin/validate_iods" --edition 2026d "${RUNNER_TEMP}/empty-dicom"
       - name: Build and test the exact crate package
         shell: bash
         run: |

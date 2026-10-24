@@ -247,7 +247,7 @@ fn a_token_without_its_tsa_certificate_is_matched_but_not_verified() {
 fn a_token_of_another_signature_fails() {
     assert_token_violation(
         |request| request.imprint[0] ^= 1,
-        "Digital Signatures Sequence (FFFA,FFFA)[1]: Certified Timestamp (0400,0310) messageImprint is not the SHA256 hash of Signature (0400,0120), so the token does not certify this Signature (PS3.3 2026c Table C.12-6 and RFC 3161 2.4.2)",
+        "Digital Signatures Sequence (FFFA,FFFA)[1]: Certified Timestamp (0400,0310) messageImprint is not the SHA256 hash of Signature (0400,0120), so the token does not certify this Signature (PS3.3 2026d Table C.12-6 and RFC 3161 2.4.2)",
     );
 }
 
@@ -277,7 +277,7 @@ fn a_timestamp_the_rule_cannot_read_fails() {
 
     assert_token_violation(
         |request| request.imprint_algorithm = ObjectIdentifier::new_unwrap("1.2.826.0.1.3680043.10.999.4"),
-        "Certified Timestamp (0400,0310) messageImprint hashes with 1.2.826.0.1.3680043.10.999.4, not a hash of PS3.3 2026c Table C.12.1.1.3.1.2-1, so it cannot be compared with the Signature",
+        "Certified Timestamp (0400,0310) messageImprint hashes with 1.2.826.0.1.3680043.10.999.4, not a hash of PS3.3 2026d Table C.12.1.1.3.1.2-1, so it cannot be compared with the Signature",
     );
 
     let mut data_set = timestamped(|signature| token(&Token::certifying(signature)));
@@ -286,6 +286,6 @@ fn a_timestamp_the_rule_cannot_read_fails() {
     });
     assert_violation(
         &file(data_set, JPEG_BASELINE),
-        "Certified Timestamp Type (0400,0305) is \"PGP\"; CMS_TSP, the RFC 3161 token of PS3.15 2026c C.1, is the type whose Certified Timestamp (0400,0310) can be read (PS3.3 2026c Table C.12-6)",
+        "Certified Timestamp Type (0400,0305) is \"PGP\"; CMS_TSP, the RFC 3161 token of PS3.15 2026d C.1, is the type whose Certified Timestamp (0400,0310) can be read (PS3.3 2026d Table C.12-6)",
     );
 }

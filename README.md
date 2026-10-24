@@ -317,7 +317,7 @@ component groups and deflated Data Sets. The `digital-signatures` check
 recomputes each Digital Signature's MAC and verifies its RSA signature and
 Certified Timestamp; whether its certificate is trusted is not checked. VL
 Whole Slide Microscopy Image objects additionally run stable
-`intrinsic-wsi-dicom-2026c-*` checks for ICC profiles, monochrome
+`intrinsic-wsi-dicom-*` checks for ICC profiles, monochrome
 presentation attributes, lossy declarations, specimen identity, dimension
 indices and ordering, the WSI image constraints the tables cannot express
 (`wsi-image`: four-valued Image and Frame Type, Specimen Label in Image, Tiles
@@ -340,7 +340,7 @@ Frames of Reference, Specimen Identifiers within a Study, Frame Extraction
 history and patient group arrangements).
 
 They also run the VL WSI IOD requirements generated from the pinned DICOM
-2026c tables (PS3.3 A.32.8 and the module and macro tables it includes, PS3.6
+edition's tables (PS3.3 A.32.8 and the module and macro tables it includes, PS3.6
 data dictionary, PS3.10 file meta): `iod-modules` (module and functional group
 usage, Per-Frame item count), `iod-attribute-presence` (Type 1, 1C, 2 and 2C,
 recursively in Sequence Items, with each condition evaluated), `iod-enumerated-values`,

@@ -15,10 +15,11 @@ use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
 use super::wsi_image::{is_code, sequence, string, strings, tag_values};
 use crate::validation::digital_signatures::excluded_from_signature;
+use crate::validation::iod::dicom_edition;
 use crate::validation::iod::{element_label, is_private};
 use crate::validation::{check_value_format, is_image_storage_sop_class, registered};
 
-const CITATION: &str = "PS3.3 2026c";
+const CITATION: &str = concat!("PS3.3 ", dicom_edition!());
 /// DateTime of processing, TID 8001 Specimen Preparation.
 const PROCESSING_DATETIME: (&str, &str) = ("DCM", "111702");
 /// Root of the HL7 OID registry, which assigns the Hierarchical Message

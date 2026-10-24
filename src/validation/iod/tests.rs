@@ -497,7 +497,7 @@ fn condition_variants_are_named_by_a_digest_of_their_text() {
 
 #[test]
 fn tables_cover_the_iod_module_and_functional_group_tables() {
-    assert_eq!(EDITION, "2026c");
+    assert_eq!(EDITION, "2026d");
     assert_eq!(MODULES.len(), 27);
     assert_eq!(FUNCTIONAL_GROUPS.len(), 9);
     let slide_label = MODULES

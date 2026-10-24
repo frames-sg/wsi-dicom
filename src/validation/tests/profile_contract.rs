@@ -4,7 +4,7 @@ fn intrinsic_status(path: &Path, name: &str) -> ValidationStatus {
     let report = validate_dicom_path_with_runner(
         path,
         &ValidationOptions {
-            profile: ValidationProfile::Core2026c,
+            profile: ValidationProfile::Core,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -36,11 +36,11 @@ fn tiled_full_accepts_implicit_frame_positions() {
     object.put(shared);
     object.write_to_file(&path).unwrap();
     assert_eq!(
-        intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-tile-geometry"),
+        intrinsic_status(&path, "intrinsic-wsi-dicom-tile-geometry"),
         ValidationStatus::Passed
     );
     assert_eq!(
-        intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-optical-path-structure"),
+        intrinsic_status(&path, "intrinsic-wsi-dicom-optical-path-structure"),
         ValidationStatus::Passed
     );
 }
@@ -57,7 +57,7 @@ fn tiled_full_accepts_dimension_index_without_per_frame_groups() {
         .unwrap();
     object.write_to_file(&path).unwrap();
     assert_eq!(
-        intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-dimension-order"),
+        intrinsic_status(&path, "intrinsic-wsi-dicom-dimension-order"),
         ValidationStatus::Passed
     );
 }
@@ -77,7 +77,7 @@ fn dimension_order_requires_per_frame_groups_outside_tiled_full() {
     ));
     object.write_to_file(&path).unwrap();
     assert_eq!(
-        intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-dimension-order"),
+        intrinsic_status(&path, "intrinsic-wsi-dicom-dimension-order"),
         ValidationStatus::Failed
     );
 }
@@ -94,7 +94,7 @@ fn tiled_full_rejects_a_complete_but_permuted_frame_order() {
     object.put(frames);
     object.write_to_file(&path).unwrap();
     assert_eq!(
-        intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-tile-geometry"),
+        intrinsic_status(&path, "intrinsic-wsi-dicom-tile-geometry"),
         ValidationStatus::Failed
     );
 }
@@ -119,12 +119,12 @@ fn tile_geometry_defers_missing_required_attributes_to_iod_presence() {
         object.write_to_file(&path).unwrap();
 
         assert_eq!(
-            intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-tile-geometry"),
+            intrinsic_status(&path, "intrinsic-wsi-dicom-tile-geometry"),
             ValidationStatus::Passed,
             "tag {tag}"
         );
         assert_eq!(
-            intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-iod-attribute-presence"),
+            intrinsic_status(&path, "intrinsic-wsi-dicom-iod-attribute-presence"),
             ValidationStatus::Failed,
             "tag {tag}"
         );
@@ -135,11 +135,11 @@ fn tile_geometry_defers_missing_required_attributes_to_iod_presence() {
     object.take(tags::DIMENSION_ORGANIZATION_TYPE).unwrap();
     object.write_to_file(&path).unwrap();
     assert_eq!(
-        intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-tile-geometry"),
+        intrinsic_status(&path, "intrinsic-wsi-dicom-tile-geometry"),
         ValidationStatus::Passed
     );
     assert_eq!(
-        intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-iod-attribute-presence"),
+        intrinsic_status(&path, "intrinsic-wsi-dicom-iod-attribute-presence"),
         ValidationStatus::Passed
     );
 }
@@ -164,7 +164,7 @@ fn wsi_pixel_metadata_enforces_specialized_values() {
         }
         object.write_to_file(&path).unwrap();
         assert_eq!(
-            intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-image-metadata"),
+            intrinsic_status(&path, "intrinsic-wsi-dicom-image-metadata"),
             ValidationStatus::Failed,
             "tag {tag}"
         );
@@ -183,7 +183,7 @@ fn wsi_pixel_metadata_rejects_color_space_outside_its_transfer_syntax() {
     ));
     object.write_to_file(&path).unwrap();
     assert_eq!(
-        intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-image-metadata"),
+        intrinsic_status(&path, "intrinsic-wsi-dicom-image-metadata"),
         ValidationStatus::Failed
     );
 }
@@ -192,7 +192,7 @@ fn intrinsic_check(path: &Path, name: &str) -> crate::validation::ValidationChec
     validate_dicom_path_with_runner(
         path,
         &ValidationOptions {
-            profile: ValidationProfile::Core2026c,
+            profile: ValidationProfile::Core,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -235,7 +235,7 @@ fn wsi_pixel_metadata_follows_the_transfer_syntax_tables() {
         meta.transfer_syntax = syntax.to_string();
         meta.update_information_group_length();
         object.write_to_file(&path).unwrap();
-        let check = intrinsic_check(&path, "intrinsic-wsi-dicom-2026c-image-metadata");
+        let check = intrinsic_check(&path, "intrinsic-wsi-dicom-image-metadata");
         if expected.is_empty() {
             assert_eq!(
                 check.status,
@@ -255,7 +255,7 @@ fn wsi_icon_images_are_checked_for_pixel_attributes_and_icc_profile() {
     let tmp = tempfile::tempdir().unwrap();
     let path = export_valid_color_wsi_for_validation(tmp.path(), "icon");
     assert_eq!(
-        intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-pixel-attributes"),
+        intrinsic_status(&path, "intrinsic-wsi-dicom-pixel-attributes"),
         ValidationStatus::Passed
     );
     let mut object = dicom_object::open_file(&path).unwrap();
@@ -302,7 +302,7 @@ fn wsi_icon_images_are_checked_for_pixel_attributes_and_icc_profile() {
     ));
     object.write_to_file(&path).unwrap();
 
-    let attributes = intrinsic_check(&path, "intrinsic-wsi-dicom-2026c-pixel-attributes");
+    let attributes = intrinsic_check(&path, "intrinsic-wsi-dicom-pixel-attributes");
     assert_eq!(attributes.status, ValidationStatus::Failed);
     for expected in [
         "Icon Image Sequence (0088,0200) Item 1: Samples per Pixel is 3",
@@ -311,7 +311,7 @@ fn wsi_icon_images_are_checked_for_pixel_attributes_and_icc_profile() {
     ] {
         assert!(attributes.message.contains(expected), "{}", attributes.message);
     }
-    let icc = intrinsic_check(&path, "intrinsic-wsi-dicom-2026c-icc-profile");
+    let icc = intrinsic_check(&path, "intrinsic-wsi-dicom-icc-profile");
     assert_eq!(icc.status, ValidationStatus::Failed);
     assert!(
         icc.message
@@ -364,7 +364,7 @@ fn core_requires_frame_type_and_derivation_when_source_is_referenced() {
         }
         object.write_to_file(&path).unwrap();
         assert_eq!(
-            intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-core-image-profile"),
+            intrinsic_status(&path, "intrinsic-wsi-dicom-core-image-profile"),
             ValidationStatus::Failed,
             "derived={derived}"
         );
@@ -386,7 +386,7 @@ fn general_profile_omits_core_only_checks_and_core_rejects_other_sop_classes() {
     assert!(!general
         .checks
         .iter()
-        .any(|c| c.name == "intrinsic-wsi-dicom-2026c-core-image-profile"));
+        .any(|c| c.name == "intrinsic-wsi-dicom-core-image-profile"));
     let mut object = dicom_object::open_file(&path).unwrap();
     object.put(DataElement::new(
         tags::SOP_CLASS_UID,
@@ -395,7 +395,7 @@ fn general_profile_omits_core_only_checks_and_core_rejects_other_sop_classes() {
     ));
     object.write_to_file(&path).unwrap();
     assert_eq!(
-        intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-core-image-profile"),
+        intrinsic_status(&path, "intrinsic-wsi-dicom-core-image-profile"),
         ValidationStatus::Failed
     );
 }

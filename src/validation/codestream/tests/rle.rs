@@ -99,11 +99,11 @@ fn encoded_frames_are_conformant() {
 fn header_and_segments_agree_with_the_image_pixel_attributes() {
     assert_violation(
         &check_frame(&dcmtk_rgb(), &declared(RLE, (4, 6), 1, 8, "MONOCHROME2")),
-        "Frame 1: RLE Header declares 3 RLE Segments but Samples per Pixel (0028,0002) 1 with Bits Allocated (0028,0100) 8 makes 1 Byte Segments (PS3.5 2026c 8.2.2 and PS3.5 2026c G.2)",
+        "Frame 1: RLE Header declares 3 RLE Segments but Samples per Pixel (0028,0002) 1 with Bits Allocated (0028,0100) 8 makes 1 Byte Segments (PS3.5 2026d 8.2.2 and PS3.5 2026d G.2)",
     );
     assert_violation(
         &check_frame(&dcmtk_rgb(), &declared(RLE, (5, 6), 3, 8, "RGB")),
-        "RLE Segment 1 decodes to 24 bytes, fewer than the 30 of Rows (0028,0010) by Columns (0028,0011) (PS3.5 2026c 8.2.2)",
+        "RLE Segment 1 decodes to 24 bytes, fewer than the 30 of Rows (0028,0010) by Columns (0028,0011) (PS3.5 2026d 8.2.2)",
     );
     assert_violation(
         &check_frame(&frame(&[vec![0x00, 0x05, 0x00, 0x06]]), &monochrome((1, 1))),
@@ -117,7 +117,7 @@ fn unused_segment_offsets_are_zero() {
     bytes[20..24].copy_from_slice(&999u32.to_le_bytes());
     assert_violation(
         &check_frame(&bytes, &declared(RLE, (4, 6), 3, 8, "RGB")),
-        "RLE Header offsets after its 3 segments are 0, 999, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, but all unused segment offsets are zero (PS3.5 2026c G.5)",
+        "RLE Header offsets after its 3 segments are 0, 999, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, but all unused segment offsets are zero (PS3.5 2026d G.5)",
     );
 }
 
@@ -125,11 +125,11 @@ fn unused_segment_offsets_are_zero() {
 fn segments_are_an_even_number_of_bytes_padded_with_zero() {
     assert_violation(
         &check_frame(&frame(&[vec![0x01, 0x2A, 0x2B]]), &monochrome((1, 2))),
-        "RLE Segment 1 is 3 bytes; each RLE Segment is an even number of bytes (PS3.5 2026c G.3)",
+        "RLE Segment 1 is 3 bytes; each RLE Segment is an even number of bytes (PS3.5 2026d G.3)",
     );
     assert_violation(
         &check_frame(&frame(&[vec![0x01, 0x2A, 0x2B, 0x07]]), &monochrome((1, 2))),
-        "RLE Segment 1 is padded with a nonzero byte; the pad byte is zero (PS3.5 2026c G.3)",
+        "RLE Segment 1 is padded with a nonzero byte; the pad byte is zero (PS3.5 2026d G.3)",
     );
     assert_conformant(&check_frame(
         &frame(&[vec![0x01, 0x2A, 0x2B, 0x00]]),
@@ -141,7 +141,7 @@ fn segments_are_an_even_number_of_bytes_padded_with_zero() {
 fn three_byte_repeats_are_replicate_runs() {
     assert_violation(
         &check_frame(&frame(&[vec![0x03, 5, 5, 5, 6, 0]]), &monochrome((1, 4))),
-        "RLE Segment 1 has a literal run at decoded byte 0 that contains a three-byte repeat, which is encoded as a Replicate Run (PS3.5 2026c G.3.1)",
+        "RLE Segment 1 has a literal run at decoded byte 0 that contains a three-byte repeat, which is encoded as a Replicate Run (PS3.5 2026d G.3.1)",
     );
     // A two-byte repeat may stay literal (G.3.1 Note).
     assert_conformant(&check_frame(
@@ -154,7 +154,7 @@ fn three_byte_repeats_are_replicate_runs() {
 fn runs_do_not_cross_row_boundaries() {
     assert_violation(
         &check_frame(&frame(&[vec![0xFB, 9]]), &monochrome((2, 3))),
-        "RLE Segment 1 has a run starting at row 0, column 0 that crosses the row boundary; each row is encoded separately (PS3.5 2026c G.3.1)",
+        "RLE Segment 1 has a run starting at row 0, column 0 that crosses the row boundary; each row is encoded separately (PS3.5 2026d G.3.1)",
     );
     assert_conformant(&check_frame(
         &frame(&[vec![0xFE, 9, 0xFE, 9]]),
@@ -173,11 +173,11 @@ fn runs_do_not_cross_row_boundaries() {
 fn malformed_headers_are_reported() {
     assert_violation(
         &check_frame(&[0; 10], &monochrome((1, 1))),
-        "is 10 bytes, shorter than the 64-byte RLE Header (PS3.5 2026c G.5)",
+        "is 10 bytes, shorter than the 64-byte RLE Header (PS3.5 2026d G.5)",
     );
     assert_violation(
         &check_frame(&[0; 64], &monochrome((1, 1))),
-        "RLE Header declares 0 RLE Segments; it describes 1 to 15 (PS3.5 2026c G.5)",
+        "RLE Header declares 0 RLE Segments; it describes 1 to 15 (PS3.5 2026d G.5)",
     );
     let mut bytes = dcmtk_rgb();
     bytes[8..12].copy_from_slice(&100u32.to_le_bytes());
@@ -188,6 +188,6 @@ fn malformed_headers_are_reported() {
     let truncated = frame(&[vec![0x05, 1, 2]]);
     assert_violation(
         &check_frame(&truncated, &monochrome((1, 6))),
-        "RLE Segment 1 ends inside a literal run of 6 bytes (PS3.5 2026c G.3.1)",
+        "RLE Segment 1 ends inside a literal run of 6 bytes (PS3.5 2026d G.3.1)",
     );
 }

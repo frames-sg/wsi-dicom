@@ -29,7 +29,7 @@ use super::pixel_structure::{dicom_frame_count, optional_u64_values, visit_encap
 use super::wsi_conformance::rule_path;
 use super::{intrinsic_check, ValidationCheck, ValidationStatus};
 
-const CODESTREAM_RULE: &str = "intrinsic-wsi-dicom-2026c-codestream";
+const CODESTREAM_RULE: &str = "intrinsic-wsi-dicom-codestream";
 
 /// The codestream check of one object. A Transfer Syntax that encapsulates no
 /// codestream this rule parses (native, deflated, video, JPIP referenced or

@@ -109,7 +109,7 @@ fn required_conformance_writes_only_the_pyramid_with_required_attributes() {
     for check in validation
         .checks
         .iter()
-        .filter(|check| check.name.contains("2026c-iod-"))
+        .filter(|check| check.name.contains("intrinsic-wsi-dicom-iod-"))
     {
         assert_eq!(
             check.status,

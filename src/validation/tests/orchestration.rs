@@ -271,7 +271,7 @@ fn iod_validation_records_an_explicit_standard_edition() {
     assert!(check
         .command
         .windows(2)
-        .any(|pair| pair == ["--edition", "2026c"]));
+        .any(|pair| pair == ["--edition", "2026d"]));
 }
 
 #[test]

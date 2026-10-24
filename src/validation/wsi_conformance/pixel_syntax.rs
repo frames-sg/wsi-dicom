@@ -8,6 +8,7 @@ use dicom_dictionary_std::{tags, uids};
 use dicom_object::DefaultDicomObject;
 
 use super::fields::optional_string;
+use crate::validation::iod::EDITION;
 
 /// What one Transfer Syntax admits in a VL WSI image.
 struct Permitted {
@@ -94,7 +95,7 @@ pub(super) fn validate_photometric_for_syntax(
     let permitted = permitted(uid);
     if !permitted.photometric.contains(&photometric) {
         return Err(format!(
-            "Photometric Interpretation {photometric} is not permitted with Transfer Syntax {uid}; a VL WSI image in this syntax uses {} (PS3.3 2026c C.8.12.4.1.5, PS3.5 2026c {})",
+            "Photometric Interpretation {photometric} is not permitted with Transfer Syntax {uid}; a VL WSI image in this syntax uses {} (PS3.3 {EDITION} C.8.12.4.1.5, PS3.5 {EDITION} {})",
             permitted.photometric.join(", "),
             permitted.citation
         ));
@@ -106,7 +107,7 @@ pub(super) fn validate_photometric_for_syntax(
             ""
         };
         return Err(format!(
-            "Transfer Syntax {uid} admits Bits Allocated 8, Bits Stored 8, High Bit 7 for {photometric}, found Bits Allocated {allocated}{reason} (PS3.5 2026c {})",
+            "Transfer Syntax {uid} admits Bits Allocated 8, Bits Stored 8, High Bit 7 for {photometric}, found Bits Allocated {allocated}{reason} (PS3.5 {EDITION} {})",
             permitted.citation
         ));
     }
@@ -273,12 +274,12 @@ pub(super) fn reject_motion_syntax(object: &DefaultDicomObject, uid: &str) -> Re
         String::new()
     } else {
         format!(
-            "; the image also departs from PS3.5 2026c {}: {}",
+            "; the image also departs from PS3.5 {EDITION} {}: {}",
             motion.section,
             departures.join(", ")
         )
     };
     Err(format!(
-        "Transfer Syntax {uid} is a motion compression syntax, which VL Whole Slide Microscopy images shall not use (PS3.3 2026c C.8.12.4.1.5){departures}"
+        "Transfer Syntax {uid} is a motion compression syntax, which VL Whole Slide Microscopy images shall not use (PS3.3 {EDITION} C.8.12.4.1.5){departures}"
     ))
 }

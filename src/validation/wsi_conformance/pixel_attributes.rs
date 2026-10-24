@@ -8,6 +8,7 @@ use dicom_dictionary_std::tags;
 use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
 use super::super::pixel_structure::{is_padded_length, NativeFrame};
+use crate::validation::iod::{dicom_edition, EDITION};
 use crate::validation::iod::{integer_value, items};
 
 /// Every violation found, joined; the object's pixel description content is
@@ -35,7 +36,7 @@ pub(super) fn validate_pixel_attributes_rule(object: &DefaultDicomObject) -> Res
             );
             if !single_sample {
                 violations.push(format!(
-                    "{label} is present, but Samples per Pixel is not 1; Palette Color Lookup Tables are used only with a single sample per pixel (PS3.3 2026c C.7.6.3.1.6 and C.7.9.2)"
+                    "{label} is present, but Samples per Pixel is not 1; Palette Color Lookup Tables are used only with a single sample per pixel (PS3.3 {EDITION} C.7.6.3.1.6 and C.7.9.2)"
                 ));
             }
             // C.7-22a belongs to C.7.9, which in an Image IOD requires 16-bit entries.
@@ -55,7 +56,7 @@ fn pixel_aspect_ratio(item: &InMemDicomObject, violations: &mut Vec<String>) {
     };
     if values.iter().any(|value| *value <= 0) {
         violations.push(format!(
-            "Pixel Aspect Ratio (0028,0034) is {}; both integer Values shall be greater than 0 (PS3.3 2026c C.7.6.3.1.7)",
+            "Pixel Aspect Ratio (0028,0034) is {}; both integer Values shall be greater than 0 (PS3.3 {EDITION} C.7.6.3.1.7)",
             values
                 .iter()
                 .map(i64::to_string)
@@ -82,7 +83,7 @@ fn pixel_padding(object: &DefaultDicomObject, violations: &mut Vec<String>) {
             if let Some(padding) = padding.filter(|padding| !(minimum..=maximum).contains(padding))
             {
                 violations.push(format!(
-                    "{name} {padding} lies outside the stored sample range {minimum}..={maximum} that Bits Stored and Pixel Representation define (PS3.3 2026c C.7.5.1.1.2)"
+                    "{name} {padding} lies outside the stored sample range {minimum}..={maximum} that Bits Stored and Pixel Representation define (PS3.3 {EDITION} C.7.5.1.1.2)"
                 ));
             }
         }
@@ -98,7 +99,7 @@ fn pixel_padding(object: &DefaultDicomObject, violations: &mut Vec<String>) {
     };
     if misordered {
         violations.push(format!(
-            "Pixel Padding Value (0028,0120) {value} and Pixel Padding Range Limit (0028,0121) {limit} are in the wrong order for Photometric Interpretation {}; the Value shall be the end of the range closer to the {} pixel value (PS3.3 2026c C.7.5.1.1.2)",
+            "Pixel Padding Value (0028,0120) {value} and Pixel Padding Range Limit (0028,0121) {limit} are in the wrong order for Photometric Interpretation {}; the Value shall be the end of the range closer to the {} pixel value (PS3.3 {EDITION} C.7.5.1.1.2)",
             photometric.unwrap_or_default(),
             if value > limit { "minimum" } else { "maximum" }
         ));
@@ -117,7 +118,7 @@ fn stored_range(item: &InMemDicomObject) -> Option<(i64, i64)> {
 /// PS3.3 C.7.6.1.1.6 restrictions on the Image Pixel Macro of an Icon
 /// Image, with the C.7-11c sample format and PS3.5 8.1.1 Native length.
 fn icon_image(icon: &InMemDicomObject, label: &str, violations: &mut Vec<String>) {
-    const CITATION: &str = "PS3.3 2026c C.7.6.1.1.6";
+    const CITATION: &str = concat!("PS3.3 ", dicom_edition!(), " C.7.6.1.1.6");
     let samples = integer(icon, tags::SAMPLES_PER_PIXEL);
     if samples.is_some_and(|samples| samples != 1) {
         violations.push(format!(
@@ -151,7 +152,7 @@ fn icon_image(icon: &InMemDicomObject, label: &str, violations: &mut Vec<String>
     if let (Some(allocated), Some(stored)) = (allocated, stored) {
         if stored > allocated {
             violations.push(format!(
-                "{label}: Bits Stored {stored} is larger than Bits Allocated {allocated} (PS3.5 2026c 8.1.1)"
+                "{label}: Bits Stored {stored} is larger than Bits Allocated {allocated} (PS3.5 {EDITION} 8.1.1)"
             ));
         }
     }
@@ -200,13 +201,13 @@ fn icon_pixel_data(icon: &InMemDicomObject, label: &str, violations: &mut Vec<St
                 .find(|(_, fragment)| fragment.is_empty() || fragment.len() % 2 == 1)
             {
                 violations.push(format!(
-                    "{label}: Pixel Data Fragment {} has Item Length {}; Items containing an encoded Fragment shall be made of an even number of bytes greater or equal to two (PS3.5 2026c A.4)",
+                    "{label}: Pixel Data Fragment {} has Item Length {}; Items containing an encoded Fragment shall be made of an even number of bytes greater or equal to two (PS3.5 {EDITION} A.4)",
                     index + 1,
                     fragment.len()
                 ));
             } else if sequence.fragments().is_empty() {
                 violations.push(format!(
-                    "{label}: encapsulated Pixel Data has no Fragment; at least one Frame shall be present (PS3.5 2026c 8.2)"
+                    "{label}: encapsulated Pixel Data has no Fragment; at least one Frame shall be present (PS3.5 {EDITION} 8.2)"
                 ));
             }
         }
@@ -222,7 +223,7 @@ fn icon_pixel_data(icon: &InMemDicomObject, label: &str, violations: &mut Vec<St
             let actual = element.to_bytes().map_or(0, |bytes| bytes.len() as u64);
             if !is_padded_length(actual, expected) {
                 violations.push(format!(
-                    "{label}: Pixel Data (7FE0,0010) holds {actual} bytes; Native Format requires {expected} bytes for {}, padded only to the next even length (PS3.5 2026c 8.1.1)",
+                    "{label}: Pixel Data (7FE0,0010) holds {actual} bytes; Native Format requires {expected} bytes for {}, padded only to the next even length (PS3.5 {EDITION} 8.1.1)",
                     frame.describe(1)
                 ));
             }
@@ -261,7 +262,7 @@ fn palette_lookup_tables(
     entry_bits: Option<u16>,
     violations: &mut Vec<String>,
 ) {
-    const CITATION: &str = "PS3.3 2026c C.7.6.3.1.5";
+    const CITATION: &str = concat!("PS3.3 ", dicom_edition!(), " C.7.6.3.1.5");
     let descriptors: Vec<(&str, [u16; 3], Tag, Tag)> = COLORS
         .iter()
         .filter_map(|(color, descriptor, data, segmented)| {
@@ -325,7 +326,7 @@ fn palette_lookup_tables(
                 "{label}: Segmented {color} Palette Color Lookup Table Data expands to 65536 entries but the {descriptor} first Value is {first}; 2^16 entries are encoded as 0 ({CITATION})"
             )),
             Ok(expanded) if expanded != entries => violations.push(format!(
-                "{label}: Segmented {color} Palette Color Lookup Table Data expands to {expanded} entries; the {descriptor} declares {entries} (PS3.3 2026c C.7.9.2)"
+                "{label}: Segmented {color} Palette Color Lookup Table Data expands to {expanded} entries; the {descriptor} declares {entries} (PS3.3 {EDITION} C.7.9.2)"
             )),
             Ok(_) => {}
             Err(reason) => violations.push(format!(
@@ -357,7 +358,7 @@ struct Indirect {
 fn expanded_entries(bytes: &[u8]) -> Result<u64, String> {
     if bytes.len() % 2 == 1 {
         return Err(format!(
-            "has odd length {}; segments are 16-bit words (PS3.3 2026c C.7.9.2)",
+            "has odd length {}; segments are 16-bit words (PS3.3 {EDITION} C.7.9.2)",
             bytes.len()
         ));
     }
@@ -374,19 +375,19 @@ fn expanded_entries(bytes: &[u8]) -> Result<u64, String> {
                 }
                 _ => {
                     return Err(format!(
-                        "has a discrete segment at byte {offset} whose Segment Length exceeds the remaining data; its format is opcode 0, Segment Length, then that many entries (PS3.3 2026c C.7.9.2.1 Table C.7-25)"
+                        "has a discrete segment at byte {offset} whose Segment Length exceeds the remaining data; its format is opcode 0, Segment Length, then that many entries (PS3.3 {EDITION} C.7.9.2.1 Table C.7-25)"
                     ))
                 }
             },
             1 => {
                 if position + 3 > words {
                     return Err(format!(
-                        "has a truncated linear segment at byte {offset}; its format is opcode 1, Segment Length, Y1 (PS3.3 2026c C.7.9.2.2 Table C.7-26)"
+                        "has a truncated linear segment at byte {offset}; its format is opcode 1, Segment Length, Y1 (PS3.3 {EDITION} C.7.9.2.2 Table C.7-26)"
                     ));
                 }
                 if segments.is_empty() {
                     return Err(
-                        "begins with a linear segment, which has no previous segment end point to continue (PS3.3 2026c C.7.9.2.2)"
+                        concat!("begins with a linear segment, which has no previous segment end point to continue (PS3.3 ", dicom_edition!(), " C.7.9.2.2)")
                             .to_string(),
                     );
                 }
@@ -395,7 +396,7 @@ fn expanded_entries(bytes: &[u8]) -> Result<u64, String> {
             2 => {
                 if position + 4 > words {
                     return Err(format!(
-                        "has a truncated indirect segment at byte {offset}; its format is opcode 2, number of segments to copy, then the byte offset as least and most significant 16 bits (PS3.3 2026c C.7.9.2.3 Table C.7-27)"
+                        "has a truncated indirect segment at byte {offset}; its format is opcode 2, number of segments to copy, then the byte offset as least and most significant 16 bits (PS3.3 {EDITION} C.7.9.2.3 Table C.7-27)"
                     ));
                 }
                 let indirect = Indirect {
@@ -406,7 +407,7 @@ fn expanded_entries(bytes: &[u8]) -> Result<u64, String> {
             }
             reserved => {
                 return Err(format!(
-                    "has segment opcode {reserved} at byte {offset}; opcodes 3 and above are reserved (PS3.3 2026c C.7.9.2 Table C.7-24)"
+                    "has segment opcode {reserved} at byte {offset}; opcodes 3 and above are reserved (PS3.3 {EDITION} C.7.9.2 Table C.7-24)"
                 ))
             }
         };
@@ -437,7 +438,7 @@ fn expanded_entries(bytes: &[u8]) -> Result<u64, String> {
         let Ok(first) = segments.binary_search_by_key(&indirect.target, |target| target.offset)
         else {
             return Err(format!(
-                "has an indirect segment at byte {} pointing to byte offset {}, which does not begin a segment (PS3.3 2026c C.7.9.2.3)",
+                "has an indirect segment at byte {} pointing to byte offset {}, which does not begin a segment (PS3.3 {EDITION} C.7.9.2.3)",
                 segment.offset, indirect.target
             ));
         };
@@ -447,13 +448,13 @@ fn expanded_entries(bytes: &[u8]) -> Result<u64, String> {
             .filter(|end| *end <= segments.len());
         let Some(end) = end else {
             return Err(format!(
-                "has an indirect segment at byte {} copying {} segments from byte offset {}, beyond the last segment (PS3.3 2026c C.7.9.2.3)",
+                "has an indirect segment at byte {} copying {} segments from byte offset {}, beyond the last segment (PS3.3 {EDITION} C.7.9.2.3)",
                 segment.offset, indirect.segments, indirect.target
             ));
         };
         if indirect_before[end] != indirect_before[first] {
             return Err(format!(
-                "has an indirect segment at byte {} that copies another indirect segment; an indirect segment shall not point to or copy another indirect segment (PS3.3 2026c C.7.9.2.3)",
+                "has an indirect segment at byte {} that copies another indirect segment; an indirect segment shall not point to or copy another indirect segment (PS3.3 {EDITION} C.7.9.2.3)",
                 segment.offset
             ));
         }

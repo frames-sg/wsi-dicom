@@ -528,7 +528,7 @@ pub(super) fn run_sparse_dicom_validators_for_test(path: &std::path::Path) {
         run_dicom_validator_for_test(
             "validate_iods",
             &validate_iods,
-            &["--edition", "2026c"],
+            &["--edition", crate::DICOM_EDITION],
             &[path],
         );
     } else {

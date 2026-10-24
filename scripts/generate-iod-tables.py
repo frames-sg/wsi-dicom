@@ -22,20 +22,26 @@ import argparse
 import hashlib
 import re
 import sys
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
-EDITION = "2026c"
+EDITION = "2026d"
 SOURCES = {
-    "part03.xml": "7911d6ec05872a38255d12ad628c1c940e9c905bb8cc3785ee039e7f6632dd48",
-    "part05.xml": "4dfd7b8cbc7c368b7cf03e9c4b8a0773bed91266fcdb0bbf8ed634b7287cacca",
-    "part06.xml": "ff1dcdfb557d57db96420614fcaf6d739bb76aa74b73eba77f367be9fab0be3e",
-    "part10.xml": "f28d8d3a8c3fc998bf0c64db5525d8744ccd0f064e6ab7e1de24b29fcc032762",
-    "part16.xml": "8a87dcbf0d4fbb9c8770bdcd2d738cf4d3037c668994ab8604a75b01b562a79a",
+    "part03.xml": "3ae695b956ba57c490933a49220b515aeaedb5ece86f05c4bf7e94ee0fbcc6ef",
+    "part05.xml": "05183ea889f097cba51a938bf961a62f308bc6044a12f24d71282f08469de835",
+    "part06.xml": "fa9f0f8d67eba692dcf95cfeae0a8f4e071beeb7844215a860bc4b9d5dfaad25",
+    "part10.xml": "4e08e2ef3ad0b57d79cf6903c0076c56b670ef2172afa2f6c42da0792ff645d5",
+    "part16.xml": "293912fbc2acefe5d53dffa449070db488134da29aaa452e31d610d403888899",
 }
-SOURCE_URL = "https://dicom.nema.org/medical/dicom/{edition}/source/docbook/{part}/{name}"
+# NEMA serves the newest edition only under current/ until the next one is
+# published; the pinned digests decide which download is the edition.
+SOURCE_URLS = (
+    "https://dicom.nema.org/medical/dicom/{edition}/source/docbook/{part}/{name}",
+    "https://dicom.nema.org/medical/dicom/current/source/docbook/{part}/{name}",
+)
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "src" / "validation" / "iod"
 OUTPUT_FILES = ("tables.rs", "dictionary.rs", "requirements.rs", "value_sets.rs")
@@ -261,15 +267,24 @@ def arguments():
 
 def fetch_source(directory, name):
     part = name.removesuffix(".xml")
-    url = SOURCE_URL.format(edition=EDITION, part=part, name=name)
-    with urllib.request.urlopen(url, timeout=120) as response:
-        body = response.read(MAX_SOURCE_BYTES + 1)
-    if len(body) > MAX_SOURCE_BYTES:
-        raise GenerationError(f"{url} exceeds {MAX_SOURCE_BYTES} bytes")
-    if hashlib.sha256(body).hexdigest() != SOURCES[name]:
-        raise GenerationError(f"{url} does not match the pinned SHA-256 for {name}")
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / name).write_bytes(body)
+    failures = []
+    for template in SOURCE_URLS:
+        url = template.format(edition=EDITION, part=part, name=name)
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response:
+                body = response.read(MAX_SOURCE_BYTES + 1)
+        except urllib.error.URLError as error:
+            failures.append(f"{url}: {error}")
+            continue
+        if len(body) > MAX_SOURCE_BYTES:
+            failures.append(f"{url} exceeds {MAX_SOURCE_BYTES} bytes")
+        elif hashlib.sha256(body).hexdigest() != SOURCES[name]:
+            failures.append(f"{url} does not match the pinned {EDITION} SHA-256 for {name}")
+        else:
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / name).write_bytes(body)
+            return
+    raise GenerationError("; ".join(failures))
 
 
 def verified_sources(directory, fetch):
@@ -1504,7 +1519,12 @@ class Emitter:
         emit("use ConditionId as C;")
         emit("use ItemCount::{AtLeast, AtMost, Exactly, NumberOfFrames, Unconstrained as ANY, ValueOf};")
         emit()
-        emit(f"pub(super) const EDITION: &str = {rust_string(EDITION)};")
+        emit("/// The pinned edition as a literal, for `concat!` in constant citations.")
+        emit("macro_rules! dicom_edition {")
+        emit(f"    () => {{ {rust_string(EDITION)} }};")
+        emit("}")
+        emit("pub(crate) use dicom_edition;")
+        emit("pub(super) const EDITION: &str = dicom_edition!();")
         emit("#[cfg(test)]")
         emit("pub(super) const SOURCE_SHA256: &[(&str, &str)] = &[")
         for name, digest in digests.items():

@@ -78,7 +78,7 @@ class IodTableTests(unittest.TestCase):
                 (sources / name).write_text("<book/>", encoding="utf-8")
             result = run_generator("--source-dir", str(sources), "--check")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("expected pinned 2026c digest", result.stderr)
+        self.assertIn("expected pinned 2026d digest", result.stderr)
 
 
 if __name__ == "__main__":

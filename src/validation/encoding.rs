@@ -31,7 +31,7 @@ use attributes::Attributes;
 use reader::Source;
 use walk::{walk, Layout, Syntax};
 
-const ENCODING_RULE: &str = "intrinsic-wsi-dicom-2026c-encoding";
+const ENCODING_RULE: &str = "intrinsic-wsi-dicom-encoding";
 /// Explicit VR Big Endian; retired, and its `uids` constant deprecated.
 const EXPLICIT_VR_BIG_ENDIAN: &str = "1.2.840.10008.1.2.2";
 

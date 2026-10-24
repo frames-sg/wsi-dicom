@@ -62,7 +62,7 @@ fn headers_agree_with_the_image_pixel_attributes() {
     for (declared, expected) in [
         (
             declared(LOSSLESS, (16, 8), 1, 8, "MONOCHROME2"),
-            "Frame 1: JPEG XL image height is 8 but Rows (0028,0010) is 16 (PS3.5 2026c 8.2.15)",
+            "Frame 1: JPEG XL image height is 8 but Rows (0028,0010) is 16 (PS3.5 2026d 8.2.15)",
         ),
         (
             declared(LOSSLESS, (8, 4), 1, 8, "MONOCHROME2"),
@@ -89,14 +89,14 @@ fn headers_agree_with_the_image_pixel_attributes() {
 fn coding_mode_is_the_one_its_transfer_syntax_identifies() {
     assert_violation(
         &check_frame(&rgb_lossy(), &rgb(LOSSLESS)),
-        "first frame uses VarDCT encoding, which is lossy, not the lossless JPEG XL coding Transfer Syntax 1.2.840.10008.1.2.4.110 identifies (PS3.5 2026c A.4.12)",
+        "first frame uses VarDCT encoding, which is lossy, not the lossless JPEG XL coding Transfer Syntax 1.2.840.10008.1.2.4.110 identifies (PS3.5 2026d A.4.12)",
     );
     assert_violation(
         &check_frame(&grey_recompressed(), &grey(LOSSLESS)),
         "carries JPEG bitstream reconstruction (jbrd) data of a transcoded JPEG, not the lossless JPEG XL coding Transfer Syntax 1.2.840.10008.1.2.4.110 identifies",
     );
     let bare = check_frame(&grey_lossless(), &grey(JPEG_RECOMPRESSION));
-    assert_violation(&bare, "has no JPEG bitstream reconstruction (jbrd) box, so it is not the reversible JPEG transcoding Transfer Syntax 1.2.840.10008.1.2.4.111 identifies (PS3.5 2026c A.4.12)");
+    assert_violation(&bare, "has no JPEG bitstream reconstruction (jbrd) box, so it is not the reversible JPEG transcoding Transfer Syntax 1.2.840.10008.1.2.4.111 identifies (PS3.5 2026d A.4.12)");
     assert_violation(&bare, "first frame uses Modular encoding");
 }
 
@@ -104,7 +104,7 @@ fn coding_mode_is_the_one_its_transfer_syntax_identifies() {
 fn frames_hold_a_jpeg_xl_codestream() {
     assert_violation(
         &check_frame(&crate::test_support::encode_test_gray_jpeg(8, 8, 1), &grey(LOSSLESS)),
-        "begins with bytes FF D8 FF DB (a JPEG stream: SOI), not the JPEG XL codestream or container signature Transfer Syntax 1.2.840.10008.1.2.4.110 identifies (PS3.10 2026c 7.2 and PS3.5 2026c A.4.12)",
+        "begins with bytes FF D8 FF DB (a JPEG stream: SOI), not the JPEG XL codestream or container signature Transfer Syntax 1.2.840.10008.1.2.4.110 identifies (PS3.10 2026d 7.2 and PS3.5 2026d A.4.12)",
     );
     let container = rgb_lossless_container();
     assert_violation(

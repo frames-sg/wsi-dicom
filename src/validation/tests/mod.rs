@@ -329,7 +329,7 @@ fn assert_intrinsic_rule_fails(path: &Path, name: &str) {
     let report = validate_dicom_path_with_runner(
         path,
         &ValidationOptions {
-            profile: ValidationProfile::Core2026c,
+            profile: ValidationProfile::Core,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),

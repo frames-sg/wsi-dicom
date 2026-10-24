@@ -133,11 +133,11 @@ fn frame_header_agrees_with_rows_columns_samples_and_bits_stored() {
     for (declared, expected) in [
         (
             declared(BASELINE, (16, 16), 3, 8, "YBR_FULL_422"),
-            "Frame 1: SOF0 number of lines is 8 but Rows (0028,0010) is 16 (PS3.5 2026c 8.2.1)",
+            "Frame 1: SOF0 number of lines is 8 but Rows (0028,0010) is 16 (PS3.5 2026d 8.2.1)",
         ),
         (
             declared(BASELINE, (8, 8), 3, 8, "YBR_FULL_422"),
-            "SOF0 samples per line is 16 but Columns (0028,0011) is 8 (PS3.5 2026c 8.2.1)",
+            "SOF0 samples per line is 16 but Columns (0028,0011) is 8 (PS3.5 2026d 8.2.1)",
         ),
         (
             declared(BASELINE, (8, 16), 1, 8, "MONOCHROME2"),
@@ -151,7 +151,7 @@ fn frame_header_agrees_with_rows_columns_samples_and_bits_stored() {
             &lossless(1),
             &declared(LOSSLESS, (8, 16), 1, 12, "MONOCHROME2"),
         ),
-        "SOF3 sample precision is 8 but Bits Stored (0028,0101) is 12 (PS3.5 2026c 8.2.1)",
+        "SOF3 sample precision is 8 but Bits Stored (0028,0101) is 12 (PS3.5 2026d 8.2.1)",
     );
 }
 
@@ -159,7 +159,7 @@ fn frame_header_agrees_with_rows_columns_samples_and_bits_stored() {
 fn coding_process_is_the_one_its_transfer_syntax_identifies() {
     assert_violation(
         &check_frame(&ybr_422(), &declared(EXTENDED, (8, 16), 3, 8, "YBR_FULL_422")),
-        "SOF0 (baseline DCT) is not the JPEG coding process that Transfer Syntax 1.2.840.10008.1.2.4.51 identifies (SOF1 (extended sequential DCT, Huffman)) (PS3.5 2026c A.4.1 Table A.4-3)",
+        "SOF0 (baseline DCT) is not the JPEG coding process that Transfer Syntax 1.2.840.10008.1.2.4.51 identifies (SOF1 (extended sequential DCT, Huffman)) (PS3.5 2026d A.4.1 Table A.4-3)",
     );
     let twelve_bit_as_baseline = check_frame(
         &extended_12_bit(),
@@ -172,7 +172,7 @@ fn coding_process_is_the_one_its_transfer_syntax_identifies() {
     );
     assert_violation(
         &check_frame(&lossless(7), &declared(SV1, (8, 16), 1, 8, "MONOCHROME2")),
-        "SOS predictor selection value 7 is not the first-order prediction (Selection Value 1) of Transfer Syntax 1.2.840.10008.1.2.4.70 (PS3.5 2026c A.4.1 Table A.4-3)",
+        "SOS predictor selection value 7 is not the first-order prediction (Selection Value 1) of Transfer Syntax 1.2.840.10008.1.2.4.70 (PS3.5 2026d A.4.1 Table A.4-3)",
     );
     assert_violation(
         &check_frame(
@@ -187,7 +187,7 @@ fn coding_process_is_the_one_its_transfer_syntax_identifies() {
 fn frames_carry_their_table_specifications() {
     let ybr = declared(BASELINE, (8, 16), 3, 8, "YBR_FULL_422");
     let without_huffman = check_frame(&without_segments(&ybr_422(), 0xC4), &ybr);
-    assert_violation(&without_huffman, "of the first scan uses DC Huffman table 0 (DHT) and AC Huffman table 0 (DHT), which the stream does not specify: abbreviated format instead of the interchange format (PS3.5 2026c A.4.1)");
+    assert_violation(&without_huffman, "of the first scan uses DC Huffman table 0 (DHT) and AC Huffman table 0 (DHT), which the stream does not specify: abbreviated format instead of the interchange format (PS3.5 2026d A.4.1)");
     assert_violation(
         &check_frame(&without_segments(&ybr_422(), 0xDB), &ybr),
         "uses quantization table 0 (DQT), which the stream does not specify",
@@ -214,7 +214,7 @@ fn each_frame_is_one_complete_separately_encoded_stream() {
     let stream = ybr_422();
     assert_violation(
         &check_frame(&stream[..stream.len() - 2], &ybr),
-        "does not end with EOI (FFD9H), so the Frame is not one complete, separately encoded JPEG stream (PS3.5 2026c A.4.1)",
+        "does not end with EOI (FFD9H), so the Frame is not one complete, separately encoded JPEG stream (PS3.5 2026d A.4.1)",
     );
     let mut first = stream.clone();
     if first.len() % 2 == 1 {
@@ -245,7 +245,7 @@ fn color_declarations_agree_with_photometric_interpretation() {
     ));
     assert_violation(
         &check_frame(&after_soi(&stream, &ADOBE_YCBCR), &rgb),
-        "APP14 Adobe transform 1 (YCbCr) declares color-transformed components but Photometric Interpretation is RGB (PS3.5 2026c 8.2.1 and PS3.3 2026c C.8.12.4.1.5)",
+        "APP14 Adobe transform 1 (YCbCr) declares color-transformed components but Photometric Interpretation is RGB (PS3.5 2026d 8.2.1 and PS3.3 2026d C.8.12.4.1.5)",
     );
     assert_violation(
         &check_frame(&after_soi(&stream, &JFIF), &rgb),
@@ -265,7 +265,7 @@ fn subsampled_planes_are_described_only_by_ybr_full_422() {
     let stream = after_soi(&ybr_422(), &ADOBE_UNTRANSFORMED);
     assert_violation(
         &check_frame(&stream, &declared(BASELINE, (8, 16), 3, 8, "RGB")),
-        "SOF0 sampling factors 2x1, 1x1, 1x1 encode planes of different sizes, which Photometric Interpretation RGB does not describe (PS3.3 2026c C.7.6.3.1.1)",
+        "SOF0 sampling factors 2x1, 1x1, 1x1 encode planes of different sizes, which Photometric Interpretation RGB does not describe (PS3.3 2026d C.7.6.3.1.1)",
     );
     assert_conformant(&check_frame(
         &full_resolution(),
@@ -278,7 +278,7 @@ fn stream_kind_is_the_one_its_transfer_syntax_identifies() {
     let codestream = super::j2k::lossless_rgb(16, 8);
     assert_violation(
         &check_frame(&codestream, &declared(BASELINE, (8, 16), 3, 8, "YBR_FULL_422")),
-        "begins with bytes FF 4F FF 51 (a JPEG 2000 codestream: SOC, SIZ), not the SOI marker of the JPEG stream Transfer Syntax 1.2.840.10008.1.2.4.50 identifies (PS3.10 2026c 7.2 and PS3.5 2026c A.4.1)",
+        "begins with bytes FF 4F FF 51 (a JPEG 2000 codestream: SOC, SIZ), not the SOI marker of the JPEG stream Transfer Syntax 1.2.840.10008.1.2.4.50 identifies (PS3.10 2026d 7.2 and PS3.5 2026d A.4.1)",
     );
     let jpeg_ls = super::jpeg_ls::dcmtk_lossless();
     assert_violation(

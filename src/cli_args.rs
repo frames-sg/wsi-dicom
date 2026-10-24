@@ -435,7 +435,8 @@ pub(crate) struct ValidateArgs {
     pub(crate) dcmvalidate_iod: Option<PathBuf>,
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
     pub(crate) command_timeout_secs: u64,
-    #[arg(long, value_enum, default_value = "general")]
+    /// Rule set: `general` or `core`.
+    #[arg(long, default_value = "general", value_parser = validation_profile)]
     pub(crate) profile: wsi_dicom::ValidationProfile,
     #[arg(long, default_value_t = 1024 * 1024 * 1024)]
     pub(crate) max_input_bytes: u64,
@@ -443,6 +444,19 @@ pub(crate) struct ValidateArgs {
     pub(crate) conformance: ConformanceArgs,
     #[arg(long)]
     pub(crate) json: bool,
+}
+
+/// `--profile`; the edition-named profiles of earlier releases are pointed at
+/// the profile that replaced them rather than reported as unknown.
+fn validation_profile(value: &str) -> Result<wsi_dicom::ValidationProfile, String> {
+    if value.starts_with("core-") {
+        return Err(format!(
+            "profile {value} is now `core`, which validates DICOM {}",
+            wsi_dicom::DICOM_EDITION
+        ));
+    }
+    <wsi_dicom::ValidationProfile as clap::ValueEnum>::from_str(value, false)
+        .map_err(|_| format!("unknown profile {value}; possible values: general, core"))
 }
 
 /// `--optional` (the default) or `--required`.

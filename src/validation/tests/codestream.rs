@@ -3,13 +3,13 @@
 use super::*;
 use dicom_core::value::Value;
 
-const CODESTREAM_RULE: &str = "intrinsic-wsi-dicom-2026c-codestream";
+const CODESTREAM_RULE: &str = "intrinsic-wsi-dicom-codestream";
 
 fn codestream_check(path: &Path) -> super::super::ValidationCheck {
     let report = validate_dicom_path_with_runner(
         path,
         &ValidationOptions {
-            profile: ValidationProfile::Core2026c,
+            profile: ValidationProfile::Core,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),

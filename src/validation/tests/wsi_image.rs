@@ -3,8 +3,8 @@
 
 use super::*;
 
-const WSI_IMAGE: &str = "intrinsic-wsi-dicom-2026c-wsi-image";
-const DIMENSIONS: &str = "intrinsic-wsi-dicom-2026c-dimension-order";
+const WSI_IMAGE: &str = "intrinsic-wsi-dicom-wsi-image";
+const DIMENSIONS: &str = "intrinsic-wsi-dicom-dimension-order";
 
 /// The Plane Position (Slide) Item of Per-Frame Item `frame`.
 fn plane_position(

@@ -106,11 +106,34 @@ fn shipped_binary_rejects_malformed_compressed_pixel_data_without_external_tools
         )
     });
     assert_eq!(report["schema_version"], "wsi-dicom-validation-report-v1");
-    assert_eq!(report["rule_set_id"], "wsi-dicom-general-v3");
+    assert_eq!(report["rule_set_id"], "wsi-dicom-general-v4");
+    assert_eq!(report["dicom_edition"], wsi_dicom::DICOM_EDITION);
     let checks = report["checks"].as_array().expect("validation checks");
     assert!(checks.iter().any(|check| {
         check["name"] == "intrinsic-pixel-structure" && check["status"] == "failed"
     }));
+}
+
+#[test]
+fn shipped_binary_points_an_edition_named_profile_at_core() {
+    let temporary_directory = tempfile::tempdir().expect("create temporary directory");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wsi-dicom"))
+        .arg("validate")
+        .arg(temporary_directory.path())
+        .args(["--profile", "core-2026c"])
+        .output()
+        .expect("execute shipped wsi-dicom binary");
+
+    assert!(!output.status.success(), "core-2026c was accepted");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "profile core-2026c is now `core`, which validates DICOM {}",
+            wsi_dicom::DICOM_EDITION
+        )),
+        "unexpected error: {stderr}"
+    );
 }
 
 #[test]

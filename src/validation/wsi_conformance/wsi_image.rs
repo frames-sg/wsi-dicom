@@ -7,10 +7,11 @@ use std::collections::BTreeSet;
 use dicom_dictionary_std::tags;
 use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
+use crate::validation::iod::dicom_edition;
 pub(super) use crate::validation::iod::{integer_value as integer, items as sequence, tag_values};
 use crate::validation::iod::{string_value, Coded};
 
-const CITATION: &str = "PS3.3 2026c";
+const CITATION: &str = concat!("PS3.3 ", dicom_edition!());
 /// Lossy Compression, CID 7203 Image Derivation.
 const LOSSY_COMPRESSION_DERIVATION: (&str, &str) = ("DCM", "113040");
 

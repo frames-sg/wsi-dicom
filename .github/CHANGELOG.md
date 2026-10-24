@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Validation holds objects to DICOM 2026d, the current edition. Reports and
+  `requirements --json` carry `dicom_edition`, and `DICOM_EDITION` exports it.
+  `scripts/generate-iod-tables.py --fetch` falls back to NEMA's `current/`
+  sources while an edition has no versioned DocBook; the pinned digests still
+  decide what is parsed.
+- **Breaking:** check names, rule sets and the core profile no longer carry
+  the edition, so a new edition changes what is checked, not what it is
+  called. Checks are `intrinsic-wsi-dicom-<family>`, `--profile core-2026c` is
+  `--profile core` (`ValidationProfile::Core`), and reports declare rule sets
+  `wsi-dicom-general-v4` and `wsi-dicom-core-profile-v5`. An edition-named
+  profile is rejected with the name of its replacement.
 - The 0.9.0 development release is offered under AGPL-3.0-only, with a
   separately negotiated commercial license available from Frames. Previously
   released versions retain their MIT/Apache-2.0 licenses. Release archives
@@ -23,15 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Image IOD: Modules and Functional Groups, Attribute presence and conditions,
   Enumerated Values, VR and VM, Value formats, Sequence Item counts, and File
   Meta Information. `scripts/generate-iod-tables.py` generates the tables from
-  the DICOM 2026c DocBook, and CI checks that they are current.
+  the pinned DICOM DocBook, and CI checks that they are current.
 - Seven more requirement families: `iod-value-sets` (Defined Context Groups and
   Templates of PS3.16 fail; Baseline and extensible departures are advisories),
   `wsi-image`, `attribute-relations`, `series-set` (consistency across the
   evaluated Instances), `pixel-attributes`, `codestream` (each encapsulated
   Frame is one complete JPEG, JPEG-LS, JPEG 2000, HTJ2K, JPEG XL or RLE
   codestream agreeing with the Image Pixel Attributes), and `encoding` (the
-  Data Set as encoded in the file's bytes). Reports declare rule sets
-  `wsi-dicom-general-v3` and `wsi-dicom-core-profile-2026c-v4`.
+  Data Set as encoded in the file's bytes).
 - `digital-signatures` recomputes each Digital Signature's MAC and verifies
   its RSA signature and Certified Timestamp (PS3.3 C.12.1.1.3, PS3.15 Annex C).
 - `wsi-dicom requirements [--json]` lists every normative statement of the

@@ -49,19 +49,20 @@ pub(in crate::validation) use scope::{
     integer_value, is_private, items, raw_tag, string_value, tag_values,
 };
 
-const IOD_MODULES_RULE: &str = "intrinsic-wsi-dicom-2026c-iod-modules";
-const IOD_ATTRIBUTE_PRESENCE_RULE: &str = "intrinsic-wsi-dicom-2026c-iod-attribute-presence";
-const IOD_ENUMERATED_VALUES_RULE: &str = "intrinsic-wsi-dicom-2026c-iod-enumerated-values";
-const IOD_VR_VM_RULE: &str = "intrinsic-wsi-dicom-2026c-iod-vr-vm";
-const IOD_VALUE_FORMAT_RULE: &str = "intrinsic-wsi-dicom-2026c-iod-value-format";
-const IOD_SEQUENCE_ITEMS_RULE: &str = "intrinsic-wsi-dicom-2026c-iod-sequence-items";
-const IOD_VALUE_SETS_RULE: &str = "intrinsic-wsi-dicom-2026c-iod-value-sets";
-const FILE_META_RULE: &str = "intrinsic-wsi-dicom-2026c-file-meta";
+const IOD_MODULES_RULE: &str = "intrinsic-wsi-dicom-iod-modules";
+const IOD_ATTRIBUTE_PRESENCE_RULE: &str = "intrinsic-wsi-dicom-iod-attribute-presence";
+const IOD_ENUMERATED_VALUES_RULE: &str = "intrinsic-wsi-dicom-iod-enumerated-values";
+const IOD_VR_VM_RULE: &str = "intrinsic-wsi-dicom-iod-vr-vm";
+const IOD_VALUE_FORMAT_RULE: &str = "intrinsic-wsi-dicom-iod-value-format";
+const IOD_SEQUENCE_ITEMS_RULE: &str = "intrinsic-wsi-dicom-iod-sequence-items";
+const IOD_VALUE_SETS_RULE: &str = "intrinsic-wsi-dicom-iod-value-sets";
+const FILE_META_RULE: &str = "intrinsic-wsi-dicom-file-meta";
 
 /// Deepest Sequence nesting walked; deeper Items are reported, not checked.
 pub(in crate::validation) const MAX_NESTING: usize = 32;
 /// The DICOM edition the requirement tables are generated from.
 pub(in crate::validation) const EDITION: &str = tables::EDITION;
+pub(crate) use tables::dicom_edition;
 
 /// One object's optional conformance: the optional items it encodes and those
 /// it does not, and its departures from Baseline Context Groups and Templates

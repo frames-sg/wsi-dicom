@@ -8,8 +8,8 @@ use super::*;
 use crate::test_support::find_command_for_test;
 use crate::validation::digital_signatures::tests::{first_signature_stream, sign};
 
-const DIGITAL_SIGNATURES_RULE: &str = "intrinsic-wsi-dicom-2026c-digital-signatures";
-const RELATIONS_RULE: &str = "intrinsic-wsi-dicom-2026c-attribute-relations";
+const DIGITAL_SIGNATURES_RULE: &str = "intrinsic-wsi-dicom-digital-signatures";
+const RELATIONS_RULE: &str = "intrinsic-wsi-dicom-attribute-relations";
 const DOES_NOT_VERIFY: &str =
     "Digital Signatures Sequence (FFFA,FFFA)[1]: Signature (0400,0120) does not verify";
 
@@ -63,7 +63,7 @@ fn an_unsigned_export_passes_with_nothing_to_verify() {
 fn a_signed_export_passes_every_rule_in_both_rule_sets() {
     let tmp = tempfile::tempdir().unwrap();
     let path = signed_export(tmp.path(), "signed");
-    for profile in [ValidationProfile::General, ValidationProfile::Core2026c] {
+    for profile in [ValidationProfile::General, ValidationProfile::Core] {
         let report = report(&path, profile);
         let check = report
             .checks
@@ -109,12 +109,12 @@ fn unsorted_or_excluded_data_elements_signed_fail_attribute_relations_alone() {
         (
             "unsorted",
             |signed| signed.reverse(),
-            "does not list its Tags in the order they appear in the Data Set (PS3.3 2026c C.12.1.1.3.1.1)",
+            "does not list its Tags in the order they appear in the Data Set (PS3.3 2026d C.12.1.1.3.1.1)",
         ),
         (
             "excluded",
             |signed| signed.insert(0, tags::TRANSFER_SYNTAX_UID),
-            "lists TransferSyntaxUID (0002,0010), but a Tag with a group below 0008 shall not be signed (PS3.3 2026c C.12.1.1.3.1.1)",
+            "lists TransferSyntaxUID (0002,0010), but a Tag with a group below 0008 shall not be signed (PS3.3 2026d C.12.1.1.3.1.1)",
         ),
     ];
     for (name, edit, expected) in cases {

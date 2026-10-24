@@ -4,7 +4,7 @@ use serde::Serialize;
 use wsi_dicom::{
     doctor_dicom_environment, requirement_catalog, run_dicom_self_test, validate_dicom_path,
     DoctorOptions, DoctorReport, Error, RequirementDisposition, RequirementEntry, SelfTestOptions,
-    SelfTestReport, ValidationOptions, ValidationProfile, ValidationReport,
+    SelfTestReport, ValidationOptions, ValidationProfile, ValidationReport, DICOM_EDITION,
 };
 
 use crate::cli_args::SelfTestArgs;
@@ -13,8 +13,8 @@ use crate::cli_output::print_cli_output;
 const DOCTOR_REPORT_SCHEMA: &str = "wsi-dicom-doctor-report-v1";
 const VALIDATION_REPORT_SCHEMA: &str = "wsi-dicom-validation-report-v1";
 const REQUIREMENTS_SCHEMA: &str = "wsi-dicom-requirements-v1";
-const GENERAL_RULE_SET: &str = "wsi-dicom-general-v3";
-const CORE_2026C_RULE_SET: &str = "wsi-dicom-core-profile-2026c-v4";
+const GENERAL_RULE_SET: &str = "wsi-dicom-general-v4";
+const CORE_RULE_SET: &str = "wsi-dicom-core-profile-v5";
 
 #[derive(Serialize)]
 struct DoctorCliReport<'a> {
@@ -27,6 +27,7 @@ struct DoctorCliReport<'a> {
 struct ValidationCliReport<'a> {
     schema_version: &'static str,
     rule_set_id: &'static str,
+    dicom_edition: &'static str,
     #[serde(flatten)]
     report: &'a ValidationReport,
 }
@@ -55,6 +56,7 @@ pub(crate) fn handle_validate(arguments: crate::cli_args::ValidateArgs) -> Resul
     let cli_report = ValidationCliReport {
         schema_version: VALIDATION_REPORT_SCHEMA,
         rule_set_id: rule_set_id(options.profile),
+        dicom_edition: DICOM_EDITION,
         report: &report,
     };
     print_cli_output(json, &cli_report, |cli_report| {
@@ -99,12 +101,14 @@ pub(crate) fn handle_doctor(
 #[derive(Serialize)]
 struct RequirementsCliReport {
     schema_version: &'static str,
+    dicom_edition: &'static str,
     requirements: Vec<RequirementEntry>,
 }
 
 pub(crate) fn handle_requirements(json: bool) -> Result<(), Error> {
     let report = RequirementsCliReport {
         schema_version: REQUIREMENTS_SCHEMA,
+        dicom_edition: DICOM_EDITION,
         requirements: requirement_catalog(),
     };
     print_cli_output(json, &report, |report| {
@@ -130,7 +134,7 @@ fn format_requirements_summary(requirements: &[RequirementEntry]) -> String {
             .or_insert(0) += 1;
     }
     let mut summary = format!(
-        "{} normative statements in the VL WSI scope",
+        "{} normative statements of DICOM {DICOM_EDITION} in the VL WSI scope",
         requirements.len()
     );
     for ((part, kind), count) in counts {
@@ -148,8 +152,8 @@ fn format_requirements_summary(requirements: &[RequirementEntry]) -> String {
 }
 
 fn rule_set_id(profile: ValidationProfile) -> &'static str {
-    if profile == ValidationProfile::Core2026c {
-        CORE_2026C_RULE_SET
+    if profile == ValidationProfile::Core {
+        CORE_RULE_SET
     } else {
         GENERAL_RULE_SET
     }

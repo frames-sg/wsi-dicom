@@ -2,14 +2,14 @@ use super::*;
 use crate::validation::{ValidationCheck, ValidationReport};
 
 const IOD_CHECKS: [&str; 8] = [
-    "intrinsic-wsi-dicom-2026c-iod-modules",
-    "intrinsic-wsi-dicom-2026c-iod-attribute-presence",
-    "intrinsic-wsi-dicom-2026c-iod-enumerated-values",
-    "intrinsic-wsi-dicom-2026c-iod-vr-vm",
-    "intrinsic-wsi-dicom-2026c-iod-value-format",
-    "intrinsic-wsi-dicom-2026c-iod-sequence-items",
-    "intrinsic-wsi-dicom-2026c-iod-value-sets",
-    "intrinsic-wsi-dicom-2026c-file-meta",
+    "intrinsic-wsi-dicom-iod-modules",
+    "intrinsic-wsi-dicom-iod-attribute-presence",
+    "intrinsic-wsi-dicom-iod-enumerated-values",
+    "intrinsic-wsi-dicom-iod-vr-vm",
+    "intrinsic-wsi-dicom-iod-value-format",
+    "intrinsic-wsi-dicom-iod-sequence-items",
+    "intrinsic-wsi-dicom-iod-value-sets",
+    "intrinsic-wsi-dicom-file-meta",
 ];
 
 fn iod_report(path: &Path, profile: ValidationProfile) -> ValidationReport {
@@ -66,7 +66,7 @@ fn assert_iod_passes(path: &Path, name: &str) {
 fn exported_wsi_passes_every_iod_check_in_both_profiles() {
     let tmp = tempfile::tempdir().unwrap();
     let path = export_valid_color_wsi_grid_for_validation(tmp.path(), "valid-grid", 4, 4, 2);
-    for profile in [ValidationProfile::General, ValidationProfile::Core2026c] {
+    for profile in [ValidationProfile::General, ValidationProfile::Core] {
         let report = iod_report(&path, profile);
         for name in IOD_CHECKS {
             let check = named(&report, name);
@@ -92,7 +92,7 @@ fn nested_type_one_deletion_names_the_path_and_table() {
     });
     assert_iod_failure(
         &path,
-        "intrinsic-wsi-dicom-2026c-iod-attribute-presence",
+        "intrinsic-wsi-dicom-iod-attribute-presence",
         "Optical Path Sequence[1] > Optical Path Identifier (0048,0106): Type 1 missing (PS3.3 C.8.12.5 Table C.8.12.5-1)",
     );
 }
@@ -105,7 +105,7 @@ fn type_two_attribute_must_be_present_but_may_be_empty() {
     });
     assert_iod_failure(
         &missing,
-        "intrinsic-wsi-dicom-2026c-iod-attribute-presence",
+        "intrinsic-wsi-dicom-iod-attribute-presence",
         "Patient's Name (0010,0010): Type 2 missing (PS3.3 C.7.1.1 Table C.7-1)",
     );
     let empty = edited_wsi(tmp.path(), "patient-name-empty", |object| {
@@ -115,7 +115,7 @@ fn type_two_attribute_must_be_present_but_may_be_empty() {
             PrimitiveValue::Empty,
         ));
     });
-    assert_iod_passes(&empty, "intrinsic-wsi-dicom-2026c-iod-attribute-presence");
+    assert_iod_passes(&empty, "intrinsic-wsi-dicom-iod-attribute-presence");
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn type_one_attribute_needs_a_value() {
     });
     assert_iod_failure(
         &path,
-        "intrinsic-wsi-dicom-2026c-iod-attribute-presence",
+        "intrinsic-wsi-dicom-iod-attribute-presence",
         "Software Versions (0018,1020): Type 1 present without a Value",
     );
 }
@@ -152,7 +152,7 @@ fn conditional_attribute_is_forbidden_when_its_condition_fails() {
     });
     assert_iod_failure(
         &path,
-        "intrinsic-wsi-dicom-2026c-iod-attribute-presence",
+        "intrinsic-wsi-dicom-iod-attribute-presence",
         "Lossy Image Compression Ratio (0028,2112): Type 1C present although its condition is not met",
     );
 }
@@ -165,7 +165,7 @@ fn enumerated_values_are_enforced_but_defined_terms_are_not() {
     });
     assert_iod_failure(
         &enumerated,
-        "intrinsic-wsi-dicom-2026c-iod-enumerated-values",
+        "intrinsic-wsi-dicom-iod-enumerated-values",
         "Focus Method (0048,0011) \"SEMIAUTO\" is not an Enumerated Value [AUTO, MANUAL]",
     );
     let image_type = edited_wsi(tmp.path(), "image-type-secondary", |object| {
@@ -182,7 +182,7 @@ fn enumerated_values_are_enforced_but_defined_terms_are_not() {
     });
     assert_iod_failure(
         &image_type,
-        "intrinsic-wsi-dicom-2026c-iod-enumerated-values",
+        "intrinsic-wsi-dicom-iod-enumerated-values",
         "Image Type (0008,0008) Value 2 \"SECONDARY\" is not an Enumerated Value [PRIMARY]",
     );
     let defined_term = edited_wsi(tmp.path(), "type-of-patient-id", |object| {
@@ -192,10 +192,7 @@ fn enumerated_values_are_enforced_but_defined_terms_are_not() {
             "LOCAL_CODE",
         ));
     });
-    assert_iod_passes(
-        &defined_term,
-        "intrinsic-wsi-dicom-2026c-iod-enumerated-values",
-    );
+    assert_iod_passes(&defined_term, "intrinsic-wsi-dicom-iod-enumerated-values");
 }
 
 #[test]
@@ -206,7 +203,7 @@ fn vr_and_vm_follow_the_data_dictionary() {
     });
     assert_iod_failure(
         &multiplicity,
-        "intrinsic-wsi-dicom-2026c-iod-vr-vm",
+        "intrinsic-wsi-dicom-iod-vr-vm",
         "ImageType (0008,0008): 1 Value where PS3.6 VM is 2-n",
     );
     let representation = edited_wsi(tmp.path(), "modality-vr", |object| {
@@ -214,7 +211,7 @@ fn vr_and_vm_follow_the_data_dictionary() {
     });
     assert_iod_failure(
         &representation,
-        "intrinsic-wsi-dicom-2026c-iod-vr-vm",
+        "intrinsic-wsi-dicom-iod-vr-vm",
         "Modality (0008,0060): VR LO where PS3.6 specifies CS",
     );
 }
@@ -232,12 +229,12 @@ fn value_format_rejects_malformed_strings() {
     });
     assert_iod_failure(
         &path,
-        "intrinsic-wsi-dicom-2026c-iod-value-format",
+        "intrinsic-wsi-dicom-iod-value-format",
         "StudyDate (0008,0020) \"2024-01-01\": not of the form YYYYMMDD for VR DA (PS3.5 6.2)",
     );
     assert_iod_failure(
         &path,
-        "intrinsic-wsi-dicom-2026c-iod-value-format",
+        "intrinsic-wsi-dicom-iod-value-format",
         "FrameOfReferenceUID (0020,0052) \"1.2.04.5\"",
     );
 }
@@ -255,7 +252,7 @@ fn sequence_item_counts_follow_the_attribute_description() {
     });
     assert_iod_failure(
         &path,
-        "intrinsic-wsi-dicom-2026c-iod-sequence-items",
+        "intrinsic-wsi-dicom-iod-sequence-items",
         "Shared Functional Groups Sequence (5200,9229): 2 Items where exactly 1 is required",
     );
 }
@@ -314,7 +311,7 @@ fn urn_code_values_without_a_scheme_still_undergo_context_group_validation() {
 
     assert_iod_failure(
         &path,
-        "intrinsic-wsi-dicom-2026c-iod-value-sets",
+        "intrinsic-wsi-dicom-iod-value-sets",
         "(urn:example:invalid-unit, no Coding Scheme Designator, \"Invalid unit\") is not in Defined CID 82 \"Measurement Unit\"",
     );
 }
@@ -340,7 +337,7 @@ fn functional_group_usage_and_frame_count_are_enforced() {
     });
     assert_iod_failure(
         &moved,
-        "intrinsic-wsi-dicom-2026c-iod-modules",
+        "intrinsic-wsi-dicom-iod-modules",
         "Pixel Measures Functional Group (PS3.3 C.7.6.16.2.1, Usage M): shall be used as a Shared Functional Group",
     );
     let counted = edited_wsi(tmp.path(), "frame-count", |object| {
@@ -348,7 +345,7 @@ fn functional_group_usage_and_frame_count_are_enforced() {
     });
     assert_iod_failure(
         &counted,
-        "intrinsic-wsi-dicom-2026c-iod-sequence-items",
+        "intrinsic-wsi-dicom-iod-sequence-items",
         "Per-Frame Functional Groups Sequence (5200,9230): 1 Item where 2 (the Value of (0028,0008)) are required",
     );
 }
@@ -365,7 +362,7 @@ fn file_meta_must_identify_the_data_set() {
     });
     assert_iod_failure(
         &path,
-        "intrinsic-wsi-dicom-2026c-file-meta",
+        "intrinsic-wsi-dicom-file-meta",
         "does not match SOP Instance UID (0008,0018)",
     );
 }
@@ -378,12 +375,12 @@ fn missing_sop_class_uid_still_runs_the_iod_checks_for_a_declared_wsi_file() {
     });
     assert_iod_failure(
         &path,
-        "intrinsic-wsi-dicom-2026c-iod-attribute-presence",
+        "intrinsic-wsi-dicom-iod-attribute-presence",
         "SOP Class UID (0008,0016): Type 1 missing (PS3.3 C.12.1 Table C.12-1)",
     );
     assert_iod_failure(
         &path,
-        "intrinsic-wsi-dicom-2026c-file-meta",
+        "intrinsic-wsi-dicom-file-meta",
         "Media Storage SOP Class UID (0002,0002)",
     );
 }
@@ -416,11 +413,11 @@ fn violation_messages_are_bounded() {
     let check = iod_check(
         &path,
         ValidationProfile::General,
-        "intrinsic-wsi-dicom-2026c-iod-value-format",
+        "intrinsic-wsi-dicom-iod-value-format",
     );
     assert_eq!(check.status, ValidationStatus::Failed);
     assert!(check.message.starts_with(&format!(
-        "DICOM PS3.5 2026c 6.2 and 7.1: {frame_count} violations: "
+        "DICOM PS3.5 2026d 6.2 and 7.1: {frame_count} violations: "
     )));
     assert!(check
         .message
@@ -466,7 +463,7 @@ fn file_meta_accepts_a_compatible_future_version() {
         let path = export_valid_color_wsi_for_validation(tmp.path(), name);
         patch_file_meta_version(&path, version);
 
-        assert_iod_passes(&path, "intrinsic-wsi-dicom-2026c-file-meta");
+        assert_iod_passes(&path, "intrinsic-wsi-dicom-file-meta");
     }
 }
 
@@ -478,7 +475,7 @@ fn file_meta_rejects_a_version_without_version_one_compatibility() {
 
     assert_iod_failure(
         &path,
-        "intrinsic-wsi-dicom-2026c-file-meta",
+        "intrinsic-wsi-dicom-file-meta",
         "File Meta Information Version (0002,0001) is [00, 02]; bit 0 of the second byte is not set",
     );
 }
@@ -568,9 +565,9 @@ fn presentation_addresses_follow_their_transport() {
             elements.sort_by_key(|(element, _)| *element);
         });
         match expected {
-            None => assert_iod_passes(&path, "intrinsic-wsi-dicom-2026c-file-meta"),
+            None => assert_iod_passes(&path, "intrinsic-wsi-dicom-file-meta"),
             Some(expected) => {
-                assert_iod_failure(&path, "intrinsic-wsi-dicom-2026c-file-meta", expected)
+                assert_iod_failure(&path, "intrinsic-wsi-dicom-file-meta", expected)
             }
         }
     }
@@ -583,7 +580,7 @@ fn file_meta_is_checked_when_the_data_set_cannot_be_parsed() {
     // Without Transfer Syntax UID the parser cannot read the Data Set.
     remove_file_meta_elements(&path, &[0x0010]);
 
-    assert_iod_failure(&path, "intrinsic-wsi-dicom-2026c-file-meta", "(0002,0010)");
+    assert_iod_failure(&path, "intrinsic-wsi-dicom-file-meta", "(0002,0010)");
     let pixel_structure = iod_check(
         &path,
         ValidationProfile::General,
@@ -613,20 +610,20 @@ fn jpip_referenced_files_are_not_ps3_10_media() {
             meta.update_information_group_length();
         });
         let report = iod_report(&path, ValidationProfile::General);
-        let file_meta = named(&report, "intrinsic-wsi-dicom-2026c-file-meta");
+        let file_meta = named(&report, "intrinsic-wsi-dicom-file-meta");
         assert!(
             file_meta.status == ValidationStatus::Failed
                 && file_meta.message.contains(&format!(
-                    "Transfer Syntax UID (0002,0010) \"{syntax}\" is a JPIP Referenced Transfer Syntax, which shall not be used for PS3.10 media storage (PS3.5 2026c 10.8"
+                    "Transfer Syntax UID (0002,0010) \"{syntax}\" is a JPIP Referenced Transfer Syntax, which shall not be used for PS3.10 media storage (PS3.5 2026d 10.8"
                 )),
             "{}",
             file_meta.message
         );
         // Otherwise the object is a well-formed JPIP Referenced encoding.
         for name in [
-            "intrinsic-wsi-dicom-2026c-iod-attribute-presence",
+            "intrinsic-wsi-dicom-iod-attribute-presence",
             "intrinsic-pixel-structure",
-            "intrinsic-wsi-dicom-2026c-image-metadata",
+            "intrinsic-wsi-dicom-image-metadata",
         ] {
             let check = named(&report, name);
             assert_eq!(
@@ -650,7 +647,7 @@ fn jpip_referenced_files_are_not_ps3_10_media() {
     std::fs::write(&path, bytes).unwrap();
     assert_iod_failure(
         &path,
-        "intrinsic-wsi-dicom-2026c-file-meta",
+        "intrinsic-wsi-dicom-file-meta",
         "\"1.2.840.10008.1.2.4.95\" is a JPIP Referenced Transfer Syntax",
     );
 }
@@ -661,7 +658,7 @@ fn file_meta_is_checked_when_an_unparsed_file_declares_no_sop_class() {
     let path = export_valid_color_wsi_for_validation(tmp.path(), "no-sop-class");
     remove_file_meta_elements(&path, &[0x0002, 0x0010]);
 
-    assert_iod_failure(&path, "intrinsic-wsi-dicom-2026c-file-meta", "(0002,0002)");
+    assert_iod_failure(&path, "intrinsic-wsi-dicom-file-meta", "(0002,0002)");
 }
 
 #[test]
@@ -688,7 +685,7 @@ fn references_to_other_instances_must_be_listed_in_the_common_instance_reference
 
     assert_iod_failure(
         &path,
-        "intrinsic-wsi-dicom-2026c-iod-attribute-presence",
+        "intrinsic-wsi-dicom-iod-attribute-presence",
         "Referenced Series Sequence (0008,1115): Type 1C missing",
     );
 }
@@ -718,7 +715,7 @@ fn requirement_catalog_names_only_emitted_rules_and_unchecked_statements_only_fa
         level_filter: None,
     })
     .unwrap();
-    let emitted: BTreeSet<String> = [ValidationProfile::General, ValidationProfile::Core2026c]
+    let emitted: BTreeSet<String> = [ValidationProfile::General, ValidationProfile::Core]
         .into_iter()
         .flat_map(|profile| iod_report(&output, profile).checks)
         .map(|check| check.name)
@@ -771,7 +768,7 @@ fn empty_values_and_empty_type_three_sequences_fail() {
     });
     assert_iod_failure(
         &path,
-        "intrinsic-wsi-dicom-2026c-iod-enumerated-values",
+        "intrinsic-wsi-dicom-iod-enumerated-values",
         "Image Type (0008,0008) Value 1 \"\" is not an Enumerated Value [ORIGINAL, DERIVED]",
     );
     let path = edited_wsi(tmp.path(), "empty-type-three-sequence", |object| {
@@ -785,12 +782,12 @@ fn empty_values_and_empty_type_three_sequences_fail() {
     });
     assert_iod_failure(
         &path,
-        "intrinsic-wsi-dicom-2026c-iod-sequence-items",
+        "intrinsic-wsi-dicom-iod-sequence-items",
         "Specimen Description Sequence[1] > Specimen Type Code Sequence (0040,059A): Type 3 Sequence present with zero Items (PS3.5 7.4.5",
     );
 }
 
-const VALUE_SETS: &str = "intrinsic-wsi-dicom-2026c-iod-value-sets";
+const VALUE_SETS: &str = "intrinsic-wsi-dicom-iod-value-sets";
 
 fn advisories(path: &Path) -> Vec<String> {
     iod_report(path, ValidationProfile::General)

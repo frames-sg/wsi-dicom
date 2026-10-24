@@ -266,7 +266,7 @@ fn one_fragment_per_frame_syntaxes_reject_frames_split_across_fragments() {
         assert_fails(
             &split,
             &format!(
-                "3 Fragments encode 2 Frames; each Frame shall be encoded in one and only one Fragment (PS3.5 2026c {section})"
+                "3 Fragments encode 2 Frames; each Frame shall be encoded in one and only one Fragment (PS3.5 2026d {section})"
             ),
         );
         let whole = write_raw(
@@ -308,7 +308,7 @@ fn encapsulated_uncompressed_fragments_hold_native_frames() {
             image_pixel(2, 3),
             &encapsulated(&[], &[&[1, 2, 3, 0], &[4, 5]]),
         ),
-        "Fragment 2 holds 2 bytes; each Fragment holds one Frame encoded as in Native Format, 3 bytes for 1 Rows x 3 Columns x 1 Samples per Pixel x 1 Frame(s) at 8 Bits Allocated padded to even length (PS3.5 2026c A.4.11)",
+        "Fragment 2 holds 2 bytes; each Fragment holds one Frame encoded as in Native Format, 3 bytes for 1 Rows x 3 Columns x 1 Samples per Pixel x 1 Frame(s) at 8 Bits Allocated padded to even length (PS3.5 2026d A.4.11)",
     );
     assert_fails(
         &write_raw(
@@ -318,7 +318,7 @@ fn encapsulated_uncompressed_fragments_hold_native_frames() {
             image_pixel(1, 3),
             &encapsulated(&[], &[&[1, 2], &[3, 0]]),
         ),
-        "2 Fragments encode 1 Frames; each Frame shall be encoded in one and only one Fragment (PS3.5 2026c A.4.11)",
+        "2 Fragments encode 1 Frames; each Frame shall be encoded in one and only one Fragment (PS3.5 2026d A.4.11)",
     );
     assert_fails(
         &write_raw(
@@ -397,7 +397,7 @@ fn extended_offset_table_needs_an_empty_basic_offset_table_and_whole_frames() {
             with_table(&[0, 20], &[4, 2]),
             &encapsulated(&[], &[&[1, 2], &[3, 4], &[5, 6]]),
         ),
-        "Extended Offset Table (7FE0,0001) is present, but 3 Fragments encode 2 Frames; it addresses the one and only Fragment of every Frame (PS3.3 2026c C.7.6.3.1.8)",
+        "Extended Offset Table (7FE0,0001) is present, but 3 Fragments encode 2 Frames; it addresses the one and only Fragment of every Frame (PS3.3 2026d C.7.6.3.1.8)",
     );
 }
 
@@ -442,7 +442,7 @@ fn video_streams_follow_their_fragment_and_offset_table_rules() {
         assert_fails(
             &write(syntax, 3, &[], &[&[0, 0], &[1, 0xB3]]),
             &format!(
-                "Pixel Data holds 2 Fragments; for a Non-Fragmentable Transfer Syntax one Fragment shall contain the whole bit stream (PS3.5 2026c {section})"
+                "Pixel Data holds 2 Fragments; for a Non-Fragmentable Transfer Syntax one Fragment shall contain the whole bit stream (PS3.5 2026d {section})"
             ),
         );
     }
@@ -453,7 +453,7 @@ fn video_streams_follow_their_fragment_and_offset_table_rules() {
         assert_fails(
             &write(syntax, 1, &[0], &[&[0, 0, 1, 0xB3]]),
             &format!(
-                "the Basic Offset Table holds 1 offsets; it shall be empty (present but zero length) for this MPEG2 Transfer Syntax (PS3.5 2026c {section})"
+                "the Basic Offset Table holds 1 offsets; it shall be empty (present but zero length) for this MPEG2 Transfer Syntax (PS3.5 2026d {section})"
             ),
         );
     }
@@ -485,7 +485,7 @@ fn native_pixel_data_holds_exactly_the_frames_padded_to_even_length() {
         assert_fails(
             &write_raw(tmp.path(), name, explicit, image_pixel(2, 2), &native(b"OB", value)),
             &format!(
-                "Pixel Data (7FE0,0010) holds {} bytes; Native Format requires 4 bytes for 1 Rows x 2 Columns x 1 Samples per Pixel x 2 Frame(s) at 8 Bits Allocated, padded only to the next even length (PS3.5 2026c 8.1.1)",
+                "Pixel Data (7FE0,0010) holds {} bytes; Native Format requires 4 bytes for 1 Rows x 2 Columns x 1 Samples per Pixel x 2 Frame(s) at 8 Bits Allocated, padded only to the next even length (PS3.5 2026d 8.1.1)",
                 value.len()
             ),
         );
@@ -498,7 +498,7 @@ fn native_pixel_data_holds_exactly_the_frames_padded_to_even_length() {
     ]);
     assert_fails(
         &write_raw(tmp.path(), "ob16.dcm", explicit, sixteen.clone(), &native(b"OB", &[0; 4])),
-        "Native Pixel Data (7FE0,0010) has VR OB with Bits Allocated 16; Bits Allocated greater than 8 requires OW (PS3.5 2026c A.2)",
+        "Native Pixel Data (7FE0,0010) has VR OB with Bits Allocated 16; Bits Allocated greater than 8 requires OW (PS3.5 2026d A.2)",
     );
     assert_passes(&write_raw(
         tmp.path(),
@@ -542,7 +542,7 @@ fn pixel_elements_follow_the_transfer_syntax() {
     };
     assert_fails(
         &write_raw(tmp.path(), "float.dcm", JPEG, with(vec![float()]), &[]),
-        "Float Pixel Data (7FE0,0008) is present, but Encapsulated Transfer Syntax 1.2.840.10008.1.2.4.50 is used only with integer Pixel Data (7FE0,0010) in the top-level Data Set (PS3.5 2026c A.4)",
+        "Float Pixel Data (7FE0,0008) is present, but Encapsulated Transfer Syntax 1.2.840.10008.1.2.4.50 is used only with integer Pixel Data (7FE0,0010) in the top-level Data Set (PS3.5 2026d A.4)",
     );
     assert_fails(
         &write_raw(
@@ -570,7 +570,7 @@ fn pixel_elements_follow_the_transfer_syntax() {
                 with(vec![url("ftp://example.org/slide.jp2")]),
                 &[],
             ),
-            "does not use HTTP or HTTPS; the JPIP transport protocol shall be HTTP or HTTPS (PS3.5 2026c 8.4.1)",
+            "does not use HTTP or HTTPS; the JPIP transport protocol shall be HTTP or HTTPS (PS3.5 2026d 8.4.1)",
         );
         assert_fails(
             &write_raw(tmp.path(), "no-url.dcm", syntax, with(Vec::new()), &[]),

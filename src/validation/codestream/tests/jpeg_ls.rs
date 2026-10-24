@@ -38,7 +38,7 @@ fn frame_header_agrees_with_the_image_pixel_attributes() {
     for (declared, expected) in [
         (
             declared(LOSSLESS, (8, 6), 3, 8, "RGB"),
-            "SOF55 number of lines is 4 but Rows (0028,0010) is 8 (PS3.5 2026c 8.2.3)",
+            "SOF55 number of lines is 4 but Rows (0028,0010) is 8 (PS3.5 2026d 8.2.3)",
         ),
         (
             declared(LOSSLESS, (4, 4), 3, 8, "RGB"),
@@ -59,7 +59,7 @@ fn frame_header_agrees_with_the_image_pixel_attributes() {
     subsampled[find(&stream, &[0xFF, 0xF7]) + 11] = 0x21;
     assert_violation(
         &check_frame(&subsampled, &rgb(LOSSLESS)),
-        "SOF55 sampling factors 2x1, 1x1, 1x1 encode planes of different sizes, which Photometric Interpretation RGB does not describe (PS3.3 2026c C.7.6.3.1.1)",
+        "SOF55 sampling factors 2x1, 1x1, 1x1 encode planes of different sizes, which Photometric Interpretation RGB does not describe (PS3.3 2026d C.7.6.3.1.1)",
     );
 }
 
@@ -67,7 +67,7 @@ fn frame_header_agrees_with_the_image_pixel_attributes() {
 fn lossless_transfer_syntax_admits_only_near_zero() {
     assert_violation(
         &check_frame(&dcmtk_near_lossless(), &rgb(LOSSLESS)),
-        "SOS NEAR 3 selects near-lossless coding, but Transfer Syntax 1.2.840.10008.1.2.4.80 identifies the lossless mode (NEAR 0) (PS3.5 2026c A.4.3)",
+        "SOS NEAR 3 selects near-lossless coding, but Transfer Syntax 1.2.840.10008.1.2.4.80 identifies the lossless mode (NEAR 0) (PS3.5 2026d A.4.3)",
     );
 }
 
@@ -79,7 +79,7 @@ fn frames_carry_all_parameter_specifications() {
     stream[sos + 5 + 3] = 5;
     assert_violation(
         &check_frame(&stream, &rgb(LOSSLESS)),
-        "SOS component 2 uses mapping table 5, which no LSE segment specifies: abbreviated format instead of the interchange format (PS3.5 2026c A.4.3)",
+        "SOS component 2 uses mapping table 5, which no LSE segment specifies: abbreviated format instead of the interchange format (PS3.5 2026d A.4.3)",
     );
     // An LSE ID 2 segment specifying table 5 (one-byte entries) completes it.
     let table = [0xFF, 0xF8, 0x00, 0x06, 0x02, 0x05, 0x01, 0x00];
@@ -106,7 +106,7 @@ fn each_frame_is_one_complete_separately_encoded_stream() {
     let stream = dcmtk_lossless();
     assert_violation(
         &check_frame(&stream[..stream.len() - 2], &rgb(LOSSLESS)),
-        "does not end with EOI (FFD9H), so the Frame is not one complete, separately encoded JPEG-LS stream (PS3.5 2026c A.4.3)",
+        "does not end with EOI (FFD9H), so the Frame is not one complete, separately encoded JPEG-LS stream (PS3.5 2026d A.4.3)",
     );
     assert_violation(
         &check_fragments(&[&stream, &stream], &rgb(LOSSLESS)),
@@ -119,7 +119,7 @@ fn stream_kind_is_the_one_its_transfer_syntax_identifies() {
     let baseline = crate::test_support::encode_test_jpeg(6, 4, [1, 2, 3]);
     assert_violation(
         &check_frame(&baseline, &rgb(LOSSLESS)),
-        "SOF0 (baseline DCT) is an ISO/IEC 10918-1 frame, not the JPEG-LS SOF55 of Transfer Syntax 1.2.840.10008.1.2.4.80 (PS3.10 2026c 7.2 and PS3.5 2026c A.4.3)",
+        "SOF0 (baseline DCT) is an ISO/IEC 10918-1 frame, not the JPEG-LS SOF55 of Transfer Syntax 1.2.840.10008.1.2.4.80 (PS3.10 2026d 7.2 and PS3.5 2026d A.4.3)",
     );
     assert_violation(
         &check_frame(&[0xFF, 0x4F, 0xFF, 0x51], &rgb(LOSSLESS)),

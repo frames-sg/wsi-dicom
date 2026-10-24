@@ -92,7 +92,7 @@ pub use validation::{
     doctor_dicom_environment, requirement_catalog, validate_dicom_path, DoctorOptions,
     DoctorReport, DoctorStatus, DoctorTool, ExecutionFailure, OptionalConformance,
     RequirementDisposition, RequirementEntry, ValidationCheck, ValidationExecution,
-    ValidationOptions, ValidationProfile, ValidationReport, ValidationStatus,
+    ValidationOptions, ValidationProfile, ValidationReport, ValidationStatus, DICOM_EDITION,
 };
 
 pub mod prelude {

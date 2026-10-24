@@ -36,7 +36,7 @@ use algorithm::MacAlgorithm;
 use stream::{Hashing, MacStream, MacSyntax};
 use timestamp::Timestamp;
 
-const DIGITAL_SIGNATURES_RULE: &str = "intrinsic-wsi-dicom-2026c-digital-signatures";
+const DIGITAL_SIGNATURES_RULE: &str = "intrinsic-wsi-dicom-digital-signatures";
 /// Length to End (retired) and the Item Delimitation Item, which a signature
 /// excludes (PS3.3 C.12.1.1.3.1.1).
 const LENGTH_TO_END: Tag = Tag(0x0008, 0x0001);

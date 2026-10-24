@@ -138,7 +138,7 @@ fn every_frame_is_checked_against_the_attributes_that_define_it() {
     let result = check(&file(image((8, 16), 3, "YBR_RCT", frames), J2K_LOSSLESS));
     assert_violation(
         &result,
-        "DICOM PS3.5 2026c 8.2.4 and A.4.4: 1 violation: Frame 2: SIZ width (Xsiz - XOsiz) is 32 but Columns (0028,0011) is 16 (PS3.5 2026c 8.2.4)",
+        "DICOM PS3.5 2026d 8.2.4 and A.4.4: 1 violation: Frame 2: SIZ width (Xsiz - XOsiz) is 32 but Columns (0028,0011) is 16 (PS3.5 2026d 8.2.4)",
     );
 }
 
@@ -180,7 +180,7 @@ fn frames_that_cannot_be_delimited_are_reported() {
     data_set.put(text(tags::NUMBER_OF_FRAMES, VR::IS, "2"));
     assert_violation(
         &check(&file(data_set, BASELINE)),
-        "Pixel Data Frames cannot be delimited, so no codestream was checked: cannot map 3 Pixel Data fragments to 2 frames without an offset table (PS3.5 2026c A.4)",
+        "Pixel Data Frames cannot be delimited, so no codestream was checked: cannot map 3 Pixel Data fragments to 2 frames without an offset table (PS3.5 2026d A.4)",
     );
     let mut native = image((8, 16), 1, "MONOCHROME2", vec![]);
     native.put(DataElement::new(
@@ -210,7 +210,7 @@ fn embedded_icc_profiles_equal_the_icc_profile_of_the_frame() {
     assert_conformant(&check(&object(grey_jpeg())));
     assert_violation(
         &check(&object(with_icc(&grey_jpeg(), &profile(5), 2))),
-        "Frame 1: APP2 ICC_PROFILE segments concatenate to a 301-byte profile that is not identical to the 301-byte ICC Profile (0028,2000) of Optical Path Sequence Item 1 (PS3.5 2026c 8.2.1)",
+        "Frame 1: APP2 ICC_PROFILE segments concatenate to a 301-byte profile that is not identical to the 301-byte ICC Profile (0028,2000) of Optical Path Sequence Item 1 (PS3.5 2026d 8.2.1)",
     );
     let first_chunk_only = icc_segments(&icc, 2);
     let first_chunk_only = &first_chunk_only[..4 + 14 + 151];

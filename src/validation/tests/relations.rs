@@ -2,8 +2,8 @@
 
 use super::*;
 
-const RELATIONS: &str = "intrinsic-wsi-dicom-2026c-attribute-relations";
-const SERIES_SET: &str = "intrinsic-wsi-dicom-2026c-series-set";
+const RELATIONS: &str = "intrinsic-wsi-dicom-attribute-relations";
+const SERIES_SET: &str = "intrinsic-wsi-dicom-series-set";
 const PARENT: &str = "1.2.826.0.1.3680043.10.999.922";
 
 fn texts(tag: Tag, vr: VR, values: &[&str]) -> InMemElement {
@@ -277,7 +277,7 @@ fn attribute_relations_fail_their_violations() {
                     ])],
                 ));
             },
-            "(PS3.3 2026c Table C.12-1)",
+            "(PS3.3 2026d Table C.12-1)",
         ),
         (
             "calibration-pairs",

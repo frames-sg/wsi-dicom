@@ -4,7 +4,7 @@
 use super::*;
 use dicom_object::DefaultDicomObject;
 
-const SERIES_SET: &str = "intrinsic-wsi-dicom-2026c-series-set";
+const SERIES_SET: &str = "intrinsic-wsi-dicom-series-set";
 
 /// A directory with an exported WSI and a copy that is another SOP Instance
 /// of the same Series, with `edit` applied to the copy.

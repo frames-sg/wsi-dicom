@@ -38,22 +38,23 @@ use pixel_attributes::validate_pixel_attributes_rule;
 use super::codestream::run_codestream_check;
 use super::iod::{declares_vl_wsi, run_iod_checks, OptionalNotes};
 use super::{intrinsic_check, ValidationCheck, ValidationProfile, ValidationStatus};
+use crate::validation::iod::dicom_edition;
 
-const ICC_RULE: &str = "intrinsic-wsi-dicom-2026c-icc-profile";
-const MONOCHROME_RULE: &str = "intrinsic-wsi-dicom-2026c-monochrome-presentation";
-const LOSSY_RULE: &str = "intrinsic-wsi-dicom-2026c-lossy-history";
-const SPECIMEN_RULE: &str = "intrinsic-wsi-dicom-2026c-specimen-identity";
-const DIMENSION_RULE: &str = "intrinsic-wsi-dicom-2026c-dimension-order";
-const TILE_GEOMETRY_RULE: &str = "intrinsic-wsi-dicom-2026c-tile-geometry";
-const IDENTITY_SET_RULE: &str = "intrinsic-wsi-dicom-2026c-identity-set";
-const IMAGE_METADATA_RULE: &str = "intrinsic-wsi-dicom-2026c-image-metadata";
-const PIXEL_ATTRIBUTES_RULE: &str = "intrinsic-wsi-dicom-2026c-pixel-attributes";
-const CORE_IMAGE_PROFILE_RULE: &str = "intrinsic-wsi-dicom-2026c-core-image-profile";
-const SLIDE_COORDINATE_RULE: &str = "intrinsic-wsi-dicom-2026c-slide-coordinate-system";
-const OPTICAL_PATH_STRUCTURE_RULE: &str = "intrinsic-wsi-dicom-2026c-optical-path-structure";
-const SPECIMEN_CONTAINER_RULE: &str = "intrinsic-wsi-dicom-2026c-specimen-container";
-const WSI_IMAGE_RULE: &str = "intrinsic-wsi-dicom-2026c-wsi-image";
-const RELATIONS_RULE: &str = "intrinsic-wsi-dicom-2026c-attribute-relations";
+const ICC_RULE: &str = "intrinsic-wsi-dicom-icc-profile";
+const MONOCHROME_RULE: &str = "intrinsic-wsi-dicom-monochrome-presentation";
+const LOSSY_RULE: &str = "intrinsic-wsi-dicom-lossy-history";
+const SPECIMEN_RULE: &str = "intrinsic-wsi-dicom-specimen-identity";
+const DIMENSION_RULE: &str = "intrinsic-wsi-dicom-dimension-order";
+const TILE_GEOMETRY_RULE: &str = "intrinsic-wsi-dicom-tile-geometry";
+const IDENTITY_SET_RULE: &str = "intrinsic-wsi-dicom-identity-set";
+const IMAGE_METADATA_RULE: &str = "intrinsic-wsi-dicom-image-metadata";
+const PIXEL_ATTRIBUTES_RULE: &str = "intrinsic-wsi-dicom-pixel-attributes";
+const CORE_IMAGE_PROFILE_RULE: &str = "intrinsic-wsi-dicom-core-image-profile";
+const SLIDE_COORDINATE_RULE: &str = "intrinsic-wsi-dicom-slide-coordinate-system";
+const OPTICAL_PATH_STRUCTURE_RULE: &str = "intrinsic-wsi-dicom-optical-path-structure";
+const SPECIMEN_CONTAINER_RULE: &str = "intrinsic-wsi-dicom-specimen-container";
+const WSI_IMAGE_RULE: &str = "intrinsic-wsi-dicom-wsi-image";
+const RELATIONS_RULE: &str = "intrinsic-wsi-dicom-attribute-relations";
 
 /// The intrinsic checks of one object, with its optional conformance notes.
 pub(super) fn run_intrinsic_wsi_conformance_checks(
@@ -65,11 +66,11 @@ pub(super) fn run_intrinsic_wsi_conformance_checks(
 ) -> (Vec<ValidationCheck>, Option<OptionalNotes>) {
     let (iod_checks, notes) = run_iod_checks(path, object, conformance);
     if !declares_vl_wsi(object) {
-        let mut checks = if profile == ValidationProfile::Core2026c {
+        let mut checks = if profile == ValidationProfile::Core {
             vec![rule_check(
                 path,
                 CORE_IMAGE_PROFILE_RULE,
-                "DICOM PS3.3 2026c A.32.8",
+                concat!("DICOM PS3.3 ", dicom_edition!(), " A.32.8"),
                 Err("core profile requires VL WSI SOP Class UID".into()),
             )]
         } else {
@@ -83,96 +84,112 @@ pub(super) fn run_intrinsic_wsi_conformance_checks(
         rule_check(
             path,
             ICC_RULE,
-            "DICOM PS3.3 2026c C.11.15 and C.8.12.5",
+            concat!("DICOM PS3.3 ", dicom_edition!(), " C.11.15 and C.8.12.5"),
             validate_icc_rule(object),
         ),
         rule_check(
             path,
             MONOCHROME_RULE,
-            "DICOM PS3.3 2026c C.8.12.4",
+            concat!("DICOM PS3.3 ", dicom_edition!(), " C.8.12.4"),
             validate_monochrome_rule(object),
         ),
         rule_check(
             path,
             LOSSY_RULE,
-            "DICOM PS3.3 2026c C.8.12.4 and C.7.6",
+            concat!("DICOM PS3.3 ", dicom_edition!(), " C.8.12.4 and C.7.6"),
             validate_lossy_rule(object),
         ),
         rule_check(
             path,
             SPECIMEN_RULE,
-            "DICOM PS3.3 2026c C.7.6.22 and 10.14",
+            concat!("DICOM PS3.3 ", dicom_edition!(), " C.7.6.22 and 10.14"),
             specimen_identities(object).map(|_| ()),
         ),
         rule_check(
             path,
             DIMENSION_RULE,
-            "DICOM PS3.3 2026c C.7.6.17.1 and C.8.12.6.1",
+            concat!(
+                "DICOM PS3.3 ",
+                dicom_edition!(),
+                " C.7.6.17.1 and C.8.12.6.1"
+            ),
             validate_dimension_rule(object),
         ),
         rule_check(
             path,
             TILE_GEOMETRY_RULE,
-            "DICOM PS3.3 2026c C.7.6.16.2.1 and C.8.12.6.1",
+            concat!(
+                "DICOM PS3.3 ",
+                dicom_edition!(),
+                " C.7.6.16.2.1 and C.8.12.6.1"
+            ),
             validate_tile_geometry_rule(object),
         ),
         rule_check(
             path,
             IDENTITY_SET_RULE,
-            "DICOM PS3.3 2026c C.12.1",
+            concat!("DICOM PS3.3 ", dicom_edition!(), " C.12.1"),
             validate_file_meta_identity(object),
         ),
         rule_check(
             path,
             IMAGE_METADATA_RULE,
-            "DICOM PS3.3 2026c C.7.6.3",
+            concat!("DICOM PS3.3 ", dicom_edition!(), " C.7.6.3"),
             validate_image_metadata_rule(object),
         ),
         rule_check(
             path,
             WSI_IMAGE_RULE,
-            "DICOM PS3.3 2026c C.8.12",
+            concat!("DICOM PS3.3 ", dicom_edition!(), " C.8.12"),
             wsi_image::validate_wsi_image_rule(object),
         ),
         rule_check(
             path,
             RELATIONS_RULE,
-            "DICOM PS3.3 2026c 8.6, 10.17, C.7, C.8.12.5 and C.12",
+            concat!(
+                "DICOM PS3.3 ",
+                dicom_edition!(),
+                " 8.6, 10.17, C.7, C.8.12.5 and C.12"
+            ),
             relations::validate_relations_rule(object),
         ),
         rule_check(
             path,
             PIXEL_ATTRIBUTES_RULE,
-            "DICOM PS3.3 2026c C.7.5.1.1.2, C.7.6.1.1.6, C.7.6.3.1 and C.7.9",
+            concat!(
+                "DICOM PS3.3 ",
+                dicom_edition!(),
+                " C.7.5.1.1.2, C.7.6.1.1.6, C.7.6.3.1 and C.7.9"
+            ),
             validate_pixel_attributes_rule(object),
         ),
     ];
     checks.push(run_codestream_check(path, object, max_pixel_frame_bytes));
     checks.extend(iod_checks);
-    if profile == ValidationProfile::Core2026c {
+    if profile == ValidationProfile::Core {
         checks.extend([
             rule_check(
                 path,
                 SPECIMEN_CONTAINER_RULE,
-                "DICOM PS3.3 2026c C.7.6.22",
+                concat!("DICOM PS3.3 ", dicom_edition!(), " C.7.6.22"),
                 validate_specimen_container_rule(object),
             ),
             rule_check(
                 path,
                 SLIDE_COORDINATE_RULE,
-                "DICOM PS3.3 2026c C.8.12.14",
+                concat!("DICOM PS3.3 ", dicom_edition!(), " C.8.12.14"),
                 validate_slide_coordinate_system_rule(object),
             ),
             rule_check(
                 path,
                 OPTICAL_PATH_STRUCTURE_RULE,
-                "DICOM PS3.3 2026c C.8.12.5",
+                concat!("DICOM PS3.3 ", dicom_edition!(), " C.8.12.5"),
                 validate_optical_path_structure_rule(object),
             ),
             rule_check(
                 path,
                 CORE_IMAGE_PROFILE_RULE,
-                "DICOM PS3.3 2026c A.32.8 and C.8.12.4",
+                concat!("DICOM PS3.3 ", dicom_edition!(), " A.32.8 and C.8.12.4"),
                 validate_core_image_profile_rule(object),
             ),
         ]);

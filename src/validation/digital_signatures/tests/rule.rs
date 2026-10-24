@@ -171,7 +171,7 @@ fn a_mac_id_number_must_identify_one_mac_parameters_item() {
     });
     assert_violation(
         &file(data_set, JPEG_BASELINE),
-        "Digital Signatures Sequence (FFFA,FFFA)[1]: MAC ID Number (0400,0005) 7 identifies no MAC Parameters Sequence (4FFE,0001) Item at its level, so its MAC cannot be recomputed (PS3.3 2026c Table C.12-6)",
+        "Digital Signatures Sequence (FFFA,FFFA)[1]: MAC ID Number (0400,0005) 7 identifies no MAC Parameters Sequence (4FFE,0001) Item at its level, so its MAC cannot be recomputed (PS3.3 2026d Table C.12-6)",
     );
 
     let mut data_set = signed_image();
@@ -202,13 +202,13 @@ fn mac_parameters_the_rule_cannot_recompute_fail() {
             |item| {
                 item.put(text(tags::MAC_ALGORITHM, VR::CS, "BLAKE3"));
             },
-            "MAC Algorithm (0400,0015) is \"BLAKE3\", not a Defined Term of PS3.3 2026c Table C.12.1.1.3.1.2-1, so its MAC cannot be computed",
+            "MAC Algorithm (0400,0015) is \"BLAKE3\", not a Defined Term of PS3.3 2026d Table C.12.1.1.3.1.2-1, so its MAC cannot be computed",
         ),
         (
             |item| {
                 item.put(text(tags::MAC_CALCULATION_TRANSFER_SYNTAX_UID, VR::UI, "1.2.840.10008.1.2"));
             },
-            "MAC Calculation Transfer Syntax UID (0400,0010) 1.2.840.10008.1.2 is an Implicit VR Transfer Syntax; a MAC is encoded in an Explicit VR Little Endian Transfer Syntax, so this one is not recomputed (PS3.3 2026c C.12.1.1.3.1.2 and Table C.12-6)",
+            "MAC Calculation Transfer Syntax UID (0400,0010) 1.2.840.10008.1.2 is an Implicit VR Transfer Syntax; a MAC is encoded in an Explicit VR Little Endian Transfer Syntax, so this one is not recomputed (PS3.3 2026d C.12.1.1.3.1.2 and Table C.12-6)",
         ),
         (
             |item| {
@@ -245,7 +245,7 @@ fn pixel_data_is_hashed_only_in_the_encoding_the_file_holds() {
     );
     assert_violation(
         &file(data_set, JPEG_BASELINE),
-        "PixelData (7FE0,0010) is encapsulated as the file's Transfer Syntax 1.2.840.10008.1.2.4.50 encodes it, and MAC Calculation Transfer Syntax UID (0400,0010) 1.2.840.10008.1.2.1 encodes it otherwise; its Frames are not re-encoded to recompute the MAC (PS3.3 2026c C.12.1.1.3.1.2)",
+        "PixelData (7FE0,0010) is encapsulated as the file's Transfer Syntax 1.2.840.10008.1.2.4.50 encodes it, and MAC Calculation Transfer Syntax UID (0400,0010) 1.2.840.10008.1.2.1 encodes it otherwise; its Frames are not re-encoded to recompute the MAC (PS3.3 2026d C.12.1.1.3.1.2)",
     );
 
     // Without Pixel Data among the signed elements, only the Data Element
@@ -293,7 +293,7 @@ fn certificates_the_rule_cannot_read_fail() {
             |item| {
                 item.put(text(tags::CERTIFICATE_TYPE, VR::CS, "X509_1993_ENC"));
             },
-            "Certificate Type (0400,0110) is \"X509_1993_ENC\"; X509_1993_SIG is the certificate type of the Digital Signature Profiles, so Certificate of Signer (0400,0115) cannot be read (PS3.15 2026c C.1)",
+            "Certificate Type (0400,0110) is \"X509_1993_ENC\"; X509_1993_SIG is the certificate type of the Digital Signature Profiles, so Certificate of Signer (0400,0115) cannot be read (PS3.15 2026d C.1)",
         ),
         (
             |item| {
@@ -344,7 +344,7 @@ fn a_certificate_without_an_rsa_key_fails() {
     });
     assert_violation(
         &file(data_set, JPEG_BASELINE),
-        "Certificate of Signer (0400,0115) holds a public key of algorithm 1.2.840.10045.2.1, not rsaEncryption; the Digital Signature Profiles sign with RSA (PS3.15 2026c Annex C)",
+        "Certificate of Signer (0400,0115) holds a public key of algorithm 1.2.840.10045.2.1, not rsaEncryption; the Digital Signature Profiles sign with RSA (PS3.15 2026d Annex C)",
     );
 }
 

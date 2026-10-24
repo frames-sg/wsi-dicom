@@ -5,7 +5,7 @@
 use super::*;
 use crate::validation::ValidationCheck;
 
-const ENCODING_RULE: &str = "intrinsic-wsi-dicom-2026c-encoding";
+const ENCODING_RULE: &str = "intrinsic-wsi-dicom-encoding";
 
 fn encoding_checks(path: &Path) -> Vec<ValidationCheck> {
     validate_dicom_path_with_runner(path, &ValidationOptions::default(), &FakeRunner::default())

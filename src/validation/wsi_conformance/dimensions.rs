@@ -12,9 +12,10 @@ use dicom_object::mem::InMemElement;
 use dicom_object::InMemDicomObject;
 
 use super::wsi_image::{sequence, string, tag_values};
+use crate::validation::iod::{dicom_edition, EDITION};
 use crate::validation::iod::{raw_tag, tag_text};
 
-const CITATION: &str = "PS3.3 2026c C.7.6.17.1";
+const CITATION: &str = concat!("PS3.3 ", dicom_edition!(), " C.7.6.17.1");
 
 /// One Item of the Dimension Index Sequence.
 struct Dimension {
@@ -172,7 +173,7 @@ fn frame_indices(
     }
     if miscounted > 0 {
         violations.push(format!(
-            "{miscounted} Frame(s) have Dimension Index Values whose count is not the {} Items of the Dimension Index Sequence (PS3.3 2026c C.7.6.16.2.2)",
+            "{miscounted} Frame(s) have Dimension Index Values whose count is not the {} Items of the Dimension Index Sequence (PS3.3 {EDITION} C.7.6.16.2.2)",
             dimensions.len()
         ));
     }

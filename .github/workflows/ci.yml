@@ -137,7 +137,7 @@ jobs:
           echo "${RUNNER_TEMP}/dicom-validator/bin" >> "$GITHUB_PATH"
           # Prepare the standard cache before per-file validation's 15s limit.
           mkdir -p "${RUNNER_TEMP}/empty-dicom"
-          "${RUNNER_TEMP}/dicom-validator/bin/validate_iods" --edition 2026c "${RUNNER_TEMP}/empty-dicom"
+          "${RUNNER_TEMP}/dicom-validator/bin/validate_iods" --edition 2026d "${RUNNER_TEMP}/empty-dicom"
       - name: Prove every required validator is present
         shell: bash
         run: |
@@ -340,7 +340,7 @@ jobs:
           "${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -m pip install "${RUNNER_TEMP}"/benchmark-wheel/wsi_dicom_bench-*.whl "dicom-validator==0.8.3"
           echo "${RUNNER_TEMP}/wsi-dicom-bench/bin" >> "${GITHUB_PATH}"
           mkdir -p "${RUNNER_TEMP}/empty-dicom"
-          "${RUNNER_TEMP}/wsi-dicom-bench/bin/validate_iods" --edition 2026c "${RUNNER_TEMP}/empty-dicom"
+          "${RUNNER_TEMP}/wsi-dicom-bench/bin/validate_iods" --edition 2026d "${RUNNER_TEMP}/empty-dicom"
       - name: Run the complete locked challenge against this source revision
         env:
           WSI_DICOM_BENCH: ${{ runner.temp }}/wsi-dicom-bench/bin/wsi-dicom-bench

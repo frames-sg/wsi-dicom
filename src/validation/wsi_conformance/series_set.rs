@@ -12,8 +12,9 @@ use sha2::{Digest, Sha256};
 use super::super::ValidationCheck;
 use super::rule_check;
 use super::wsi_image::{functional_group_items, integer, is_code, sequence, string, tag_values};
+use crate::validation::iod::{dicom_edition, EDITION};
 
-pub(super) const SERIES_SET_RULE: &str = "intrinsic-wsi-dicom-2026c-series-set";
+pub(super) const SERIES_SET_RULE: &str = "intrinsic-wsi-dicom-series-set";
 /// Localizer, the Purpose of Reference of a planning image (C.7.6.16.2.5.1).
 const LOCALIZER: (&str, &str) = ("DCM", "121311");
 /// Attributes that may differ between the SOP Instances of a Concatenation
@@ -263,7 +264,13 @@ pub(super) fn run_series_set_check(facts: &[SeriesFacts]) -> Option<ValidationCh
     Some(rule_check(
         Path::new(""),
         SERIES_SET_RULE,
-        "DICOM PS3.3 2026c C.7.1.4, C.7.4.1, C.7.6.16, C.7.6.22 and C.12.3, and PS3.5 2026c 9",
+        concat!(
+            "DICOM PS3.3 ",
+            dicom_edition!(),
+            " C.7.1.4, C.7.4.1, C.7.6.16, C.7.6.22 and C.12.3, and PS3.5 ",
+            dicom_edition!(),
+            " 9"
+        ),
         super::violation_result(violations),
     ))
 }
@@ -278,7 +285,7 @@ fn frames_of_reference(facts: &[SeriesFacts], violations: &mut Vec<String>) {
         };
         match slides.get(frame.as_str()) {
             Some((existing, path)) if existing != container => violations.push(format!(
-                "Frame of Reference UID {frame} is shared by images of slides {existing} ({}) and {container} ({}); images sharing a slide-related Frame of Reference are spatially related to one slide (PS3.3 2026c C.7.4.1.1.1 and C.8.12.2.1)",
+                "Frame of Reference UID {frame} is shared by images of slides {existing} ({}) and {container} ({}); images sharing a slide-related Frame of Reference are spatially related to one slide (PS3.3 {EDITION} C.7.4.1.1.1 and C.8.12.2.1)",
                 path.display(),
                 object.path.display()
             )),
@@ -295,7 +302,7 @@ fn frames_of_reference(facts: &[SeriesFacts], violations: &mut Vec<String>) {
         };
         match series.get(uid.as_str()) {
             Some((existing, path)) if existing != frame => violations.push(format!(
-                "Series {uid} has Frame of Reference UIDs {existing} ({}) and {frame} ({}); each Series has a single one (PS3.3 2026c C.7.4.1.1.1)",
+                "Series {uid} has Frame of Reference UIDs {existing} ({}) and {frame} ({}); each Series has a single one (PS3.3 {EDITION} C.7.4.1.1.1)",
                 path.display(),
                 object.path.display()
             )),
@@ -317,7 +324,7 @@ fn uid_roles(facts: &[SeriesFacts], violations: &mut Vec<String>) {
             match roles.get(uid.as_str()) {
                 Some((existing, path)) if existing != role && reported.insert(uid.as_str()) => {
                     violations.push(format!(
-                        "UID {uid} is both a {existing} ({}) and a {role} ({}); UIDs identify one entity (PS3.5 2026c 9)",
+                        "UID {uid} is both a {existing} ({}) and a {role} ({}); UIDs identify one entity (PS3.5 {EDITION} 9)",
                         path.display(),
                         object.path.display()
                     ));
@@ -337,7 +344,7 @@ fn uid_roles(facts: &[SeriesFacts], violations: &mut Vec<String>) {
         if let Some(existing) = studies.insert(series, study) {
             if existing != study {
                 violations.push(format!(
-                    "Series {series} belongs to Studies {existing} and {study} (PS3.3 2026c C.7.3.1)"
+                    "Series {series} belongs to Studies {existing} and {study} (PS3.3 {EDITION} C.7.3.1)"
                 ));
             }
         }
@@ -358,7 +365,7 @@ fn instance_numbers(facts: &[SeriesFacts], violations: &mut Vec<String>) {
             .map(|concatenation| concatenation.uid.as_str());
         match owners.get(&(series.as_str(), number)) {
             Some((existing, path)) if owner.is_none() || existing != &owner => violations.push(format!(
-                "Instance Number {number} is used by {} and {} in Series {series}; it is shared only within a Concatenation (PS3.3 2026c C.7.6.16.1)",
+                "Instance Number {number} is used by {} and {} in Series {series}; it is shared only within a Concatenation (PS3.3 {EDITION} C.7.6.16.1)",
                 path.display(),
                 object.path.display()
             )),
@@ -383,7 +390,7 @@ fn concatenations(facts: &[SeriesFacts], violations: &mut Vec<String>) {
                 .push((object, concatenation));
             if concatenation.total.is_some_and(|total| total <= 1) {
                 violations.push(format!(
-                    "{}: In-concatenation Total Number shall be greater than one (PS3.3 2026c C.7.6.16.1)",
+                    "{}: In-concatenation Total Number shall be greater than one (PS3.3 {EDITION} C.7.6.16.1)",
                     object.path.display()
                 ));
             }
@@ -416,7 +423,7 @@ fn concatenations(facts: &[SeriesFacts], violations: &mut Vec<String>) {
             ] {
                 if differs {
                     violations.push(format!(
-                        "Concatenation {uid}: {what} differs between {} and {} (PS3.3 2026c C.7.6.16.2.2.4)",
+                        "Concatenation {uid}: {what} differs between {} and {} (PS3.3 {EDITION} C.7.6.16.2.2.4)",
                         first.path.display(),
                         object.path.display()
                     ));
@@ -431,7 +438,7 @@ fn concatenations(facts: &[SeriesFacts], violations: &mut Vec<String>) {
                     .is_some_and(|(number, total)| number > total)
             {
                 violations.push(format!(
-                    "Concatenation {uid}: {} has In-concatenation Number {:?} outside 1..{:?} (PS3.3 2026c C.7.6.16.1)",
+                    "Concatenation {uid}: {} has In-concatenation Number {:?} outside 1..{:?} (PS3.3 {EDITION} C.7.6.16.1)",
                     object.path.display(),
                     concatenation.number,
                     concatenation.total
@@ -443,7 +450,7 @@ fn concatenations(facts: &[SeriesFacts], violations: &mut Vec<String>) {
                     .is_some_and(|frame_offset| frame_offset != 0)
             {
                 violations.push(format!(
-                    "Concatenation {uid}: {} is In-concatenation Number 1 but has Concatenation Frame Offset Number {:?} instead of 0 (PS3.3 2026c C.7.6.16.1)",
+                    "Concatenation {uid}: {} is In-concatenation Number 1 but has Concatenation Frame Offset Number {:?} instead of 0 (PS3.3 {EDITION} C.7.6.16.1)",
                     object.path.display(),
                     concatenation.frame_offset
                 ));
@@ -457,7 +464,7 @@ fn concatenations(facts: &[SeriesFacts], violations: &mut Vec<String>) {
                 .is_some_and(|(frame_offset, minimum)| frame_offset < minimum)
             {
                 violations.push(format!(
-                    "Concatenation {uid}: {} has In-concatenation Number {:?} but Concatenation Frame Offset Number {:?}; each earlier member has at least one Frame (PS3.3 2026c C.7.6.16.1)",
+                    "Concatenation {uid}: {} has In-concatenation Number {:?} but Concatenation Frame Offset Number {:?}; each earlier member has at least one Frame (PS3.3 {EDITION} C.7.6.16.1)",
                     object.path.display(),
                     concatenation.number,
                     concatenation.frame_offset
@@ -476,7 +483,7 @@ fn concatenations(facts: &[SeriesFacts], violations: &mut Vec<String>) {
             let (after, after_number, after_offset) = pair[1];
             if after_number <= before_number || after_offset <= before_offset {
                 violations.push(format!(
-                    "Concatenation {uid}: In-concatenation Numbers and Concatenation Frame Offset Numbers are not strictly increasing between {} and {} (PS3.3 2026c C.7.6.16.1)",
+                    "Concatenation {uid}: In-concatenation Numbers and Concatenation Frame Offset Numbers are not strictly increasing between {} and {} (PS3.3 {EDITION} C.7.6.16.1)",
                     before.path.display(),
                     after.path.display()
                 ));
@@ -487,7 +494,7 @@ fn concatenations(facts: &[SeriesFacts], violations: &mut Vec<String>) {
             };
             let Some(after_known_frames) = before_offset.checked_add(frames) else {
                 violations.push(format!(
-                    "Concatenation {uid}: {} has Number of Frames {frames}, which cannot be added to Concatenation Frame Offset Number {before_offset} (PS3.3 2026c C.7.6.16.1)",
+                    "Concatenation {uid}: {} has Number of Frames {frames}, which cannot be added to Concatenation Frame Offset Number {before_offset} (PS3.3 {EDITION} C.7.6.16.1)",
                     before.path.display()
                 ));
                 continue;
@@ -498,7 +505,7 @@ fn concatenations(facts: &[SeriesFacts], violations: &mut Vec<String>) {
             if number_gap == 1 {
                 if after_offset != after_known_frames {
                     violations.push(format!(
-                        "Concatenation {uid}: {} has Concatenation Frame Offset Number {after_offset}, inconsistent with adjacent member {} (PS3.3 2026c C.7.6.16.1)",
+                        "Concatenation {uid}: {} has Concatenation Frame Offset Number {after_offset}, inconsistent with adjacent member {} (PS3.3 {EDITION} C.7.6.16.1)",
                         after.path.display(),
                         before.path.display()
                     ));
@@ -509,7 +516,7 @@ fn concatenations(facts: &[SeriesFacts], violations: &mut Vec<String>) {
                     .and_then(|missing_members| after_known_frames.checked_add(missing_members))
                 else {
                     violations.push(format!(
-                        "Concatenation {uid}: the Frame ranges implied by {} and {} overflow (PS3.3 2026c C.7.6.16.1)",
+                        "Concatenation {uid}: the Frame ranges implied by {} and {} overflow (PS3.3 {EDITION} C.7.6.16.1)",
                         before.path.display(),
                         after.path.display()
                     ));
@@ -517,7 +524,7 @@ fn concatenations(facts: &[SeriesFacts], violations: &mut Vec<String>) {
                 };
                 if after_offset < minimum_offset {
                     violations.push(format!(
-                        "Concatenation {uid}: {} has Concatenation Frame Offset Number {after_offset}, which overlaps the Frames of {} or the intervening members (PS3.3 2026c C.7.6.16.1)",
+                        "Concatenation {uid}: {} has Concatenation Frame Offset Number {after_offset}, which overlaps the Frames of {} or the intervening members (PS3.3 {EDITION} C.7.6.16.1)",
                         after.path.display(),
                         before.path.display()
                     ));
@@ -539,7 +546,7 @@ fn dimension_organizations(facts: &[SeriesFacts], violations: &mut Vec<String>) 
         for (uid, pointers) in mine {
             match seen.get(uid) {
                 Some((existing, path)) if existing != &pointers => violations.push(format!(
-                    "Dimension Organization UID {uid} indexes different Attributes in {} and {}; shared indices shall have the same meaning (PS3.3 2026c C.7.6.17.2)",
+                    "Dimension Organization UID {uid} indexes different Attributes in {} and {}; shared indices shall have the same meaning (PS3.3 {EDITION} C.7.6.17.2)",
                     path.display(),
                     object.path.display()
                 )),
@@ -569,7 +576,7 @@ fn localizers(facts: &[SeriesFacts], violations: &mut Vec<String>) {
             if let Some(frame) = frames.get(localizer.as_str()) {
                 if *frame != object.frame_of_reference.as_deref() {
                     violations.push(format!(
-                        "{} references localizer {localizer} with a different Frame of Reference UID (PS3.3 2026c C.7.6.16.2.5.1)",
+                        "{} references localizer {localizer} with a different Frame of Reference UID (PS3.3 {EDITION} C.7.6.16.2.5.1)",
                         object.path.display()
                     ));
                 }
@@ -589,7 +596,7 @@ fn specimen_identifiers(facts: &[SeriesFacts], violations: &mut Vec<String>) {
         for (identifier, uid) in &object.specimens {
             match specimens.get(&(study.as_str(), identifier)) {
                 Some((existing, path)) if existing != uid => violations.push(format!(
-                    "Specimen Identifier {} names Specimen UIDs {existing} ({}) and {uid} ({}) in Study {study} (PS3.3 2026c C.7.6.22.1.2)",
+                    "Specimen Identifier {} names Specimen UIDs {existing} ({}) and {uid} ({}) in Study {study} (PS3.3 {EDITION} C.7.6.22.1.2)",
                     identifier.0,
                     path.display(),
                     object.path.display()
@@ -627,7 +634,7 @@ fn frame_extractions(facts: &[SeriesFacts], violations: &mut Vec<String>) {
                 .all(|(_, item)| object.extractions.iter().any(|(_, mine)| mine == item));
             if !carried || object.extractions.len() != parent.extractions.len() + 1 {
                 violations.push(format!(
-                    "{} was extracted from {}, so its Frame Extraction Sequence shall hold all {} Items of the parent's and one new Item, but has {} Items{} (PS3.3 2026c Table C.12-9)",
+                    "{} was extracted from {}, so its Frame Extraction Sequence shall hold all {} Items of the parent's and one new Item, but has {} Items{} (PS3.3 {EDITION} Table C.12-9)",
                     object.path.display(),
                     parent.path.display(),
                     parent.extractions.len(),
@@ -651,7 +658,7 @@ fn arrangements(facts: &[SeriesFacts], violations: &mut Vec<String>) {
         let key = (arrangement.group.as_str(), &arrangement.members);
         match seen.get(&key) {
             Some((positions, path)) if *positions != &arrangement.positions => violations.push(format!(
-                "Patient ID {} names a group arranged differently in {} and {}; a different arrangement of the same organisms uses a different Patient ID (PS3.3 2026c C.7.1.4.1.1.1)",
+                "Patient ID {} names a group arranged differently in {} and {}; a different arrangement of the same organisms uses a different Patient ID (PS3.3 {EDITION} C.7.1.4.1.1.1)",
                 arrangement.group,
                 path.display(),
                 object.path.display()
