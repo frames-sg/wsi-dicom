@@ -188,6 +188,139 @@ fn wsi_pixel_metadata_rejects_color_space_outside_its_transfer_syntax() {
     );
 }
 
+fn intrinsic_check(path: &Path, name: &str) -> crate::validation::ValidationCheck {
+    validate_dicom_path_with_runner(
+        path,
+        &ValidationOptions {
+            profile: ValidationProfile::Core2026c,
+            ..ValidationOptions::default()
+        },
+        &FakeRunner::default(),
+    )
+    .unwrap()
+    .checks
+    .into_iter()
+    .find(|check| check.name == name)
+    .unwrap()
+}
+
+#[test]
+fn wsi_pixel_metadata_follows_the_transfer_syntax_tables() {
+    for (syntax, photometric, expected) in [
+        // PS3.5 Table 8.2.1-1 lists JPEG Extended for monochrome images only.
+        ("1.2.840.10008.1.2.4.51", "YBR_FULL_422", "is not permitted"),
+        ("1.2.840.10008.1.2.4.51", "RGB", "is not permitted"),
+        ("1.2.840.10008.1.2.4.110", "YBR_RCT", ""),
+        ("1.2.840.10008.1.2.4.111", "YBR_FULL_422", ""),
+        (
+            "1.2.840.10008.1.2.4.100.1",
+            "RGB",
+            "is a motion compression syntax",
+        ),
+        (
+            "1.2.840.10008.1.2.4.108",
+            "YBR_PARTIAL_420",
+            "is a motion compression syntax",
+        ),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = export_valid_color_wsi_for_validation(tmp.path(), "syntax");
+        let mut object = dicom_object::open_file(&path).unwrap();
+        object.put(DataElement::new(
+            tags::PHOTOMETRIC_INTERPRETATION,
+            VR::CS,
+            photometric,
+        ));
+        let meta = object.meta_mut();
+        meta.transfer_syntax = syntax.to_string();
+        meta.update_information_group_length();
+        object.write_to_file(&path).unwrap();
+        let check = intrinsic_check(&path, "intrinsic-wsi-dicom-2026c-image-metadata");
+        if expected.is_empty() {
+            assert_eq!(
+                check.status,
+                ValidationStatus::Passed,
+                "{syntax}: {}",
+                check.message
+            );
+        } else {
+            assert_eq!(check.status, ValidationStatus::Failed, "{syntax}");
+            assert!(check.message.contains(expected), "{}", check.message);
+        }
+    }
+}
+
+#[test]
+fn wsi_icon_images_are_checked_for_pixel_attributes_and_icc_profile() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = export_valid_color_wsi_for_validation(tmp.path(), "icon");
+    assert_eq!(
+        intrinsic_status(&path, "intrinsic-wsi-dicom-2026c-pixel-attributes"),
+        ValidationStatus::Passed
+    );
+    let mut object = dicom_object::open_file(&path).unwrap();
+    let mut profile = object
+        .element(tags::OPTICAL_PATH_SEQUENCE)
+        .unwrap()
+        .items()
+        .unwrap()[0]
+        .element(tags::ICC_PROFILE)
+        .unwrap()
+        .to_bytes()
+        .unwrap()
+        .into_owned();
+    profile[16..20].copy_from_slice(b"GRAY");
+    let icon = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::SAMPLES_PER_PIXEL, VR::US, PrimitiveValue::from(3_u16)),
+        DataElement::new(tags::PHOTOMETRIC_INTERPRETATION, VR::CS, "RGB"),
+        DataElement::new(tags::ROWS, VR::US, PrimitiveValue::from(1_u16)),
+        DataElement::new(tags::COLUMNS, VR::US, PrimitiveValue::from(2_u16)),
+        DataElement::new(tags::BITS_ALLOCATED, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::BITS_STORED, VR::US, PrimitiveValue::from(8_u16)),
+        DataElement::new(tags::HIGH_BIT, VR::US, PrimitiveValue::from(7_u16)),
+        DataElement::new(
+            tags::PIXEL_REPRESENTATION,
+            VR::US,
+            PrimitiveValue::from(0_u16),
+        ),
+        DataElement::new(
+            tags::PLANAR_CONFIGURATION,
+            VR::US,
+            PrimitiveValue::from(0_u16),
+        ),
+        DataElement::new(tags::ICC_PROFILE, VR::OB, PrimitiveValue::from(profile)),
+        DataElement::new(
+            tags::PIXEL_DATA,
+            VR::OB,
+            PrimitiveValue::from(vec![0_u8; 6]),
+        ),
+    ]);
+    object.put(DataElement::new(
+        tags::ICON_IMAGE_SEQUENCE,
+        VR::SQ,
+        DataSetSequence::from(vec![icon]),
+    ));
+    object.write_to_file(&path).unwrap();
+
+    let attributes = intrinsic_check(&path, "intrinsic-wsi-dicom-2026c-pixel-attributes");
+    assert_eq!(attributes.status, ValidationStatus::Failed);
+    for expected in [
+        "Icon Image Sequence (0088,0200) Item 1: Samples per Pixel is 3",
+        "Photometric Interpretation is RGB; Icon Images are MONOCHROME1, MONOCHROME2 or PALETTE COLOR",
+        "Planar Configuration (0028,0006) is present",
+    ] {
+        assert!(attributes.message.contains(expected), "{}", attributes.message);
+    }
+    let icc = intrinsic_check(&path, "intrinsic-wsi-dicom-2026c-icc-profile");
+    assert_eq!(icc.status, ValidationStatus::Failed);
+    assert!(
+        icc.message
+            .contains("Icon Image Sequence item 0 has an invalid ICC Profile"),
+        "{}",
+        icc.message
+    );
+}
+
 #[test]
 fn core_requires_frame_type_and_derivation_when_source_is_referenced() {
     for derived in [false, true] {

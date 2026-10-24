@@ -1,19 +1,19 @@
 use super::*;
-use crate::validation::ValidationCheck;
-use dicom_object::DefaultDicomObject;
+use crate::validation::{ValidationCheck, ValidationReport};
 
-const IOD_CHECKS: [&str; 7] = [
+const IOD_CHECKS: [&str; 8] = [
     "intrinsic-wsi-dicom-2026c-iod-modules",
     "intrinsic-wsi-dicom-2026c-iod-attribute-presence",
     "intrinsic-wsi-dicom-2026c-iod-enumerated-values",
     "intrinsic-wsi-dicom-2026c-iod-vr-vm",
     "intrinsic-wsi-dicom-2026c-iod-value-format",
     "intrinsic-wsi-dicom-2026c-iod-sequence-items",
+    "intrinsic-wsi-dicom-2026c-iod-value-sets",
     "intrinsic-wsi-dicom-2026c-file-meta",
 ];
 
-fn iod_check(path: &Path, profile: ValidationProfile, name: &str) -> ValidationCheck {
-    let report = validate_dicom_path_with_runner(
+fn iod_report(path: &Path, profile: ValidationProfile) -> ValidationReport {
+    validate_dicom_path_with_runner(
         path,
         &ValidationOptions {
             profile,
@@ -21,12 +21,20 @@ fn iod_check(path: &Path, profile: ValidationProfile, name: &str) -> ValidationC
         },
         &FakeRunner::default(),
     )
-    .unwrap();
+    .unwrap()
+}
+
+fn named(report: &ValidationReport, name: &str) -> ValidationCheck {
     report
         .checks
-        .into_iter()
+        .iter()
         .find(|check| check.name == name)
+        .cloned()
         .unwrap_or_else(|| panic!("missing check {name}"))
+}
+
+fn iod_check(path: &Path, profile: ValidationProfile, name: &str) -> ValidationCheck {
+    named(&iod_report(path, profile), name)
 }
 
 fn assert_iod_failure(path: &Path, name: &str, expected: &str) {
@@ -54,22 +62,14 @@ fn assert_iod_passes(path: &Path, name: &str) {
     );
 }
 
-/// Exports a valid WSI, applies `edit`, and writes it back.
-fn edited_wsi(root: &Path, name: &str, edit: impl FnOnce(&mut DefaultDicomObject)) -> PathBuf {
-    let path = export_valid_color_wsi_for_validation(root, name);
-    let mut object = dicom_object::open_file(&path).unwrap();
-    edit(&mut object);
-    object.write_to_file(&path).unwrap();
-    path
-}
-
 #[test]
 fn exported_wsi_passes_every_iod_check_in_both_profiles() {
     let tmp = tempfile::tempdir().unwrap();
     let path = export_valid_color_wsi_grid_for_validation(tmp.path(), "valid-grid", 4, 4, 2);
     for profile in [ValidationProfile::General, ValidationProfile::Core2026c] {
+        let report = iod_report(&path, profile);
         for name in IOD_CHECKS {
-            let check = iod_check(&path, profile, name);
+            let check = named(&report, name);
             assert_eq!(
                 check.status,
                 ValidationStatus::Passed,
@@ -261,6 +261,65 @@ fn sequence_item_counts_follow_the_attribute_description() {
 }
 
 #[test]
+fn urn_code_values_without_a_scheme_still_undergo_context_group_validation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = edited_wsi(tmp.path(), "urn-measurement-unit", |object| {
+        let mut unit = InMemDicomObject::new_empty();
+        unit.put(DataElement::new(
+            tags::URN_CODE_VALUE,
+            VR::UR,
+            "urn:example:invalid-unit",
+        ));
+        unit.put(DataElement::new(tags::CODE_MEANING, VR::LO, "Invalid unit"));
+
+        let mut mapping = InMemDicomObject::new_empty();
+        mapping.put(DataElement::new(tags::LUT_EXPLANATION, VR::LO, "Test"));
+        mapping.put(DataElement::new(tags::LUT_LABEL, VR::SH, "TEST"));
+        mapping.put(DataElement::new(
+            tags::REAL_WORLD_VALUE_FIRST_VALUE_MAPPED,
+            VR::US,
+            PrimitiveValue::from(0_u16),
+        ));
+        mapping.put(DataElement::new(
+            tags::REAL_WORLD_VALUE_LAST_VALUE_MAPPED,
+            VR::US,
+            PrimitiveValue::from(255_u16),
+        ));
+        mapping.put(DataElement::new(
+            tags::REAL_WORLD_VALUE_INTERCEPT,
+            VR::FD,
+            PrimitiveValue::from(0_f64),
+        ));
+        mapping.put(DataElement::new(
+            tags::REAL_WORLD_VALUE_SLOPE,
+            VR::FD,
+            PrimitiveValue::from(1_f64),
+        ));
+        mapping.put(DataElement::new(
+            tags::MEASUREMENT_UNITS_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![unit]),
+        ));
+
+        let mut shared = object
+            .take(tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE)
+            .unwrap();
+        shared.items_mut().unwrap()[0].put(DataElement::new(
+            tags::REAL_WORLD_VALUE_MAPPING_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![mapping]),
+        ));
+        object.put(shared);
+    });
+
+    assert_iod_failure(
+        &path,
+        "intrinsic-wsi-dicom-2026c-iod-value-sets",
+        "(urn:example:invalid-unit, no Coding Scheme Designator, \"Invalid unit\") is not in Defined CID 82 \"Measurement Unit\"",
+    );
+}
+
+#[test]
 fn functional_group_usage_and_frame_count_are_enforced() {
     let tmp = tempfile::tempdir().unwrap();
     let moved = edited_wsi(tmp.path(), "pixel-measures-per-frame", |object| {
@@ -289,8 +348,8 @@ fn functional_group_usage_and_frame_count_are_enforced() {
     });
     assert_iod_failure(
         &counted,
-        "intrinsic-wsi-dicom-2026c-iod-modules",
-        "Per-Frame Functional Groups Sequence (5200,9230): 1 Items for Number of Frames 2",
+        "intrinsic-wsi-dicom-2026c-iod-sequence-items",
+        "Per-Frame Functional Groups Sequence (5200,9230): 1 Item where 2 (the Value of (0028,0008)) are required",
     );
 }
 
@@ -424,17 +483,17 @@ fn file_meta_rejects_a_version_without_version_one_compatibility() {
     );
 }
 
-/// Removes group 0002 `elements` from an exported file as encoded, and
-/// shortens its File Meta Information Group Length to match.
-fn remove_file_meta_elements(path: &std::path::Path, elements: &[u16]) {
+/// Rewrites the group 0002 elements of an exported file as encoded, each a
+/// (element number, encoded bytes) pair, and recomputes the File Meta
+/// Information Group Length.
+fn rewrite_file_meta(path: &Path, edit: impl FnOnce(&mut Vec<(u16, Vec<u8>)>)) {
     let mut bytes = std::fs::read(path).unwrap();
     let group_length_at = 128 + 4 + 8;
     let read_u32 =
         |bytes: &[u8], at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
     let group_end = group_length_at + 4 + read_u32(&bytes, group_length_at) as usize;
     let mut offset = group_length_at + 4;
-    let mut kept = Vec::new();
-    let mut removed = 0;
+    let mut elements = Vec::new();
     while offset < group_end {
         let element = u16::from_le_bytes([bytes[offset + 2], bytes[offset + 3]]);
         let long = matches!(
@@ -457,22 +516,64 @@ fn remove_file_meta_elements(path: &std::path::Path, elements: &[u16]) {
         } else {
             8 + usize::from(u16::from_le_bytes([bytes[offset + 6], bytes[offset + 7]]))
         };
-        if elements.contains(&element) {
-            removed += length;
-        } else {
-            kept.extend_from_slice(&bytes[offset..offset + length]);
-        }
+        elements.push((element, bytes[offset..offset + length].to_vec()));
         offset += length;
     }
-    assert_eq!(
-        removed > 0,
-        !elements.is_empty(),
-        "File Meta elements to remove"
-    );
-    bytes.splice(group_length_at + 4..group_end, kept);
-    let shortened = (group_end - group_length_at - 4 - removed) as u32;
-    bytes[group_length_at..group_length_at + 4].copy_from_slice(&shortened.to_le_bytes());
+    edit(&mut elements);
+    let encoded: Vec<u8> = elements.into_iter().flat_map(|(_, bytes)| bytes).collect();
+    let length = u32::try_from(encoded.len()).unwrap();
+    bytes.splice(group_length_at + 4..group_end, encoded);
+    bytes[group_length_at..group_length_at + 4].copy_from_slice(&length.to_le_bytes());
     std::fs::write(path, bytes).unwrap();
+}
+
+/// Removes group 0002 `elements` from an exported file as encoded.
+fn remove_file_meta_elements(path: &Path, elements: &[u16]) {
+    rewrite_file_meta(path, |encoded| {
+        let before = encoded.len();
+        encoded.retain(|(element, _)| !elements.contains(element));
+        assert_eq!(
+            encoded.len() < before,
+            !elements.is_empty(),
+            "File Meta elements to remove"
+        );
+    });
+}
+
+#[test]
+fn presentation_addresses_follow_their_transport() {
+    let tmp = tempfile::tempdir().unwrap();
+    for (name, address, expected) in [
+        ("upper-layer", "dicom:127.0.0.1:104", None),
+        ("web", "http://myhost.mydomain.com:80/wado-rs/", None),
+        (
+            "upper-layer-port",
+            "dicom:myhost.mydomain.com",
+            Some("is not \"dicom:\" followed by a host name or IP address, a colon and a port number"),
+        ),
+        ("https", "https://myhost/wado-rs/", Some("uses the scheme \"https\"")),
+        ("other", "ftp://myhost/", Some("is neither a DICOM Upper Layer address")),
+    ] {
+        let path = export_valid_color_wsi_for_validation(tmp.path(), name);
+        rewrite_file_meta(&path, |elements| {
+            let mut value = address.as_bytes().to_vec();
+            if value.len() % 2 == 1 {
+                value.push(b' ');
+            }
+            // (0002,0026) Source Presentation Address, UR.
+            let mut element = vec![0x02, 0x00, 0x26, 0x00, b'U', b'R', 0, 0];
+            element.extend_from_slice(&u32::try_from(value.len()).unwrap().to_le_bytes());
+            element.extend_from_slice(&value);
+            elements.push((0x0026, element));
+            elements.sort_by_key(|(element, _)| *element);
+        });
+        match expected {
+            None => assert_iod_passes(&path, "intrinsic-wsi-dicom-2026c-file-meta"),
+            Some(expected) => {
+                assert_iod_failure(&path, "intrinsic-wsi-dicom-2026c-file-meta", expected)
+            }
+        }
+    }
 }
 
 #[test]
@@ -489,6 +590,69 @@ fn file_meta_is_checked_when_the_data_set_cannot_be_parsed() {
         "intrinsic-pixel-structure",
     );
     assert_eq!(pixel_structure.status, ValidationStatus::Failed);
+}
+
+#[test]
+fn jpip_referenced_files_are_not_ps3_10_media() {
+    let tmp = tempfile::tempdir().unwrap();
+    for syntax in ["1.2.840.10008.1.2.4.94", "1.2.840.10008.1.2.4.204"] {
+        let path = edited_wsi(tmp.path(), &format!("jpip-{syntax}"), |object| {
+            object.take(tags::PIXEL_DATA).unwrap();
+            object.put(DataElement::new(
+                tags::PIXEL_DATA_PROVIDER_URL,
+                VR::UR,
+                PrimitiveValue::from("https://example.org/jpip?target=slide.jp2"),
+            ));
+            object.put(DataElement::new(
+                tags::PHOTOMETRIC_INTERPRETATION,
+                VR::CS,
+                PrimitiveValue::from("YBR_RCT"),
+            ));
+            let meta = object.meta_mut();
+            meta.transfer_syntax = syntax.to_string();
+            meta.update_information_group_length();
+        });
+        let report = iod_report(&path, ValidationProfile::General);
+        let file_meta = named(&report, "intrinsic-wsi-dicom-2026c-file-meta");
+        assert!(
+            file_meta.status == ValidationStatus::Failed
+                && file_meta.message.contains(&format!(
+                    "Transfer Syntax UID (0002,0010) \"{syntax}\" is a JPIP Referenced Transfer Syntax, which shall not be used for PS3.10 media storage (PS3.5 2026c 10.8"
+                )),
+            "{}",
+            file_meta.message
+        );
+        // Otherwise the object is a well-formed JPIP Referenced encoding.
+        for name in [
+            "intrinsic-wsi-dicom-2026c-iod-attribute-presence",
+            "intrinsic-pixel-structure",
+            "intrinsic-wsi-dicom-2026c-image-metadata",
+        ] {
+            let check = named(&report, name);
+            assert_eq!(
+                check.status,
+                ValidationStatus::Passed,
+                "{syntax} {name}: {}",
+                check.message
+            );
+        }
+    }
+
+    // The deflated JPIP syntax cannot be parsed here; its File Meta is still checked.
+    let path = export_valid_color_wsi_for_validation(tmp.path(), "jpip-deflate");
+    let mut bytes = std::fs::read(&path).unwrap();
+    let declared = b"1.2.840.10008.1.2.4.90";
+    let at = bytes
+        .windows(declared.len())
+        .position(|window| window == declared)
+        .expect("Transfer Syntax UID");
+    bytes[at..at + declared.len()].copy_from_slice(b"1.2.840.10008.1.2.4.95");
+    std::fs::write(&path, bytes).unwrap();
+    assert_iod_failure(
+        &path,
+        "intrinsic-wsi-dicom-2026c-file-meta",
+        "\"1.2.840.10008.1.2.4.95\" is a JPIP Referenced Transfer Syntax",
+    );
 }
 
 #[test]
@@ -526,5 +690,354 @@ fn references_to_other_instances_must_be_listed_in_the_common_instance_reference
         &path,
         "intrinsic-wsi-dicom-2026c-iod-attribute-presence",
         "Referenced Series Sequence (0008,1115): Type 1C missing",
+    );
+}
+
+/// Statements decidable from the encoded objects that no check enforces yet.
+/// It only falls; a release has none.
+const UNCHECKED_LIMIT: usize = 11;
+
+#[test]
+fn requirement_catalog_names_only_emitted_rules_and_unchecked_statements_only_fall() {
+    use crate::validation::{requirement_catalog, RequirementDisposition};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("associated.svs");
+    crate::test_support::write_aperio_svs_with_associated_images(&source, false);
+    let output = tmp.path().join("out");
+    crate::export_dicom(crate::ExportRequest {
+        source_path: source,
+        output_dir: output.clone(),
+        options: crate::ExportOptions {
+            tile_size: 32,
+            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+            ..crate::ExportOptions::default()
+        },
+        color_management: crate::ColorManagement::SourceOrSrgb,
+        metadata: crate::MetadataSource::ResearchPlaceholder,
+        level_filter: None,
+    })
+    .unwrap();
+    let emitted: BTreeSet<String> = [ValidationProfile::General, ValidationProfile::Core2026c]
+        .into_iter()
+        .flat_map(|profile| iod_report(&output, profile).checks)
+        .map(|check| check.name)
+        .collect();
+
+    let catalog = requirement_catalog();
+    let mut seen = BTreeSet::new();
+    let mut unchecked = 0;
+    for entry in &catalog {
+        assert!(
+            seen.insert((entry.part, entry.section, entry.keyword, entry.text)),
+            "duplicate statement {entry:?}"
+        );
+        match entry.disposition {
+            RequirementDisposition::Checked(rule) => {
+                assert!(emitted.contains(rule), "{rule} is not emitted: {entry:?}");
+            }
+            RequirementDisposition::Unchecked(_) => unchecked += 1,
+            RequirementDisposition::OutsideScope(reason)
+            | RequirementDisposition::Behavior(reason)
+            | RequirementDisposition::Undecidable(reason) => {
+                assert!(!reason.is_empty(), "{entry:?}");
+            }
+            RequirementDisposition::Tables => {}
+        }
+    }
+    assert!(
+        unchecked <= UNCHECKED_LIMIT,
+        "{unchecked} unchecked statements exceed the limit of {UNCHECKED_LIMIT}"
+    );
+    assert!(
+        unchecked == UNCHECKED_LIMIT,
+        "lower UNCHECKED_LIMIT to {unchecked}"
+    );
+}
+
+#[test]
+fn empty_values_and_empty_type_three_sequences_fail() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = edited_wsi(tmp.path(), "empty-image-type-value", |object| {
+        object.put(DataElement::new(
+            tags::IMAGE_TYPE,
+            VR::CS,
+            PrimitiveValue::Strs(
+                ["", "PRIMARY", "VOLUME", "NONE"]
+                    .map(String::from)
+                    .into_iter()
+                    .collect(),
+            ),
+        ));
+    });
+    assert_iod_failure(
+        &path,
+        "intrinsic-wsi-dicom-2026c-iod-enumerated-values",
+        "Image Type (0008,0008) Value 1 \"\" is not an Enumerated Value [ORIGINAL, DERIVED]",
+    );
+    let path = edited_wsi(tmp.path(), "empty-type-three-sequence", |object| {
+        let mut specimens = object.take(tags::SPECIMEN_DESCRIPTION_SEQUENCE).unwrap();
+        specimens.items_mut().unwrap()[0].put(DataElement::new(
+            tags::SPECIMEN_TYPE_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(Vec::<InMemDicomObject>::new()),
+        ));
+        object.put(specimens);
+    });
+    assert_iod_failure(
+        &path,
+        "intrinsic-wsi-dicom-2026c-iod-sequence-items",
+        "Specimen Description Sequence[1] > Specimen Type Code Sequence (0040,059A): Type 3 Sequence present with zero Items (PS3.5 7.4.5",
+    );
+}
+
+const VALUE_SETS: &str = "intrinsic-wsi-dicom-2026c-iod-value-sets";
+
+fn advisories(path: &Path) -> Vec<String> {
+    iod_report(path, ValidationProfile::General)
+        .optional
+        .into_iter()
+        .flat_map(|optional| optional.advisories)
+        .collect()
+}
+
+fn assert_advises(path: &Path, expected: &str) {
+    let advisories = advisories(path);
+    assert!(
+        advisories
+            .iter()
+            .any(|advisory| advisory.contains(expected)),
+        "no advisory contains {expected:?}: {advisories:?}"
+    );
+}
+
+fn assert_does_not_advise(path: &Path, unexpected: &str) {
+    let advisories = advisories(path);
+    assert!(
+        !advisories
+            .iter()
+            .any(|advisory| advisory.contains(unexpected)),
+        "an advisory contains {unexpected:?}: {advisories:?}"
+    );
+}
+
+/// A Real World Value Mapping Sequence mapping stored values to `units`.
+fn value_mapping(units: InMemDicomObject) -> InMemElement {
+    sq(
+        tags::REAL_WORLD_VALUE_MAPPING_SEQUENCE,
+        vec![item(vec![
+            text(tags::LUT_EXPLANATION, VR::LO, "Optical density"),
+            text(tags::LUT_LABEL, VR::SH, "OD"),
+            DataElement::new(
+                tags::REAL_WORLD_VALUE_FIRST_VALUE_MAPPED,
+                VR::US,
+                PrimitiveValue::from(0_u16),
+            ),
+            DataElement::new(
+                tags::REAL_WORLD_VALUE_LAST_VALUE_MAPPED,
+                VR::US,
+                PrimitiveValue::from(255_u16),
+            ),
+            DataElement::new(
+                tags::REAL_WORLD_VALUE_INTERCEPT,
+                VR::FD,
+                PrimitiveValue::from(0_f64),
+            ),
+            DataElement::new(
+                tags::REAL_WORLD_VALUE_SLOPE,
+                VR::FD,
+                PrimitiveValue::from(0.01_f64),
+            ),
+            sq(tags::MEASUREMENT_UNITS_CODE_SEQUENCE, vec![units]),
+        ])],
+    )
+}
+
+/// `code` declared as an extension of its Context Group (PS3.3 8.7).
+fn extension(mut code: InMemDicomObject) -> InMemDicomObject {
+    code.put(text(tags::CONTEXT_GROUP_EXTENSION_FLAG, VR::CS, "Y"));
+    code.put(text(tags::CONTEXT_GROUP_LOCAL_VERSION, VR::DT, "20260101"));
+    code.put(text(
+        tags::CONTEXT_GROUP_EXTENSION_CREATOR_UID,
+        VR::UI,
+        "1.2.826.0.1.3680043.10.999.930",
+    ));
+    code
+}
+
+/// An export whose Shared Functional Groups Item maps values to `units`
+/// (Real World Value Mapping Functional Group: CID 82, Defined, not
+/// extensible).
+fn mapped_frames(root: &Path, name: &str, units: InMemDicomObject) -> PathBuf {
+    edited_wsi(root, name, |object| {
+        first_item(object, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE, |shared| {
+            shared.put(value_mapping(units));
+        });
+    })
+}
+
+/// An export whose General Image Module maps values to `units` (CID 7181,
+/// Defined, extensible).
+fn mapped_image(root: &Path, name: &str, units: InMemDicomObject) -> PathBuf {
+    edited_wsi(root, name, |object| {
+        object.put(value_mapping(units));
+    })
+}
+
+fn specimen_type(root: &Path, name: &str, specimen: InMemDicomObject) -> PathBuf {
+    edited_wsi(root, name, |object| {
+        first_item(object, tags::SPECIMEN_DESCRIPTION_SEQUENCE, |description| {
+            description.put(sq(tags::SPECIMEN_TYPE_CODE_SEQUENCE, vec![specimen]));
+        });
+    })
+}
+
+#[test]
+fn context_groups_fail_or_advise_by_their_strength() {
+    let tmp = tempfile::tempdir().unwrap();
+    let local_unit = || code("99LOCAL", "mm", "millimeter");
+    let not_in_ucum = "Shared Functional Groups Sequence[1] > Real World Value Mapping Sequence[1] > Measurement Units Code Sequence (0040,08EA)[1]: (mm, 99LOCAL, \"millimeter\") is not in Defined CID 82 \"Measurement Unit\"";
+    let path = mapped_frames(tmp.path(), "unit-outside-ucum", local_unit());
+    assert_iod_failure(&path, VALUE_SETS, not_in_ucum);
+    // A declared extension does not extend a non-extensible group.
+    let path = mapped_frames(tmp.path(), "unit-extending-ucum", extension(local_unit()));
+    assert_iod_failure(&path, VALUE_SETS, not_in_ucum);
+    // CID 82 comprises UCUM whole.
+    let path = mapped_frames(tmp.path(), "ucum-unit", code("UCUM", "mm", "millimeter"));
+    assert_iod_passes(&path, VALUE_SETS);
+
+    let undeclared = "Measurement Units Code Sequence (0040,08EA)[1]: (mm, 99LOCAL, \"millimeter\") is not in Defined CID 7181";
+    let path = mapped_image(tmp.path(), "undeclared-extension", local_unit());
+    assert_iod_passes(&path, VALUE_SETS);
+    assert_advises(&path, undeclared);
+    assert_advises(
+        &path,
+        "declared with Context Group Extension Flag (0008,010B) \"Y\"",
+    );
+    let path = mapped_image(tmp.path(), "declared-extension", extension(local_unit()));
+    assert_iod_passes(&path, VALUE_SETS);
+    assert_does_not_advise(&path, "CID 7181");
+
+    let path = specimen_type(
+        tmp.path(),
+        "local-specimen-type",
+        code("99LOCAL", "T1", "Local specimen type"),
+    );
+    assert_iod_passes(&path, VALUE_SETS);
+    assert_advises(
+        &path,
+        "Specimen Type Code Sequence (0040,059A)[1]: (T1, 99LOCAL, \"Local specimen type\") is not in Baseline CID 8103 \"Anatomic Pathology Specimen Type\"",
+    );
+    // The retired SRT designator matches by the SNOMED-RT identifier.
+    let path = specimen_type(
+        tmp.path(),
+        "legacy-specimen-type",
+        code("SRT", "G-8300", "Tissue specimen"),
+    );
+    assert_does_not_advise(&path, "CID 8103");
+}
+
+/// A Content Item of `value_type` named by `name`, with its value Attributes.
+fn content_item(
+    value_type: &str,
+    name: InMemDicomObject,
+    mut value: Vec<InMemElement>,
+) -> InMemDicomObject {
+    value.push(text(tags::VALUE_TYPE, VR::CS, value_type));
+    value.push(sq(tags::CONCEPT_NAME_CODE_SEQUENCE, vec![name]));
+    item(value)
+}
+
+fn text_item(scheme: &str, value: &str, meaning: &str, text_value: &str) -> InMemDicomObject {
+    content_item(
+        "TEXT",
+        code(scheme, value, meaning),
+        vec![text(tags::TEXT_VALUE, VR::UT, text_value)],
+    )
+}
+
+fn location() -> InMemDicomObject {
+    text_item("DCM", "111718", "Location of Specimen", "upper left")
+}
+
+fn x_offset() -> InMemDicomObject {
+    content_item(
+        "NUMERIC",
+        code("DCM", "111719", "Location of Specimen X offset"),
+        vec![sq(
+            tags::MEASURED_VALUE_SEQUENCE,
+            vec![item(vec![
+                text(tags::NUMERIC_VALUE, VR::DS, "1.5"),
+                sq(
+                    tags::MEASUREMENT_UNITS_CODE_SEQUENCE,
+                    vec![code("UCUM", "mm", "millimeter")],
+                ),
+            ])],
+        )],
+    )
+}
+
+fn localized(root: &Path, name: &str, content: Vec<InMemDicomObject>) -> PathBuf {
+    edited_wsi(root, name, |object| {
+        first_item(object, tags::SPECIMEN_DESCRIPTION_SEQUENCE, |specimen| {
+            specimen.put(sq(
+                tags::SPECIMEN_LOCALIZATION_CONTENT_ITEM_SEQUENCE,
+                content,
+            ));
+        });
+    })
+}
+
+#[test]
+fn defined_templates_fail_row_count_and_order_departures() {
+    let tmp = tempfile::tempdir().unwrap();
+    let template =
+        "Specimen Localization Content Item Sequence: TID 8004 \"Specimen Localization\"";
+    let path = localized(tmp.path(), "two-locations", vec![location(), location()]);
+    assert_iod_failure(
+        &path,
+        VALUE_SETS,
+        &format!("{template} Row 2 TEXT (111718, DCM, \"Location of Specimen\") appears 2 times"),
+    );
+    let path = localized(tmp.path(), "offset-first", vec![x_offset(), location()]);
+    assert_iod_failure(
+        &path,
+        VALUE_SETS,
+        &format!("{template} Content Items are not in Template row order"),
+    );
+    // TID 8004 is extensible: an Item no row names neither fails nor breaks
+    // the row order.
+    let comment = text_item("DCM", "121106", "Comment", "near the label");
+    let path = localized(
+        tmp.path(),
+        "extended",
+        vec![location(), comment, x_offset()],
+    );
+    assert_iod_passes(&path, VALUE_SETS);
+}
+
+#[test]
+fn baseline_templates_only_advise() {
+    let tmp = tempfile::tempdir().unwrap();
+    let step = text_item("DCM", "121041", "Specimen Identifier", "S1");
+    let path = edited_wsi(
+        tmp.path(),
+        "preparation-without-processing-type",
+        |object| {
+            first_item(object, tags::SPECIMEN_DESCRIPTION_SEQUENCE, |specimen| {
+                specimen.put(sq(
+                    tags::SPECIMEN_PREPARATION_SEQUENCE,
+                    vec![item(vec![sq(
+                        tags::SPECIMEN_PREPARATION_STEP_CONTENT_ITEM_SEQUENCE,
+                        vec![step],
+                    )])],
+                ));
+            });
+        },
+    );
+    assert_iod_passes(&path, VALUE_SETS);
+    assert_advises(
+        &path,
+        "TID 8001 \"Specimen Preparation\" Row 3 CODE (111701, DCM, \"Processing type\") missing",
     );
 }

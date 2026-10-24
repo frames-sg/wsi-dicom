@@ -25,7 +25,9 @@ exclude = [
 clap = { version = "4", features = ["derive"] }
 dicom-core = "0.9"
 dicom-dictionary-std = "0.9"
-dicom-object = "0.9"
+dicom-encoding = "0.9"
+dicom-object = { version = "0.9", features = ["deflate"] }
+flate2 = "1"
 getrandom = "0.4"
 moxcms = "0.8.1"
 rayon = "1"
@@ -119,6 +121,8 @@ codegen-units = 1
 # compositing and TIFF LZW changes (wsi-rs 6431c24). Remove this section once
 # both are on crates.io; crates.io rejects git dependencies.
 [patch.crates-io]
+# format_dicom_decimal is unreleased (frames-sg/wsi-dicom-annotations#6).
+wsi-dicom-annotations = { git = "https://github.com/frames-sg/wsi-dicom-annotations", rev = "1bb9c0de14914a5324c07beb726dee681260b492" }
 j2k = { git = "https://github.com/frames-sg/j2k", branch = "main" }
 j2k-codec-math = { git = "https://github.com/frames-sg/j2k", branch = "main" }
 j2k-core = { git = "https://github.com/frames-sg/j2k", branch = "main" }

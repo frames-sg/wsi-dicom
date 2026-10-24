@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use j2k_jpeg::{EncodedJpeg, JpegBackend, JpegSamples, JpegSubsampling};
+use j2k_jpeg::{EncodedJpeg, JpegBackend, JpegSubsampling};
 use rayon::prelude::*;
 use wsi_rs::{
     Compression, LevelIdx, PlaneSelection, RegionRequest, SceneId, SeriesId, Slide, TileLayout,
@@ -11,11 +11,11 @@ use super::frame_region::{
 };
 use super::jpeg_baseline::{
     blank_jpeg_baseline_frame, encode_jpeg_baseline_cpu_fragment,
-    jpeg_baseline_cpu_restart_interval, pixel_profile_from_raw_jpeg_tile,
-    raw_compressed_error_is_empty_tile, raw_jpeg_matches_frame_geometry,
-    raw_jpeg_profile_can_passthrough, read_raw_source_tile, uncompressed_frame_bytes,
-    JpegBaselineFallbackFrame, JpegBaselineFrameLocation, JpegBaselineMetalEncodedRun,
-    JpegBaselinePlannedFrame,
+    jpeg_baseline_cpu_restart_interval, jpeg_baseline_output_profile, jpeg_baseline_samples,
+    pixel_profile_from_raw_jpeg_tile, raw_compressed_error_is_empty_tile,
+    raw_jpeg_matches_frame_geometry, raw_jpeg_profile_can_passthrough, read_raw_source_tile,
+    uncompressed_frame_bytes, JpegBaselineFallbackFrame, JpegBaselineFrameLocation,
+    JpegBaselineMetalEncodedRun, JpegBaselinePlannedFrame,
 };
 use super::jpeg_retile::{read_raw_jpeg_retile_display_tile, RawJpegRetileProbe};
 use super::raw_tile::{
@@ -223,9 +223,11 @@ pub(super) fn plan_jpeg_baseline_row(
     let columns = (0..request.tile_count)
         .into_par_iter()
         .filter(|&col| {
-            request
-                .per_frame_plan
-                .is_none_or(|plan| plan.includes_grid_position(request.row, col))
+            crate::writer::PerFrameFunctionalGroupsPlan::writes_grid_position(
+                request.per_frame_plan,
+                request.row,
+                col,
+            )
         })
         .map(|col| plan_jpeg_baseline_frame_at(slide, request, col))
         .collect::<Result<Vec<_>, _>>()?;
@@ -403,6 +405,23 @@ pub(super) fn record_jpeg_retile_rejections(
     }
 }
 
+pub(super) fn record_compressed_source_reencodes(
+    metrics: &mut ExportMetrics,
+    frames: &[JpegBaselinePlannedFrame],
+) {
+    for frame in frames {
+        if matches!(
+            frame,
+            JpegBaselinePlannedFrame::Fallback {
+                compressed_source_reencode: true,
+                ..
+            }
+        ) {
+            metrics.record_compressed_source_reencode();
+        }
+    }
+}
+
 pub(super) fn jpeg_baseline_fallback_frame(
     col: u64,
     row: u64,
@@ -458,29 +477,6 @@ pub(super) fn encode_jpeg_baseline_cpu_input_tile_batch(
             .min(rayon::current_num_threads()),
         |frame| encode_jpeg_baseline_cpu_input_tile(slide, location, *frame, settings),
     )
-}
-
-pub(super) fn jpeg_baseline_samples(
-    data: &[u8],
-    profile: PixelProfile,
-    width: u32,
-    height: u32,
-) -> Result<JpegSamples<'_>, Error> {
-    match profile.components {
-        1 => Ok(JpegSamples::Gray8 {
-            data,
-            width,
-            height,
-        }),
-        3 => Ok(JpegSamples::Rgb8 {
-            data,
-            width,
-            height,
-        }),
-        components => Err(Error::UnsupportedPixelData {
-            reason: format!("JPEG Baseline supports 1 or 3 components, got {components}"),
-        }),
-    }
 }
 
 pub(super) fn encode_jpeg_baseline_cpu_input_tile(
@@ -590,31 +586,4 @@ pub(super) fn read_and_prepare_region(
         input_decode_duration,
         compose_duration,
     })
-}
-
-pub(super) fn jpeg_baseline_output_profile(
-    source: PixelProfile,
-) -> Result<(PixelProfile, JpegSubsampling), Error> {
-    if source.bits_allocated != 8 {
-        return Err(Error::UnsupportedPixelData {
-            reason: format!(
-                "JPEG Baseline fallback requires 8-bit samples, got {}",
-                source.bits_allocated
-            ),
-        });
-    }
-    match source.components {
-        1 => Ok((source, JpegSubsampling::Gray)),
-        3 => Ok((
-            PixelProfile {
-                components: 3,
-                bits_allocated: 8,
-                photometric_interpretation: "YBR_FULL_422",
-            },
-            JpegSubsampling::Ybr422,
-        )),
-        components => Err(Error::UnsupportedPixelData {
-            reason: format!("JPEG Baseline supports 1 or 3 components, got {components}"),
-        }),
-    }
 }

@@ -179,6 +179,7 @@ fn sample_dicom_object_params<'a>(
         objective_lens_power: None,
         lossy_compression: super::LossyCompressionHistory::default(),
         conformance: crate::ConformanceLevel::Optional,
+        sparse: false,
     }
 }
 

@@ -2,12 +2,14 @@
 // Regenerate with: scripts/generate-iod-tables.py --source-dir <dir> [--fetch]
 // Verify with:     scripts/generate-iod-tables.py --source-dir <dir> --check
 // Source part03.xml SHA-256 7911d6ec05872a38255d12ad628c1c940e9c905bb8cc3785ee039e7f6632dd48
+// Source part05.xml SHA-256 4dfd7b8cbc7c368b7cf03e9c4b8a0773bed91266fcdb0bbf8ed634b7287cacca
 // Source part06.xml SHA-256 ff1dcdfb557d57db96420614fcaf6d739bb76aa74b73eba77f367be9fab0be3e
 // Source part10.xml SHA-256 f28d8d3a8c3fc998bf0c64db5525d8744ccd0f064e6ab7e1de24b29fcc032762
+// Source part16.xml SHA-256 8a87dcbf0d4fbb9c8770bdcd2d738cf4d3037c668994ab8604a75b01b562a79a
 
 use super::model::{
     Attribute, AttributeType, Enumeration, FunctionalGroupMacro, ItemCount, Module, Node,
-    Placement, Table, Usage,
+    Placement, Strength, Table, Usage, ValueSet,
 };
 use ConditionId as C;
 use ItemCount::{AtLeast, AtMost, Exactly, NumberOfFrames, Unconstrained as ANY, ValueOf};
@@ -16,8 +18,10 @@ pub(super) const EDITION: &str = "2026c";
 #[cfg(test)]
 pub(super) const SOURCE_SHA256: &[(&str, &str)] = &[
     ("part03.xml", "7911d6ec05872a38255d12ad628c1c940e9c905bb8cc3785ee039e7f6632dd48"),
+    ("part05.xml", "4dfd7b8cbc7c368b7cf03e9c4b8a0773bed91266fcdb0bbf8ed634b7287cacca"),
     ("part06.xml", "ff1dcdfb557d57db96420614fcaf6d739bb76aa74b73eba77f367be9fab0be3e"),
     ("part10.xml", "f28d8d3a8c3fc998bf0c64db5525d8744ccd0f064e6ab7e1de24b29fcc032762"),
+    ("part16.xml", "8a87dcbf0d4fbb9c8770bdcd2d738cf4d3037c668994ab8604a75b01b562a79a"),
 ];
 
 /// One Variant per distinct condition text in the IOD, its Modules and Macros.
@@ -650,9 +654,14 @@ const fn t(
 }
 
 const fn i(table: &'static Table) -> Node {
-    Node::Include(table)
+    Node::Include(table, &[])
 }
 
+const fn ib(table: &'static Table, value_sets: &'static [(u32, ValueSet)]) -> Node {
+    Node::Include(table, value_sets)
+}
+
+#[allow(clippy::too_many_arguments)]
 const fn a(
     tag: u32,
     name: &'static str,
@@ -660,9 +669,10 @@ const fn a(
     condition: Option<ConditionId>,
     enumerations: &'static [Enumeration],
     items: ItemCount,
+    value_set: Option<ValueSet>,
     children: &'static [Node],
 ) -> Node {
-    Node::Attribute(Attribute { tag, name, kind, condition, enumerations, items, children })
+    Node::Attribute(Attribute { tag, name, kind, condition, enumerations, items, value_set, children })
 }
 
 const fn e(
@@ -981,74 +991,74 @@ pub(super) static FILE_META: &Table = &T_7_1_1;
 
 /// Patient Module Attributes
 pub(super) static T_C_7_1: Table = t("PS3.3", "C.7-1", "C.7.1.1", &[
-    a(0x0010_0010, "Patient's Name", T2, None, &[], ANY, &[]),
-    a(0x0010_0020, "Patient ID", T2, None, &[], ANY, &[]),
+    a(0x0010_0010, "Patient's Name", T2, None, &[], ANY, None, &[]),
+    a(0x0010_0020, "Patient ID", T2, None, &[], ANY, None, &[]),
     i(&T_10_18),
-    a(0x0010_0022, "Type of Patient ID", T3, None, &[], ANY, &[]),
-    a(0x0010_0030, "Patient's Birth Date", T2, None, &[], ANY, &[]),
-    a(0x0010_0033, "Patient's Birth Date in Alternative Calendar", T3, None, &[], ANY, &[]),
-    a(0x0010_0034, "Patient's Death Date in Alternative Calendar", T3, None, &[], ANY, &[]),
-    a(0x0010_0035, "Patient's Alternative Calendar", T1C, Some(C::PatientAlternativeCalendar_fae075), &[], ANY, &[]),
-    a(0x0010_0040, "Patient's Sex", T2, None, &[e(None, None, &["M", "F", "O"])], ANY, &[]),
-    a(0x0010_1100, "Referenced Patient Photo Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0010_0022, "Type of Patient ID", T3, None, &[], ANY, None, &[]),
+    a(0x0010_0030, "Patient's Birth Date", T2, None, &[], ANY, None, &[]),
+    a(0x0010_0033, "Patient's Birth Date in Alternative Calendar", T3, None, &[], ANY, None, &[]),
+    a(0x0010_0034, "Patient's Death Date in Alternative Calendar", T3, None, &[], ANY, None, &[]),
+    a(0x0010_0035, "Patient's Alternative Calendar", T1C, Some(C::PatientAlternativeCalendar_fae075), &[], ANY, None, &[]),
+    a(0x0010_0040, "Patient's Sex", T2, None, &[e(None, None, &["M", "F", "O"])], ANY, None, &[]),
+    a(0x0010_1100, "Referenced Patient Photo Sequence", T3, None, &[], AtMost(1), None, &[
         i(&T_10_3B),
     ]),
-    a(0x0010_0200, "Quality Control Subject", T3, None, &[e(None, None, &["YES", "NO"])], ANY, &[]),
-    a(0x0008_1120, "Referenced Patient Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0010_0200, "Quality Control Subject", T3, None, &[e(None, None, &["YES", "NO"])], ANY, None, &[]),
+    a(0x0008_1120, "Referenced Patient Sequence", T3, None, &[], AtMost(1), None, &[
         i(&T_10_11),
     ]),
-    a(0x0010_0032, "Patient's Birth Time", T3, None, &[], ANY, &[]),
-    a(0x0010_1002, "Other Patient IDs Sequence", T3, None, &[], ANY, &[
-        a(0x0010_0020, "Patient ID", T1, None, &[], ANY, &[]),
+    a(0x0010_0032, "Patient's Birth Time", T3, None, &[], ANY, None, &[]),
+    a(0x0010_1002, "Other Patient IDs Sequence", T3, None, &[], ANY, None, &[
+        a(0x0010_0020, "Patient ID", T1, None, &[], ANY, None, &[]),
         i(&T_10_18),
-        a(0x0010_0022, "Type of Patient ID", T1, None, &[], ANY, &[]),
+        a(0x0010_0022, "Type of Patient ID", T1, None, &[], ANY, None, &[]),
     ]),
-    a(0x0010_1001, "Other Patient Names", T3, None, &[], ANY, &[]),
-    a(0x0010_2161, "Ethnic Group Code Sequence", T3, None, &[], ANY, &[
+    a(0x0010_1001, "Other Patient Names", T3, None, &[], ANY, None, &[]),
+    a(0x0010_2161, "Ethnic Group Code Sequence", T3, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Baseline, &[6099])), &[
         i(&T_8_8_1),
     ]),
-    a(0x0010_2162, "Ethnic Groups", T3, None, &[], ANY, &[]),
-    a(0x0010_4000, "Patient Comments", T3, None, &[], ANY, &[]),
-    a(0x0010_2201, "Patient Species Description", T1C, Some(C::PatientSpeciesDescription_6364e6), &[], ANY, &[]),
-    a(0x0010_2202, "Patient Species Code Sequence", T1C, Some(C::PatientSpeciesCodeSequence_3133a2), &[], Exactly(1), &[
+    a(0x0010_2162, "Ethnic Groups", T3, None, &[], ANY, None, &[]),
+    a(0x0010_4000, "Patient Comments", T3, None, &[], ANY, None, &[]),
+    a(0x0010_2201, "Patient Species Description", T1C, Some(C::PatientSpeciesDescription_6364e6), &[], ANY, None, &[]),
+    a(0x0010_2202, "Patient Species Code Sequence", T1C, Some(C::PatientSpeciesCodeSequence_3133a2), &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Defined, &[7454])), &[
         i(&T_8_8_1),
     ]),
-    a(0x0010_2292, "Patient Breed Description", T2C, Some(C::PatientBreedDescription_2b9079), &[], ANY, &[]),
-    a(0x0010_2293, "Patient Breed Code Sequence", T2C, Some(C::PatientBreedCodeSequence_878016), &[], ANY, &[
+    a(0x0010_2292, "Patient Breed Description", T2C, Some(C::PatientBreedDescription_2b9079), &[], ANY, None, &[]),
+    a(0x0010_2293, "Patient Breed Code Sequence", T2C, Some(C::PatientBreedCodeSequence_878016), &[], ANY, Some(ValueSet::ContextGroups(Strength::Defined, &[7480])), &[
         i(&T_8_8_1),
     ]),
-    a(0x0010_2294, "Breed Registration Sequence", T2C, Some(C::PatientBreedCodeSequence_878016), &[], ANY, &[
-        a(0x0010_2295, "Breed Registration Number", T1, None, &[], ANY, &[]),
-        a(0x0010_2296, "Breed Registry Code Sequence", T1, None, &[], Exactly(1), &[
+    a(0x0010_2294, "Breed Registration Sequence", T2C, Some(C::PatientBreedCodeSequence_878016), &[], ANY, None, &[
+        a(0x0010_2295, "Breed Registration Number", T1, None, &[], ANY, None, &[]),
+        a(0x0010_2296, "Breed Registry Code Sequence", T1, None, &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Defined, &[7481])), &[
             i(&T_8_8_1),
         ]),
     ]),
-    a(0x0010_0212, "Strain Description", T3, None, &[], ANY, &[]),
-    a(0x0010_0213, "Strain Nomenclature", T3, None, &[], ANY, &[]),
-    a(0x0010_0219, "Strain Code Sequence", T3, None, &[], ANY, &[
+    a(0x0010_0212, "Strain Description", T3, None, &[], ANY, None, &[]),
+    a(0x0010_0213, "Strain Nomenclature", T3, None, &[], ANY, None, &[]),
+    a(0x0010_0219, "Strain Code Sequence", T3, None, &[], ANY, None, &[
         i(&T_8_8_1),
     ]),
-    a(0x0010_0218, "Strain Additional Information", T3, None, &[], ANY, &[]),
-    a(0x0010_0216, "Strain Stock Sequence", T3, None, &[], AtMost(1), &[
-        a(0x0010_0214, "Strain Stock Number", T1, None, &[], ANY, &[]),
-        a(0x0010_0217, "Strain Source", T1, None, &[], ANY, &[]),
-        a(0x0010_0215, "Strain Source Registry Code Sequence", T1, None, &[], AtMost(1), &[
+    a(0x0010_0218, "Strain Additional Information", T3, None, &[], ANY, None, &[]),
+    a(0x0010_0216, "Strain Stock Sequence", T3, None, &[], AtMost(1), None, &[
+        a(0x0010_0214, "Strain Stock Number", T1, None, &[], ANY, None, &[]),
+        a(0x0010_0217, "Strain Source", T1, None, &[], ANY, None, &[]),
+        a(0x0010_0215, "Strain Source Registry Code Sequence", T1, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Defined, &[7490])), &[
             i(&T_8_8_1),
         ]),
     ]),
-    a(0x0010_0221, "Genetic Modifications Sequence", T3, None, &[], ANY, &[
-        a(0x0010_0222, "Genetic Modifications Description", T1, None, &[], ANY, &[]),
-        a(0x0010_0223, "Genetic Modifications Nomenclature", T1, None, &[], ANY, &[]),
-        a(0x0010_0229, "Genetic Modifications Code Sequence", T3, None, &[], ANY, &[
+    a(0x0010_0221, "Genetic Modifications Sequence", T3, None, &[], ANY, None, &[
+        a(0x0010_0222, "Genetic Modifications Description", T1, None, &[], ANY, None, &[]),
+        a(0x0010_0223, "Genetic Modifications Nomenclature", T1, None, &[], ANY, None, &[]),
+        a(0x0010_0229, "Genetic Modifications Code Sequence", T3, None, &[], ANY, None, &[
             i(&T_8_8_1),
         ]),
     ]),
-    a(0x0010_2297, "Responsible Person", T2C, Some(C::ResponsiblePerson_26bd73), &[], ANY, &[]),
-    a(0x0010_2298, "Responsible Person Role", T1C, Some(C::ResponsiblePersonRole_45e655), &[], ANY, &[]),
-    a(0x0010_2299, "Responsible Organization", T2C, Some(C::ResponsibleOrganization_a81ee5), &[], ANY, &[]),
-    a(0x0012_0062, "Patient Identity Removed", T3, None, &[e(None, None, &["YES", "NO"])], ANY, &[]),
-    a(0x0012_0063, "De-identification Method", T1C, Some(C::DeidentificationMethod_1b21e1), &[], ANY, &[]),
-    a(0x0012_0064, "De-identification Method Code Sequence", T1C, Some(C::DeidentificationMethodCodeSequence_1e6093), &[], AtLeast(1), &[
+    a(0x0010_2297, "Responsible Person", T2C, Some(C::ResponsiblePerson_26bd73), &[], ANY, None, &[]),
+    a(0x0010_2298, "Responsible Person Role", T1C, Some(C::ResponsiblePersonRole_45e655), &[], ANY, None, &[]),
+    a(0x0010_2299, "Responsible Organization", T2C, Some(C::ResponsibleOrganization_a81ee5), &[], ANY, None, &[]),
+    a(0x0012_0062, "Patient Identity Removed", T3, None, &[e(None, None, &["YES", "NO"])], ANY, None, &[]),
+    a(0x0012_0063, "De-identification Method", T1C, Some(C::DeidentificationMethod_1b21e1), &[], ANY, None, &[]),
+    a(0x0012_0064, "De-identification Method Code Sequence", T1C, Some(C::DeidentificationMethodCodeSequence_1e6093), &[], AtLeast(1), Some(ValueSet::ContextGroups(Strength::Defined, &[7050])), &[
         i(&T_8_8_1),
     ]),
     i(&T_C_7_1_4_1),
@@ -1056,18 +1066,18 @@ pub(super) static T_C_7_1: Table = t("PS3.3", "C.7-1", "C.7.1.1", &[
 
 /// Issuer of Patient ID Macro Attributes
 pub(super) static T_10_18: Table = t("PS3.3", "10-18", "10.15", &[
-    a(0x0010_0021, "Issuer of Patient ID", T3, None, &[], ANY, &[]),
-    a(0x0010_0024, "Issuer of Patient ID Qualifiers Sequence", T3, None, &[], AtMost(1), &[
-        a(0x0040_0032, "Universal Entity ID", T3, None, &[], ANY, &[]),
-        a(0x0040_0033, "Universal Entity ID Type", T1C, Some(C::UniversalEntityIDType_3c046f), &[], ANY, &[]),
-        a(0x0040_0035, "Identifier Type Code", T3, None, &[], ANY, &[]),
-        a(0x0040_0036, "Assigning Facility Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0010_0021, "Issuer of Patient ID", T3, None, &[], ANY, None, &[]),
+    a(0x0010_0024, "Issuer of Patient ID Qualifiers Sequence", T3, None, &[], AtMost(1), None, &[
+        a(0x0040_0032, "Universal Entity ID", T3, None, &[], ANY, None, &[]),
+        a(0x0040_0033, "Universal Entity ID Type", T1C, Some(C::UniversalEntityIDType_3c046f), &[], ANY, None, &[]),
+        a(0x0040_0035, "Identifier Type Code", T3, None, &[], ANY, None, &[]),
+        a(0x0040_0036, "Assigning Facility Sequence", T3, None, &[], AtMost(1), None, &[
             i(&T_10_17),
         ]),
-        a(0x0040_0039, "Assigning Jurisdiction Code Sequence", T3, None, &[], AtMost(1), &[
+        a(0x0040_0039, "Assigning Jurisdiction Code Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[5001])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0040_003A, "Assigning Agency or Department Code Sequence", T3, None, &[], AtMost(1), &[
+        a(0x0040_003A, "Assigning Agency or Department Code Sequence", T3, None, &[], AtMost(1), None, &[
             i(&T_8_8_1),
         ]),
     ]),
@@ -1075,15 +1085,15 @@ pub(super) static T_10_18: Table = t("PS3.3", "10-18", "10.15", &[
 
 /// HL7v2 Hierarchic Designator Macro Attributes
 pub(super) static T_10_17: Table = t("PS3.3", "10-17", "10.14", &[
-    a(0x0040_0031, "Local Namespace Entity ID", T1C, Some(C::LocalNamespaceEntityID_3fcb73), &[], ANY, &[]),
-    a(0x0040_0032, "Universal Entity ID", T1C, Some(C::UniversalEntityID_a05e96), &[], ANY, &[]),
-    a(0x0040_0033, "Universal Entity ID Type", T1C, Some(C::UniversalEntityIDType_3c046f), &[e(None, None, &["DNS", "EUI64", "ISO", "URI", "UUID", "X400", "X500"])], ANY, &[]),
+    a(0x0040_0031, "Local Namespace Entity ID", T1C, Some(C::LocalNamespaceEntityID_3fcb73), &[], ANY, None, &[]),
+    a(0x0040_0032, "Universal Entity ID", T1C, Some(C::UniversalEntityID_a05e96), &[], ANY, None, &[]),
+    a(0x0040_0033, "Universal Entity ID Type", T1C, Some(C::UniversalEntityIDType_3c046f), &[e(None, None, &["DNS", "EUI64", "ISO", "URI", "UUID", "X400", "X500"])], ANY, None, &[]),
 ]);
 
 /// Code Sequence Macro Attributes
 pub(super) static T_8_8_1: Table = t("PS3.3", "8.8-1", "8.8", &[
     i(&T_8_8_1A),
-    a(0x0008_0121, "Equivalent Code Sequence", T3, None, &[], ANY, &[
+    a(0x0008_0121, "Equivalent Code Sequence", T3, None, &[], ANY, None, &[
         i(&T_8_8_1A),
         i(&T_8_8_1B),
     ]),
@@ -1092,329 +1102,329 @@ pub(super) static T_8_8_1: Table = t("PS3.3", "8.8-1", "8.8", &[
 
 /// Basic Code Sequence Macro Attributes
 pub(super) static T_8_8_1A: Table = t("PS3.3", "8.8-1a", "8.8", &[
-    a(0x0008_0100, "Code Value", T1C, Some(C::CodeValue_c75d2f), &[], ANY, &[]),
-    a(0x0008_0102, "Coding Scheme Designator", T1C, Some(C::CodingSchemeDesignator_117155), &[], ANY, &[]),
-    a(0x0008_0103, "Coding Scheme Version", T1C, Some(C::CodingSchemeVersion_74cac7), &[], ANY, &[]),
-    a(0x0008_0104, "Code Meaning", T1, None, &[], ANY, &[]),
-    a(0x0008_0119, "Long Code Value", T1C, Some(C::LongCodeValue_318ae8), &[], ANY, &[]),
-    a(0x0008_0120, "URN Code Value", T1C, Some(C::URNCodeValue_3efa2e), &[], ANY, &[]),
+    a(0x0008_0100, "Code Value", T1C, Some(C::CodeValue_c75d2f), &[], ANY, None, &[]),
+    a(0x0008_0102, "Coding Scheme Designator", T1C, Some(C::CodingSchemeDesignator_117155), &[], ANY, None, &[]),
+    a(0x0008_0103, "Coding Scheme Version", T1C, Some(C::CodingSchemeVersion_74cac7), &[], ANY, None, &[]),
+    a(0x0008_0104, "Code Meaning", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0119, "Long Code Value", T1C, Some(C::LongCodeValue_318ae8), &[], ANY, None, &[]),
+    a(0x0008_0120, "URN Code Value", T1C, Some(C::URNCodeValue_3efa2e), &[], ANY, None, &[]),
 ]);
 
 /// Enhanced Code Sequence Macro Attributes
 pub(super) static T_8_8_1B: Table = t("PS3.3", "8.8-1b", "8.8", &[
-    a(0x0008_010F, "Context Identifier", T3, None, &[], ANY, &[]),
-    a(0x0008_0117, "Context UID", T3, None, &[], ANY, &[]),
-    a(0x0008_0105, "Mapping Resource", T1C, Some(C::MappingResource_00f87e), &[], ANY, &[]),
-    a(0x0008_0118, "Mapping Resource UID", T3, None, &[], ANY, &[]),
-    a(0x0008_0122, "Mapping Resource Name", T3, None, &[], ANY, &[]),
-    a(0x0008_0106, "Context Group Version", T1C, Some(C::MappingResource_00f87e), &[], ANY, &[]),
-    a(0x0008_010B, "Context Group Extension Flag", T3, None, &[e(None, None, &["Y", "N"])], ANY, &[]),
-    a(0x0008_0107, "Context Group Local Version", T1C, Some(C::ContextGroupLocalVersion_b3415f), &[], ANY, &[]),
-    a(0x0008_010D, "Context Group Extension Creator UID", T1C, Some(C::ContextGroupLocalVersion_b3415f), &[], ANY, &[]),
+    a(0x0008_010F, "Context Identifier", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0117, "Context UID", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0105, "Mapping Resource", T1C, Some(C::MappingResource_00f87e), &[], ANY, None, &[]),
+    a(0x0008_0118, "Mapping Resource UID", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0122, "Mapping Resource Name", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0106, "Context Group Version", T1C, Some(C::MappingResource_00f87e), &[], ANY, None, &[]),
+    a(0x0008_010B, "Context Group Extension Flag", T3, None, &[e(None, None, &["Y", "N"])], ANY, None, &[]),
+    a(0x0008_0107, "Context Group Local Version", T1C, Some(C::ContextGroupLocalVersion_b3415f), &[], ANY, None, &[]),
+    a(0x0008_010D, "Context Group Extension Creator UID", T1C, Some(C::ContextGroupLocalVersion_b3415f), &[], ANY, None, &[]),
 ]);
 
 /// Referenced Instances and Access Macro Attributes
 pub(super) static T_10_3B: Table = t("PS3.3", "10-3b", "10.3", &[
-    a(0x0040_E020, "Type of Instances", T1, None, &[], ANY, &[]),
-    a(0x0020_000D, "Study Instance UID", T1C, Some(C::StudyInstanceUID_56e908), &[], ANY, &[]),
-    a(0x0020_000E, "Series Instance UID", T1C, Some(C::SeriesInstanceUID_117bc3), &[], ANY, &[]),
-    a(0x0008_1199, "Referenced SOP Sequence", T1, None, &[], AtLeast(1), &[
-        a(0x0008_1150, "Referenced SOP Class UID", T1, None, &[], ANY, &[]),
-        a(0x0008_1155, "Referenced SOP Instance UID", T1, None, &[], ANY, &[]),
-        a(0x0040_E001, "HL7 Instance Identifier", T1C, Some(C::HL7InstanceIdentifier_194507), &[], ANY, &[]),
-        a(0x0008_1160, "Referenced Frame Number", T1C, Some(C::ReferencedFrameNumber_1e1f84), &[], ANY, &[]),
-        a(0x0062_000B, "Referenced Segment Number", T1C, Some(C::ReferencedSegmentNumber_19fe72), &[], ANY, &[]),
+    a(0x0040_E020, "Type of Instances", T1, None, &[], ANY, None, &[]),
+    a(0x0020_000D, "Study Instance UID", T1C, Some(C::StudyInstanceUID_56e908), &[], ANY, None, &[]),
+    a(0x0020_000E, "Series Instance UID", T1C, Some(C::SeriesInstanceUID_117bc3), &[], ANY, None, &[]),
+    a(0x0008_1199, "Referenced SOP Sequence", T1, None, &[], AtLeast(1), None, &[
+        a(0x0008_1150, "Referenced SOP Class UID", T1, None, &[], ANY, None, &[]),
+        a(0x0008_1155, "Referenced SOP Instance UID", T1, None, &[], ANY, None, &[]),
+        a(0x0040_E001, "HL7 Instance Identifier", T1C, Some(C::HL7InstanceIdentifier_194507), &[], ANY, None, &[]),
+        a(0x0008_1160, "Referenced Frame Number", T1C, Some(C::ReferencedFrameNumber_1e1f84), &[], ANY, None, &[]),
+        a(0x0062_000B, "Referenced Segment Number", T1C, Some(C::ReferencedSegmentNumber_19fe72), &[], ANY, None, &[]),
     ]),
-    a(0x0040_E021, "DICOM Retrieval Sequence", T1C, Some(C::DICOMRetrievalSequence_da69fd), &[], AtLeast(1), &[
-        a(0x0008_0054, "Retrieve AE Title", T1, None, &[], ANY, &[]),
+    a(0x0040_E021, "DICOM Retrieval Sequence", T1C, Some(C::DICOMRetrievalSequence_da69fd), &[], AtLeast(1), None, &[
+        a(0x0008_0054, "Retrieve AE Title", T1, None, &[], ANY, None, &[]),
     ]),
-    a(0x0040_E022, "DICOM Media Retrieval Sequence", T1C, Some(C::DICOMMediaRetrievalSequence_be1086), &[], AtLeast(1), &[
-        a(0x0088_0130, "Storage Media File-Set ID", T2, None, &[], ANY, &[]),
-        a(0x0088_0140, "Storage Media File-Set UID", T1, None, &[], ANY, &[]),
+    a(0x0040_E022, "DICOM Media Retrieval Sequence", T1C, Some(C::DICOMMediaRetrievalSequence_be1086), &[], AtLeast(1), None, &[
+        a(0x0088_0130, "Storage Media File-Set ID", T2, None, &[], ANY, None, &[]),
+        a(0x0088_0140, "Storage Media File-Set UID", T1, None, &[], ANY, None, &[]),
     ]),
-    a(0x0040_E023, "WADO Retrieval Sequence", T1C, Some(C::WADORetrievalSequence_61a093), &[], AtLeast(1), &[
-        a(0x0040_E010, "Retrieve URI", T1, None, &[], ANY, &[]),
+    a(0x0040_E023, "WADO Retrieval Sequence", T1C, Some(C::WADORetrievalSequence_61a093), &[], AtLeast(1), None, &[
+        a(0x0040_E010, "Retrieve URI", T1, None, &[], ANY, None, &[]),
     ]),
-    a(0x0040_E024, "XDS Retrieval Sequence", T1C, Some(C::XDSRetrievalSequence_82c637), &[], AtLeast(1), &[
-        a(0x0040_E030, "Repository Unique ID", T1, None, &[], ANY, &[]),
-        a(0x0040_E031, "Home Community ID", T3, None, &[], ANY, &[]),
+    a(0x0040_E024, "XDS Retrieval Sequence", T1C, Some(C::XDSRetrievalSequence_82c637), &[], AtLeast(1), None, &[
+        a(0x0040_E030, "Repository Unique ID", T1, None, &[], ANY, None, &[]),
+        a(0x0040_E031, "Home Community ID", T3, None, &[], ANY, None, &[]),
     ]),
-    a(0x0040_E025, "WADO-RS Retrieval Sequence", T1C, Some(C::WADORSRetrievalSequence_be3376), &[], AtLeast(1), &[
-        a(0x0008_1190, "Retrieve URL", T1, None, &[], ANY, &[]),
+    a(0x0040_E025, "WADO-RS Retrieval Sequence", T1C, Some(C::WADORSRetrievalSequence_be3376), &[], AtLeast(1), None, &[
+        a(0x0008_1190, "Retrieve URL", T1, None, &[], ANY, None, &[]),
     ]),
 ]);
 
 /// SOP Instance Reference Macro Attributes
 pub(super) static T_10_11: Table = t("PS3.3", "10-11", "10.8", &[
-    a(0x0008_1150, "Referenced SOP Class UID", T1, None, &[], ANY, &[]),
-    a(0x0008_1155, "Referenced SOP Instance UID", T1, None, &[], ANY, &[]),
+    a(0x0008_1150, "Referenced SOP Class UID", T1, None, &[], ANY, None, &[]),
+    a(0x0008_1155, "Referenced SOP Instance UID", T1, None, &[], ANY, None, &[]),
 ]);
 
 /// Patient Group Macro Attributes
 pub(super) static T_C_7_1_4_1: Table = t("PS3.3", "C.7.1.4-1", "C.7.1.4", &[
-    a(0x0010_0026, "Source Patient Group Identification Sequence", T3, None, &[], AtMost(1), &[
-        a(0x0010_0020, "Patient ID", T1, None, &[], ANY, &[]),
+    a(0x0010_0026, "Source Patient Group Identification Sequence", T3, None, &[], AtMost(1), None, &[
+        a(0x0010_0020, "Patient ID", T1, None, &[], ANY, None, &[]),
         i(&T_10_18),
     ]),
-    a(0x0010_0027, "Group of Patients Identification Sequence", T3, None, &[], ANY, &[
-        a(0x0010_0020, "Patient ID", T1, None, &[], ANY, &[]),
+    a(0x0010_0027, "Group of Patients Identification Sequence", T3, None, &[], ANY, None, &[
+        a(0x0010_0020, "Patient ID", T1, None, &[], ANY, None, &[]),
         i(&T_10_18),
-        a(0x0010_0028, "Subject Relative Position in Image", T3, None, &[], ANY, &[]),
-        a(0x0018_5100, "Patient Position", T3, None, &[], ANY, &[]),
+        a(0x0010_0028, "Subject Relative Position in Image", T3, None, &[], ANY, None, &[]),
+        a(0x0018_5100, "Patient Position", T3, None, &[], ANY, None, &[]),
     ]),
 ]);
 
 /// Clinical Trial Subject Module Attributes
 pub(super) static T_C_7_2B: Table = t("PS3.3", "C.7-2b", "C.7.1.3", &[
-    a(0x0012_0010, "Clinical Trial Sponsor Name", T1, None, &[], ANY, &[]),
-    a(0x0012_0020, "Clinical Trial Protocol ID", T1, None, &[], ANY, &[]),
-    a(0x0012_0022, "Issuer of Clinical Trial Protocol ID", T3, None, &[], ANY, &[]),
-    a(0x0012_0023, "Other Clinical Trial Protocol IDs Sequence", T3, None, &[], ANY, &[
-        a(0x0012_0020, "Clinical Trial Protocol ID", T1, None, &[], ANY, &[]),
-        a(0x0012_0022, "Issuer of Clinical Trial Protocol ID", T1, None, &[], ANY, &[]),
+    a(0x0012_0010, "Clinical Trial Sponsor Name", T1, None, &[], ANY, None, &[]),
+    a(0x0012_0020, "Clinical Trial Protocol ID", T1, None, &[], ANY, None, &[]),
+    a(0x0012_0022, "Issuer of Clinical Trial Protocol ID", T3, None, &[], ANY, None, &[]),
+    a(0x0012_0023, "Other Clinical Trial Protocol IDs Sequence", T3, None, &[], ANY, None, &[
+        a(0x0012_0020, "Clinical Trial Protocol ID", T1, None, &[], ANY, None, &[]),
+        a(0x0012_0022, "Issuer of Clinical Trial Protocol ID", T1, None, &[], ANY, None, &[]),
     ]),
-    a(0x0012_0021, "Clinical Trial Protocol Name", T2, None, &[], ANY, &[]),
-    a(0x0012_0030, "Clinical Trial Site ID", T2, None, &[], ANY, &[]),
-    a(0x0012_0032, "Issuer of Clinical Trial Site ID", T3, None, &[], ANY, &[]),
-    a(0x0012_0031, "Clinical Trial Site Name", T2, None, &[], ANY, &[]),
-    a(0x0012_0040, "Clinical Trial Subject ID", T1C, Some(C::ClinicalTrialSubjectID_4bdaa7), &[], ANY, &[]),
-    a(0x0012_0041, "Issuer of Clinical Trial Subject ID", T3, None, &[], ANY, &[]),
-    a(0x0012_0042, "Clinical Trial Subject Reading ID", T1C, Some(C::ClinicalTrialSubjectReadingID_e427c4), &[], ANY, &[]),
-    a(0x0012_0043, "Issuer of Clinical Trial Subject Reading ID", T3, None, &[], ANY, &[]),
-    a(0x0012_0081, "Clinical Trial Protocol Ethics Committee Name", T1C, Some(C::ClinicalTrialProtocolEthicsCommitteeName_b2d50b), &[], ANY, &[]),
-    a(0x0012_0082, "Clinical Trial Protocol Ethics Committee Approval Number", T3, None, &[], ANY, &[]),
+    a(0x0012_0021, "Clinical Trial Protocol Name", T2, None, &[], ANY, None, &[]),
+    a(0x0012_0030, "Clinical Trial Site ID", T2, None, &[], ANY, None, &[]),
+    a(0x0012_0032, "Issuer of Clinical Trial Site ID", T3, None, &[], ANY, None, &[]),
+    a(0x0012_0031, "Clinical Trial Site Name", T2, None, &[], ANY, None, &[]),
+    a(0x0012_0040, "Clinical Trial Subject ID", T1C, Some(C::ClinicalTrialSubjectID_4bdaa7), &[], ANY, None, &[]),
+    a(0x0012_0041, "Issuer of Clinical Trial Subject ID", T3, None, &[], ANY, None, &[]),
+    a(0x0012_0042, "Clinical Trial Subject Reading ID", T1C, Some(C::ClinicalTrialSubjectReadingID_e427c4), &[], ANY, None, &[]),
+    a(0x0012_0043, "Issuer of Clinical Trial Subject Reading ID", T3, None, &[], ANY, None, &[]),
+    a(0x0012_0081, "Clinical Trial Protocol Ethics Committee Name", T1C, Some(C::ClinicalTrialProtocolEthicsCommitteeName_b2d50b), &[], ANY, None, &[]),
+    a(0x0012_0082, "Clinical Trial Protocol Ethics Committee Approval Number", T3, None, &[], ANY, None, &[]),
 ]);
 
 /// General Study Module Attributes
 pub(super) static T_C_7_3: Table = t("PS3.3", "C.7-3", "C.7.2.1", &[
-    a(0x0020_000D, "Study Instance UID", T1, None, &[], ANY, &[]),
-    a(0x0008_0020, "Study Date", T2, None, &[], ANY, &[]),
-    a(0x0008_0030, "Study Time", T2, None, &[], ANY, &[]),
-    a(0x0008_0090, "Referring Physician's Name", T2, None, &[], ANY, &[]),
-    a(0x0008_0096, "Referring Physician Identification Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0020_000D, "Study Instance UID", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0020, "Study Date", T2, None, &[], ANY, None, &[]),
+    a(0x0008_0030, "Study Time", T2, None, &[], ANY, None, &[]),
+    a(0x0008_0090, "Referring Physician's Name", T2, None, &[], ANY, None, &[]),
+    a(0x0008_0096, "Referring Physician Identification Sequence", T3, None, &[], AtMost(1), None, &[
         i(&T_10_1),
     ]),
-    a(0x0008_009C, "Consulting Physician's Name", T3, None, &[], ANY, &[]),
-    a(0x0008_009D, "Consulting Physician Identification Sequence", T3, None, &[], ANY, &[
+    a(0x0008_009C, "Consulting Physician's Name", T3, None, &[], ANY, None, &[]),
+    a(0x0008_009D, "Consulting Physician Identification Sequence", T3, None, &[], ANY, None, &[
         i(&T_10_1),
     ]),
-    a(0x0020_0010, "Study ID", T2, None, &[], ANY, &[]),
-    a(0x0008_0050, "Accession Number", T2, None, &[], ANY, &[]),
-    a(0x0008_0051, "Issuer of Accession Number Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0020_0010, "Study ID", T2, None, &[], ANY, None, &[]),
+    a(0x0008_0050, "Accession Number", T2, None, &[], ANY, None, &[]),
+    a(0x0008_0051, "Issuer of Accession Number Sequence", T3, None, &[], AtMost(1), None, &[
         i(&T_10_17),
     ]),
-    a(0x0008_1030, "Study Description", T3, None, &[], ANY, &[]),
-    a(0x0008_1048, "Physician(s) of Record", T3, None, &[], ANY, &[]),
-    a(0x0008_1049, "Physician(s) of Record Identification Sequence", T3, None, &[], ANY, &[
+    a(0x0008_1030, "Study Description", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1048, "Physician(s) of Record", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1049, "Physician(s) of Record Identification Sequence", T3, None, &[], ANY, None, &[
         i(&T_10_1),
     ]),
-    a(0x0008_1060, "Name of Physician(s) Reading Study", T3, None, &[], ANY, &[]),
-    a(0x0008_1062, "Physician(s) Reading Study Identification Sequence", T3, None, &[], ANY, &[
+    a(0x0008_1060, "Name of Physician(s) Reading Study", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1062, "Physician(s) Reading Study Identification Sequence", T3, None, &[], ANY, None, &[
         i(&T_10_1),
     ]),
-    a(0x0032_1033, "Requesting Service", T3, None, &[], ANY, &[]),
-    a(0x0032_1034, "Requesting Service Code Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0032_1033, "Requesting Service", T3, None, &[], ANY, None, &[]),
+    a(0x0032_1034, "Requesting Service Code Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Defined, &[7030])), &[
         i(&T_8_8_1),
     ]),
-    a(0x0008_1110, "Referenced Study Sequence", T3, None, &[], ANY, &[
+    a(0x0008_1110, "Referenced Study Sequence", T3, None, &[], ANY, None, &[
         i(&T_10_11),
     ]),
-    a(0x0008_1032, "Procedure Code Sequence", T3, None, &[], ANY, &[
+    a(0x0008_1032, "Procedure Code Sequence", T3, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Baseline, &[101])), &[
         i(&T_8_8_1),
     ]),
-    a(0x0040_1012, "Reason For Performed Procedure Code Sequence", T3, None, &[], ANY, &[
+    a(0x0040_1012, "Reason For Performed Procedure Code Sequence", T3, None, &[], ANY, None, &[
         i(&T_8_8_1),
     ]),
 ]);
 
 /// Person Identification Macro Attributes
 pub(super) static T_10_1: Table = t("PS3.3", "10-1", "10.1", &[
-    a(0x0040_1101, "Person Identification Code Sequence", T1, None, &[], AtLeast(1), &[
+    a(0x0040_1101, "Person Identification Code Sequence", T1, None, &[], AtLeast(1), None, &[
         i(&T_8_8_1),
     ]),
-    a(0x0040_1102, "Person's Address", T3, None, &[], ANY, &[]),
-    a(0x0040_1103, "Person's Telephone Numbers", T3, None, &[], ANY, &[]),
-    a(0x0040_1104, "Person's Telecom Information", T3, None, &[], ANY, &[]),
-    a(0x0008_0080, "Institution Name", T1C, Some(C::InstitutionName_211fb8), &[], ANY, &[]),
-    a(0x0008_0081, "Institution Address", T3, None, &[], ANY, &[]),
-    a(0x0008_0082, "Institution Code Sequence", T1C, Some(C::InstitutionCodeSequence_605819), &[], Exactly(1), &[
+    a(0x0040_1102, "Person's Address", T3, None, &[], ANY, None, &[]),
+    a(0x0040_1103, "Person's Telephone Numbers", T3, None, &[], ANY, None, &[]),
+    a(0x0040_1104, "Person's Telecom Information", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0080, "Institution Name", T1C, Some(C::InstitutionName_211fb8), &[], ANY, None, &[]),
+    a(0x0008_0081, "Institution Address", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0082, "Institution Code Sequence", T1C, Some(C::InstitutionCodeSequence_605819), &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[5002])), &[
         i(&T_8_8_1),
     ]),
-    a(0x0008_1040, "Institutional Department Name", T3, None, &[], ANY, &[]),
-    a(0x0008_1041, "Institutional Department Type Code Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0008_1040, "Institutional Department Name", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1041, "Institutional Department Type Code Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[7030])), &[
         i(&T_8_8_1),
     ]),
 ]);
 
 /// Patient Study Module Attributes
 pub(super) static T_C_7_4A: Table = t("PS3.3", "C.7-4a", "C.7.2.2", &[
-    a(0x0008_1080, "Admitting Diagnoses Description", T3, None, &[], ANY, &[]),
-    a(0x0008_1084, "Admitting Diagnoses Code Sequence", T3, None, &[], ANY, &[
+    a(0x0008_1080, "Admitting Diagnoses Description", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1084, "Admitting Diagnoses Code Sequence", T3, None, &[], ANY, None, &[
         i(&T_8_8_1),
     ]),
-    a(0x0008_1301, "Principal Diagnosis Code Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0008_1301, "Principal Diagnosis Code Sequence", T3, None, &[], AtMost(1), None, &[
         i(&T_8_8_1),
     ]),
-    a(0x0008_1302, "Primary Diagnosis Code Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0008_1302, "Primary Diagnosis Code Sequence", T3, None, &[], AtMost(1), None, &[
         i(&T_8_8_1),
     ]),
-    a(0x0008_1303, "Secondary Diagnoses Code Sequence", T3, None, &[], ANY, &[
+    a(0x0008_1303, "Secondary Diagnoses Code Sequence", T3, None, &[], ANY, None, &[
         i(&T_8_8_1),
     ]),
-    a(0x0008_1304, "Histological Diagnoses Code Sequence", T3, None, &[], ANY, &[
+    a(0x0008_1304, "Histological Diagnoses Code Sequence", T3, None, &[], ANY, None, &[
         i(&T_8_8_1),
     ]),
-    a(0x0010_1010, "Patient's Age", T3, None, &[], ANY, &[]),
-    a(0x0010_1020, "Patient's Size", T3, None, &[], ANY, &[]),
-    a(0x0010_1030, "Patient's Weight", T3, None, &[], ANY, &[]),
-    a(0x0010_1022, "Patient's Body Mass Index", T3, None, &[], ANY, &[]),
-    a(0x0010_1023, "Measured AP Dimension", T3, None, &[], ANY, &[]),
-    a(0x0010_1024, "Measured Lateral Dimension", T3, None, &[], ANY, &[]),
-    a(0x0010_1021, "Patient's Size Code Sequence", T3, None, &[], ANY, &[
+    a(0x0010_1010, "Patient's Age", T3, None, &[], ANY, None, &[]),
+    a(0x0010_1020, "Patient's Size", T3, None, &[], ANY, None, &[]),
+    a(0x0010_1030, "Patient's Weight", T3, None, &[], ANY, None, &[]),
+    a(0x0010_1022, "Patient's Body Mass Index", T3, None, &[], ANY, None, &[]),
+    a(0x0010_1023, "Measured AP Dimension", T3, None, &[], ANY, None, &[]),
+    a(0x0010_1024, "Measured Lateral Dimension", T3, None, &[], ANY, None, &[]),
+    a(0x0010_1021, "Patient's Size Code Sequence", T3, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Baseline, &[7039, 7041])), &[
         i(&T_8_8_1),
     ]),
-    a(0x0010_2000, "Medical Alerts", T3, None, &[], ANY, &[]),
-    a(0x0010_2110, "Allergies", T3, None, &[], ANY, &[]),
-    a(0x0010_21A0, "Smoking Status", T3, None, &[e(None, None, &["YES", "NO", "UNKNOWN"])], ANY, &[]),
-    a(0x0010_21C0, "Pregnancy Status", T3, None, &[e(None, None, &["1", "2", "3", "4"])], ANY, &[]),
-    a(0x0010_21D0, "Last Menstrual Date", T3, None, &[], ANY, &[]),
-    a(0x0038_0500, "Patient State", T3, None, &[], ANY, &[]),
-    a(0x0010_2180, "Occupation", T3, None, &[], ANY, &[]),
-    a(0x0010_21B0, "Additional Patient History", T3, None, &[], ANY, &[]),
-    a(0x0038_0010, "Admission ID", T3, None, &[], ANY, &[]),
-    a(0x0038_0014, "Issuer of Admission ID Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0010_2000, "Medical Alerts", T3, None, &[], ANY, None, &[]),
+    a(0x0010_2110, "Allergies", T3, None, &[], ANY, None, &[]),
+    a(0x0010_21A0, "Smoking Status", T3, None, &[e(None, None, &["YES", "NO", "UNKNOWN"])], ANY, None, &[]),
+    a(0x0010_21C0, "Pregnancy Status", T3, None, &[e(None, None, &["1", "2", "3", "4"])], ANY, None, &[]),
+    a(0x0010_21D0, "Last Menstrual Date", T3, None, &[], ANY, None, &[]),
+    a(0x0038_0500, "Patient State", T3, None, &[], ANY, None, &[]),
+    a(0x0010_2180, "Occupation", T3, None, &[], ANY, None, &[]),
+    a(0x0010_21B0, "Additional Patient History", T3, None, &[], ANY, None, &[]),
+    a(0x0038_0010, "Admission ID", T3, None, &[], ANY, None, &[]),
+    a(0x0038_0014, "Issuer of Admission ID Sequence", T3, None, &[], AtMost(1), None, &[
         i(&T_10_17),
     ]),
-    a(0x0032_1066, "Reason for Visit", T3, None, &[], ANY, &[]),
-    a(0x0032_1067, "Reason for Visit Code Sequence", T3, None, &[], ANY, &[
+    a(0x0032_1066, "Reason for Visit", T3, None, &[], ANY, None, &[]),
+    a(0x0032_1067, "Reason for Visit Code Sequence", T3, None, &[], ANY, None, &[
         i(&T_8_8_1),
     ]),
-    a(0x0038_0060, "Service Episode ID", T3, None, &[], ANY, &[]),
-    a(0x0038_0064, "Issuer of Service Episode ID Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0038_0060, "Service Episode ID", T3, None, &[], ANY, None, &[]),
+    a(0x0038_0064, "Issuer of Service Episode ID Sequence", T3, None, &[], AtMost(1), None, &[
         i(&T_10_17),
     ]),
-    a(0x0038_0062, "Service Episode Description", T3, None, &[], ANY, &[]),
-    a(0x0010_2203, "Patient's Sex Neutered", T2C, Some(C::ResponsibleOrganization_a81ee5), &[e(None, None, &["ALTERED", "UNALTERED"])], ANY, &[]),
-    a(0x0010_0041, "Gender Identity Sequence", T3, None, &[], ANY, &[
-        a(0x0010_0044, "Gender Identity Code Sequence", T1, None, &[], Exactly(1), &[
+    a(0x0038_0062, "Service Episode Description", T3, None, &[], ANY, None, &[]),
+    a(0x0010_2203, "Patient's Sex Neutered", T2C, Some(C::ResponsibleOrganization_a81ee5), &[e(None, None, &["ALTERED", "UNALTERED"])], ANY, None, &[]),
+    a(0x0010_0041, "Gender Identity Sequence", T3, None, &[], ANY, None, &[
+        a(0x0010_0044, "Gender Identity Code Sequence", T1, None, &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[7458])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0040_A034, "Effective Start DateTime", T3, None, &[], ANY, &[]),
-        a(0x0040_A035, "Effective Stop DateTime", T3, None, &[], ANY, &[]),
-        a(0x0010_0045, "Gender Identity Comment", T3, None, &[], ANY, &[]),
+        a(0x0040_A034, "Effective Start DateTime", T3, None, &[], ANY, None, &[]),
+        a(0x0040_A035, "Effective Stop DateTime", T3, None, &[], ANY, None, &[]),
+        a(0x0010_0045, "Gender Identity Comment", T3, None, &[], ANY, None, &[]),
     ]),
-    a(0x0010_0043, "Sex Parameters for Clinical Use Category Sequence", T3, None, &[], ANY, &[
-        a(0x0010_0046, "Sex Parameters for Clinical Use Category Code Sequence", T1, None, &[], Exactly(1), &[
+    a(0x0010_0043, "Sex Parameters for Clinical Use Category Sequence", T3, None, &[], ANY, None, &[
+        a(0x0010_0046, "Sex Parameters for Clinical Use Category Code Sequence", T1, None, &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[7459])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0040_A034, "Effective Start DateTime", T3, None, &[], ANY, &[]),
-        a(0x0040_A035, "Effective Stop DateTime", T3, None, &[], ANY, &[]),
-        a(0x0010_0042, "Sex Parameters for Clinical Use Category Comment", T2C, Some(C::SexParametersForClinicalUseCategoryComment_c0a125), &[], ANY, &[]),
-        a(0x0010_0047, "Sex Parameters for Clinical Use Category Reference", T2C, Some(C::SexParametersForClinicalUseCategoryComment_c0a125), &[], ANY, &[]),
+        a(0x0040_A034, "Effective Start DateTime", T3, None, &[], ANY, None, &[]),
+        a(0x0040_A035, "Effective Stop DateTime", T3, None, &[], ANY, None, &[]),
+        a(0x0010_0042, "Sex Parameters for Clinical Use Category Comment", T2C, Some(C::SexParametersForClinicalUseCategoryComment_c0a125), &[], ANY, None, &[]),
+        a(0x0010_0047, "Sex Parameters for Clinical Use Category Reference", T2C, Some(C::SexParametersForClinicalUseCategoryComment_c0a125), &[], ANY, None, &[]),
     ]),
-    a(0x0010_0011, "Person Names to Use Sequence", T3, None, &[], ANY, &[
-        a(0x0010_0012, "Name to Use", T1, None, &[], ANY, &[]),
-        a(0x0040_A034, "Effective Start DateTime", T3, None, &[], ANY, &[]),
-        a(0x0040_A035, "Effective Stop DateTime", T3, None, &[], ANY, &[]),
-        a(0x0010_0013, "Name to Use Comment", T3, None, &[], ANY, &[]),
+    a(0x0010_0011, "Person Names to Use Sequence", T3, None, &[], ANY, None, &[
+        a(0x0010_0012, "Name to Use", T1, None, &[], ANY, None, &[]),
+        a(0x0040_A034, "Effective Start DateTime", T3, None, &[], ANY, None, &[]),
+        a(0x0040_A035, "Effective Stop DateTime", T3, None, &[], ANY, None, &[]),
+        a(0x0010_0013, "Name to Use Comment", T3, None, &[], ANY, None, &[]),
     ]),
-    a(0x0010_0014, "Third Person Pronouns Sequence", T3, None, &[], ANY, &[
-        a(0x0010_0015, "Pronoun Code Sequence", T1, None, &[], Exactly(1), &[
+    a(0x0010_0014, "Third Person Pronouns Sequence", T3, None, &[], ANY, None, &[
+        a(0x0010_0015, "Pronoun Code Sequence", T1, None, &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[7448])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0040_A034, "Effective Start DateTime", T3, None, &[], ANY, &[]),
-        a(0x0040_A035, "Effective Stop DateTime", T3, None, &[], ANY, &[]),
-        a(0x0010_0016, "Pronoun Comment", T3, None, &[], ANY, &[]),
+        a(0x0040_A034, "Effective Start DateTime", T3, None, &[], ANY, None, &[]),
+        a(0x0040_A035, "Effective Stop DateTime", T3, None, &[], ANY, None, &[]),
+        a(0x0010_0016, "Pronoun Comment", T3, None, &[], ANY, None, &[]),
     ]),
 ]);
 
 /// Clinical Trial Study Module Attributes
 pub(super) static T_C_7_4B: Table = t("PS3.3", "C.7-4b", "C.7.2.3", &[
-    a(0x0012_0050, "Clinical Trial Time Point ID", T2, None, &[], ANY, &[]),
-    a(0x0012_0055, "Issuer of Clinical Trial Time Point ID", T3, None, &[], ANY, &[]),
-    a(0x0012_0051, "Clinical Trial Time Point Description", T3, None, &[], ANY, &[]),
-    a(0x0012_0054, "Clinical Trial Time Point Type Code Sequence", T3, None, &[], ANY, &[
+    a(0x0012_0050, "Clinical Trial Time Point ID", T2, None, &[], ANY, None, &[]),
+    a(0x0012_0055, "Issuer of Clinical Trial Time Point ID", T3, None, &[], ANY, None, &[]),
+    a(0x0012_0051, "Clinical Trial Time Point Description", T3, None, &[], ANY, None, &[]),
+    a(0x0012_0054, "Clinical Trial Time Point Type Code Sequence", T3, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Baseline, &[6146])), &[
         i(&T_8_8_1),
     ]),
-    a(0x0012_0052, "Longitudinal Temporal Offset from Event", T3, None, &[], ANY, &[]),
-    a(0x0012_0053, "Longitudinal Temporal Event Type", T1C, Some(C::LongitudinalTemporalEventType_30a811), &[], ANY, &[]),
-    a(0x0012_0083, "Consent for Clinical Trial Use Sequence", T3, None, &[], ANY, &[
-        a(0x0012_0084, "Distribution Type", T1C, Some(C::DistributionType_606cf8), &[], ANY, &[]),
-        a(0x0012_0020, "Clinical Trial Protocol ID", T1C, Some(C::ClinicalTrialProtocolID_3ce4a5), &[], ANY, &[]),
-        a(0x0012_0022, "Issuer of Clinical Trial Protocol ID", T3, None, &[], ANY, &[]),
-        a(0x0012_0085, "Consent for Distribution Flag", T1, None, &[e(None, None, &["NO", "YES", "WITHDRAWN"])], ANY, &[]),
+    a(0x0012_0052, "Longitudinal Temporal Offset from Event", T3, None, &[], ANY, None, &[]),
+    a(0x0012_0053, "Longitudinal Temporal Event Type", T1C, Some(C::LongitudinalTemporalEventType_30a811), &[], ANY, None, &[]),
+    a(0x0012_0083, "Consent for Clinical Trial Use Sequence", T3, None, &[], ANY, None, &[
+        a(0x0012_0084, "Distribution Type", T1C, Some(C::DistributionType_606cf8), &[], ANY, None, &[]),
+        a(0x0012_0020, "Clinical Trial Protocol ID", T1C, Some(C::ClinicalTrialProtocolID_3ce4a5), &[], ANY, None, &[]),
+        a(0x0012_0022, "Issuer of Clinical Trial Protocol ID", T3, None, &[], ANY, None, &[]),
+        a(0x0012_0085, "Consent for Distribution Flag", T1, None, &[e(None, None, &["NO", "YES", "WITHDRAWN"])], ANY, None, &[]),
     ]),
 ]);
 
 /// General Series Module Attributes
 pub(super) static T_C_7_5A: Table = t("PS3.3", "C.7-5a", "C.7.3.1", &[
-    a(0x0008_0060, "Modality", T1, None, &[], ANY, &[]),
-    a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, &[]),
-    a(0x0020_0011, "Series Number", T2, None, &[], ANY, &[]),
-    a(0x0020_0060, "Laterality", T2C, Some(C::Laterality_0273c7), &[e(None, None, &["R", "L"])], ANY, &[]),
-    a(0x0008_0021, "Series Date", T3, None, &[], ANY, &[]),
-    a(0x0008_0031, "Series Time", T3, None, &[], ANY, &[]),
-    a(0x0008_1050, "Performing Physician's Name", T3, None, &[], ANY, &[]),
-    a(0x0008_1052, "Performing Physician Identification Sequence", T3, None, &[], ANY, &[
+    a(0x0008_0060, "Modality", T1, None, &[], ANY, None, &[]),
+    a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
+    a(0x0020_0011, "Series Number", T2, None, &[], ANY, None, &[]),
+    a(0x0020_0060, "Laterality", T2C, Some(C::Laterality_0273c7), &[e(None, None, &["R", "L"])], ANY, None, &[]),
+    a(0x0008_0021, "Series Date", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0031, "Series Time", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1050, "Performing Physician's Name", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1052, "Performing Physician Identification Sequence", T3, None, &[], ANY, None, &[
         i(&T_10_1),
     ]),
-    a(0x0018_1030, "Protocol Name", T3, None, &[], ANY, &[]),
-    a(0x0008_103E, "Series Description", T3, None, &[], ANY, &[]),
-    a(0x0008_103F, "Series Description Code Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0018_1030, "Protocol Name", T3, None, &[], ANY, None, &[]),
+    a(0x0008_103E, "Series Description", T3, None, &[], ANY, None, &[]),
+    a(0x0008_103F, "Series Description Code Sequence", T3, None, &[], AtMost(1), None, &[
         i(&T_8_8_1),
     ]),
-    a(0x0008_1070, "Operators' Name", T3, None, &[], ANY, &[]),
-    a(0x0008_1072, "Operator Identification Sequence", T3, None, &[], ANY, &[
+    a(0x0008_1070, "Operators' Name", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1072, "Operator Identification Sequence", T3, None, &[], ANY, None, &[
         i(&T_10_1),
     ]),
-    a(0x0008_1111, "Referenced Performed Procedure Step Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0008_1111, "Referenced Performed Procedure Step Sequence", T3, None, &[], AtMost(1), None, &[
         i(&T_10_11),
     ]),
-    a(0x0008_1250, "Related Series Sequence", T3, None, &[], ANY, &[
-        a(0x0020_000D, "Study Instance UID", T1, None, &[], ANY, &[]),
-        a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, &[]),
-        a(0x0040_A170, "Purpose of Reference Code Sequence", T2, None, &[], ANY, &[
+    a(0x0008_1250, "Related Series Sequence", T3, None, &[], ANY, None, &[
+        a(0x0020_000D, "Study Instance UID", T1, None, &[], ANY, None, &[]),
+        a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
+        a(0x0040_A170, "Purpose of Reference Code Sequence", T2, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Defined, &[7210])), &[
             i(&T_8_8_1),
         ]),
     ]),
-    a(0x0018_0015, "Body Part Examined", T3, None, &[], ANY, &[]),
-    a(0x0018_5100, "Patient Position", T2C, Some(C::PatientPosition_3d8fad), &[], ANY, &[]),
-    a(0x0028_0108, "Smallest Pixel Value in Series", T3, None, &[], ANY, &[]),
-    a(0x0028_0109, "Largest Pixel Value in Series", T3, None, &[], ANY, &[]),
-    a(0x0040_0275, "Request Attributes Sequence", T3, None, &[], ANY, &[
+    a(0x0018_0015, "Body Part Examined", T3, None, &[], ANY, None, &[]),
+    a(0x0018_5100, "Patient Position", T2C, Some(C::PatientPosition_3d8fad), &[], ANY, None, &[]),
+    a(0x0028_0108, "Smallest Pixel Value in Series", T3, None, &[], ANY, None, &[]),
+    a(0x0028_0109, "Largest Pixel Value in Series", T3, None, &[], ANY, None, &[]),
+    a(0x0040_0275, "Request Attributes Sequence", T3, None, &[], ANY, None, &[
         i(&T_10_9),
     ]),
     i(&T_10_16),
-    a(0x0010_2210, "Anatomical Orientation Type", T1C, Some(C::AnatomicalOrientationType_a42424), &[e(None, None, &["BIPED", "QUADRUPED"])], ANY, &[]),
-    a(0x300A_0700, "Treatment Session UID", T3, None, &[], ANY, &[]),
+    a(0x0010_2210, "Anatomical Orientation Type", T1C, Some(C::AnatomicalOrientationType_a42424), &[e(None, None, &["BIPED", "QUADRUPED"])], ANY, None, &[]),
+    a(0x300A_0700, "Treatment Session UID", T3, None, &[], ANY, None, &[]),
 ]);
 
 /// Request Attributes Macro Attributes
 pub(super) static T_10_9: Table = t("PS3.3", "10-9", "10.6", &[
-    a(0x0040_1001, "Requested Procedure ID", T1C, Some(C::RequestedProcedureID_08c518), &[], ANY, &[]),
-    a(0x0008_0050, "Accession Number", T3, None, &[], ANY, &[]),
-    a(0x0008_0051, "Issuer of Accession Number Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0040_1001, "Requested Procedure ID", T1C, Some(C::RequestedProcedureID_08c518), &[], ANY, None, &[]),
+    a(0x0008_0050, "Accession Number", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0051, "Issuer of Accession Number Sequence", T3, None, &[], AtMost(1), None, &[
         i(&T_10_17),
     ]),
-    a(0x0020_000D, "Study Instance UID", T3, None, &[], ANY, &[]),
-    a(0x0008_1110, "Referenced Study Sequence", T3, None, &[], ANY, &[
+    a(0x0020_000D, "Study Instance UID", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1110, "Referenced Study Sequence", T3, None, &[], ANY, None, &[
         i(&T_10_11),
     ]),
-    a(0x0032_1060, "Requested Procedure Description", T3, None, &[], ANY, &[]),
-    a(0x0032_1064, "Requested Procedure Code Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0032_1060, "Requested Procedure Description", T3, None, &[], ANY, None, &[]),
+    a(0x0032_1064, "Requested Procedure Code Sequence", T3, None, &[], AtMost(1), None, &[
         i(&T_8_8_1),
     ]),
-    a(0x0040_1002, "Reason for the Requested Procedure", T3, None, &[], ANY, &[]),
-    a(0x0040_100A, "Reason for Requested Procedure Code Sequence", T3, None, &[], ANY, &[
+    a(0x0040_1002, "Reason for the Requested Procedure", T3, None, &[], ANY, None, &[]),
+    a(0x0040_100A, "Reason for Requested Procedure Code Sequence", T3, None, &[], ANY, None, &[
         i(&T_8_8_1),
     ]),
-    a(0x0040_0009, "Scheduled Procedure Step ID", T1C, Some(C::ScheduledProcedureStepID_d945b5), &[], ANY, &[]),
-    a(0x0040_0007, "Scheduled Procedure Step Description", T3, None, &[], ANY, &[]),
-    a(0x0040_0008, "Scheduled Protocol Code Sequence", T3, None, &[], ANY, &[
+    a(0x0040_0009, "Scheduled Procedure Step ID", T1C, Some(C::ScheduledProcedureStepID_d945b5), &[], ANY, None, &[]),
+    a(0x0040_0007, "Scheduled Procedure Step Description", T3, None, &[], ANY, None, &[]),
+    a(0x0040_0008, "Scheduled Protocol Code Sequence", T3, None, &[], ANY, None, &[
         i(&T_8_8_1),
-        a(0x0040_0440, "Protocol Context Sequence", T3, None, &[], ANY, &[
+        a(0x0040_0440, "Protocol Context Sequence", T3, None, &[], ANY, None, &[
             i(&T_10_2),
-            a(0x0040_0441, "Content Item Modifier Sequence", T3, None, &[], ANY, &[
+            a(0x0040_0441, "Content Item Modifier Sequence", T3, None, &[], ANY, None, &[
                 i(&T_10_2),
             ]),
         ]),
@@ -1423,208 +1433,208 @@ pub(super) static T_10_9: Table = t("PS3.3", "10-9", "10.6", &[
 
 /// Content Item Macro Attributes
 pub(super) static T_10_2: Table = t("PS3.3", "10-2", "10.2", &[
-    a(0x0040_A040, "Value Type", T1, None, &[e(None, None, &["DATE", "TIME", "DATETIME", "PNAME", "UIDREF", "TEXT", "CODE", "NUMERIC", "COMPOSITE", "IMAGE", "WAVEFORM"])], ANY, &[]),
-    a(0x0040_A032, "Observation DateTime", T3, None, &[], ANY, &[]),
-    a(0x0040_A033, "Observation Start DateTime", T3, None, &[], ANY, &[]),
-    a(0x0040_A043, "Concept Name Code Sequence", T1, None, &[], Exactly(1), &[
+    a(0x0040_A040, "Value Type", T1, None, &[e(None, None, &["DATE", "TIME", "DATETIME", "PNAME", "UIDREF", "TEXT", "CODE", "NUMERIC", "COMPOSITE", "IMAGE", "WAVEFORM"])], ANY, None, &[]),
+    a(0x0040_A032, "Observation DateTime", T3, None, &[], ANY, None, &[]),
+    a(0x0040_A033, "Observation Start DateTime", T3, None, &[], ANY, None, &[]),
+    a(0x0040_A043, "Concept Name Code Sequence", T1, None, &[], Exactly(1), None, &[
         i(&T_8_8_1),
     ]),
-    a(0x0040_A120, "DateTime", T1C, Some(C::DateTime_e5e09c), &[], ANY, &[]),
-    a(0x0040_A121, "Date", T1C, Some(C::Date_f120f4), &[], ANY, &[]),
-    a(0x0040_A122, "Time", T1C, Some(C::Time_ad089b), &[], ANY, &[]),
-    a(0x0040_A123, "Person Name", T1C, Some(C::PersonName_a1fae7), &[], ANY, &[]),
-    a(0x0040_A124, "UID", T1C, Some(C::UID_ca8b4b), &[], ANY, &[]),
-    a(0x0040_A160, "Text Value", T1C, Some(C::TextValue_6d4c4e), &[], ANY, &[]),
-    a(0x0040_A168, "Concept Code Sequence", T1C, Some(C::ConceptCodeSequence_52aed2), &[], Exactly(1), &[
+    a(0x0040_A120, "DateTime", T1C, Some(C::DateTime_e5e09c), &[], ANY, None, &[]),
+    a(0x0040_A121, "Date", T1C, Some(C::Date_f120f4), &[], ANY, None, &[]),
+    a(0x0040_A122, "Time", T1C, Some(C::Time_ad089b), &[], ANY, None, &[]),
+    a(0x0040_A123, "Person Name", T1C, Some(C::PersonName_a1fae7), &[], ANY, None, &[]),
+    a(0x0040_A124, "UID", T1C, Some(C::UID_ca8b4b), &[], ANY, None, &[]),
+    a(0x0040_A160, "Text Value", T1C, Some(C::TextValue_6d4c4e), &[], ANY, None, &[]),
+    a(0x0040_A168, "Concept Code Sequence", T1C, Some(C::ConceptCodeSequence_52aed2), &[], Exactly(1), None, &[
         i(&T_8_8_1),
     ]),
-    a(0x0040_A30A, "Numeric Value", T1C, Some(C::NumericValue_8073ae), &[], ANY, &[]),
-    a(0x0040_A161, "Floating Point Value", T1C, Some(C::FloatingPointValue_a84f01), &[], ANY, &[]),
-    a(0x0040_A162, "Rational Numerator Value", T1C, Some(C::RationalNumeratorValue_5600ef), &[], ANY, &[]),
-    a(0x0040_A163, "Rational Denominator Value", T1C, Some(C::RationalDenominatorValue_553a6d), &[], ANY, &[]),
-    a(0x0040_08EA, "Measurement Units Code Sequence", T1C, Some(C::NumericValue_8073ae), &[], Exactly(1), &[
+    a(0x0040_A30A, "Numeric Value", T1C, Some(C::NumericValue_8073ae), &[], ANY, None, &[]),
+    a(0x0040_A161, "Floating Point Value", T1C, Some(C::FloatingPointValue_a84f01), &[], ANY, None, &[]),
+    a(0x0040_A162, "Rational Numerator Value", T1C, Some(C::RationalNumeratorValue_5600ef), &[], ANY, None, &[]),
+    a(0x0040_A163, "Rational Denominator Value", T1C, Some(C::RationalDenominatorValue_553a6d), &[], ANY, None, &[]),
+    a(0x0040_08EA, "Measurement Units Code Sequence", T1C, Some(C::NumericValue_8073ae), &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[82])), &[
         i(&T_8_8_1),
     ]),
-    a(0x0008_1199, "Referenced SOP Sequence", T1C, Some(C::ReferencedSOPSequence_fabd0b), &[], Exactly(1), &[
+    a(0x0008_1199, "Referenced SOP Sequence", T1C, Some(C::ReferencedSOPSequence_fabd0b), &[], Exactly(1), None, &[
         i(&T_10_11),
-        a(0x0008_1160, "Referenced Frame Number", T1C, Some(C::ReferencedFrameNumber_1e1f84), &[], ANY, &[]),
-        a(0x0062_000B, "Referenced Segment Number", T1C, Some(C::ReferencedSegmentNumber_f2b12f), &[], ANY, &[]),
-        a(0x0040_A0B0, "Referenced Waveform Channels", T1C, Some(C::ReferencedWaveformChannels_6a695a), &[], ANY, &[]),
+        a(0x0008_1160, "Referenced Frame Number", T1C, Some(C::ReferencedFrameNumber_1e1f84), &[], ANY, None, &[]),
+        a(0x0062_000B, "Referenced Segment Number", T1C, Some(C::ReferencedSegmentNumber_f2b12f), &[], ANY, None, &[]),
+        a(0x0040_A0B0, "Referenced Waveform Channels", T1C, Some(C::ReferencedWaveformChannels_6a695a), &[], ANY, None, &[]),
     ]),
 ]);
 
 /// Performed Procedure Step Summary Macro Attributes
 pub(super) static T_10_16: Table = t("PS3.3", "10-16", "10.13", &[
-    a(0x0040_0253, "Performed Procedure Step ID", T3, None, &[], ANY, &[]),
-    a(0x0040_0244, "Performed Procedure Step Start Date", T3, None, &[], ANY, &[]),
-    a(0x0040_0245, "Performed Procedure Step Start Time", T3, None, &[], ANY, &[]),
-    a(0x0040_0250, "Performed Procedure Step End Date", T3, None, &[], ANY, &[]),
-    a(0x0040_0251, "Performed Procedure Step End Time", T3, None, &[], ANY, &[]),
-    a(0x0040_0254, "Performed Procedure Step Description", T3, None, &[], ANY, &[]),
-    a(0x0040_0260, "Performed Protocol Code Sequence", T3, None, &[], ANY, &[
+    a(0x0040_0253, "Performed Procedure Step ID", T3, None, &[], ANY, None, &[]),
+    a(0x0040_0244, "Performed Procedure Step Start Date", T3, None, &[], ANY, None, &[]),
+    a(0x0040_0245, "Performed Procedure Step Start Time", T3, None, &[], ANY, None, &[]),
+    a(0x0040_0250, "Performed Procedure Step End Date", T3, None, &[], ANY, None, &[]),
+    a(0x0040_0251, "Performed Procedure Step End Time", T3, None, &[], ANY, None, &[]),
+    a(0x0040_0254, "Performed Procedure Step Description", T3, None, &[], ANY, None, &[]),
+    a(0x0040_0260, "Performed Protocol Code Sequence", T3, None, &[], ANY, None, &[
         i(&T_8_8_1),
-        a(0x0040_0440, "Protocol Context Sequence", T3, None, &[], ANY, &[
+        a(0x0040_0440, "Protocol Context Sequence", T3, None, &[], ANY, None, &[
             i(&T_10_2),
-            a(0x0040_0441, "Content Item Modifier Sequence", T3, None, &[], ANY, &[
+            a(0x0040_0441, "Content Item Modifier Sequence", T3, None, &[], ANY, None, &[
                 i(&T_10_2),
             ]),
         ]),
     ]),
-    a(0x0040_0280, "Comments on the Performed Procedure Step", T3, None, &[], ANY, &[]),
+    a(0x0040_0280, "Comments on the Performed Procedure Step", T3, None, &[], ANY, None, &[]),
 ]);
 
 /// Whole Slide Microscopy Series Module Attributes
 pub(super) static T_C_8_12_3_1: Table = t("PS3.3", "C.8.12.3-1", "C.8.12.3", &[
-    a(0x0008_0060, "Modality", T1, None, &[e(None, None, &["SM"])], ANY, &[]),
-    a(0x0008_1111, "Referenced Performed Procedure Step Sequence", T1C, Some(C::ReferencedPerformedProcedureStepSequence_d5d6e5), &[], Exactly(1), &[
+    a(0x0008_0060, "Modality", T1, None, &[e(None, None, &["SM"])], ANY, None, &[]),
+    a(0x0008_1111, "Referenced Performed Procedure Step Sequence", T1C, Some(C::ReferencedPerformedProcedureStepSequence_d5d6e5), &[], Exactly(1), None, &[
         i(&T_10_11),
     ]),
 ]);
 
 /// Clinical Trial Series Module Attributes
 pub(super) static T_C_7_5B: Table = t("PS3.3", "C.7-5b", "C.7.3.2", &[
-    a(0x0012_0060, "Clinical Trial Coordinating Center Name", T2, None, &[], ANY, &[]),
-    a(0x0012_0071, "Clinical Trial Series ID", T3, None, &[], ANY, &[]),
-    a(0x0012_0073, "Issuer of Clinical Trial Series ID", T3, None, &[], ANY, &[]),
-    a(0x0012_0072, "Clinical Trial Series Description", T3, None, &[], ANY, &[]),
+    a(0x0012_0060, "Clinical Trial Coordinating Center Name", T2, None, &[], ANY, None, &[]),
+    a(0x0012_0071, "Clinical Trial Series ID", T3, None, &[], ANY, None, &[]),
+    a(0x0012_0073, "Issuer of Clinical Trial Series ID", T3, None, &[], ANY, None, &[]),
+    a(0x0012_0072, "Clinical Trial Series Description", T3, None, &[], ANY, None, &[]),
 ]);
 
 /// Frame of Reference Module Attributes
 pub(super) static T_C_7_6: Table = t("PS3.3", "C.7-6", "C.7.4.1", &[
-    a(0x0020_0052, "Frame of Reference UID", T1, None, &[], ANY, &[]),
-    a(0x0020_1040, "Position Reference Indicator", T2, None, &[], ANY, &[]),
+    a(0x0020_0052, "Frame of Reference UID", T1, None, &[], ANY, None, &[]),
+    a(0x0020_1040, "Position Reference Indicator", T2, None, &[], ANY, None, &[]),
 ]);
 
 /// General Equipment Module Attributes
 pub(super) static T_C_7_8: Table = t("PS3.3", "C.7-8", "C.7.5.1", &[
-    a(0x0008_0070, "Manufacturer", T2, None, &[], ANY, &[]),
-    a(0x0008_0080, "Institution Name", T3, None, &[], ANY, &[]),
-    a(0x0008_0081, "Institution Address", T3, None, &[], ANY, &[]),
-    a(0x0008_1010, "Station Name", T3, None, &[], ANY, &[]),
-    a(0x0008_1040, "Institutional Department Name", T3, None, &[], ANY, &[]),
-    a(0x0008_1041, "Institutional Department Type Code Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0008_0070, "Manufacturer", T2, None, &[], ANY, None, &[]),
+    a(0x0008_0080, "Institution Name", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0081, "Institution Address", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1010, "Station Name", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1040, "Institutional Department Name", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1041, "Institutional Department Type Code Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[7030])), &[
         i(&T_8_8_1),
     ]),
-    a(0x0008_1090, "Manufacturer's Model Name", T3, None, &[], ANY, &[]),
-    a(0x0018_100B, "Manufacturer's Device Class UID", T3, None, &[], ANY, &[]),
-    a(0x0018_1000, "Device Serial Number", T3, None, &[], ANY, &[]),
-    a(0x0018_1020, "Software Versions", T3, None, &[], ANY, &[]),
-    a(0x0018_1008, "Gantry ID", T3, None, &[], ANY, &[]),
-    a(0x0018_100A, "UDI Sequence", T3, None, &[], ANY, &[
+    a(0x0008_1090, "Manufacturer's Model Name", T3, None, &[], ANY, None, &[]),
+    a(0x0018_100B, "Manufacturer's Device Class UID", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1000, "Device Serial Number", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1020, "Software Versions", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1008, "Gantry ID", T3, None, &[], ANY, None, &[]),
+    a(0x0018_100A, "UDI Sequence", T3, None, &[], ANY, None, &[
         i(&T_10_29_1),
     ]),
-    a(0x0018_1002, "Device UID", T3, None, &[], ANY, &[]),
-    a(0x0018_1050, "Spatial Resolution", T3, None, &[], ANY, &[]),
-    a(0x0018_1204, "Date of Manufacture", T3, None, &[], ANY, &[]),
-    a(0x0018_1205, "Date of Installation", T3, None, &[], ANY, &[]),
-    a(0x0018_1200, "Date of Last Calibration", T3, None, &[], ANY, &[]),
-    a(0x0018_1201, "Time of Last Calibration", T3, None, &[], ANY, &[]),
-    a(0x0028_0120, "Pixel Padding Value", T1C, Some(C::PixelPaddingValue_894c69), &[], ANY, &[]),
+    a(0x0018_1002, "Device UID", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1050, "Spatial Resolution", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1204, "Date of Manufacture", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1205, "Date of Installation", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1200, "Date of Last Calibration", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1201, "Time of Last Calibration", T3, None, &[], ANY, None, &[]),
+    a(0x0028_0120, "Pixel Padding Value", T1C, Some(C::PixelPaddingValue_894c69), &[], ANY, None, &[]),
 ]);
 
 /// UDI Macro Attributes
 pub(super) static T_10_29_1: Table = t("PS3.3", "10.29-1", "10.29", &[
-    a(0x0018_1009, "Unique Device Identifier", T1, None, &[], ANY, &[]),
-    a(0x0050_0020, "Device Description", T3, None, &[], ANY, &[]),
+    a(0x0018_1009, "Unique Device Identifier", T1, None, &[], ANY, None, &[]),
+    a(0x0050_0020, "Device Description", T3, None, &[], ANY, None, &[]),
 ]);
 
 /// Enhanced General Equipment Module Attributes
 pub(super) static T_C_7_8B: Table = t("PS3.3", "C.7-8b", "C.7.5.2", &[
-    a(0x0008_0070, "Manufacturer", T1, None, &[], ANY, &[]),
-    a(0x0008_1090, "Manufacturer's Model Name", T1, None, &[], ANY, &[]),
-    a(0x0018_1000, "Device Serial Number", T1, None, &[], ANY, &[]),
-    a(0x0018_1020, "Software Versions", T1, None, &[], ANY, &[]),
+    a(0x0008_0070, "Manufacturer", T1, None, &[], ANY, None, &[]),
+    a(0x0008_1090, "Manufacturer's Model Name", T1, None, &[], ANY, None, &[]),
+    a(0x0018_1000, "Device Serial Number", T1, None, &[], ANY, None, &[]),
+    a(0x0018_1020, "Software Versions", T1, None, &[], ANY, None, &[]),
 ]);
 
 /// General Acquisition Module Attributes
 pub(super) static T_C_7_10_1_1: Table = t("PS3.3", "C.7.10.1-1", "C.7.10.1", &[
-    a(0x0008_0017, "Acquisition UID", T3, None, &[], ANY, &[]),
-    a(0x0020_0012, "Acquisition Number", T3, None, &[], ANY, &[]),
-    a(0x0008_0022, "Acquisition Date", T3, None, &[], ANY, &[]),
-    a(0x0008_0032, "Acquisition Time", T3, None, &[], ANY, &[]),
-    a(0x0008_002A, "Acquisition DateTime", T3, None, &[], ANY, &[]),
-    a(0x0018_9073, "Acquisition Duration", T3, None, &[], ANY, &[]),
-    a(0x0020_1002, "Images in Acquisition", T3, None, &[], ANY, &[]),
-    a(0x0008_3010, "Irradiation Event UID", T3, None, &[], ANY, &[]),
+    a(0x0008_0017, "Acquisition UID", T3, None, &[], ANY, None, &[]),
+    a(0x0020_0012, "Acquisition Number", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0022, "Acquisition Date", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0032, "Acquisition Time", T3, None, &[], ANY, None, &[]),
+    a(0x0008_002A, "Acquisition DateTime", T3, None, &[], ANY, None, &[]),
+    a(0x0018_9073, "Acquisition Duration", T3, None, &[], ANY, None, &[]),
+    a(0x0020_1002, "Images in Acquisition", T3, None, &[], ANY, None, &[]),
+    a(0x0008_3010, "Irradiation Event UID", T3, None, &[], ANY, None, &[]),
 ]);
 
 /// Multi-Resolution Pyramid Module Attributes
 pub(super) static T_C_7_11_1_1: Table = t("PS3.3", "C.7.11.1-1", "C.7.11.1", &[
-    a(0x0008_0019, "Pyramid UID", T1, None, &[], ANY, &[]),
-    a(0x0020_0027, "Pyramid Label", T3, None, &[], ANY, &[]),
-    a(0x0008_1088, "Pyramid Description", T3, None, &[], ANY, &[]),
+    a(0x0008_0019, "Pyramid UID", T1, None, &[], ANY, None, &[]),
+    a(0x0020_0027, "Pyramid Label", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1088, "Pyramid Description", T3, None, &[], ANY, None, &[]),
 ]);
 
 /// General Image Module Attributes
 pub(super) static T_C_7_9: Table = t("PS3.3", "C.7-9", "C.7.6.1", &[
-    a(0x0020_0013, "Instance Number", T2, None, &[], ANY, &[]),
-    a(0x0020_0020, "Patient Orientation", T2C, Some(C::PatientOrientation_964c1d), &[], ANY, &[]),
-    a(0x0008_0023, "Content Date", T2C, Some(C::ContentDate_b7911d), &[], ANY, &[]),
-    a(0x0008_0033, "Content Time", T2C, Some(C::ContentDate_b7911d), &[], ANY, &[]),
-    a(0x0008_0008, "Image Type", T3, None, &[e(Some(1), None, &["ORIGINAL", "DERIVED"]), e(Some(2), None, &["PRIMARY", "SECONDARY"])], ANY, &[]),
-    a(0x0020_4000, "Image Comments", T3, None, &[], ANY, &[]),
-    a(0x0028_0300, "Quality Control Image", T3, None, &[e(None, None, &["YES", "NO", "BOTH"])], ANY, &[]),
-    a(0x0028_0301, "Burned In Annotation", T3, None, &[e(None, None, &["YES", "NO"])], ANY, &[]),
-    a(0x0028_0302, "Recognizable Visual Features", T3, None, &[e(None, None, &["YES", "NO"])], ANY, &[]),
-    a(0x0028_2110, "Lossy Image Compression", T3, None, &[e(None, None, &["00", "01"])], ANY, &[]),
-    a(0x0028_2112, "Lossy Image Compression Ratio", T3, None, &[], ANY, &[]),
-    a(0x0028_2114, "Lossy Image Compression Method", T3, None, &[], ANY, &[]),
-    a(0x0088_0200, "Icon Image Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0020_0013, "Instance Number", T2, None, &[], ANY, None, &[]),
+    a(0x0020_0020, "Patient Orientation", T2C, Some(C::PatientOrientation_964c1d), &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T2C, Some(C::ContentDate_b7911d), &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T2C, Some(C::ContentDate_b7911d), &[], ANY, None, &[]),
+    a(0x0008_0008, "Image Type", T3, None, &[e(Some(1), None, &["ORIGINAL", "DERIVED"]), e(Some(2), None, &["PRIMARY", "SECONDARY"])], ANY, None, &[]),
+    a(0x0020_4000, "Image Comments", T3, None, &[], ANY, None, &[]),
+    a(0x0028_0300, "Quality Control Image", T3, None, &[e(None, None, &["YES", "NO", "BOTH"])], ANY, None, &[]),
+    a(0x0028_0301, "Burned In Annotation", T3, None, &[e(None, None, &["YES", "NO"])], ANY, None, &[]),
+    a(0x0028_0302, "Recognizable Visual Features", T3, None, &[e(None, None, &["YES", "NO"])], ANY, None, &[]),
+    a(0x0028_2110, "Lossy Image Compression", T3, None, &[e(None, None, &["00", "01"])], ANY, None, &[]),
+    a(0x0028_2112, "Lossy Image Compression Ratio", T3, None, &[], ANY, None, &[]),
+    a(0x0028_2114, "Lossy Image Compression Method", T3, None, &[], ANY, None, &[]),
+    a(0x0088_0200, "Icon Image Sequence", T3, None, &[], AtMost(1), None, &[
         i(&T_C_7_11B),
     ]),
-    a(0x2050_0020, "Presentation LUT Shape", T3, None, &[e(None, None, &["IDENTITY", "INVERSE"])], ANY, &[]),
-    a(0x0040_9096, "Real World Value Mapping Sequence", T3, None, &[], ANY, &[
+    a(0x2050_0020, "Presentation LUT Shape", T3, None, &[e(None, None, &["IDENTITY", "INVERSE"])], ANY, None, &[]),
+    a(0x0040_9096, "Real World Value Mapping Sequence", T3, None, &[], ANY, None, &[
         i(&T_C_7_6_16_12B),
     ]),
-    a(0x0020_0062, "Image Laterality", T3, None, &[e(None, None, &["R", "L", "U", "B"])], ANY, &[]),
-    i(&T_10_7),
+    a(0x0020_0062, "Image Laterality", T3, None, &[e(None, None, &["R", "L", "U", "B"])], ANY, None, &[]),
+    ib(&T_10_7, &[(0x0008_2218, ValueSet::ContextGroups(Strength::Baseline, &[4031, 7483]))]),
 ]);
 
 /// Image Pixel Macro Attributes
 pub(super) static T_C_7_11B: Table = t("PS3.3", "C.7-11b", "C.7.6.3.2", &[
     i(&T_C_7_11C),
-    a(0x7FE0_0010, "Pixel Data", T1, None, &[], ANY, &[]),
+    a(0x7FE0_0010, "Pixel Data", T1, None, &[], ANY, None, &[]),
 ]);
 
 /// Image Pixel Description Macro Attributes
 pub(super) static T_C_7_11C: Table = t("PS3.3", "C.7-11c", "C.7.6.3.3", &[
-    a(0x0028_0002, "Samples per Pixel", T1, None, &[], ANY, &[]),
-    a(0x0028_0004, "Photometric Interpretation", T1, None, &[], ANY, &[]),
-    a(0x0028_0010, "Rows", T1, None, &[], ANY, &[]),
-    a(0x0028_0011, "Columns", T1, None, &[], ANY, &[]),
-    a(0x0028_0100, "Bits Allocated", T1, None, &[], ANY, &[]),
-    a(0x0028_0101, "Bits Stored", T1, None, &[], ANY, &[]),
-    a(0x0028_0102, "High Bit", T1, None, &[], ANY, &[]),
-    a(0x0028_0103, "Pixel Representation", T1, None, &[e(None, None, &["0", "1"])], ANY, &[]),
-    a(0x0028_0006, "Planar Configuration", T1C, Some(C::PlanarConfiguration_097db3), &[e(None, None, &["0", "1"])], ANY, &[]),
-    a(0x0028_0034, "Pixel Aspect Ratio", T1C, Some(C::PixelAspectRatio_6287c0), &[], ANY, &[]),
-    a(0x0028_0106, "Smallest Image Pixel Value", T3, None, &[], ANY, &[]),
-    a(0x0028_0107, "Largest Image Pixel Value", T3, None, &[], ANY, &[]),
-    a(0x0028_1101, "Red Palette Color Lookup Table Descriptor", T1C, Some(C::RedPaletteColorLookupTableDescriptor_cd3c5c), &[], ANY, &[]),
-    a(0x0028_1102, "Green Palette Color Lookup Table Descriptor", T1C, Some(C::RedPaletteColorLookupTableDescriptor_cd3c5c), &[], ANY, &[]),
-    a(0x0028_1103, "Blue Palette Color Lookup Table Descriptor", T1C, Some(C::RedPaletteColorLookupTableDescriptor_cd3c5c), &[], ANY, &[]),
-    a(0x0028_1201, "Red Palette Color Lookup Table Data", T1C, Some(C::RedPaletteColorLookupTableData_04117f), &[], ANY, &[]),
-    a(0x0028_1202, "Green Palette Color Lookup Table Data", T1C, Some(C::RedPaletteColorLookupTableData_04117f), &[], ANY, &[]),
-    a(0x0028_1203, "Blue Palette Color Lookup Table Data", T1C, Some(C::RedPaletteColorLookupTableData_04117f), &[], ANY, &[]),
-    a(0x0028_2000, "ICC Profile", T3, Some(C::ICCProfile_e05055), &[], ANY, &[]),
-    a(0x0028_2002, "Color Space", T3, Some(C::ColorSpace_709202), &[], ANY, &[]),
+    a(0x0028_0002, "Samples per Pixel", T1, None, &[], ANY, None, &[]),
+    a(0x0028_0004, "Photometric Interpretation", T1, None, &[], ANY, None, &[]),
+    a(0x0028_0010, "Rows", T1, None, &[], ANY, None, &[]),
+    a(0x0028_0011, "Columns", T1, None, &[], ANY, None, &[]),
+    a(0x0028_0100, "Bits Allocated", T1, None, &[], ANY, None, &[]),
+    a(0x0028_0101, "Bits Stored", T1, None, &[], ANY, None, &[]),
+    a(0x0028_0102, "High Bit", T1, None, &[], ANY, None, &[]),
+    a(0x0028_0103, "Pixel Representation", T1, None, &[e(None, None, &["0", "1"])], ANY, None, &[]),
+    a(0x0028_0006, "Planar Configuration", T1C, Some(C::PlanarConfiguration_097db3), &[e(None, None, &["0", "1"])], ANY, None, &[]),
+    a(0x0028_0034, "Pixel Aspect Ratio", T1C, Some(C::PixelAspectRatio_6287c0), &[], ANY, None, &[]),
+    a(0x0028_0106, "Smallest Image Pixel Value", T3, None, &[], ANY, None, &[]),
+    a(0x0028_0107, "Largest Image Pixel Value", T3, None, &[], ANY, None, &[]),
+    a(0x0028_1101, "Red Palette Color Lookup Table Descriptor", T1C, Some(C::RedPaletteColorLookupTableDescriptor_cd3c5c), &[], ANY, None, &[]),
+    a(0x0028_1102, "Green Palette Color Lookup Table Descriptor", T1C, Some(C::RedPaletteColorLookupTableDescriptor_cd3c5c), &[], ANY, None, &[]),
+    a(0x0028_1103, "Blue Palette Color Lookup Table Descriptor", T1C, Some(C::RedPaletteColorLookupTableDescriptor_cd3c5c), &[], ANY, None, &[]),
+    a(0x0028_1201, "Red Palette Color Lookup Table Data", T1C, Some(C::RedPaletteColorLookupTableData_04117f), &[], ANY, None, &[]),
+    a(0x0028_1202, "Green Palette Color Lookup Table Data", T1C, Some(C::RedPaletteColorLookupTableData_04117f), &[], ANY, None, &[]),
+    a(0x0028_1203, "Blue Palette Color Lookup Table Data", T1C, Some(C::RedPaletteColorLookupTableData_04117f), &[], ANY, None, &[]),
+    a(0x0028_2000, "ICC Profile", T3, Some(C::ICCProfile_e05055), &[], ANY, None, &[]),
+    a(0x0028_2002, "Color Space", T3, Some(C::ColorSpace_709202), &[], ANY, None, &[]),
 ]);
 
 /// Real World Value Mapping Item Macro Attributes
 pub(super) static T_C_7_6_16_12B: Table = t("PS3.3", "C.7.6.16-12b", "C.7.6.16.2.11", &[
-    a(0x0040_9216, "Real World Value First Value Mapped", T1C, Some(C::RealWorldValueFirstValueMapped_8ca8ef), &[], ANY, &[]),
-    a(0x0040_9211, "Real World Value Last Value Mapped", T1C, Some(C::RealWorldValueLastValueMapped_2d3315), &[], ANY, &[]),
-    a(0x0040_9214, "Double Float Real World Value First Value Mapped", T1C, Some(C::DoubleFloatRealWorldValueFirstValueMapped_8dc058), &[], ANY, &[]),
-    a(0x0040_9213, "Double Float Real World Value Last Value Mapped", T1C, Some(C::DoubleFloatRealWorldValueLastValueMapped_b10528), &[], ANY, &[]),
-    a(0x0040_9224, "Real World Value Intercept", T1C, Some(C::RealWorldValueIntercept_10f07f), &[], ANY, &[]),
-    a(0x0040_9225, "Real World Value Slope", T1C, Some(C::RealWorldValueIntercept_10f07f), &[], ANY, &[]),
-    a(0x0040_9212, "Real World Value LUT Data", T1C, Some(C::RealWorldValueLUTData_797724), &[], ANY, &[]),
-    a(0x0028_3003, "LUT Explanation", T1, None, &[], ANY, &[]),
-    a(0x0040_9210, "LUT Label", T1, None, &[], ANY, &[]),
-    a(0x0040_08EA, "Measurement Units Code Sequence", T1, None, &[], Exactly(1), &[
+    a(0x0040_9216, "Real World Value First Value Mapped", T1C, Some(C::RealWorldValueFirstValueMapped_8ca8ef), &[], ANY, None, &[]),
+    a(0x0040_9211, "Real World Value Last Value Mapped", T1C, Some(C::RealWorldValueLastValueMapped_2d3315), &[], ANY, None, &[]),
+    a(0x0040_9214, "Double Float Real World Value First Value Mapped", T1C, Some(C::DoubleFloatRealWorldValueFirstValueMapped_8dc058), &[], ANY, None, &[]),
+    a(0x0040_9213, "Double Float Real World Value Last Value Mapped", T1C, Some(C::DoubleFloatRealWorldValueLastValueMapped_b10528), &[], ANY, None, &[]),
+    a(0x0040_9224, "Real World Value Intercept", T1C, Some(C::RealWorldValueIntercept_10f07f), &[], ANY, None, &[]),
+    a(0x0040_9225, "Real World Value Slope", T1C, Some(C::RealWorldValueIntercept_10f07f), &[], ANY, None, &[]),
+    a(0x0040_9212, "Real World Value LUT Data", T1C, Some(C::RealWorldValueLUTData_797724), &[], ANY, None, &[]),
+    a(0x0028_3003, "LUT Explanation", T1, None, &[], ANY, None, &[]),
+    a(0x0040_9210, "LUT Label", T1, None, &[], ANY, None, &[]),
+    a(0x0040_08EA, "Measurement Units Code Sequence", T1, None, &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Defined, &[7181])), &[
         i(&T_8_8_1),
     ]),
-    a(0x0040_9220, "Quantity Definition Sequence", T3, None, &[], ANY, &[
+    a(0x0040_9220, "Quantity Definition Sequence", T3, None, &[], ANY, Some(ValueSet::Template(Strength::Baseline, 15400)), &[
         i(&T_10_2_1_1),
     ]),
 ]);
@@ -1632,16 +1642,16 @@ pub(super) static T_C_7_6_16_12B: Table = t("PS3.3", "C.7.6.16-12b", "C.7.6.16.2
 /// Content Item with Modifiers Macro Attributes
 pub(super) static T_10_2_1_1: Table = t("PS3.3", "10.2.1-1", "10.2.1", &[
     i(&T_10_2),
-    a(0x0040_0441, "Content Item Modifier Sequence", T3, None, &[], ANY, &[
+    a(0x0040_0441, "Content Item Modifier Sequence", T3, None, &[], ANY, None, &[
         i(&T_10_2),
     ]),
 ]);
 
 /// General Anatomy Optional Macro Attributes
 pub(super) static T_10_7: Table = t("PS3.3", "10-7", "10.5", &[
-    a(0x0008_2218, "Anatomic Region Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0008_2218, "Anatomic Region Sequence", T3, None, &[], AtMost(1), None, &[
         i(&T_8_8_1),
-        a(0x0008_2220, "Anatomic Region Modifier Sequence", T3, None, &[], ANY, &[
+        a(0x0008_2220, "Anatomic Region Modifier Sequence", T3, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Defined, &[2])), &[
             i(&T_8_8_1),
         ]),
     ]),
@@ -1650,9 +1660,9 @@ pub(super) static T_10_7: Table = t("PS3.3", "10-7", "10.5", &[
 
 /// Primary Anatomic Structure Macro Attributes
 pub(super) static T_10_8: Table = t("PS3.3", "10-8", "10.5", &[
-    a(0x0008_2228, "Primary Anatomic Structure Sequence", T3, None, &[], ANY, &[
+    a(0x0008_2228, "Primary Anatomic Structure Sequence", T3, None, &[], ANY, None, &[
         i(&T_8_8_1),
-        a(0x0008_2230, "Primary Anatomic Structure Modifier Sequence", T3, None, &[], ANY, &[
+        a(0x0008_2230, "Primary Anatomic Structure Modifier Sequence", T3, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Defined, &[2])), &[
             i(&T_8_8_1),
         ]),
     ]),
@@ -1660,33 +1670,33 @@ pub(super) static T_10_8: Table = t("PS3.3", "10-8", "10.5", &[
 
 /// General Reference Module Attributes
 pub(super) static T_C_12_10: Table = t("PS3.3", "C.12-10", "C.12.4", &[
-    a(0x0008_1140, "Referenced Image Sequence", T3, None, &[], ANY, &[
+    a(0x0008_1140, "Referenced Image Sequence", T3, None, &[], ANY, None, &[
         i(&T_10_3),
-        a(0x0040_A170, "Purpose of Reference Code Sequence", T3, None, &[], AtMost(1), &[
+        a(0x0040_A170, "Purpose of Reference Code Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Defined, &[7201])), &[
             i(&T_8_8_1),
         ]),
     ]),
-    a(0x0008_114A, "Referenced Instance Sequence", T3, None, &[], ANY, &[
+    a(0x0008_114A, "Referenced Instance Sequence", T3, None, &[], ANY, None, &[
         i(&T_10_11),
-        a(0x0040_A170, "Purpose of Reference Code Sequence", T1, None, &[], Exactly(1), &[
+        a(0x0040_A170, "Purpose of Reference Code Sequence", T1, None, &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Defined, &[7004, 7022])), &[
             i(&T_8_8_1),
         ]),
     ]),
-    a(0x0008_2111, "Derivation Description", T3, None, &[], ANY, &[]),
-    a(0x0008_9215, "Derivation Code Sequence", T3, None, &[], ANY, &[
+    a(0x0008_2111, "Derivation Description", T3, None, &[], ANY, None, &[]),
+    a(0x0008_9215, "Derivation Code Sequence", T3, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Defined, &[7203])), &[
         i(&T_8_8_1),
     ]),
-    a(0x0008_2112, "Source Image Sequence", T3, None, &[], ANY, &[
+    a(0x0008_2112, "Source Image Sequence", T3, None, &[], ANY, None, &[
         i(&T_10_3),
-        a(0x0040_A170, "Purpose of Reference Code Sequence", T3, None, &[], AtMost(1), &[
+        a(0x0040_A170, "Purpose of Reference Code Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Defined, &[7202])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0028_135A, "Spatial Locations Preserved", T3, None, &[e(None, None, &["YES", "NO", "REORIENTED_ONLY"])], ANY, &[]),
-        a(0x0020_0020, "Patient Orientation", T1C, Some(C::PatientOrientation_0a4c6c), &[], ANY, &[]),
+        a(0x0028_135A, "Spatial Locations Preserved", T3, None, &[e(None, None, &["YES", "NO", "REORIENTED_ONLY"])], ANY, None, &[]),
+        a(0x0020_0020, "Patient Orientation", T1C, Some(C::PatientOrientation_0a4c6c), &[], ANY, None, &[]),
     ]),
-    a(0x0042_0013, "Source Instance Sequence", T3, None, &[], ANY, &[
+    a(0x0042_0013, "Source Instance Sequence", T3, None, &[], ANY, None, &[
         i(&T_10_11),
-        a(0x0040_A170, "Purpose of Reference Code Sequence", T3, None, &[], AtMost(1), &[
+        a(0x0040_A170, "Purpose of Reference Code Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Defined, &[7013])), &[
             i(&T_8_8_1),
         ]),
     ]),
@@ -1695,73 +1705,73 @@ pub(super) static T_C_12_10: Table = t("PS3.3", "C.12-10", "C.12.4", &[
 /// Image SOP Instance Reference Macro Attributes
 pub(super) static T_10_3: Table = t("PS3.3", "10-3", "10.3", &[
     i(&T_10_11),
-    a(0x0008_1160, "Referenced Frame Number", T1C, Some(C::ReferencedFrameNumber_1e1f84), &[], ANY, &[]),
-    a(0x0062_000B, "Referenced Segment Number", T1C, Some(C::ReferencedSegmentNumber_f2b12f), &[], ANY, &[]),
+    a(0x0008_1160, "Referenced Frame Number", T1C, Some(C::ReferencedFrameNumber_1e1f84), &[], ANY, None, &[]),
+    a(0x0062_000B, "Referenced Segment Number", T1C, Some(C::ReferencedSegmentNumber_f2b12f), &[], ANY, None, &[]),
 ]);
 
 /// Microscope Slide Layer Tile Organization Module Attributes
 pub(super) static T_C_8_12_14_1: Table = t("PS3.3", "C.8.12.14-1", "C.8.12.14", &[
-    a(0x0048_0006, "Total Pixel Matrix Columns", T1, None, &[], ANY, &[]),
-    a(0x0048_0007, "Total Pixel Matrix Rows", T1, None, &[], ANY, &[]),
-    a(0x0048_0303, "Total Pixel Matrix Focal Planes", T1C, Some(C::TotalPixelMatrixFocalPlanes_d443dd), &[], ANY, &[]),
-    a(0x0048_0008, "Total Pixel Matrix Origin Sequence", T1, None, &[], Exactly(1), &[
-        a(0x0040_072A, "X Offset in Slide Coordinate System", T1, None, &[], ANY, &[]),
-        a(0x0040_073A, "Y Offset in Slide Coordinate System", T1, None, &[], ANY, &[]),
-        a(0x0040_074A, "Z Offset in Slide Coordinate System", T1C, Some(C::ZOffsetInSlideCoordinateSystem_efd490), &[], ANY, &[]),
+    a(0x0048_0006, "Total Pixel Matrix Columns", T1, None, &[], ANY, None, &[]),
+    a(0x0048_0007, "Total Pixel Matrix Rows", T1, None, &[], ANY, None, &[]),
+    a(0x0048_0303, "Total Pixel Matrix Focal Planes", T1C, Some(C::TotalPixelMatrixFocalPlanes_d443dd), &[], ANY, None, &[]),
+    a(0x0048_0008, "Total Pixel Matrix Origin Sequence", T1, None, &[], Exactly(1), None, &[
+        a(0x0040_072A, "X Offset in Slide Coordinate System", T1, None, &[], ANY, None, &[]),
+        a(0x0040_073A, "Y Offset in Slide Coordinate System", T1, None, &[], ANY, None, &[]),
+        a(0x0040_074A, "Z Offset in Slide Coordinate System", T1C, Some(C::ZOffsetInSlideCoordinateSystem_efd490), &[], ANY, None, &[]),
     ]),
-    a(0x0048_0102, "Image Orientation (Slide)", T1C, Some(C::ImageOrientationSlide_d008d7), &[], ANY, &[]),
-    a(0x0048_0304, "Tiles Overlap", T3, None, &[e(None, None, &["ALL", "SOME", "UNDEFINED", "NONE"])], ANY, &[]),
+    a(0x0048_0102, "Image Orientation (Slide)", T1C, Some(C::ImageOrientationSlide_d008d7), &[], ANY, None, &[]),
+    a(0x0048_0304, "Tiles Overlap", T3, None, &[e(None, None, &["ALL", "SOME", "UNDEFINED", "NONE"])], ANY, None, &[]),
 ]);
 
 /// Image Pixel Module Attributes
 pub(super) static T_C_7_11A: Table = t("PS3.3", "C.7-11a", "C.7.6.3", &[
     i(&T_C_7_11C),
-    a(0x7FE0_0010, "Pixel Data", T1C, Some(C::PixelData_f3a5dd), &[], ANY, &[]),
-    a(0x0028_7FE0, "Pixel Data Provider URL", T1C, Some(C::PixelDataProviderURL_83d79f), &[], ANY, &[]),
-    a(0x0028_0121, "Pixel Padding Range Limit", T1C, Some(C::PixelPaddingRangeLimit_0bc79e), &[], ANY, &[]),
-    a(0x7FE0_0001, "Extended Offset Table", T3, None, &[], ANY, &[]),
-    a(0x7FE0_0002, "Extended Offset Table Lengths", T1C, Some(C::ExtendedOffsetTableLengths_cde7d0), &[], ANY, &[]),
+    a(0x7FE0_0010, "Pixel Data", T1C, Some(C::PixelData_f3a5dd), &[], ANY, None, &[]),
+    a(0x0028_7FE0, "Pixel Data Provider URL", T1C, Some(C::PixelDataProviderURL_83d79f), &[], ANY, None, &[]),
+    a(0x0028_0121, "Pixel Padding Range Limit", T1C, Some(C::PixelPaddingRangeLimit_0bc79e), &[], ANY, None, &[]),
+    a(0x7FE0_0001, "Extended Offset Table", T3, None, &[], ANY, None, &[]),
+    a(0x7FE0_0002, "Extended Offset Table Lengths", T1C, Some(C::ExtendedOffsetTableLengths_cde7d0), &[], ANY, None, &[]),
 ]);
 
 /// Acquisition Context Module Attributes
 pub(super) static T_C_7_6_14_1: Table = t("PS3.3", "C.7.6.14-1", "C.7.6.14", &[
-    a(0x0040_0555, "Acquisition Context Sequence", T2, None, &[], ANY, &[
+    a(0x0040_0555, "Acquisition Context Sequence", T2, None, &[], ANY, None, &[
         i(&T_10_2_1_1),
     ]),
-    a(0x0040_0556, "Acquisition Context Description", T3, None, &[], ANY, &[]),
+    a(0x0040_0556, "Acquisition Context Description", T3, None, &[], ANY, None, &[]),
 ]);
 
 /// Multi-frame Functional Groups Module Attributes
 pub(super) static T_C_7_6_16_1: Table = t("PS3.3", "C.7.6.16-1", "C.7.6.16", &[
-    a(0x5200_9229, "Shared Functional Groups Sequence", T1, None, &[], Exactly(1), &[]),
-    a(0x5200_9230, "Per-Frame Functional Groups Sequence", T1C, Some(C::PerFrameFunctionalGroupsSequence_2da3d8), &[], NumberOfFrames, &[]),
-    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, &[]),
-    a(0x0008_0023, "Content Date", T1, None, &[], ANY, &[]),
-    a(0x0008_0033, "Content Time", T1, None, &[], ANY, &[]),
-    a(0x0028_0008, "Number of Frames", T1, None, &[], ANY, &[]),
-    a(0x0022_0028, "Stereo Pairs Present", T3, None, &[e(None, None, &["YES", "NO"])], ANY, &[]),
-    a(0x0020_9228, "Concatenation Frame Offset Number", T1C, Some(C::ConcatenationFrameOffsetNumber_e63090), &[], ANY, &[]),
-    a(0x0028_6010, "Representative Frame Number", T3, None, &[], ANY, &[]),
-    a(0x0020_9161, "Concatenation UID", T1C, Some(C::ConcatenationUID_3c3e36), &[], ANY, &[]),
-    a(0x0020_0242, "SOP Instance UID of Concatenation Source", T1C, Some(C::ConcatenationFrameOffsetNumber_e63090), &[], ANY, &[]),
-    a(0x0020_9162, "In-concatenation Number", T1C, Some(C::ConcatenationFrameOffsetNumber_e63090), &[], ANY, &[]),
-    a(0x0020_9163, "In-concatenation Total Number", T3, None, &[], ANY, &[]),
-    a(0x7FE0_0003, "Encapsulated Pixel Data Value Total Length", T3, None, &[], ANY, &[]),
+    a(0x5200_9229, "Shared Functional Groups Sequence", T1, None, &[], Exactly(1), None, &[]),
+    a(0x5200_9230, "Per-Frame Functional Groups Sequence", T1C, Some(C::PerFrameFunctionalGroupsSequence_2da3d8), &[], NumberOfFrames, None, &[]),
+    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+    a(0x0028_0008, "Number of Frames", T1, None, &[], ANY, None, &[]),
+    a(0x0022_0028, "Stereo Pairs Present", T3, None, &[e(None, None, &["YES", "NO"])], ANY, None, &[]),
+    a(0x0020_9228, "Concatenation Frame Offset Number", T1C, Some(C::ConcatenationFrameOffsetNumber_e63090), &[], ANY, None, &[]),
+    a(0x0028_6010, "Representative Frame Number", T3, None, &[], ANY, None, &[]),
+    a(0x0020_9161, "Concatenation UID", T1C, Some(C::ConcatenationUID_3c3e36), &[], ANY, None, &[]),
+    a(0x0020_0242, "SOP Instance UID of Concatenation Source", T1C, Some(C::ConcatenationFrameOffsetNumber_e63090), &[], ANY, None, &[]),
+    a(0x0020_9162, "In-concatenation Number", T1C, Some(C::ConcatenationFrameOffsetNumber_e63090), &[], ANY, None, &[]),
+    a(0x0020_9163, "In-concatenation Total Number", T3, None, &[], ANY, None, &[]),
+    a(0x7FE0_0003, "Encapsulated Pixel Data Value Total Length", T3, None, &[], ANY, None, &[]),
 ]);
 
 /// Multi-frame Dimension Module Attributes
 pub(super) static T_C_7_6_17_1: Table = t("PS3.3", "C.7.6.17-1", "C.7.6.17", &[
-    a(0x0020_9221, "Dimension Organization Sequence", T1, None, &[], AtLeast(1), &[
-        a(0x0020_9164, "Dimension Organization UID", T1, None, &[], ANY, &[]),
+    a(0x0020_9221, "Dimension Organization Sequence", T1, None, &[], AtLeast(1), None, &[
+        a(0x0020_9164, "Dimension Organization UID", T1, None, &[], ANY, None, &[]),
     ]),
-    a(0x0020_9311, "Dimension Organization Type", T3, None, &[], ANY, &[]),
-    a(0x0020_9222, "Dimension Index Sequence", T1C, Some(C::DimensionIndexSequence_aaaa80), &[], AtLeast(1), &[
-        a(0x0020_9165, "Dimension Index Pointer", T1, None, &[], ANY, &[]),
-        a(0x0020_9213, "Dimension Index Private Creator", T1C, Some(C::DimensionIndexPrivateCreator_252bb2), &[], ANY, &[]),
-        a(0x0020_9167, "Functional Group Pointer", T1C, Some(C::FunctionalGroupPointer_59f16f), &[], ANY, &[]),
-        a(0x0020_9238, "Functional Group Private Creator", T1C, Some(C::FunctionalGroupPrivateCreator_d93a4b), &[], ANY, &[]),
-        a(0x0020_9164, "Dimension Organization UID", T1, None, &[], ANY, &[]),
-        a(0x0020_9421, "Dimension Description Label", T3, None, &[], ANY, &[]),
+    a(0x0020_9311, "Dimension Organization Type", T3, None, &[], ANY, None, &[]),
+    a(0x0020_9222, "Dimension Index Sequence", T1C, Some(C::DimensionIndexSequence_aaaa80), &[], AtLeast(1), None, &[
+        a(0x0020_9165, "Dimension Index Pointer", T1, None, &[], ANY, None, &[]),
+        a(0x0020_9213, "Dimension Index Private Creator", T1C, Some(C::DimensionIndexPrivateCreator_252bb2), &[], ANY, None, &[]),
+        a(0x0020_9167, "Functional Group Pointer", T1C, Some(C::FunctionalGroupPointer_59f16f), &[], ANY, None, &[]),
+        a(0x0020_9238, "Functional Group Private Creator", T1C, Some(C::FunctionalGroupPrivateCreator_d93a4b), &[], ANY, None, &[]),
+        a(0x0020_9164, "Dimension Organization UID", T1, None, &[], ANY, None, &[]),
+        a(0x0020_9421, "Dimension Description Label", T3, None, &[], ANY, None, &[]),
     ]),
 ]);
 
@@ -1772,52 +1782,52 @@ pub(super) static T_C_7_6_22_1: Table = t("PS3.3", "C.7.6.22-1", "C.7.6.22", &[
 
 /// Specimen Macro Attributes
 pub(super) static T_C_7_6_22_2: Table = t("PS3.3", "C.7.6.22-2", "C.7.6.22", &[
-    a(0x0040_0512, "Container Identifier", T1, None, &[], ANY, &[]),
-    a(0x0040_0513, "Issuer of the Container Identifier Sequence", T2, None, &[], AtMost(1), &[
+    a(0x0040_0512, "Container Identifier", T1, None, &[], ANY, None, &[]),
+    a(0x0040_0513, "Issuer of the Container Identifier Sequence", T2, None, &[], AtMost(1), None, &[
         i(&T_10_17),
     ]),
-    a(0x0040_0515, "Alternate Container Identifier Sequence", T3, None, &[], ANY, &[
-        a(0x0040_0512, "Container Identifier", T1, None, &[], ANY, &[]),
-        a(0x0040_0513, "Issuer of the Container Identifier Sequence", T2, None, &[], AtMost(1), &[
+    a(0x0040_0515, "Alternate Container Identifier Sequence", T3, None, &[], ANY, None, &[
+        a(0x0040_0512, "Container Identifier", T1, None, &[], ANY, None, &[]),
+        a(0x0040_0513, "Issuer of the Container Identifier Sequence", T2, None, &[], AtMost(1), None, &[
             i(&T_10_17),
         ]),
     ]),
-    a(0x0040_0518, "Container Type Code Sequence", T2, None, &[], AtMost(1), &[
+    a(0x0040_0518, "Container Type Code Sequence", T2, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[8101])), &[
         i(&T_8_8_1),
     ]),
-    a(0x0040_051A, "Container Description", T3, None, &[], ANY, &[]),
-    a(0x0040_0520, "Container Component Sequence", T3, None, &[], ANY, &[
-        a(0x0050_0012, "Container Component Type Code Sequence", T1, None, &[], Exactly(1), &[
+    a(0x0040_051A, "Container Description", T3, None, &[], ANY, None, &[]),
+    a(0x0040_0520, "Container Component Sequence", T3, None, &[], ANY, None, &[
+        a(0x0050_0012, "Container Component Type Code Sequence", T1, None, &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[8102])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0008_0070, "Manufacturer", T3, None, &[], ANY, &[]),
-        a(0x0008_1090, "Manufacturer's Model Name", T3, None, &[], ANY, &[]),
-        a(0x0050_001B, "Container Component ID", T3, None, &[], ANY, &[]),
-        a(0x0050_001C, "Container Component Length", T3, None, &[], ANY, &[]),
-        a(0x0050_0015, "Container Component Width", T3, None, &[], ANY, &[]),
-        a(0x0050_001D, "Container Component Diameter", T3, None, &[], ANY, &[]),
-        a(0x0050_0013, "Container Component Thickness", T3, None, &[], ANY, &[]),
-        a(0x0050_001A, "Container Component Material", T3, None, &[], ANY, &[]),
-        a(0x0050_001E, "Container Component Description", T3, None, &[], ANY, &[]),
+        a(0x0008_0070, "Manufacturer", T3, None, &[], ANY, None, &[]),
+        a(0x0008_1090, "Manufacturer's Model Name", T3, None, &[], ANY, None, &[]),
+        a(0x0050_001B, "Container Component ID", T3, None, &[], ANY, None, &[]),
+        a(0x0050_001C, "Container Component Length", T3, None, &[], ANY, None, &[]),
+        a(0x0050_0015, "Container Component Width", T3, None, &[], ANY, None, &[]),
+        a(0x0050_001D, "Container Component Diameter", T3, None, &[], ANY, None, &[]),
+        a(0x0050_0013, "Container Component Thickness", T3, None, &[], ANY, None, &[]),
+        a(0x0050_001A, "Container Component Material", T3, None, &[], ANY, None, &[]),
+        a(0x0050_001E, "Container Component Description", T3, None, &[], ANY, None, &[]),
     ]),
-    a(0x0040_0560, "Specimen Description Sequence", T1, None, &[], AtLeast(1), &[
-        a(0x0040_0551, "Specimen Identifier", T1, None, &[], ANY, &[]),
-        a(0x0040_0562, "Issuer of the Specimen Identifier Sequence", T2, None, &[], AtMost(1), &[
+    a(0x0040_0560, "Specimen Description Sequence", T1, None, &[], AtLeast(1), None, &[
+        a(0x0040_0551, "Specimen Identifier", T1, None, &[], ANY, None, &[]),
+        a(0x0040_0562, "Issuer of the Specimen Identifier Sequence", T2, None, &[], AtMost(1), None, &[
             i(&T_10_17),
         ]),
-        a(0x0040_0554, "Specimen UID", T1, None, &[], ANY, &[]),
-        a(0x0040_059A, "Specimen Type Code Sequence", T3, None, &[], AtMost(1), &[
+        a(0x0040_0554, "Specimen UID", T1, None, &[], ANY, None, &[]),
+        a(0x0040_059A, "Specimen Type Code Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[8103])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0040_0600, "Specimen Short Description", T3, None, &[], ANY, &[]),
-        a(0x0040_0602, "Specimen Detailed Description", T3, None, &[], ANY, &[]),
-        a(0x0040_0610, "Specimen Preparation Sequence", T2, None, &[], ANY, &[
-            a(0x0040_0612, "Specimen Preparation Step Content Item Sequence", T1, None, &[], AtLeast(1), &[
+        a(0x0040_0600, "Specimen Short Description", T3, None, &[], ANY, None, &[]),
+        a(0x0040_0602, "Specimen Detailed Description", T3, None, &[], ANY, None, &[]),
+        a(0x0040_0610, "Specimen Preparation Sequence", T2, None, &[], ANY, None, &[
+            a(0x0040_0612, "Specimen Preparation Step Content Item Sequence", T1, None, &[], AtLeast(1), Some(ValueSet::Template(Strength::Baseline, 8001)), &[
                 i(&T_10_2),
             ]),
         ]),
-        i(&T_10_8),
-        a(0x0040_0620, "Specimen Localization Content Item Sequence", T1C, Some(C::SpecimenLocalizationContentItemSequence_4cd40e), &[], AtLeast(1), &[
+        ib(&T_10_8, &[(0x0008_2228, ValueSet::ContextGroups(Strength::Baseline, &[8134]))]),
+        a(0x0040_0620, "Specimen Localization Content Item Sequence", T1C, Some(C::SpecimenLocalizationContentItemSequence_4cd40e), &[], AtLeast(1), Some(ValueSet::Template(Strength::Defined, 8004)), &[
             i(&T_10_2),
         ]),
     ]),
@@ -1825,238 +1835,238 @@ pub(super) static T_C_7_6_22_2: Table = t("PS3.3", "C.7.6.22-2", "C.7.6.22", &[
 
 /// Whole Slide Microscopy Image Module Attributes
 pub(super) static T_C_8_12_4_1: Table = t("PS3.3", "C.8.12.4-1", "C.8.12.4", &[
-    a(0x0008_0008, "Image Type", T1, None, &[e(Some(1), None, &["ORIGINAL", "DERIVED"]), e(Some(2), None, &["PRIMARY"])], ANY, &[]),
-    a(0x0048_0001, "Imaged Volume Width", T1C, Some(C::ImagedVolumeWidth_96eff9), &[], ANY, &[]),
-    a(0x0048_0002, "Imaged Volume Height", T1C, Some(C::ImagedVolumeWidth_96eff9), &[], ANY, &[]),
-    a(0x0048_0003, "Imaged Volume Depth", T1C, Some(C::ImagedVolumeWidth_96eff9), &[], ANY, &[]),
-    a(0x0028_0002, "Samples per Pixel", T1, None, &[e(None, None, &["3", "1"]), e(None, Some(C::SamplesPerPixel_d24356), &["1"]), e(None, Some(C::SamplesPerPixel_0c16cf), &["3"])], ANY, &[]),
-    a(0x0028_0004, "Photometric Interpretation", T1, None, &[e(None, None, &["MONOCHROME2", "RGB", "YBR_FULL_422", "YBR_ICT", "YBR_RCT"])], ANY, &[]),
-    a(0x0028_0006, "Planar Configuration", T1C, Some(C::PlanarConfiguration_290ffd), &[e(None, None, &["0"])], ANY, &[]),
-    a(0x0028_0008, "Number of Frames", T1, None, &[e(None, Some(C::NumberOfFrames_8113e0), &["1"])], ANY, &[]),
-    a(0x0028_0100, "Bits Allocated", T1, None, &[e(None, None, &["8", "16"])], ANY, &[]),
-    a(0x0028_0101, "Bits Stored", T1, None, &[], ANY, &[]),
-    a(0x0028_0102, "High Bit", T1, None, &[], ANY, &[]),
-    a(0x0028_0103, "Pixel Representation", T1, None, &[e(None, None, &["0"])], ANY, &[]),
-    a(0x0008_002A, "Acquisition DateTime", T1, None, &[], ANY, &[]),
-    a(0x0018_9073, "Acquisition Duration", T3, None, &[], ANY, &[]),
-    a(0x0028_2110, "Lossy Image Compression", T1, None, &[e(None, None, &["00", "01"])], ANY, &[]),
-    a(0x0028_2112, "Lossy Image Compression Ratio", T1C, Some(C::LossyImageCompressionRatio_84e963), &[], ANY, &[]),
-    a(0x0028_2114, "Lossy Image Compression Method", T1C, Some(C::LossyImageCompressionRatio_84e963), &[], ANY, &[]),
-    a(0x2050_0020, "Presentation LUT Shape", T1C, Some(C::PresentationLUTShape_dde08b), &[e(None, None, &["IDENTITY"])], ANY, &[]),
-    a(0x0028_1052, "Rescale Intercept", T1C, Some(C::PresentationLUTShape_dde08b), &[e(None, None, &["0"])], ANY, &[]),
-    a(0x0028_1053, "Rescale Slope", T1C, Some(C::PresentationLUTShape_dde08b), &[e(None, None, &["1"])], ANY, &[]),
-    a(0x0008_9206, "Volumetric Properties", T1, None, &[e(None, None, &["VOLUME"])], ANY, &[]),
-    a(0x0048_0010, "Specimen Label in Image", T1, None, &[e(None, None, &["YES", "NO"])], ANY, &[]),
-    a(0x0028_0301, "Burned In Annotation", T1, None, &[e(None, None, &["YES", "NO"])], ANY, &[]),
-    a(0x0048_0011, "Focus Method", T1, None, &[e(None, None, &["AUTO", "MANUAL"])], ANY, &[]),
-    a(0x0048_0012, "Extended Depth of Field", T1, None, &[e(None, None, &["YES", "NO"])], ANY, &[]),
-    a(0x0048_0013, "Number of Focal Planes", T1C, Some(C::NumberOfFocalPlanes_2aca60), &[], ANY, &[]),
-    a(0x0048_0014, "Distance Between Focal Planes", T1C, Some(C::DistanceBetweenFocalPlanes_70deaa), &[], ANY, &[]),
-    a(0x0018_1400, "Acquisition Device Processing Description", T3, None, &[], ANY, &[]),
-    a(0x0018_1210, "Convolution Kernel", T3, None, &[], ANY, &[]),
-    a(0x0048_0015, "Recommended Absent Pixel CIELab Value", T3, None, &[], ANY, &[]),
+    a(0x0008_0008, "Image Type", T1, None, &[e(Some(1), None, &["ORIGINAL", "DERIVED"]), e(Some(2), None, &["PRIMARY"])], ANY, None, &[]),
+    a(0x0048_0001, "Imaged Volume Width", T1C, Some(C::ImagedVolumeWidth_96eff9), &[], ANY, None, &[]),
+    a(0x0048_0002, "Imaged Volume Height", T1C, Some(C::ImagedVolumeWidth_96eff9), &[], ANY, None, &[]),
+    a(0x0048_0003, "Imaged Volume Depth", T1C, Some(C::ImagedVolumeWidth_96eff9), &[], ANY, None, &[]),
+    a(0x0028_0002, "Samples per Pixel", T1, None, &[e(None, None, &["3", "1"]), e(None, Some(C::SamplesPerPixel_d24356), &["1"]), e(None, Some(C::SamplesPerPixel_0c16cf), &["3"])], ANY, None, &[]),
+    a(0x0028_0004, "Photometric Interpretation", T1, None, &[e(None, None, &["MONOCHROME2", "RGB", "YBR_FULL_422", "YBR_ICT", "YBR_RCT"])], ANY, None, &[]),
+    a(0x0028_0006, "Planar Configuration", T1C, Some(C::PlanarConfiguration_290ffd), &[e(None, None, &["0"])], ANY, None, &[]),
+    a(0x0028_0008, "Number of Frames", T1, None, &[e(None, Some(C::NumberOfFrames_8113e0), &["1"])], ANY, None, &[]),
+    a(0x0028_0100, "Bits Allocated", T1, None, &[e(None, None, &["8", "16"])], ANY, None, &[]),
+    a(0x0028_0101, "Bits Stored", T1, None, &[], ANY, None, &[]),
+    a(0x0028_0102, "High Bit", T1, None, &[], ANY, None, &[]),
+    a(0x0028_0103, "Pixel Representation", T1, None, &[e(None, None, &["0"])], ANY, None, &[]),
+    a(0x0008_002A, "Acquisition DateTime", T1, None, &[], ANY, None, &[]),
+    a(0x0018_9073, "Acquisition Duration", T3, None, &[], ANY, None, &[]),
+    a(0x0028_2110, "Lossy Image Compression", T1, None, &[e(None, None, &["00", "01"])], ANY, None, &[]),
+    a(0x0028_2112, "Lossy Image Compression Ratio", T1C, Some(C::LossyImageCompressionRatio_84e963), &[], ANY, None, &[]),
+    a(0x0028_2114, "Lossy Image Compression Method", T1C, Some(C::LossyImageCompressionRatio_84e963), &[], ANY, None, &[]),
+    a(0x2050_0020, "Presentation LUT Shape", T1C, Some(C::PresentationLUTShape_dde08b), &[e(None, None, &["IDENTITY"])], ANY, None, &[]),
+    a(0x0028_1052, "Rescale Intercept", T1C, Some(C::PresentationLUTShape_dde08b), &[e(None, None, &["0"])], ANY, None, &[]),
+    a(0x0028_1053, "Rescale Slope", T1C, Some(C::PresentationLUTShape_dde08b), &[e(None, None, &["1"])], ANY, None, &[]),
+    a(0x0008_9206, "Volumetric Properties", T1, None, &[e(None, None, &["VOLUME"])], ANY, None, &[]),
+    a(0x0048_0010, "Specimen Label in Image", T1, None, &[e(None, None, &["YES", "NO"])], ANY, None, &[]),
+    a(0x0028_0301, "Burned In Annotation", T1, None, &[e(None, None, &["YES", "NO"])], ANY, None, &[]),
+    a(0x0048_0011, "Focus Method", T1, None, &[e(None, None, &["AUTO", "MANUAL"])], ANY, None, &[]),
+    a(0x0048_0012, "Extended Depth of Field", T1, None, &[e(None, None, &["YES", "NO"])], ANY, None, &[]),
+    a(0x0048_0013, "Number of Focal Planes", T1C, Some(C::NumberOfFocalPlanes_2aca60), &[], ANY, None, &[]),
+    a(0x0048_0014, "Distance Between Focal Planes", T1C, Some(C::DistanceBetweenFocalPlanes_70deaa), &[], ANY, None, &[]),
+    a(0x0018_1400, "Acquisition Device Processing Description", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1210, "Convolution Kernel", T3, None, &[], ANY, None, &[]),
+    a(0x0048_0015, "Recommended Absent Pixel CIELab Value", T3, None, &[], ANY, None, &[]),
 ]);
 
 /// Optical Path Module Attributes
 pub(super) static T_C_8_12_5_1: Table = t("PS3.3", "C.8.12.5-1", "C.8.12.5", &[
-    a(0x0048_0302, "Number of Optical Paths", T1C, Some(C::TotalPixelMatrixFocalPlanes_d443dd), &[], ANY, &[]),
-    a(0x0048_0105, "Optical Path Sequence", T1, None, &[], AtLeast(1), &[
-        a(0x0048_0106, "Optical Path Identifier", T1, None, &[], ANY, &[]),
-        a(0x0048_0107, "Optical Path Description", T3, None, &[], ANY, &[]),
-        a(0x0048_0100, "Illuminator Type Code Sequence", T3, None, &[], AtMost(1), &[
+    a(0x0048_0302, "Number of Optical Paths", T1C, Some(C::TotalPixelMatrixFocalPlanes_d443dd), &[], ANY, None, &[]),
+    a(0x0048_0105, "Optical Path Sequence", T1, None, &[], AtLeast(1), None, &[
+        a(0x0048_0106, "Optical Path Identifier", T1, None, &[], ANY, None, &[]),
+        a(0x0048_0107, "Optical Path Description", T3, None, &[], ANY, None, &[]),
+        a(0x0048_0100, "Illuminator Type Code Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[8125])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0022_0055, "Illumination Wave Length", T1C, Some(C::IlluminationWaveLength_66d7d2), &[], ANY, &[]),
-        a(0x0048_0108, "Illumination Color Code Sequence", T1C, Some(C::IlluminationColorCodeSequence_e613f9), &[], Exactly(1), &[
+        a(0x0022_0055, "Illumination Wave Length", T1C, Some(C::IlluminationWaveLength_66d7d2), &[], ANY, None, &[]),
+        a(0x0048_0108, "Illumination Color Code Sequence", T1C, Some(C::IlluminationColorCodeSequence_e613f9), &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[8122])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0022_0016, "Illumination Type Code Sequence", T1, None, &[], AtLeast(1), &[
+        a(0x0022_0016, "Illumination Type Code Sequence", T1, None, &[], AtLeast(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[8123])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0022_0017, "Light Path Filter Type Stack Code Sequence", T3, None, &[], ANY, &[
+        a(0x0022_0017, "Light Path Filter Type Stack Code Sequence", T3, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Baseline, &[8124])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0022_0001, "Light Path Filter Pass-Through Wavelength", T3, None, &[], ANY, &[]),
-        a(0x0022_0002, "Light Path Filter Pass Band", T3, None, &[], ANY, &[]),
-        a(0x0022_0018, "Image Path Filter Type Stack Code Sequence", T3, None, &[], ANY, &[
+        a(0x0022_0001, "Light Path Filter Pass-Through Wavelength", T3, None, &[], ANY, None, &[]),
+        a(0x0022_0002, "Light Path Filter Pass Band", T3, None, &[], ANY, None, &[]),
+        a(0x0022_0018, "Image Path Filter Type Stack Code Sequence", T3, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Baseline, &[8124])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0022_0003, "Image Path Filter Pass-Through Wavelength", T3, None, &[], ANY, &[]),
-        a(0x0022_0004, "Image Path Filter Pass Band", T3, None, &[], ANY, &[]),
-        a(0x0022_0019, "Lenses Code Sequence", T3, None, &[], ANY, &[
+        a(0x0022_0003, "Image Path Filter Pass-Through Wavelength", T3, None, &[], ANY, None, &[]),
+        a(0x0022_0004, "Image Path Filter Pass Band", T3, None, &[], ANY, None, &[]),
+        a(0x0022_0019, "Lenses Code Sequence", T3, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Baseline, &[8121])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0048_0111, "Condenser Lens Power", T3, None, &[], ANY, &[]),
-        a(0x0048_0112, "Objective Lens Power", T3, None, &[], ANY, &[]),
-        a(0x0048_0113, "Objective Lens Numerical Aperture", T3, None, &[], ANY, &[]),
-        a(0x0022_001A, "Channel Description Code Sequence", T1C, Some(C::ChannelDescriptionCodeSequence_5684e2), &[], ValueOf(0x0028_0003, 0x0028_0002), &[
+        a(0x0048_0111, "Condenser Lens Power", T3, None, &[], ANY, None, &[]),
+        a(0x0048_0112, "Objective Lens Power", T3, None, &[], ANY, None, &[]),
+        a(0x0048_0113, "Objective Lens Numerical Aperture", T3, None, &[], ANY, None, &[]),
+        a(0x0022_001A, "Channel Description Code Sequence", T1C, Some(C::ChannelDescriptionCodeSequence_5684e2), &[], ValueOf(0x0028_0003, 0x0028_0002), Some(ValueSet::ContextGroups(Strength::Baseline, &[8122])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0048_0120, "Palette Color Lookup Table Sequence", T3, None, &[], AtMost(1), &[
+        a(0x0048_0120, "Palette Color Lookup Table Sequence", T3, None, &[], AtMost(1), None, &[
             i(&T_C_7_22A),
         ]),
-        a(0x0028_2000, "ICC Profile", T1C, Some(C::ICCProfile_3b45af), &[], ANY, &[]),
-        a(0x0028_2002, "Color Space", T3, None, &[], ANY, &[]),
+        a(0x0028_2000, "ICC Profile", T1C, Some(C::ICCProfile_3b45af), &[], ANY, None, &[]),
+        a(0x0028_2002, "Color Space", T3, None, &[], ANY, None, &[]),
     ]),
 ]);
 
 /// Palette Color Lookup Table Macro Attributes
 pub(super) static T_C_7_22A: Table = t("PS3.3", "C.7-22a", "C.7.9", &[
-    a(0x0028_1101, "Red Palette Color Lookup Table Descriptor", T1, None, &[], ANY, &[]),
-    a(0x0028_1102, "Green Palette Color Lookup Table Descriptor", T1, None, &[], ANY, &[]),
-    a(0x0028_1103, "Blue Palette Color Lookup Table Descriptor", T1, None, &[], ANY, &[]),
-    a(0x0028_1199, "Palette Color Lookup Table UID", T3, None, &[], ANY, &[]),
-    a(0x0028_1201, "Red Palette Color Lookup Table Data", T1C, Some(C::RedPaletteColorLookupTableData_219a0b), &[], ANY, &[]),
-    a(0x0028_1202, "Green Palette Color Lookup Table Data", T1C, Some(C::RedPaletteColorLookupTableData_219a0b), &[], ANY, &[]),
-    a(0x0028_1203, "Blue Palette Color Lookup Table Data", T1C, Some(C::RedPaletteColorLookupTableData_219a0b), &[], ANY, &[]),
-    a(0x0028_1221, "Segmented Red Palette Color Lookup Table Data", T1C, Some(C::SegmentedRedPaletteColorLookupTableData_2d20ab), &[], ANY, &[]),
-    a(0x0028_1222, "Segmented Green Palette Color Lookup Table Data", T1C, Some(C::SegmentedRedPaletteColorLookupTableData_2d20ab), &[], ANY, &[]),
-    a(0x0028_1223, "Segmented Blue Palette Color Lookup Table Data", T1C, Some(C::SegmentedRedPaletteColorLookupTableData_2d20ab), &[], ANY, &[]),
+    a(0x0028_1101, "Red Palette Color Lookup Table Descriptor", T1, None, &[], ANY, None, &[]),
+    a(0x0028_1102, "Green Palette Color Lookup Table Descriptor", T1, None, &[], ANY, None, &[]),
+    a(0x0028_1103, "Blue Palette Color Lookup Table Descriptor", T1, None, &[], ANY, None, &[]),
+    a(0x0028_1199, "Palette Color Lookup Table UID", T3, None, &[], ANY, None, &[]),
+    a(0x0028_1201, "Red Palette Color Lookup Table Data", T1C, Some(C::RedPaletteColorLookupTableData_219a0b), &[], ANY, None, &[]),
+    a(0x0028_1202, "Green Palette Color Lookup Table Data", T1C, Some(C::RedPaletteColorLookupTableData_219a0b), &[], ANY, None, &[]),
+    a(0x0028_1203, "Blue Palette Color Lookup Table Data", T1C, Some(C::RedPaletteColorLookupTableData_219a0b), &[], ANY, None, &[]),
+    a(0x0028_1221, "Segmented Red Palette Color Lookup Table Data", T1C, Some(C::SegmentedRedPaletteColorLookupTableData_2d20ab), &[], ANY, None, &[]),
+    a(0x0028_1222, "Segmented Green Palette Color Lookup Table Data", T1C, Some(C::SegmentedRedPaletteColorLookupTableData_2d20ab), &[], ANY, None, &[]),
+    a(0x0028_1223, "Segmented Blue Palette Color Lookup Table Data", T1C, Some(C::SegmentedRedPaletteColorLookupTableData_2d20ab), &[], ANY, None, &[]),
 ]);
 
 /// Slide Label Module Attributes
 pub(super) static T_C_8_12_8_1: Table = t("PS3.3", "C.8.12.8-1", "C.8.12.8", &[
-    a(0x2200_0005, "Barcode Value", T2, None, &[], ANY, &[]),
-    a(0x2200_0002, "Label Text", T2, None, &[], ANY, &[]),
+    a(0x2200_0005, "Barcode Value", T2, None, &[], ANY, None, &[]),
+    a(0x2200_0002, "Label Text", T2, None, &[], ANY, None, &[]),
 ]);
 
 /// SOP Common Module Attributes
 pub(super) static T_C_12_1: Table = t("PS3.3", "C.12-1", "C.12.1", &[
-    a(0x0008_0016, "SOP Class UID", T1, None, &[], ANY, &[]),
-    a(0x0008_0018, "SOP Instance UID", T1, None, &[], ANY, &[]),
-    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_2f5b10), &[], ANY, &[]),
-    a(0x0008_0012, "Instance Creation Date", T3, None, &[], ANY, &[]),
-    a(0x0008_0013, "Instance Creation Time", T3, None, &[], ANY, &[]),
-    a(0x0008_0015, "Instance Coercion DateTime", T3, None, &[], ANY, &[]),
-    a(0x0008_0014, "Instance Creator UID", T3, None, &[], ANY, &[]),
-    a(0x0008_001A, "Related General SOP Class UID", T3, None, &[], ANY, &[]),
-    a(0x0008_001B, "Original Specialized SOP Class UID", T3, None, &[], ANY, &[]),
-    a(0x0008_001C, "Synthetic Data", T3, None, &[e(None, None, &["YES", "NO"])], ANY, &[]),
-    a(0x0008_001D, "Sensitive Content Code Sequence", T3, None, &[], ANY, &[
+    a(0x0008_0016, "SOP Class UID", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0018, "SOP Instance UID", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_2f5b10), &[], ANY, None, &[]),
+    a(0x0008_0012, "Instance Creation Date", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0013, "Instance Creation Time", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0015, "Instance Coercion DateTime", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0014, "Instance Creator UID", T3, None, &[], ANY, None, &[]),
+    a(0x0008_001A, "Related General SOP Class UID", T3, None, &[], ANY, None, &[]),
+    a(0x0008_001B, "Original Specialized SOP Class UID", T3, None, &[], ANY, None, &[]),
+    a(0x0008_001C, "Synthetic Data", T3, None, &[e(None, None, &["YES", "NO"])], ANY, None, &[]),
+    a(0x0008_001D, "Sensitive Content Code Sequence", T3, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Defined, &[900, 901])), &[
         i(&T_8_8_1),
     ]),
-    a(0x0008_0110, "Coding Scheme Identification Sequence", T3, None, &[], ANY, &[
-        a(0x0008_0102, "Coding Scheme Designator", T1, None, &[], ANY, &[]),
-        a(0x0008_0112, "Coding Scheme Registry", T1C, Some(C::CodingSchemeRegistry_fc29b3), &[], ANY, &[]),
-        a(0x0008_010C, "Coding Scheme UID", T1C, Some(C::CodingSchemeUID_22aeb9), &[], ANY, &[]),
-        a(0x0008_0114, "Coding Scheme External ID", T2C, Some(C::CodingSchemeExternalID_1973e8), &[], ANY, &[]),
-        a(0x0008_0115, "Coding Scheme Name", T3, None, &[], ANY, &[]),
-        a(0x0008_0103, "Coding Scheme Version", T3, None, &[], ANY, &[]),
-        a(0x0008_0116, "Coding Scheme Responsible Organization", T3, None, &[], ANY, &[]),
-        a(0x0008_0109, "Coding Scheme Resources Sequence", T3, None, &[], ANY, &[
-            a(0x0008_010A, "Coding Scheme URL Type", T1, None, &[], ANY, &[]),
-            a(0x0008_010E, "Coding Scheme URL", T1, None, &[], ANY, &[]),
+    a(0x0008_0110, "Coding Scheme Identification Sequence", T3, None, &[], ANY, None, &[
+        a(0x0008_0102, "Coding Scheme Designator", T1, None, &[], ANY, None, &[]),
+        a(0x0008_0112, "Coding Scheme Registry", T1C, Some(C::CodingSchemeRegistry_fc29b3), &[], ANY, None, &[]),
+        a(0x0008_010C, "Coding Scheme UID", T1C, Some(C::CodingSchemeUID_22aeb9), &[], ANY, None, &[]),
+        a(0x0008_0114, "Coding Scheme External ID", T2C, Some(C::CodingSchemeExternalID_1973e8), &[], ANY, None, &[]),
+        a(0x0008_0115, "Coding Scheme Name", T3, None, &[], ANY, None, &[]),
+        a(0x0008_0103, "Coding Scheme Version", T3, None, &[], ANY, None, &[]),
+        a(0x0008_0116, "Coding Scheme Responsible Organization", T3, None, &[], ANY, None, &[]),
+        a(0x0008_0109, "Coding Scheme Resources Sequence", T3, None, &[], ANY, None, &[
+            a(0x0008_010A, "Coding Scheme URL Type", T1, None, &[], ANY, None, &[]),
+            a(0x0008_010E, "Coding Scheme URL", T1, None, &[], ANY, None, &[]),
         ]),
     ]),
-    a(0x0008_0123, "Context Group Identification Sequence", T3, None, &[], ANY, &[
-        a(0x0008_010F, "Context Identifier", T1, None, &[], ANY, &[]),
-        a(0x0008_0117, "Context UID", T3, None, &[], ANY, &[]),
-        a(0x0008_0105, "Mapping Resource", T1, None, &[], ANY, &[]),
-        a(0x0008_0106, "Context Group Version", T1, None, &[], ANY, &[]),
+    a(0x0008_0123, "Context Group Identification Sequence", T3, None, &[], ANY, None, &[
+        a(0x0008_010F, "Context Identifier", T1, None, &[], ANY, None, &[]),
+        a(0x0008_0117, "Context UID", T3, None, &[], ANY, None, &[]),
+        a(0x0008_0105, "Mapping Resource", T1, None, &[], ANY, None, &[]),
+        a(0x0008_0106, "Context Group Version", T1, None, &[], ANY, None, &[]),
     ]),
-    a(0x0008_0124, "Mapping Resource Identification Sequence", T3, None, &[], ANY, &[
-        a(0x0008_0105, "Mapping Resource", T1, None, &[], ANY, &[]),
-        a(0x0008_0118, "Mapping Resource UID", T3, None, &[], ANY, &[]),
-        a(0x0008_0122, "Mapping Resource Name", T3, None, &[], ANY, &[]),
+    a(0x0008_0124, "Mapping Resource Identification Sequence", T3, None, &[], ANY, None, &[
+        a(0x0008_0105, "Mapping Resource", T1, None, &[], ANY, None, &[]),
+        a(0x0008_0118, "Mapping Resource UID", T3, None, &[], ANY, None, &[]),
+        a(0x0008_0122, "Mapping Resource Name", T3, None, &[], ANY, None, &[]),
     ]),
-    a(0x0008_0201, "Timezone Offset From UTC", T3, None, &[], ANY, &[]),
-    a(0x0018_A001, "Contributing Equipment Sequence", T3, None, &[], ANY, &[
-        a(0x0040_A170, "Purpose of Reference Code Sequence", T1, None, &[], Exactly(1), &[
+    a(0x0008_0201, "Timezone Offset From UTC", T3, None, &[], ANY, None, &[]),
+    a(0x0018_A001, "Contributing Equipment Sequence", T3, None, &[], ANY, None, &[
+        a(0x0040_A170, "Purpose of Reference Code Sequence", T1, None, &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Defined, &[7005])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0008_0070, "Manufacturer", T1, None, &[], ANY, &[]),
-        a(0x0008_0080, "Institution Name", T3, None, &[], ANY, &[]),
-        a(0x0008_0081, "Institution Address", T3, None, &[], ANY, &[]),
-        a(0x0008_1010, "Station Name", T3, None, &[], ANY, &[]),
-        a(0x0008_1040, "Institutional Department Name", T3, None, &[], ANY, &[]),
-        a(0x0008_1041, "Institutional Department Type Code Sequence", T3, None, &[], AtMost(1), &[
+        a(0x0008_0070, "Manufacturer", T1, None, &[], ANY, None, &[]),
+        a(0x0008_0080, "Institution Name", T3, None, &[], ANY, None, &[]),
+        a(0x0008_0081, "Institution Address", T3, None, &[], ANY, None, &[]),
+        a(0x0008_1010, "Station Name", T3, None, &[], ANY, None, &[]),
+        a(0x0008_1040, "Institutional Department Name", T3, None, &[], ANY, None, &[]),
+        a(0x0008_1041, "Institutional Department Type Code Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[7030])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0008_1070, "Operators' Name", T3, None, &[], ANY, &[]),
-        a(0x0008_1072, "Operator Identification Sequence", T3, None, &[], ANY, &[
+        a(0x0008_1070, "Operators' Name", T3, None, &[], ANY, None, &[]),
+        a(0x0008_1072, "Operator Identification Sequence", T3, None, &[], ANY, None, &[
             i(&T_10_1),
         ]),
-        a(0x0008_1090, "Manufacturer's Model Name", T3, None, &[], ANY, &[]),
-        a(0x0018_1000, "Device Serial Number", T3, None, &[], ANY, &[]),
-        a(0x0018_1020, "Software Versions", T3, None, &[], ANY, &[]),
-        a(0x0018_1204, "Date of Manufacture", T3, None, &[], ANY, &[]),
-        a(0x0018_1205, "Date of Installation", T3, None, &[], ANY, &[]),
-        a(0x0018_1002, "Device UID", T3, None, &[], ANY, &[]),
-        a(0x0018_100A, "UDI Sequence", T3, None, &[], ANY, &[
+        a(0x0008_1090, "Manufacturer's Model Name", T3, None, &[], ANY, None, &[]),
+        a(0x0018_1000, "Device Serial Number", T3, None, &[], ANY, None, &[]),
+        a(0x0018_1020, "Software Versions", T3, None, &[], ANY, None, &[]),
+        a(0x0018_1204, "Date of Manufacture", T3, None, &[], ANY, None, &[]),
+        a(0x0018_1205, "Date of Installation", T3, None, &[], ANY, None, &[]),
+        a(0x0018_1002, "Device UID", T3, None, &[], ANY, None, &[]),
+        a(0x0018_100A, "UDI Sequence", T3, None, &[], ANY, None, &[
             i(&T_10_29_1),
         ]),
-        a(0x0018_1050, "Spatial Resolution", T3, None, &[], ANY, &[]),
-        a(0x0018_1200, "Date of Last Calibration", T3, None, &[], ANY, &[]),
-        a(0x0018_1201, "Time of Last Calibration", T3, None, &[], ANY, &[]),
-        a(0x0018_A002, "Contribution DateTime", T3, None, &[], ANY, &[]),
-        a(0x0018_A003, "Contribution Description", T3, None, &[], ANY, &[]),
+        a(0x0018_1050, "Spatial Resolution", T3, None, &[], ANY, None, &[]),
+        a(0x0018_1200, "Date of Last Calibration", T3, None, &[], ANY, None, &[]),
+        a(0x0018_1201, "Time of Last Calibration", T3, None, &[], ANY, None, &[]),
+        a(0x0018_A002, "Contribution DateTime", T3, None, &[], ANY, None, &[]),
+        a(0x0018_A003, "Contribution Description", T3, None, &[], ANY, None, &[]),
     ]),
-    a(0x0020_0013, "Instance Number", T3, None, &[], ANY, &[]),
-    a(0x0100_0410, "SOP Instance Status", T3, None, &[e(None, None, &["NS", "OR", "AO", "AC"])], ANY, &[]),
-    a(0x0100_0420, "SOP Authorization DateTime", T3, None, &[], ANY, &[]),
-    a(0x0100_0424, "SOP Authorization Comment", T3, None, &[], ANY, &[]),
-    a(0x0100_0426, "Authorization Equipment Certification Number", T3, None, &[], ANY, &[]),
+    a(0x0020_0013, "Instance Number", T3, None, &[], ANY, None, &[]),
+    a(0x0100_0410, "SOP Instance Status", T3, None, &[e(None, None, &["NS", "OR", "AO", "AC"])], ANY, None, &[]),
+    a(0x0100_0420, "SOP Authorization DateTime", T3, None, &[], ANY, None, &[]),
+    a(0x0100_0424, "SOP Authorization Comment", T3, None, &[], ANY, None, &[]),
+    a(0x0100_0426, "Authorization Equipment Certification Number", T3, None, &[], ANY, None, &[]),
     i(&T_C_12_6),
-    a(0x0400_0500, "Encrypted Attributes Sequence", T1C, Some(C::EncryptedAttributesSequence_20eb1a), &[], AtLeast(1), &[
-        a(0x0400_0510, "Encrypted Content Transfer Syntax UID", T1, None, &[], ANY, &[]),
-        a(0x0400_0520, "Encrypted Content", T1, None, &[], ANY, &[]),
+    a(0x0400_0500, "Encrypted Attributes Sequence", T1C, Some(C::EncryptedAttributesSequence_20eb1a), &[], AtLeast(1), None, &[
+        a(0x0400_0510, "Encrypted Content Transfer Syntax UID", T1, None, &[], ANY, None, &[]),
+        a(0x0400_0520, "Encrypted Content", T1, None, &[], ANY, None, &[]),
     ]),
     i(&T_C_12_1_1_9_1),
-    a(0x0040_A390, "HL7 Structured Document Reference Sequence", T1C, Some(C::HL7StructuredDocumentReferenceSequence_97a169), &[], AtLeast(1), &[
+    a(0x0040_A390, "HL7 Structured Document Reference Sequence", T1C, Some(C::HL7StructuredDocumentReferenceSequence_97a169), &[], AtLeast(1), None, &[
         i(&T_10_11),
-        a(0x0040_E001, "HL7 Instance Identifier", T1, None, &[], ANY, &[]),
-        a(0x0040_E010, "Retrieve URI", T3, None, &[], ANY, &[]),
+        a(0x0040_E001, "HL7 Instance Identifier", T1, None, &[], ANY, None, &[]),
+        a(0x0040_E010, "Retrieve URI", T3, None, &[], ANY, None, &[]),
     ]),
-    a(0x0028_0303, "Longitudinal Temporal Information Modified", T3, None, &[e(None, None, &["UNMODIFIED", "MODIFIED", "REMOVED"])], ANY, &[]),
-    a(0x0008_0053, "Query/Retrieve View", T1C, Some(C::QueryRetrieveView_01d963), &[e(None, None, &["CLASSIC", "ENHANCED"])], ANY, &[]),
-    a(0x0020_9172, "Conversion Source Attributes Sequence", T1C, Some(C::ConversionSourceAttributesSequence_78685d), &[], AtLeast(1), &[
+    a(0x0028_0303, "Longitudinal Temporal Information Modified", T3, None, &[e(None, None, &["UNMODIFIED", "MODIFIED", "REMOVED"])], ANY, None, &[]),
+    a(0x0008_0053, "Query/Retrieve View", T1C, Some(C::QueryRetrieveView_01d963), &[e(None, None, &["CLASSIC", "ENHANCED"])], ANY, None, &[]),
+    a(0x0020_9172, "Conversion Source Attributes Sequence", T1C, Some(C::ConversionSourceAttributesSequence_78685d), &[], AtLeast(1), None, &[
         i(&T_10_3),
     ]),
-    a(0x0018_9004, "Content Qualification", T3, None, &[e(None, None, &["PRODUCT", "RESEARCH", "SERVICE"])], ANY, &[]),
-    a(0x0008_0300, "Private Data Element Characteristics Sequence", T3, None, &[], ANY, &[
-        a(0x0008_0301, "Private Group Reference", T1, None, &[], ANY, &[]),
-        a(0x0008_0302, "Private Creator Reference", T1, None, &[], ANY, &[]),
-        a(0x0008_0310, "Private Data Element Definition Sequence", T3, None, &[], ANY, &[
-            a(0x0008_0308, "Private Data Element", T1, None, &[], ANY, &[]),
-            a(0x0008_0309, "Private Data Element Value Multiplicity", T1, None, &[], ANY, &[]),
-            a(0x0008_030A, "Private Data Element Value Representation", T1, None, &[], ANY, &[]),
-            a(0x0008_030B, "Private Data Element Number of Items", T1C, Some(C::PrivateDataElementNumberOfItems_54e1ee), &[], ANY, &[]),
-            a(0x0008_030D, "Private Data Element Keyword", T1, None, &[], ANY, &[]),
-            a(0x0008_030C, "Private Data Element Name", T1, None, &[], ANY, &[]),
-            a(0x0008_030E, "Private Data Element Description", T3, None, &[], ANY, &[]),
-            a(0x0008_030F, "Private Data Element Encoding", T3, None, &[], ANY, &[]),
-            a(0x0040_E010, "Retrieve URI", T3, None, &[], ANY, &[]),
+    a(0x0018_9004, "Content Qualification", T3, None, &[e(None, None, &["PRODUCT", "RESEARCH", "SERVICE"])], ANY, None, &[]),
+    a(0x0008_0300, "Private Data Element Characteristics Sequence", T3, None, &[], ANY, None, &[
+        a(0x0008_0301, "Private Group Reference", T1, None, &[], ANY, None, &[]),
+        a(0x0008_0302, "Private Creator Reference", T1, None, &[], ANY, None, &[]),
+        a(0x0008_0310, "Private Data Element Definition Sequence", T3, None, &[], ANY, None, &[
+            a(0x0008_0308, "Private Data Element", T1, None, &[], ANY, None, &[]),
+            a(0x0008_0309, "Private Data Element Value Multiplicity", T1, None, &[], ANY, None, &[]),
+            a(0x0008_030A, "Private Data Element Value Representation", T1, None, &[], ANY, None, &[]),
+            a(0x0008_030B, "Private Data Element Number of Items", T1C, Some(C::PrivateDataElementNumberOfItems_54e1ee), &[], ANY, None, &[]),
+            a(0x0008_030D, "Private Data Element Keyword", T1, None, &[], ANY, None, &[]),
+            a(0x0008_030C, "Private Data Element Name", T1, None, &[], ANY, None, &[]),
+            a(0x0008_030E, "Private Data Element Description", T3, None, &[], ANY, None, &[]),
+            a(0x0008_030F, "Private Data Element Encoding", T3, None, &[], ANY, None, &[]),
+            a(0x0040_E010, "Retrieve URI", T3, None, &[], ANY, None, &[]),
         ]),
-        a(0x0008_0303, "Block Identifying Information Status", T1, None, &[e(None, None, &["SAFE", "UNSAFE", "MIXED"])], ANY, &[]),
-        a(0x0008_0304, "Nonidentifying Private Elements", T1C, Some(C::NonidentifyingPrivateElements_0bc3db), &[], ANY, &[]),
-        a(0x0008_0305, "Deidentification Action Sequence", T3, None, &[], ANY, &[
-            a(0x0008_0306, "Identifying Private Elements", T1, None, &[], ANY, &[]),
-            a(0x0008_0307, "Deidentification Action", T1, None, &[e(None, None, &["D", "Z", "X", "U"])], ANY, &[]),
+        a(0x0008_0303, "Block Identifying Information Status", T1, None, &[e(None, None, &["SAFE", "UNSAFE", "MIXED"])], ANY, None, &[]),
+        a(0x0008_0304, "Nonidentifying Private Elements", T1C, Some(C::NonidentifyingPrivateElements_0bc3db), &[], ANY, None, &[]),
+        a(0x0008_0305, "Deidentification Action Sequence", T3, None, &[], ANY, None, &[
+            a(0x0008_0306, "Identifying Private Elements", T1, None, &[], ANY, None, &[]),
+            a(0x0008_0307, "Deidentification Action", T1, None, &[e(None, None, &["D", "Z", "X", "U"])], ANY, None, &[]),
         ]),
     ]),
-    a(0x0400_0600, "Instance Origin Status", T3, None, &[e(None, None, &["LOCAL", "IMPORTED"])], ANY, &[]),
-    a(0x2200_0005, "Barcode Value", T3, None, &[], ANY, &[]),
+    a(0x0400_0600, "Instance Origin Status", T3, None, &[e(None, None, &["LOCAL", "IMPORTED"])], ANY, None, &[]),
+    a(0x2200_0005, "Barcode Value", T3, None, &[], ANY, None, &[]),
     i(&T_10_41_1),
 ]);
 
 /// Digital Signatures Macro Attributes
 pub(super) static T_C_12_6: Table = t("PS3.3", "C.12-6", "C.12.1.1.3", &[
-    a(0x4FFE_0001, "MAC Parameters Sequence", T3, None, &[], AtLeast(1), &[
-        a(0x0400_0005, "MAC ID Number", T1, None, &[], ANY, &[]),
-        a(0x0400_0010, "MAC Calculation Transfer Syntax UID", T1, None, &[], ANY, &[]),
-        a(0x0400_0015, "MAC Algorithm", T1, None, &[], ANY, &[]),
-        a(0x0400_0020, "Data Elements Signed", T1, None, &[], ANY, &[]),
+    a(0x4FFE_0001, "MAC Parameters Sequence", T3, None, &[], AtLeast(1), None, &[
+        a(0x0400_0005, "MAC ID Number", T1, None, &[], ANY, None, &[]),
+        a(0x0400_0010, "MAC Calculation Transfer Syntax UID", T1, None, &[], ANY, None, &[]),
+        a(0x0400_0015, "MAC Algorithm", T1, None, &[], ANY, None, &[]),
+        a(0x0400_0020, "Data Elements Signed", T1, None, &[], ANY, None, &[]),
     ]),
-    a(0xFFFA_FFFA, "Digital Signatures Sequence", T3, None, &[], ANY, &[
-        a(0x0400_0005, "MAC ID Number", T1, None, &[], ANY, &[]),
-        a(0x0400_0100, "Digital Signature UID", T1, None, &[], ANY, &[]),
-        a(0x0400_0105, "Digital Signature DateTime", T1, None, &[], ANY, &[]),
-        a(0x0400_0110, "Certificate Type", T1, None, &[], ANY, &[]),
-        a(0x0400_0115, "Certificate of Signer", T1, None, &[], ANY, &[]),
-        a(0x0400_0120, "Signature", T1, None, &[], ANY, &[]),
-        a(0x0400_0305, "Certified Timestamp Type", T1C, Some(C::CertifiedTimestampType_eabbec), &[], ANY, &[]),
-        a(0x0400_0310, "Certified Timestamp", T3, None, &[], ANY, &[]),
-        a(0x0400_0401, "Digital Signature Purpose Code Sequence", T3, None, &[], AtMost(1), &[
+    a(0xFFFA_FFFA, "Digital Signatures Sequence", T3, None, &[], ANY, None, &[
+        a(0x0400_0005, "MAC ID Number", T1, None, &[], ANY, None, &[]),
+        a(0x0400_0100, "Digital Signature UID", T1, None, &[], ANY, None, &[]),
+        a(0x0400_0105, "Digital Signature DateTime", T1, None, &[], ANY, None, &[]),
+        a(0x0400_0110, "Certificate Type", T1, None, &[], ANY, None, &[]),
+        a(0x0400_0115, "Certificate of Signer", T1, None, &[], ANY, None, &[]),
+        a(0x0400_0120, "Signature", T1, None, &[], ANY, None, &[]),
+        a(0x0400_0305, "Certified Timestamp Type", T1C, Some(C::CertifiedTimestampType_eabbec), &[], ANY, None, &[]),
+        a(0x0400_0310, "Certified Timestamp", T3, None, &[], ANY, None, &[]),
+        a(0x0400_0401, "Digital Signature Purpose Code Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[7007])), &[
             i(&T_8_8_1),
         ]),
     ]),
@@ -2064,62 +2074,62 @@ pub(super) static T_C_12_6: Table = t("PS3.3", "C.12-6", "C.12.1.1.3", &[
 
 /// Original Attributes Macro Attributes
 pub(super) static T_C_12_1_1_9_1: Table = t("PS3.3", "C.12.1.1.9-1", "C.12.1.1.9", &[
-    a(0x0400_0561, "Original Attributes Sequence", T3, None, &[], ANY, &[
-        a(0x0400_0564, "Source of Previous Values", T2, None, &[], ANY, &[]),
-        a(0x0400_0562, "Attribute Modification DateTime", T1, None, &[], ANY, &[]),
-        a(0x0400_0563, "Modifying System", T1, None, &[], ANY, &[]),
-        a(0x0400_0565, "Reason for the Attribute Modification", T1, None, &[], ANY, &[]),
-        a(0x0400_0550, "Modified Attributes Sequence", T1, None, &[], Exactly(1), &[]),
-        a(0x0400_0551, "Nonconforming Modified Attributes Sequence", T3, None, &[], ANY, &[
+    a(0x0400_0561, "Original Attributes Sequence", T3, None, &[], ANY, None, &[
+        a(0x0400_0564, "Source of Previous Values", T2, None, &[], ANY, None, &[]),
+        a(0x0400_0562, "Attribute Modification DateTime", T1, None, &[], ANY, None, &[]),
+        a(0x0400_0563, "Modifying System", T1, None, &[], ANY, None, &[]),
+        a(0x0400_0565, "Reason for the Attribute Modification", T1, None, &[], ANY, None, &[]),
+        a(0x0400_0550, "Modified Attributes Sequence", T1, None, &[], Exactly(1), None, &[]),
+        a(0x0400_0551, "Nonconforming Modified Attributes Sequence", T3, None, &[], ANY, None, &[
             i(&T_10_20),
-            a(0x0400_0552, "Nonconforming Data Element Value", T1, None, &[], ANY, &[]),
+            a(0x0400_0552, "Nonconforming Data Element Value", T1, None, &[], ANY, None, &[]),
         ]),
     ]),
 ]);
 
 /// Selector Attribute Macro Attributes
 pub(super) static T_10_20: Table = t("PS3.3", "10-20", "10.17", &[
-    a(0x0072_0026, "Selector Attribute", T1C, Some(C::SelectorAttribute_8b10ca), &[], ANY, &[]),
-    a(0x0072_0028, "Selector Value Number", T1C, Some(C::SelectorValueNumber_81714a), &[], ANY, &[]),
-    a(0x0072_0052, "Selector Sequence Pointer", T1C, Some(C::SelectorSequencePointer_452bba), &[], ANY, &[]),
-    a(0x0072_0054, "Selector Sequence Pointer Private Creator", T1C, Some(C::SelectorSequencePointerPrivateCreator_4cb02f), &[], ANY, &[]),
-    a(0x0074_1057, "Selector Sequence Pointer Items", T1C, Some(C::SelectorSequencePointerItems_60e4ce), &[], ANY, &[]),
-    a(0x0072_0056, "Selector Attribute Private Creator", T1C, Some(C::SelectorAttributePrivateCreator_83625b), &[], ANY, &[]),
+    a(0x0072_0026, "Selector Attribute", T1C, Some(C::SelectorAttribute_8b10ca), &[], ANY, None, &[]),
+    a(0x0072_0028, "Selector Value Number", T1C, Some(C::SelectorValueNumber_81714a), &[], ANY, None, &[]),
+    a(0x0072_0052, "Selector Sequence Pointer", T1C, Some(C::SelectorSequencePointer_452bba), &[], ANY, None, &[]),
+    a(0x0072_0054, "Selector Sequence Pointer Private Creator", T1C, Some(C::SelectorSequencePointerPrivateCreator_4cb02f), &[], ANY, None, &[]),
+    a(0x0074_1057, "Selector Sequence Pointer Items", T1C, Some(C::SelectorSequencePointerItems_60e4ce), &[], ANY, None, &[]),
+    a(0x0072_0056, "Selector Attribute Private Creator", T1C, Some(C::SelectorAttributePrivateCreator_83625b), &[], ANY, None, &[]),
 ]);
 
 /// General Procedure Protocol Reference Macro Attributes
 pub(super) static T_10_41_1: Table = t("PS3.3", "10.41-1", "10.41", &[
-    a(0x0018_990C, "Referenced Defined Protocol Sequence", T1C, Some(C::ReferencedDefinedProtocolSequence_f99e76), &[], AtLeast(1), &[
+    a(0x0018_990C, "Referenced Defined Protocol Sequence", T1C, Some(C::ReferencedDefinedProtocolSequence_f99e76), &[], AtLeast(1), None, &[
         i(&T_10_11),
-        a(0x0018_9938, "Source Acquisition Protocol Element Number", T3, Some(C::SourceAcquisitionProtocolElementNumber_90f9d5), &[], ANY, &[]),
-        a(0x0018_993A, "Source Reconstruction Protocol Element Number", T3, Some(C::SourceReconstructionProtocolElementNumber_eeffde), &[], ANY, &[]),
+        a(0x0018_9938, "Source Acquisition Protocol Element Number", T3, Some(C::SourceAcquisitionProtocolElementNumber_90f9d5), &[], ANY, None, &[]),
+        a(0x0018_993A, "Source Reconstruction Protocol Element Number", T3, Some(C::SourceReconstructionProtocolElementNumber_eeffde), &[], ANY, None, &[]),
     ]),
-    a(0x0018_990D, "Referenced Performed Protocol Sequence", T1C, Some(C::ReferencedPerformedProtocolSequence_e963cd), &[], AtLeast(1), &[
+    a(0x0018_990D, "Referenced Performed Protocol Sequence", T1C, Some(C::ReferencedPerformedProtocolSequence_e963cd), &[], AtLeast(1), None, &[
         i(&T_10_11),
-        a(0x0018_9938, "Source Acquisition Protocol Element Number", T3, Some(C::SourceAcquisitionProtocolElementNumber_90f9d5), &[], ANY, &[]),
-        a(0x0018_993A, "Source Reconstruction Protocol Element Number", T3, Some(C::SourceReconstructionProtocolElementNumber_eeffde), &[], ANY, &[]),
+        a(0x0018_9938, "Source Acquisition Protocol Element Number", T3, Some(C::SourceAcquisitionProtocolElementNumber_90f9d5), &[], ANY, None, &[]),
+        a(0x0018_993A, "Source Reconstruction Protocol Element Number", T3, Some(C::SourceReconstructionProtocolElementNumber_eeffde), &[], ANY, None, &[]),
     ]),
 ]);
 
 /// Common Instance Reference Module Attributes
 pub(super) static T_C_12_8: Table = t("PS3.3", "C.12-8", "C.12.2", &[
-    a(0x0008_1115, "Referenced Series Sequence", T1C, Some(C::ReferencedSeriesSequence_78cb90), &[], AtLeast(1), &[
-        a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, &[]),
-        a(0x0008_114A, "Referenced Instance Sequence", T1, None, &[], AtLeast(1), &[
+    a(0x0008_1115, "Referenced Series Sequence", T1C, Some(C::ReferencedSeriesSequence_78cb90), &[], AtLeast(1), None, &[
+        a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
+        a(0x0008_114A, "Referenced Instance Sequence", T1, None, &[], AtLeast(1), None, &[
             i(&T_10_11),
         ]),
     ]),
-    a(0x0008_1200, "Studies Containing Other Referenced Instances Sequence", T1C, Some(C::StudiesContainingOtherReferencedInstancesSequence_4a06a8), &[], AtLeast(1), &[
-        a(0x0020_000D, "Study Instance UID", T1, None, &[], ANY, &[]),
+    a(0x0008_1200, "Studies Containing Other Referenced Instances Sequence", T1C, Some(C::StudiesContainingOtherReferencedInstancesSequence_4a06a8), &[], AtLeast(1), None, &[
+        a(0x0020_000D, "Study Instance UID", T1, None, &[], ANY, None, &[]),
         i(&T_10_4),
     ]),
 ]);
 
 /// Series and Instance Reference Macro Attributes
 pub(super) static T_10_4: Table = t("PS3.3", "10-4", "10.4", &[
-    a(0x0008_1115, "Referenced Series Sequence", T1, None, &[], AtLeast(1), &[
-        a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, &[]),
-        a(0x0008_114A, "Referenced Instance Sequence", T1, None, &[], AtLeast(1), &[
+    a(0x0008_1115, "Referenced Series Sequence", T1, None, &[], AtLeast(1), None, &[
+        a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
+        a(0x0008_114A, "Referenced Instance Sequence", T1, None, &[], AtLeast(1), None, &[
             i(&T_10_11),
         ]),
     ]),
@@ -2127,46 +2137,46 @@ pub(super) static T_10_4: Table = t("PS3.3", "10-4", "10.4", &[
 
 /// Frame Extraction Module Attributes
 pub(super) static T_C_12_9: Table = t("PS3.3", "C.12-9", "C.12.3", &[
-    a(0x0008_1164, "Frame Extraction Sequence", T1, None, &[], AtLeast(1), &[
-        a(0x0008_1167, "Multi-frame Source SOP Instance UID", T1, None, &[], ANY, &[]),
-        a(0x0008_1161, "Simple Frame List", T1C, Some(C::SimpleFrameList_116fb1), &[], ANY, &[]),
-        a(0x0008_1162, "Calculated Frame List", T1C, Some(C::CalculatedFrameList_0f7f87), &[], ANY, &[]),
-        a(0x0008_1163, "Time Range", T1C, Some(C::TimeRange_8f1b63), &[], ANY, &[]),
+    a(0x0008_1164, "Frame Extraction Sequence", T1, None, &[], AtLeast(1), None, &[
+        a(0x0008_1167, "Multi-frame Source SOP Instance UID", T1, None, &[], ANY, None, &[]),
+        a(0x0008_1161, "Simple Frame List", T1C, Some(C::SimpleFrameList_116fb1), &[], ANY, None, &[]),
+        a(0x0008_1162, "Calculated Frame List", T1C, Some(C::CalculatedFrameList_0f7f87), &[], ANY, None, &[]),
+        a(0x0008_1163, "Time Range", T1C, Some(C::TimeRange_8f1b63), &[], ANY, None, &[]),
     ]),
 ]);
 
 /// Pixel Measures Macro Attributes
 pub(super) static T_C_7_6_16_2: Table = t("PS3.3", "C.7.6.16-2", "C.7.6.16.2.1", &[
-    a(0x0028_9110, "Pixel Measures Sequence", T1, None, &[], Exactly(1), &[
-        a(0x0028_0030, "Pixel Spacing", T1C, Some(C::PixelSpacing_a4aaf2), &[], ANY, &[]),
-        a(0x0018_0050, "Slice Thickness", T1C, Some(C::SliceThickness_d972aa), &[], ANY, &[]),
-        a(0x0018_0088, "Spacing Between Slices", T1C, Some(C::SpacingBetweenSlices_c4b1ab), &[], ANY, &[]),
+    a(0x0028_9110, "Pixel Measures Sequence", T1, None, &[], Exactly(1), None, &[
+        a(0x0028_0030, "Pixel Spacing", T1C, Some(C::PixelSpacing_a4aaf2), &[], ANY, None, &[]),
+        a(0x0018_0050, "Slice Thickness", T1C, Some(C::SliceThickness_d972aa), &[], ANY, None, &[]),
+        a(0x0018_0088, "Spacing Between Slices", T1C, Some(C::SpacingBetweenSlices_c4b1ab), &[], ANY, None, &[]),
     ]),
 ]);
 
 /// Frame Content Macro Attributes
 pub(super) static T_C_7_6_16_3: Table = t("PS3.3", "C.7.6.16-3", "C.7.6.16.2.2", &[
-    a(0x0020_9111, "Frame Content Sequence", T1, None, &[], Exactly(1), &[
-        a(0x0020_9156, "Frame Acquisition Number", T3, None, &[], ANY, &[]),
-        a(0x0018_9151, "Frame Reference DateTime", T1C, Some(C::FrameReferenceDateTime_b677d6), &[], ANY, &[]),
-        a(0x0018_9074, "Frame Acquisition DateTime", T1C, Some(C::FrameAcquisitionDateTime_a613a8), &[], ANY, &[]),
-        a(0x0018_9220, "Frame Acquisition Duration", T1C, Some(C::FrameReferenceDateTime_b677d6), &[], ANY, &[]),
-        a(0x0018_9236, "Cardiac Cycle Position", T3, None, &[], ANY, &[]),
-        a(0x0018_9214, "Respiratory Cycle Position", T3, None, &[], ANY, &[]),
-        a(0x0020_9157, "Dimension Index Values", T1C, Some(C::DimensionIndexValues_88c44a), &[], ANY, &[]),
-        a(0x0020_9128, "Temporal Position Index", T1C, Some(C::TemporalPositionIndex_517e64), &[], ANY, &[]),
-        a(0x0020_9056, "Stack ID", T1C, Some(C::StackID_06f205), &[], ANY, &[]),
-        a(0x0020_9057, "In-Stack Position Number", T1C, Some(C::InStackPositionNumber_261950), &[], ANY, &[]),
-        a(0x0020_9158, "Frame Comments", T3, None, &[], ANY, &[]),
-        a(0x0020_9453, "Frame Label", T3, None, &[], ANY, &[]),
+    a(0x0020_9111, "Frame Content Sequence", T1, None, &[], Exactly(1), None, &[
+        a(0x0020_9156, "Frame Acquisition Number", T3, None, &[], ANY, None, &[]),
+        a(0x0018_9151, "Frame Reference DateTime", T1C, Some(C::FrameReferenceDateTime_b677d6), &[], ANY, None, &[]),
+        a(0x0018_9074, "Frame Acquisition DateTime", T1C, Some(C::FrameAcquisitionDateTime_a613a8), &[], ANY, None, &[]),
+        a(0x0018_9220, "Frame Acquisition Duration", T1C, Some(C::FrameReferenceDateTime_b677d6), &[], ANY, None, &[]),
+        a(0x0018_9236, "Cardiac Cycle Position", T3, None, &[], ANY, None, &[]),
+        a(0x0018_9214, "Respiratory Cycle Position", T3, None, &[], ANY, None, &[]),
+        a(0x0020_9157, "Dimension Index Values", T1C, Some(C::DimensionIndexValues_88c44a), &[], ANY, None, &[]),
+        a(0x0020_9128, "Temporal Position Index", T1C, Some(C::TemporalPositionIndex_517e64), &[], ANY, None, &[]),
+        a(0x0020_9056, "Stack ID", T1C, Some(C::StackID_06f205), &[], ANY, None, &[]),
+        a(0x0020_9057, "In-Stack Position Number", T1C, Some(C::InStackPositionNumber_261950), &[], ANY, None, &[]),
+        a(0x0020_9158, "Frame Comments", T3, None, &[], ANY, None, &[]),
+        a(0x0020_9453, "Frame Label", T3, None, &[], ANY, None, &[]),
     ]),
 ]);
 
 /// Referenced Image Macro Attributes
 pub(super) static T_C_7_6_16_6: Table = t("PS3.3", "C.7.6.16-6", "C.7.6.16.2.5", &[
-    a(0x0008_1140, "Referenced Image Sequence", T2, None, &[], ANY, &[
+    a(0x0008_1140, "Referenced Image Sequence", T2, None, &[], ANY, None, &[
         i(&T_10_3),
-        a(0x0040_A170, "Purpose of Reference Code Sequence", T1C, Some(C::PurposeOfReferenceCodeSequence_187ad5), &[], Exactly(1), &[
+        a(0x0040_A170, "Purpose of Reference Code Sequence", T1C, Some(C::PurposeOfReferenceCodeSequence_187ad5), &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Defined, &[8120])), &[
             i(&T_8_8_1),
         ]),
     ]),
@@ -2174,77 +2184,77 @@ pub(super) static T_C_7_6_16_6: Table = t("PS3.3", "C.7.6.16-6", "C.7.6.16.2.5",
 
 /// Derivation Image Macro Attributes
 pub(super) static T_C_7_6_16_7: Table = t("PS3.3", "C.7.6.16-7", "C.7.6.16.2.6", &[
-    a(0x0008_9124, "Derivation Image Sequence", T2, None, &[], ANY, &[
-        a(0x0008_2111, "Derivation Description", T3, None, &[], ANY, &[]),
-        a(0x0008_9215, "Derivation Code Sequence", T1C, Some(C::PurposeOfReferenceCodeSequence_187ad5), &[], AtLeast(1), &[
+    a(0x0008_9124, "Derivation Image Sequence", T2, None, &[], ANY, None, &[
+        a(0x0008_2111, "Derivation Description", T3, None, &[], ANY, None, &[]),
+        a(0x0008_9215, "Derivation Code Sequence", T1C, Some(C::PurposeOfReferenceCodeSequence_187ad5), &[], AtLeast(1), Some(ValueSet::ContextGroups(Strength::Defined, &[7203])), &[
             i(&T_8_8_1),
         ]),
-        a(0x0008_2112, "Source Image Sequence", T2, None, &[], ANY, &[
+        a(0x0008_2112, "Source Image Sequence", T2, None, &[], ANY, None, &[
             i(&T_10_3),
-            a(0x0040_A170, "Purpose of Reference Code Sequence", T1C, Some(C::PurposeOfReferenceCodeSequence_187ad5), &[], Exactly(1), &[
+            a(0x0040_A170, "Purpose of Reference Code Sequence", T1C, Some(C::PurposeOfReferenceCodeSequence_187ad5), &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Defined, &[7202])), &[
                 i(&T_8_8_1),
             ]),
-            a(0x0028_135A, "Spatial Locations Preserved", T3, None, &[e(None, None, &["YES", "NO", "REORIENTED_ONLY"])], ANY, &[]),
-            a(0x0020_0020, "Patient Orientation", T1C, Some(C::PatientOrientation_0a4c6c), &[], ANY, &[]),
+            a(0x0028_135A, "Spatial Locations Preserved", T3, None, &[e(None, None, &["YES", "NO", "REORIENTED_ONLY"])], ANY, None, &[]),
+            a(0x0020_0020, "Patient Orientation", T1C, Some(C::PatientOrientation_0a4c6c), &[], ANY, None, &[]),
         ]),
     ]),
 ]);
 
 /// Real World Value Mapping Macro Attributes
 pub(super) static T_C_7_6_16_12: Table = t("PS3.3", "C.7.6.16-12", "C.7.6.16.2.11", &[
-    a(0x0040_9096, "Real World Value Mapping Sequence", T1, None, &[], AtLeast(1), &[
-        i(&T_C_7_6_16_12B),
+    a(0x0040_9096, "Real World Value Mapping Sequence", T1, None, &[], AtLeast(1), None, &[
+        ib(&T_C_7_6_16_12B, &[(0x0040_08EA, ValueSet::ContextGroups(Strength::Defined, &[82]))]),
     ]),
 ]);
 
 /// Plane Position (Slide) Macro Attributes
 pub(super) static T_C_8_12_6_1_1: Table = t("PS3.3", "C.8.12.6.1-1", "C.8.12.6.1", &[
-    a(0x0048_021A, "Plane Position (Slide) Sequence", T1, None, &[], Exactly(1), &[
-        a(0x0048_021E, "Column Position In Total Image Pixel Matrix", T1, None, &[], ANY, &[]),
-        a(0x0048_021F, "Row Position In Total Image Pixel Matrix", T1, None, &[], ANY, &[]),
-        a(0x0040_072A, "X Offset in Slide Coordinate System", T1, None, &[], ANY, &[]),
-        a(0x0040_073A, "Y Offset in Slide Coordinate System", T1, None, &[], ANY, &[]),
-        a(0x0040_074A, "Z Offset in Slide Coordinate System", T1, None, &[], ANY, &[]),
+    a(0x0048_021A, "Plane Position (Slide) Sequence", T1, None, &[], Exactly(1), None, &[
+        a(0x0048_021E, "Column Position In Total Image Pixel Matrix", T1, None, &[], ANY, None, &[]),
+        a(0x0048_021F, "Row Position In Total Image Pixel Matrix", T1, None, &[], ANY, None, &[]),
+        a(0x0040_072A, "X Offset in Slide Coordinate System", T1, None, &[], ANY, None, &[]),
+        a(0x0040_073A, "Y Offset in Slide Coordinate System", T1, None, &[], ANY, None, &[]),
+        a(0x0040_074A, "Z Offset in Slide Coordinate System", T1, None, &[], ANY, None, &[]),
     ]),
 ]);
 
 /// Optical Path Identification Macro Attributes
 pub(super) static T_C_8_12_6_2_1: Table = t("PS3.3", "C.8.12.6.2-1", "C.8.12.6.2", &[
-    a(0x0048_0207, "Optical Path Identification Sequence", T1, None, &[], Exactly(1), &[
-        a(0x0048_0106, "Optical Path Identifier", T1, None, &[], ANY, &[]),
+    a(0x0048_0207, "Optical Path Identification Sequence", T1, None, &[], Exactly(1), None, &[
+        a(0x0048_0106, "Optical Path Identifier", T1, None, &[], ANY, None, &[]),
     ]),
 ]);
 
 /// Specimen Reference Macro Attributes
 pub(super) static T_C_8_12_6_3_1: Table = t("PS3.3", "C.8.12.6.3-1", "C.8.12.6.3", &[
-    a(0x0048_0110, "Specimen Reference Sequence", T2, None, &[], ANY, &[
-        a(0x0040_0554, "Specimen UID", T1, None, &[], ANY, &[]),
+    a(0x0048_0110, "Specimen Reference Sequence", T2, None, &[], ANY, None, &[
+        a(0x0040_0554, "Specimen UID", T1, None, &[], ANY, None, &[]),
     ]),
 ]);
 
 /// Whole Slide Microscopy Image Frame Type Macro Attributes
 pub(super) static T_C_8_12_9_1: Table = t("PS3.3", "C.8.12.9-1", "C.8.12.9", &[
-    a(0x0040_0710, "Whole Slide Microscopy Image Frame Type Sequence", T1, None, &[], Exactly(1), &[
-        a(0x0008_9007, "Frame Type", T1, None, &[e(Some(1), None, &["ORIGINAL", "DERIVED"]), e(Some(2), None, &["PRIMARY"])], ANY, &[]),
+    a(0x0040_0710, "Whole Slide Microscopy Image Frame Type Sequence", T1, None, &[], Exactly(1), None, &[
+        a(0x0008_9007, "Frame Type", T1, None, &[e(Some(1), None, &["ORIGINAL", "DERIVED"]), e(Some(2), None, &["PRIMARY"])], ANY, None, &[]),
     ]),
 ]);
 
 /// DICOM File Meta Information
 pub(super) static T_7_1_1: Table = t("PS3.10", "7.1-1", "7.1", &[
-    a(0x0002_0000, "File Meta Information Group Length", T1, None, &[], ANY, &[]),
-    a(0x0002_0001, "File Meta Information Version", T1, None, &[], ANY, &[]),
-    a(0x0002_0002, "Media Storage SOP Class UID", T1, None, &[], ANY, &[]),
-    a(0x0002_0003, "Media Storage SOP Instance UID", T1, None, &[], ANY, &[]),
-    a(0x0002_0010, "Transfer Syntax UID", T1, None, &[], ANY, &[]),
-    a(0x0002_0012, "Implementation Class UID", T1, None, &[], ANY, &[]),
-    a(0x0002_0013, "Implementation Version Name", T3, None, &[], ANY, &[]),
-    a(0x0002_0016, "Source Application Entity Title", T3, None, &[], ANY, &[]),
-    a(0x0002_0017, "Sending Application Entity Title", T3, None, &[], ANY, &[]),
-    a(0x0002_0018, "Receiving Application Entity Title", T3, None, &[], ANY, &[]),
-    a(0x0002_0026, "Source Presentation Address", T3, None, &[], ANY, &[]),
-    a(0x0002_0027, "Sending Presentation Address", T3, None, &[], ANY, &[]),
-    a(0x0002_0028, "Receiving Presentation Address", T3, None, &[], ANY, &[]),
-    a(0x0002_0100, "Private Information Creator UID", T3, None, &[], ANY, &[]),
-    a(0x0002_0102, "Private Information", T1C, Some(C::PrivateInformation_5c0ac1), &[], ANY, &[]),
+    a(0x0002_0000, "File Meta Information Group Length", T1, None, &[], ANY, None, &[]),
+    a(0x0002_0001, "File Meta Information Version", T1, None, &[], ANY, None, &[]),
+    a(0x0002_0002, "Media Storage SOP Class UID", T1, None, &[], ANY, None, &[]),
+    a(0x0002_0003, "Media Storage SOP Instance UID", T1, None, &[], ANY, None, &[]),
+    a(0x0002_0010, "Transfer Syntax UID", T1, None, &[], ANY, None, &[]),
+    a(0x0002_0012, "Implementation Class UID", T1, None, &[], ANY, None, &[]),
+    a(0x0002_0013, "Implementation Version Name", T3, None, &[], ANY, None, &[]),
+    a(0x0002_0016, "Source Application Entity Title", T3, None, &[], ANY, None, &[]),
+    a(0x0002_0017, "Sending Application Entity Title", T3, None, &[], ANY, None, &[]),
+    a(0x0002_0018, "Receiving Application Entity Title", T3, None, &[], ANY, None, &[]),
+    a(0x0002_0026, "Source Presentation Address", T3, None, &[], ANY, None, &[]),
+    a(0x0002_0027, "Sending Presentation Address", T3, None, &[], ANY, None, &[]),
+    a(0x0002_0028, "Receiving Presentation Address", T3, None, &[], ANY, None, &[]),
+    a(0x0002_0100, "Private Information Creator UID", T3, None, &[], ANY, None, &[]),
+    a(0x0002_0102, "Private Information", T1C, Some(C::PrivateInformation_5c0ac1), &[], ANY, None, &[]),
 ]);
 

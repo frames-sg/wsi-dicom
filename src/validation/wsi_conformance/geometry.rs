@@ -1,6 +1,7 @@
 use dicom_dictionary_std::tags;
 use dicom_object::DefaultDicomObject;
 
+use super::dimensions::validate_dimension_indices;
 use super::fields::{
     required_finite_float64, required_float64, required_positive_u64, required_string,
     sequence_items, PixelSpacingMm, PlanePosition,
@@ -123,6 +124,16 @@ pub(super) fn slide_coordinate_identity(
 }
 
 pub(super) fn validate_dimension_rule(object: &DefaultDicomObject) -> Result<(), String> {
+    let mut violations = validate_dimension_indices(object);
+    if let Err(reason) = validate_row_column_indices(object) {
+        violations.push(reason);
+    }
+    super::violation_result(violations)
+}
+
+/// Row and column pointers order the Frames row-major and match each Frame's
+/// plane position.
+fn validate_row_column_indices(object: &DefaultDicomObject) -> Result<(), String> {
     let dimension_items = match object.element(tags::DIMENSION_INDEX_SEQUENCE) {
         Ok(element) => element
             .items()
@@ -197,11 +208,7 @@ pub(super) fn validate_dimension_rule(object: &DefaultDicomObject) -> Result<(),
             .to_multi_int::<u32>()
             .map_err(|err| format!("frame {frame} has invalid Dimension Index Values: {err}"))?;
         if values.len() != pointers.len() {
-            return Err(format!(
-                "frame {frame} Dimension Index Values VM {} does not match {} index items",
-                values.len(),
-                pointers.len()
-            ));
+            continue; // reported by validate_dimension_indices
         }
         let position = PlanePosition::from_frame_functional_group(item, frame)?;
         let (expected_row, expected_column) =

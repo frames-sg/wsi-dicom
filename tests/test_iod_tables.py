@@ -14,7 +14,6 @@ GENERATOR = REPO_ROOT / "scripts" / "generate-iod-tables.py"
 OUTPUT_DIR = REPO_ROOT / "src" / "validation" / "iod"
 # Directory holding the pinned DocBook part03.xml, part06.xml and part10.xml.
 SOURCE_DIR_VARIABLE = "WSI_DICOM_DOCBOOK_DIR"
-CHECKED_VARIABLE = "WSI_DICOM_IOD_TABLES_CHECKED"
 
 
 def load_generator():
@@ -52,8 +51,6 @@ class IodTableTests(unittest.TestCase):
             self.assertEqual(recorded, generator.SOURCES, name)
 
     def test_check_mode_accepts_the_checked_in_tables(self):
-        if os.environ.get(CHECKED_VARIABLE) == "1":
-            self.skipTest("generated tables were checked by the preceding CI step")
         sources = source_dir()
         if sources is None:
             self.skipTest(f"set {SOURCE_DIR_VARIABLE} to the pinned DocBook sources")

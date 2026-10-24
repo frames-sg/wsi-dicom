@@ -80,8 +80,10 @@ fn writer_metadata_validation_rejects_invalid_vr_values() {
 #[test]
 fn export_metadata_validation_checks_depth_before_encoding() {
     let mut metadata = DicomMetadata::research_placeholder();
-    metadata.imaged_volume_depth_mm = Some(0.001);
-    metadata.validate_for_export().unwrap();
+    for valid in [0.001, 1e-13] {
+        metadata.imaged_volume_depth_mm = Some(valid);
+        metadata.validate_for_export().unwrap();
+    }
 
     for invalid in [
         0.0,
@@ -123,7 +125,10 @@ fn writer_metadata_validation_accepts_semantic_da_tm_dt_values() {
     metadata.study_time = Some("235959.123456".to_string());
     metadata.content_time = Some("00".to_string());
     metadata.acquisition_date_time = Some("20240229235959.123456+0530".to_string());
+    metadata.validated_for_writer().unwrap();
 
+    // PS3.5 6.2: a leap second is a valid TM second.
+    metadata.content_time = Some("235960".to_string());
     metadata.validated_for_writer().unwrap();
 }
 
@@ -154,7 +159,7 @@ fn writer_metadata_validation_rejects_invalid_semantic_da_tm_dt_values() {
         .contains("study_time"));
 
     let mut metadata = DicomMetadata::research_placeholder();
-    metadata.content_time = Some("235960".to_string());
+    metadata.content_time = Some("235961".to_string());
     assert!(metadata
         .validated_for_writer()
         .unwrap_err()
@@ -192,4 +197,16 @@ fn writer_metadata_validation_rejects_invalid_semantic_da_tm_dt_values() {
         .unwrap_err()
         .to_string()
         .contains("acquisition_date_time"));
+
+    // The export check is the validator's: offsets run from -1200 to +1400,
+    // and UTC is +0000, never -0000.
+    for offset in ["-1300", "-0000"] {
+        let mut metadata = DicomMetadata::research_placeholder();
+        metadata.acquisition_date_time = Some(format!("20260614235959{offset}"));
+        assert!(metadata
+            .validated_for_writer()
+            .unwrap_err()
+            .to_string()
+            .contains("acquisition_date_time"));
+    }
 }

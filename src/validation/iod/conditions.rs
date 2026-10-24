@@ -15,6 +15,7 @@ use super::scope::{
     present, required_if, string_value, tag_values, value_in, Otherwise, Requirement, Scope, Tri,
 };
 use super::tables::ConditionId as C;
+use crate::validation::transfer_syntaxes::is_jpip_referenced;
 use crate::VL_WSI_SOP_CLASS_UID;
 
 use Otherwise::{MayBePresent, NotPresent};
@@ -24,14 +25,6 @@ const LEGACY_CONVERTED: [&str; 3] = [
     uids::LEGACY_CONVERTED_ENHANCED_MR_IMAGE_STORAGE,
     uids::LEGACY_CONVERTED_ENHANCED_PET_IMAGE_STORAGE,
 ];
-/// Excluded from the Frame Reference and Frame Acquisition DateTime conditions.
-const LEGACY_CONVERTED_AND_VL_WSI: [&str; 4] = [
-    uids::LEGACY_CONVERTED_ENHANCED_CT_IMAGE_STORAGE,
-    uids::LEGACY_CONVERTED_ENHANCED_MR_IMAGE_STORAGE,
-    uids::LEGACY_CONVERTED_ENHANCED_PET_IMAGE_STORAGE,
-    VL_WSI_SOP_CLASS_UID,
-];
-const JPIP_REFERENCED: [&str; 2] = [uids::JPIP_REFERENCED, uids::JPIP_REFERENCED_DEFLATE];
 const PATIENT_POSITION_SOP_CLASSES: [&str; 6] = [
     uids::CT_IMAGE_STORAGE,
     uids::MR_IMAGE_STORAGE,
@@ -70,7 +63,7 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         C::CodeValue_c75d2f => required_if(code_value_fits_short_form(item), NotPresent),
         // "Shall be present if Code Value or Long Code Value is present. May be present otherwise."
         C::CodingSchemeDesignator_117155 => required_if(
-            (has(item, tags::CODE_VALUE) || has(item, tags::LONG_CODE_VALUE)).into(),
+            present(item, tags::CODE_VALUE).or(present(item, tags::LONG_CODE_VALUE)),
             MayBePresent,
         ),
         // "Required if the Value of Coding Scheme Designator is present and is not sufficient to
@@ -88,12 +81,12 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         }
         // "Shall be present if Code Value is not present and the Code Value is not a URN or URL."
         C::LongCodeValue_318ae8 => required_if(
-            Tri::from(!has(item, tags::CODE_VALUE)).and(code_value_is_urn(item).not()),
+            absent(item, tags::CODE_VALUE).and(code_value_is_urn(item).not()),
             NotPresent,
         ),
         // "Shall be present if Code Value is not present and the Code Value is a URN or URL."
         C::URNCodeValue_3efa2e => required_if(
-            Tri::from(!has(item, tags::CODE_VALUE)).and(code_value_is_urn(item)),
+            absent(item, tags::CODE_VALUE).and(code_value_is_urn(item)),
             NotPresent,
         ),
 
@@ -120,19 +113,19 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         // "Required if the Patient is a non-human organism and if Patient Species Code Sequence
         // is not present. May be present otherwise."
         C::PatientSpeciesDescription_6364e6 => required_if(
-            non_human().and(absent(item, tags::PATIENT_SPECIES_CODE_SEQUENCE)),
+            non_human(root).and(absent(item, tags::PATIENT_SPECIES_CODE_SEQUENCE)),
             MayBePresent,
         ),
         // "Required if the Patient is a non-human organism and if Patient Species Description
         // is not present. May be present otherwise."
         C::PatientSpeciesCodeSequence_3133a2 => required_if(
-            non_human().and(absent(item, tags::PATIENT_SPECIES_DESCRIPTION)),
+            non_human(root).and(absent(item, tags::PATIENT_SPECIES_DESCRIPTION)),
             MayBePresent,
         ),
         // "Required if the Patient is a non-human organism and if Patient Breed Code Sequence
         // is empty. May be present otherwise."
         C::PatientBreedDescription_2b9079 => required_if(
-            non_human().and(
+            non_human(root).and(
                 items(item, tags::PATIENT_BREED_CODE_SEQUENCE)
                     .is_empty()
                     .into(),
@@ -140,15 +133,15 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
             MayBePresent,
         ),
         // "Required if the Patient is a non-human organism." (Type 2C)
-        C::PatientBreedCodeSequence_878016 => required_if(non_human(), NotPresent),
+        C::PatientBreedCodeSequence_878016 => required_if(non_human(root), NotPresent),
         // "Required if the Patient is a non-human organism. May be present otherwise."
-        C::ResponsiblePerson_26bd73 => required_if(non_human(), MayBePresent),
+        C::ResponsiblePerson_26bd73 => required_if(non_human(root), MayBePresent),
         // "Required if Responsible Person is present and has a Value."
         C::ResponsiblePersonRole_45e655 => {
             required_if(has_value(item, tags::RESPONSIBLE_PERSON).into(), NotPresent)
         }
         // "Required if Patient is a non-human organism. May be present otherwise."
-        C::ResponsibleOrganization_a81ee5 => required_if(non_human(), MayBePresent),
+        C::ResponsibleOrganization_a81ee5 => required_if(non_human(root), MayBePresent),
         // "Required if Patient Identity Removed is present and has a Value of YES and
         // De-identification Method Code Sequence is not present. May be present otherwise."
         C::DeidentificationMethod_1b21e1 => required_if(
@@ -291,7 +284,7 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         }
         // "Required if the Patient is a non-human organism and the anatomical Frame of Reference
         // is not bipedal. May be present otherwise."
-        C::AnatomicalOrientationType_a42424 => required_if(non_human(), MayBePresent),
+        C::AnatomicalOrientationType_a42424 => required_if(non_human(root), MayBePresent),
 
         // ---- Table 10-9 Request Attributes Macro ----
         // "Required if procedure was scheduled. May be present otherwise."
@@ -481,11 +474,12 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         C::PixelData_f3a5dd => required_if(absent(item, tags::PIXEL_DATA_PROVIDER_URL), NotPresent),
         // "Required if the image is to be transferred in one of the following presentation
         // contexts identified by Transfer Syntax UID: JPIP Referenced, JPIP Referenced Deflate".
-        // A stored file is encoded in the Transfer Syntax of its File Meta Information.
-        C::PixelDataProviderURL_83d79f => required_if(
-            JPIP_REFERENCED.contains(&scope.transfer_syntax).into(),
-            NotPresent,
-        ),
+        // A stored file is encoded in the Transfer Syntax of its File Meta Information. The list
+        // predates the JPIP HTJ2K Referenced syntaxes, which PS3.5 A.11 and A.12 encode the same
+        // way (Pixel Data replaced by this URL); PS3.5 defines the encoding, so they are included.
+        C::PixelDataProviderURL_83d79f => {
+            required_if(is_jpip_referenced(scope.transfer_syntax).into(), NotPresent)
+        }
         // "Required if pixel padding is to be defined as a range rather than a single Value."
         C::PixelPaddingRangeLimit_0bc79e => required_if(Tri::Unknown, NotPresent),
         // "Required if Extended Offset Table (7FE0,0001) is present."
@@ -526,13 +520,9 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         ),
         // "Required if the Dimension Index Pointer Value is the Data Element Tag of a Private
         // Attribute."
-        C::DimensionIndexPrivateCreator_252bb2 => required_if(
-            tag_values(item, tags::DIMENSION_INDEX_POINTER)
-                .into_iter()
-                .any(is_private)
-                .into(),
-            NotPresent,
-        ),
+        C::DimensionIndexPrivateCreator_252bb2 => {
+            private_creator_required(item, tags::DIMENSION_INDEX_POINTER)
+        }
         // "Required if the Value of Dimension Index Pointer is the Data Element Tag of an
         // Attribute that is contained within a Functional Group Sequence."
         C::FunctionalGroupPointer_59f16f => {
@@ -540,13 +530,9 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         }
         // "Required if the Functional Group Pointer Value is the Data Element Tag of a Private
         // Attribute."
-        C::FunctionalGroupPrivateCreator_d93a4b => required_if(
-            tag_values(item, tags::FUNCTIONAL_GROUP_POINTER)
-                .into_iter()
-                .any(is_private)
-                .into(),
-            NotPresent,
-        ),
+        C::FunctionalGroupPrivateCreator_d93a4b => {
+            private_creator_required(item, tags::FUNCTIONAL_GROUP_POINTER)
+        }
 
         // ---- Table C.7.6.22-2 Specimen Description Items ----
         // "Required if multiple specimens present in the image. May be present otherwise." The
@@ -714,26 +700,18 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         }
         // "Required if Selector Sequence Pointer is present and one or more of its Values is the
         // Data Element Tag of a Private Attribute."
-        C::SelectorSequencePointerPrivateCreator_4cb02f => required_if(
-            tag_values(item, tags::SELECTOR_SEQUENCE_POINTER)
-                .into_iter()
-                .any(is_private)
-                .into(),
-            NotPresent,
-        ),
+        C::SelectorSequencePointerPrivateCreator_4cb02f => {
+            private_creator_required(item, tags::SELECTOR_SEQUENCE_POINTER)
+        }
         // "Required if Selector Sequence Pointer is present."
         C::SelectorSequencePointerItems_60e4ce => {
             required_if(present(item, tags::SELECTOR_SEQUENCE_POINTER), NotPresent)
         }
         // "Required if the Selector Attribute Value is the Data Element Tag of a Private
         // Attribute."
-        C::SelectorAttributePrivateCreator_83625b => required_if(
-            tag_values(item, tags::SELECTOR_ATTRIBUTE)
-                .into_iter()
-                .any(is_private)
-                .into(),
-            NotPresent,
-        ),
+        C::SelectorAttributePrivateCreator_83625b => {
+            private_creator_required(item, tags::SELECTOR_ATTRIBUTE)
+        }
 
         // ---- Table 10.41-1 Protocol Context Macro ----
         // "Required if this instance is a Performed Procedure Protocol that resulted from a
@@ -902,10 +880,33 @@ fn applies(condition: Tri) -> Requirement {
     required_if(condition, MayBePresent)
 }
 
-/// Whether the Patient is a non-human organism: PS3.3 encodes no Attribute that
-/// states this (species Attributes may also describe humans).
-fn non_human() -> Tri {
-    Tri::Unknown
+/// Homo sapiens in Patient Species Code Sequence (CID 7454), with its legacy
+/// SNOMED-RT and NCBI Taxonomy identifiers.
+const HOMO_SAPIENS: [(&str, &str); 3] = [
+    ("SCT", "337915000"),
+    ("SRT", "L-85B00"),
+    ("NCBITaxon", "9606"),
+];
+
+/// Whether the Patient is a non-human organism, as its Patient Species Code
+/// Sequence states: Homo sapiens is human and any other species is not.
+/// Without a coded species nothing encoded states it, since a Patient Species
+/// Description is free text.
+fn non_human(root: &InMemDicomObject) -> Tri {
+    let Some(species) = items(root, tags::PATIENT_SPECIES_CODE_SEQUENCE).first() else {
+        return Tri::Unknown;
+    };
+    match (
+        string_value(species, tags::CODING_SCHEME_DESIGNATOR, 1),
+        code_identifier(species),
+    ) {
+        (Some(scheme), Some(value)) => {
+            Tri::from(!HOMO_SAPIENS.iter().any(|(human_scheme, human_value)| {
+                *human_scheme == scheme && *human_value == value
+            }))
+        }
+        _ => Tri::Unknown,
+    }
 }
 
 fn value_type(item: &InMemDicomObject, values: &[&str]) -> Requirement {
@@ -1068,6 +1069,15 @@ fn contains_tag(object: &InMemDicomObject, target: Tag, depth: usize) -> bool {
     })
 }
 
+/// A Private Creator is required when a pointer Attribute names a Private
+/// Data Element.
+fn private_creator_required(item: &InMemDicomObject, pointer: Tag) -> Requirement {
+    required_if(
+        tag_values(item, pointer).into_iter().any(is_private).into(),
+        NotPresent,
+    )
+}
+
 fn sop_class_in(scope: &Scope<'_>, classes: &[&str]) -> Tri {
     Tri::from(
         scope
@@ -1109,7 +1119,11 @@ fn original_frame_not_tiled_full(scope: &Scope<'_>) -> Tri {
     original
         .unwrap_or(Tri::Unknown)
         .and(scope.dimension_organization_type_is("TILED_FULL").not())
-        .and(sop_class_in(scope, &LEGACY_CONVERTED_AND_VL_WSI).not())
+        .and(
+            sop_class_in(scope, &LEGACY_CONVERTED)
+                .or(sop_class_in(scope, &[VL_WSI_SOP_CLASS_UID]))
+                .not(),
+        )
 }
 
 fn functional_mr(scope: &Scope<'_>) -> bool {

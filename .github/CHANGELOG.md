@@ -19,6 +19,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Validation checks each VL WSI instance against the VL Whole Slide Microscopy
+  Image IOD: Modules and Functional Groups, Attribute presence and conditions,
+  Enumerated Values, VR and VM, Value formats, Sequence Item counts, and File
+  Meta Information. `scripts/generate-iod-tables.py` generates the tables from
+  the DICOM 2026c DocBook, and CI checks that they are current.
+- Seven more requirement families: `iod-value-sets` (Defined Context Groups and
+  Templates of PS3.16 fail; Baseline and extensible departures are advisories),
+  `wsi-image`, `attribute-relations`, `series-set` (consistency across the
+  evaluated Instances), `pixel-attributes`, `codestream` (each encapsulated
+  Frame is one complete JPEG, JPEG-LS, JPEG 2000, HTJ2K, JPEG XL or RLE
+  codestream agreeing with the Image Pixel Attributes), and `encoding` (the
+  Data Set as encoded in the file's bytes). Reports declare rule sets
+  `wsi-dicom-general-v3` and `wsi-dicom-core-profile-2026c-v4`.
+- `wsi-dicom requirements [--json]` lists every normative statement of the
+  pinned edition in the VL WSI scope, with a stable `id` and how validation
+  holds an object to it; `RequirementEntry` gains `id`.
+- `convert` and `validate` take `--optional` (the default) and `--required`.
+  `--optional` writes the associated images, TILED_SPARSE for absent tiles and
+  the optional attributes the source fills truthfully; `validate --optional`
+  lists the optional Modules each file has and lacks, with value set
+  advisories.
 - JPEG Lossless SV1 output (`--transfer-syntax jpeg-lossless-sv1`,
   `1.2.840.10008.1.2.4.70`) for 8- and 16-bit RGB and MONOCHROME2 frames,
   encoded on the CPU. `RequireDevice` is rejected.

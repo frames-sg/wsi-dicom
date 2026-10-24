@@ -130,6 +130,12 @@ pub(crate) enum Command {
         json: bool,
     },
     SelfTest(SelfTestArgs),
+    /// Lists every normative statement of the pinned DICOM edition in the VL
+    /// WSI scope and how validation checks it.
+    Requirements {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

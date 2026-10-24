@@ -7,8 +7,9 @@ use dicom_object::mem::InMemElement;
 use dicom_object::InMemDicomObject;
 
 use super::dictionary::{DICTIONARY, DICTIONARY_REPEATING};
+use super::file_meta::long_length;
 use super::model::{DictionaryEntry, ValueMultiplicity};
-use super::report::{excerpt, Family};
+use super::report::{excerpt, tag_text, Family};
 use super::scope::{declared_length, is_private, raw_tag};
 use super::MAX_NESTING;
 use crate::uid::is_valid_dicom_uid;
@@ -49,7 +50,7 @@ impl ValueChecks<'_> {
                 tag,
                 retired: false,
             };
-            self.element(element, tag, label);
+            self.element(element, label);
             let Some(items) = element.items() else {
                 continue;
             };
@@ -66,11 +67,15 @@ impl ValueChecks<'_> {
         }
     }
 
-    fn element(&mut self, element: &InMemElement, tag: Tag, label: Label<'_>) {
+    fn element(&mut self, element: &InMemElement, label: Label<'_>) {
         let vr = element.vr();
-        if let Some((allowed, vm, retired)) = expected(tag) {
+        if let Some((allowed, vm, retired)) = expected(label.tag) {
             let label = Label { retired, ..label };
-            if self.encoding.explicit_vr && !allowed.is_empty() && !allowed.contains(&vr) {
+            if self.encoding.explicit_vr
+                && !allowed.is_empty()
+                && !allowed.contains(&vr)
+                && !unknown_for_long_value(vr, allowed, element)
+            {
                 self.vr_vm.push(|| {
                     format!(
                         "{label}: VR {vr:?} where PS3.6 specifies {}",
@@ -93,9 +98,13 @@ impl ValueChecks<'_> {
                     });
                 }
             }
-        } else if !is_private(tag) {
-            self.vr_vm
-                .push(|| format!("{label}: not a Data Element of the PS3.6 2026c registry"));
+        } else if !is_private(label.tag) {
+            self.vr_vm.push(|| {
+                format!(
+                    "{label}: not a Data Element of the PS3.6 {} registry",
+                    super::tables::EDITION
+                )
+            });
         }
         self.length(element, label);
         if let Value::Primitive(primitive) = element.value() {
@@ -131,9 +140,9 @@ impl ValueChecks<'_> {
     }
 
     fn format_values(&mut self, vr: VR, primitive: &PrimitiveValue, label: Label<'_>) {
-        let values: Vec<&str> = match primitive {
-            PrimitiveValue::Strs(values) => values.iter().map(String::as_str).collect(),
-            PrimitiveValue::Str(value) => vec![value.as_str()],
+        let values: &[String] = match primitive {
+            PrimitiveValue::Strs(values) => values,
+            PrimitiveValue::Str(value) => std::slice::from_ref(value),
             _ => return,
         };
         let last = values.len().saturating_sub(1);
@@ -189,6 +198,24 @@ fn any_text_bounded(
     })
 }
 
+/// PS3.5 6.2.2: a Standard Data Element whose VR has a 16-bit Value Length
+/// Field is encoded as UN in Explicit VR once its Value exceeds 65534 bytes.
+fn unknown_for_long_value(vr: VR, allowed: &[VR], element: &InMemElement) -> bool {
+    vr == VR::UN
+        && allowed.iter().all(|allowed| !long_length(*allowed))
+        && declared_length(element).is_some_and(|length| length > 65534)
+}
+
+/// `<path><Keyword> (gggg,eeee)` as the value checks name an element.
+pub(in crate::validation) fn element_label(path: &str, tag: Tag) -> String {
+    Label {
+        path,
+        tag,
+        retired: false,
+    }
+    .to_string()
+}
+
 /// `<path><Keyword> (gggg,eeee)`, without a keyword for unregistered tags;
 /// formatted only when a message names the element.
 #[derive(Clone, Copy)]
@@ -204,7 +231,7 @@ impl std::fmt::Display for Label<'_> {
         if let Some(entry) = StandardDataDictionary.by_tag(self.tag) {
             write!(f, "{} ", entry.alias())?;
         }
-        write!(f, "({:04X},{:04X})", self.tag.group(), self.tag.element())?;
+        f.write_str(&tag_text(raw_tag(self.tag)))?;
         if self.retired {
             f.write_str(" (retired)")?;
         }
@@ -226,6 +253,11 @@ fn expected(tag: Tag) -> Option<(&'static [VR], ValueMultiplicity, bool)> {
         return Some((GROUP_LENGTH, VM_1, tag.group() != 0x0002));
     }
     entry(tag).map(|entry| (entry.vr, entry.vm, entry.retired))
+}
+
+/// The PS3.6 VR alternatives of a public tag (an Implicit VR element's VR).
+pub(in crate::validation) fn dictionary_vrs(tag: Tag) -> Option<&'static [VR]> {
+    entry(tag).map(|entry| entry.vr)
 }
 
 pub(super) fn entry(tag: Tag) -> Option<&'static DictionaryEntry> {
@@ -308,13 +340,19 @@ pub(super) fn check_value(vr: VR, value: &str, extended: bool) -> Result<(), Str
         VR::PN => person_name(value, extended),
         VR::TM => time(value.trim_end_matches(' ')),
         VR::UI => {
-            if value.is_empty() || is_valid_dicom_uid(value) {
-                Ok(())
-            } else {
+            if !value.is_empty() && !is_valid_dicom_uid(value) {
                 Err(
                     "not a UID of at most 64 digits and periods without leading-zero components"
                         .into(),
                 )
+            } else if value.starts_with("1.2.840.10008.")
+                && super::dictionary::REGISTERED_UIDS
+                    .binary_search(&value)
+                    .is_err()
+            {
+                Err("under the DICOM root 1.2.840.10008 but not registered in PS3.6 Annex A (PS3.5 9.2)".into())
+            } else {
+                Ok(())
             }
         }
         VR::UR => uri(value),
@@ -354,7 +392,13 @@ fn repertoire(value: &str, allowed: impl Fn(char) -> bool) -> Result<(), String>
 /// SH, LO, UC, ST, LT, UT: Default Repertoire unless Specific Character Set is
 /// present; control characters only as PS3.5 6.2 permits.
 fn text(value: &str, limit: usize, extended: bool, paragraphs: bool) -> Result<(), String> {
-    max_chars(value, limit)?;
+    // A Value with Code Extension is decoded by Value 1 of Specific Character
+    // Set alone, so its escape sequences and multi-byte characters miscount
+    // here; the encoding check counts it from the encoded bytes, without the
+    // escape sequences (PS3.5 6.2).
+    if !value.contains(ESC) {
+        max_chars(value, limit)?;
+    }
     repertoire(value, |c| {
         permitted_text_char(c, extended, paragraphs, false)
     })
@@ -375,6 +419,12 @@ fn permitted_text_char(c: char, extended: bool, paragraphs: bool, person_name: b
 
 fn person_name(value: &str, extended: bool) -> Result<(), String> {
     repertoire(value, |c| permitted_text_char(c, extended, false, true))?;
+    // With Code Extension, "^" and "=" bytes may belong to multi-byte
+    // characters; the encoding check finds the delimiters from the encoded
+    // bytes and counts the component groups there.
+    if value.contains(ESC) {
+        return Ok(());
+    }
     let groups: Vec<&str> = value.split('=').collect();
     if groups.len() > 3 {
         return Err(format!("{} component groups exceed three", groups.len()));

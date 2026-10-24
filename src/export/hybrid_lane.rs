@@ -12,7 +12,9 @@ use super::jobs::{
     DicomExportInstanceJob,
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
-use super::lossless_j2k_instance::{prepare_lossless_j2k_instance, PendingLosslessInstance};
+use super::lossless_j2k_instance::prepare_lossless_j2k_instance;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::pending_instance::PendingLosslessInstance;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use super::InstanceExportContext;
 #[cfg(all(feature = "metal", target_os = "macos"))]

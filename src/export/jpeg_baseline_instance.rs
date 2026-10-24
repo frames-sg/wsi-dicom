@@ -60,9 +60,7 @@ pub(super) fn export_jpeg_passthrough_instance(
         export.coordinate,
         export.level,
         geometry,
-        export
-            .per_frame_plan
-            .map_or(0, |plan| plan.grid_frame_index(0) as usize),
+        crate::writer::PerFrameFunctionalGroupsPlan::grid_frame(export.per_frame_plan, 0),
     )?;
     if let Some(start) = direct_start {
         if let Some(report) = export_direct(
@@ -98,9 +96,10 @@ pub(super) fn export_jpeg_passthrough_instance(
     lossy.append(target_lossy.into_history()?);
     output.write(profile, icc, lossy, None, metrics, |writer| {
         spool.stream_frames_to(writer, |index| {
-            let index = export
-                .per_frame_plan
-                .map_or(index, |plan| plan.grid_frame_index(index as u32) as usize);
+            let index = crate::writer::PerFrameFunctionalGroupsPlan::grid_frame(
+                export.per_frame_plan,
+                index,
+            );
             let raw = super::jpeg_passthrough::read_raw_jpeg_passthrough_tile(
                 slide,
                 export.coordinate,
@@ -230,6 +229,11 @@ impl JpegInstanceOutput<'_> {
         mut metrics: ExportMetrics,
         frames: impl FnOnce(&mut StreamingPixelDataFrameWriter<'_>) -> Result<(), Error>,
     ) -> Result<InstanceReport, Error> {
+        let per_frame_plan = self.context.per_frame_plan(
+            self.frame_count,
+            self.grid,
+            self.export.per_frame_plan.cloned(),
+        )?;
         let object = self.context.build_dicom_object(InstanceDicomObjectParams {
             metadata: self.export.metadata,
             study_uid: self.export.identity.study_uid(),
@@ -240,12 +244,8 @@ impl JpegInstanceOutput<'_> {
             profile,
             icc_profile: icc.bytes.as_deref(),
             lossy_compression: lossy,
+            sparse: per_frame_plan.is_sparse(),
         })?;
-        let per_frame_plan = self.context.per_frame_plan(
-            self.frame_count,
-            self.grid,
-            self.export.per_frame_plan.cloned(),
-        )?;
         let write_started = Instant::now();
         let streamed = write_dicom_object_with_streamed_pixel_data(
             &self.context.path,

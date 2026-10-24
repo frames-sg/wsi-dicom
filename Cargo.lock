@@ -455,6 +455,7 @@ dependencies = [
  "byteordered",
  "dicom-core",
  "dicom-encoding",
+ "flate2",
  "lazy_static",
  "tracing",
 ]
@@ -1748,7 +1749,9 @@ dependencies = [
  "criterion",
  "dicom-core",
  "dicom-dictionary-std",
+ "dicom-encoding",
  "dicom-object",
+ "flate2",
  "getrandom",
  "j2k",
  "j2k-core",
@@ -1779,8 +1782,7 @@ dependencies = [
 [[package]]
 name = "wsi-dicom-annotations"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3068231969c8ecb10d94106300418be73e9de33ed5eed49c41a1bf99ea967875"
+source = "git+https://github.com/frames-sg/wsi-dicom-annotations?rev=1bb9c0de14914a5324c07beb726dee681260b492#1bb9c0de14914a5324c07beb726dee681260b492"
 dependencies = [
  "chrono",
  "dicom-core",

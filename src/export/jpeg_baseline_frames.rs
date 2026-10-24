@@ -14,9 +14,10 @@ use super::jpeg_baseline::{
 };
 use super::jpeg_baseline_pipeline::{
     jpeg_backend_uses_device, jpeg_baseline_fallback_run, plan_jpeg_baseline_row,
-    prepare_jpeg_baseline_fallback_batch, record_jpeg_retile_rejections,
-    take_consistent_jpeg_baseline_fallback_frame, EncodedJpegBaselineFrame,
-    JpegBaselineCpuEncodeSettings, JpegBaselineFallbackBatchRequest, JpegBaselineRowPlanRequest,
+    prepare_jpeg_baseline_fallback_batch, record_compressed_source_reencodes,
+    record_jpeg_retile_rejections, take_consistent_jpeg_baseline_fallback_frame,
+    EncodedJpegBaselineFrame, JpegBaselineCpuEncodeSettings, JpegBaselineFallbackBatchRequest,
+    JpegBaselineRowPlanRequest,
 };
 use super::jpeg_frame_spool::JpegFrameSpool;
 use super::route_plan::{incompatible_frame_route, PlannedFrameRoute, RouteExecutionContext};
@@ -263,10 +264,10 @@ impl JpegFrameEncoder<'_> {
         }
         let start_index = index;
         let (next_index, fallback_frames) = jpeg_baseline_fallback_run(planned, index);
+        record_compressed_source_reencodes(&mut self.metrics, &planned[start_index..next_index]);
         for frame in &planned[start_index..next_index] {
             let JpegBaselinePlannedFrame::Fallback {
                 source_lossy_compression: source_history,
-                compressed_source_reencode,
                 ..
             } = frame
             else {
@@ -274,9 +275,6 @@ impl JpegFrameEncoder<'_> {
             };
             if let Some(source) = source_history {
                 self.source_lossy_compression.observe(source)?;
-            }
-            if *compressed_source_reencode {
-                self.metrics.record_compressed_source_reencode();
             }
         }
 

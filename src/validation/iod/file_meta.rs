@@ -16,6 +16,7 @@ use super::report::{tag_text, Family, Findings};
 use super::scope::{raw_tag, string_value, Scope};
 use super::tables::FILE_META;
 use super::values::{Encoding, ValueChecks};
+use crate::validation::transfer_syntaxes::is_jpip_referenced;
 
 const PREAMBLE: usize = 128;
 const PREFIX: &[u8; 4] = b"DICM";
@@ -90,6 +91,26 @@ pub(super) fn check_unparsed_file_meta(path: &Path, findings: &mut Findings) -> 
         .and_then(|meta| string_value(&meta, tags::MEDIA_STORAGE_SOP_CLASS_UID, 1))
 }
 
+/// Where the Data Set of `path` starts, after the preamble, prefix and group
+/// 0002 as its Group Length frames them, and the declared Transfer Syntax UID
+/// (without padding). Framing defects of the group itself are the File Meta
+/// check's findings, not repeated here.
+pub(in crate::validation) fn data_set_start(path: &Path) -> Result<(u64, String), String> {
+    let group = read_group(path, &mut Family::default())?;
+    let transfer_syntax = group
+        .elements
+        .iter()
+        .find(|element| element.tag == tags::TRANSFER_SYNTAX_UID)
+        .map(|element| {
+            String::from_utf8_lossy(&element.value)
+                .trim_end_matches(['\0', ' '])
+                .to_string()
+        })
+        .ok_or("the File Meta Information has no Transfer Syntax UID (0002,0010)")?;
+    let offset = (PREAMBLE + 4 + 12) as u64 + u64::from(group.length);
+    Ok((offset, transfer_syntax))
+}
+
 /// Checks the encoded group 0002 of `path` on its own: framing, Table 7.1-1
 /// presence, VR, VM and value format, and the version. Returns the group as
 /// a data set, or `None` (after recording why) when it cannot be read.
@@ -111,6 +132,12 @@ fn check_encoded_group(path: &Path, family: &mut Family) -> Option<InMemDicomObj
         family.push(|| format!(
             "File Meta Information Group Length {} ends before the last group 0002 element ({CITATION})",
             group.length
+        ));
+    }
+    if is_jpip_referenced(&transfer_syntax) {
+        family.push(|| format!(
+            "Transfer Syntax UID (0002,0010) {transfer_syntax:?} is a JPIP Referenced Transfer Syntax, which shall not be used for PS3.10 media storage (PS3.5 {} 10.8, {CITATION})",
+            super::tables::EDITION
         ));
     }
     let scope = Scope::top(&meta, &transfer_syntax);
@@ -149,7 +176,57 @@ fn check_encoded_group(path: &Path, family: &mut Family) -> Option<InMemDicomObj
             ));
         }
     }
+    for (tag, name) in [
+        (
+            tags::SOURCE_PRESENTATION_ADDRESS,
+            "Source Presentation Address (0002,0026)",
+        ),
+        (
+            tags::SENDING_PRESENTATION_ADDRESS,
+            "Sending Presentation Address (0002,0027)",
+        ),
+        (
+            tags::RECEIVING_PRESENTATION_ADDRESS,
+            "Receiving Presentation Address (0002,0028)",
+        ),
+    ] {
+        let Some(address) = string_value(&meta, tag, 1) else {
+            continue;
+        };
+        if let Err(reason) = presentation_address(&address) {
+            family.push(|| format!("{name} \"{address}\" {reason} (PS3.10 7.1.1.1)"));
+        }
+    }
     Some(meta)
+}
+
+/// PS3.10 7.1.1.1: `dicom:<host>:<port>` for the DICOM Upper Layer Protocol,
+/// or the absolute `http` URL of a Web Services endpoint whatever transport
+/// security was used.
+fn presentation_address(address: &str) -> Result<(), &'static str> {
+    if let Some(rest) = address.strip_prefix("dicom:") {
+        let (host, port) = rest.rsplit_once(':').unwrap_or((rest, ""));
+        let valid_port = !port.is_empty()
+            && port.bytes().all(|byte| byte.is_ascii_digit())
+            && port.parse::<u16>().is_ok();
+        return if !host.is_empty() && !host.contains('/') && valid_port {
+            Ok(())
+        } else {
+            Err("is not \"dicom:\" followed by a host name or IP address, a colon and a port number")
+        };
+    }
+    if let Some(rest) = address.strip_prefix("http://") {
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        return if authority.is_empty() {
+            Err("is not an absolute URL; it does not name the host of the endpoint")
+        } else {
+            Ok(())
+        };
+    }
+    if address.starts_with("https:") {
+        return Err("uses the scheme \"https\"; a Web Services presentation address uses \"http\" whether or not secure transport was used");
+    }
+    Err("is neither a DICOM Upper Layer address \"dicom:<host>:<port>\" nor an \"http\" Web Services URL")
 }
 
 /// Reads the preamble, prefix and group 0002 as Explicit VR Little Endian.
@@ -268,7 +345,7 @@ fn parse_element(
 }
 
 /// PS3.5 Table 7.1-1: VRs with a 4-byte Value Length in Explicit VR.
-fn long_length(vr: VR) -> bool {
+pub(in crate::validation) fn long_length(vr: VR) -> bool {
     matches!(
         vr,
         VR::OB

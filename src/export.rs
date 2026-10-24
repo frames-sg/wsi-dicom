@@ -67,6 +67,7 @@ mod associated_images;
 mod corpus_discovery;
 mod cpu_batch;
 mod defaults;
+mod direct_batch;
 mod frame_region;
 mod hybrid_lane;
 mod icc_profile;
@@ -81,6 +82,7 @@ mod jpeg_baseline_metal;
 mod jpeg_baseline_pipeline;
 mod jpeg_direct_htj2k;
 mod jpeg_frame_spool;
+mod jpeg_lossless;
 mod jpeg_lossless_instance;
 mod jpeg_passthrough;
 mod jpeg_retile;
@@ -100,6 +102,7 @@ mod metal_input;
 mod metal_route;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_row_batch;
+mod pending_instance;
 mod profiling;
 mod raw_tile;
 #[cfg(all(feature = "metal", target_os = "macos"))]

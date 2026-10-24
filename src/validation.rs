@@ -7,12 +7,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
+mod codestream;
 mod command_checks;
 mod discovery;
 mod doctor;
+mod encoding;
 mod iod;
 mod pixel_structure;
 mod process;
+mod transfer_syntaxes;
 mod wsi_conformance;
 
 use command_checks::*;
@@ -20,6 +23,7 @@ use discovery::discover_dicom_files;
 pub use doctor::doctor_dicom_environment;
 #[cfg(test)]
 use doctor::doctor_dicom_environment_with_runner;
+pub(crate) use iod::{check_value_format, is_image_storage_sop_class, registered};
 #[cfg(test)]
 use pixel_structure::assemble_encapsulated_frames;
 #[cfg(any(test, feature = "bench-internals"))]
@@ -29,7 +33,7 @@ use process::SystemCommandRunner;
 pub(crate) use process::{CommandOutcome, ValidationCommandRunner};
 use wsi_conformance::{
     run_clinical_identity_set_check, run_identity_set_check, run_intrinsic_wsi_conformance_checks,
-    run_pyramid_geometry_set_check, run_slide_coordinate_set_check,
+    run_pyramid_geometry_set_check, run_series_set_check, run_slide_coordinate_set_check,
     run_source_relationship_set_check, run_specimen_uid_set_check, WsiConformanceCorpus,
 };
 
@@ -209,21 +213,79 @@ pub struct ValidationReport {
     pub files: Vec<PathBuf>,
     /// Individual validation checks.
     pub checks: Vec<ValidationCheck>,
-    /// Optional VL WSI modules and attributes each object lacks, when
-    /// validation runs at `ConformanceLevel::Optional`.
-    pub optional_absent: Vec<OptionalAbsence>,
+    /// Each VL WSI object's optional conformance, when validation runs at
+    /// `ConformanceLevel::Optional`.
+    pub optional: Vec<OptionalConformance>,
 }
 
-/// The optional VL Whole Slide Microscopy modules, functional groups and
-/// attributes one object does not encode. An absent module or Sequence is
-/// listed once, without the rows it would contain.
+/// What one VL Whole Slide Microscopy object implements of the IOD's optional
+/// content, and which suggestions of the standard it does not follow. None of
+/// it is a failure.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
-pub struct OptionalAbsence {
+pub struct OptionalConformance {
     /// The validated file.
     pub path: PathBuf,
-    /// One entry per absent item, with its PS3.3 table.
+    /// Optional modules, functional groups and attributes the object encodes,
+    /// each with its PS3.3 table.
+    pub present: Vec<String>,
+    /// Those it does not encode. An absent module or Sequence is listed once,
+    /// without the rows it would contain.
     pub absent: Vec<String>,
+    /// Codes outside a suggested (Baseline) PS3.16 Context Group, Content
+    /// Items departing from a Baseline Template, and Context Group extensions
+    /// not declared with Context Group Extension Flag "Y".
+    pub advisories: Vec<String>,
+}
+
+/// One normative statement of the pinned DICOM edition in the scope of the VL
+/// Whole Slide Microscopy Image IOD (PS3.3 IOD, Module, Macro and Attribute
+/// descriptions it reaches; PS3.5 encoding; PS3.10 file format), and how
+/// validation holds an object to it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct RequirementEntry {
+    /// The statement's stable identifier, which an evaluation case can name;
+    /// statements the generated tables enforce have none.
+    pub id: Option<&'static str>,
+    /// "PS3.3", "PS3.5" or "PS3.10".
+    pub part: &'static str,
+    /// The section or table label that states it.
+    pub section: &'static str,
+    /// The Attribute whose table row states it, if any.
+    pub keyword: Option<&'static str>,
+    /// The sentence, as the standard words it.
+    pub text: &'static str,
+    /// How validation treats it.
+    pub disposition: RequirementDisposition,
+}
+
+/// How validation holds an object to one normative statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RequirementDisposition {
+    /// Enforced by the IOD checks generated from the standard's tables
+    /// (Module usage, Attribute presence and conditions, Enumerated Values,
+    /// Sequence Item counts).
+    Tables,
+    /// Enforced by the named intrinsic check.
+    Checked(&'static str),
+    /// Decidable from the encoded objects but not yet checked; the check
+    /// family it awaits.
+    Unchecked(&'static str),
+    /// Binds IODs, encodings or contexts a VL WSI object cannot carry.
+    OutsideScope(&'static str),
+    /// Binds applications or processes rather than the encoded objects.
+    Behavior(&'static str),
+    /// Binds the objects on facts their encoded bytes cannot show.
+    Undecidable(&'static str),
+}
+
+/// Every normative statement in the VL WSI scope of the pinned DICOM edition,
+/// with how validation treats it.
+pub fn requirement_catalog() -> Vec<RequirementEntry> {
+    iod::catalog()
 }
 
 impl ValidationReport {
@@ -399,7 +461,7 @@ pub(crate) fn validate_dicom_path_with_runner(
     let input = path.as_ref().to_path_buf();
     let files = discover_dicom_files(&input, options)?;
     let mut checks = Vec::new();
-    let mut optional_absent = Vec::new();
+    let mut optional = Vec::new();
     let mut corpus = WsiConformanceCorpus::default();
 
     for file in &files {
@@ -434,6 +496,11 @@ pub(crate) fn validate_dicom_path_with_runner(
                     format!("failed to read DICOM file: {err}"),
                 ));
                 checks.extend(iod::run_unparsed_file_meta_check(file));
+                checks.push(encoding::run_encoding_check(
+                    file,
+                    None,
+                    options.max_input_bytes,
+                ));
                 continue;
             }
         };
@@ -442,17 +509,25 @@ pub(crate) fn validate_dicom_path_with_runner(
             &object,
             options.max_pixel_frame_bytes,
         ));
-        let (wsi_checks, absent) = run_intrinsic_wsi_conformance_checks(
+        checks.push(encoding::run_encoding_check(
+            file,
+            Some(&object),
+            options.max_input_bytes,
+        ));
+        let (wsi_checks, notes) = run_intrinsic_wsi_conformance_checks(
             file,
             &object,
             options.profile,
             options.conformance,
+            options.max_pixel_frame_bytes,
         );
         checks.extend(wsi_checks);
-        if let Some(absent) = absent {
-            optional_absent.push(OptionalAbsence {
+        if let Some(notes) = notes {
+            optional.push(OptionalConformance {
                 path: file.clone(),
-                absent,
+                present: notes.present,
+                absent: notes.absent,
+                advisories: notes.advisories,
             });
         }
         corpus.observe(file, &object);
@@ -461,6 +536,9 @@ pub(crate) fn validate_dicom_path_with_runner(
         checks.push(check);
     }
     if let Some(check) = run_identity_set_check(&corpus) {
+        checks.push(check);
+    }
+    if let Some(check) = run_series_set_check(&corpus) {
         checks.push(check);
     }
     if options.profile == ValidationProfile::Core2026c {
@@ -551,16 +629,26 @@ pub(crate) fn validate_dicom_path_with_runner(
         input,
         files,
         checks,
-        optional_absent,
+        optional,
     })
 }
 
 fn failed_check(name: &str, path: Option<&PathBuf>, message: String) -> ValidationCheck {
+    intrinsic_check(name, path.cloned(), ValidationStatus::Failed, message)
+}
+
+/// The result of a check this crate evaluates itself, without a command.
+fn intrinsic_check(
+    name: &str,
+    path: Option<PathBuf>,
+    status: ValidationStatus,
+    message: String,
+) -> ValidationCheck {
     ValidationCheck {
         execution: None,
         name: name.to_string(),
-        path: path.cloned(),
-        status: ValidationStatus::Failed,
+        path,
+        status,
         command: Vec::new(),
         message,
         stdout: String::new(),

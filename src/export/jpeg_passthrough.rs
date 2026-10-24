@@ -169,8 +169,7 @@ impl<'a> DirectJpegPassthroughFrameWriter<'a> {
     }
 
     fn grid_frame(&self, idx: usize) -> usize {
-        self.sparse_plan
-            .map_or(idx, |plan| plan.grid_frame_index(idx as u32) as usize)
+        crate::writer::PerFrameFunctionalGroupsPlan::grid_frame(self.sparse_plan, idx)
     }
 }
 

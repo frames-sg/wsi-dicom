@@ -138,6 +138,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             json,
         )?),
         Command::SelfTest(arguments) => Ok(cli_validation::handle_self_test(arguments)?),
+        Command::Requirements { json } => Ok(cli_validation::handle_requirements(json)?),
     }
 }
 

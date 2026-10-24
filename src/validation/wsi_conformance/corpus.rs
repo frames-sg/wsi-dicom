@@ -11,6 +11,7 @@ use super::identity::{
     clinical_identity, specimen_identities, ClinicalIdentity, IssuerIdentity, SpecimenIdentity,
 };
 use super::rule_check;
+use super::series_set::{self, SeriesFacts};
 use crate::uid::is_valid_dicom_uid;
 use crate::validation::iod::declares_vl_wsi;
 
@@ -23,6 +24,7 @@ const CLINICAL_IDENTITY_SET_RULE: &str = "intrinsic-wsi-dicom-2026c-clinical-ide
 #[derive(Debug, Default)]
 pub(in crate::validation) struct WsiConformanceCorpus {
     instances: Vec<WsiInstanceFacts>,
+    series: Vec<SeriesFacts>,
 }
 
 #[derive(Debug)]
@@ -54,7 +56,14 @@ impl WsiConformanceCorpus {
             pyramid: pyramid_fact(object, path),
             sources: source_facts(object, path),
         });
+        self.series.push(SeriesFacts::of(object, path));
     }
+}
+
+pub(in crate::validation) fn run_series_set_check(
+    corpus: &WsiConformanceCorpus,
+) -> Option<ValidationCheck> {
+    series_set::run_series_set_check(&corpus.series)
 }
 
 pub(in crate::validation) fn run_slide_coordinate_set_check(

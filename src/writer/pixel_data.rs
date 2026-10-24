@@ -1,299 +1,26 @@
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::fs::File;
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use dicom_core::{header::Header, DataElement, PrimitiveValue, VR};
 use dicom_dictionary_std::tags;
 use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 
-use super::background_spool::BackgroundPixelDataSpool;
 use super::encoding::{format_ds, write_item_header, write_tag};
 use super::frame_index::FrameIndexSpool;
 use super::functional_groups::PerFrameFunctionalGroupsPlan;
 use super::persistence::{flush_and_sync_dicom_writer, PendingDicomOutput};
+use super::spool_path::frame_index_spool_path;
 use crate::Error;
 
 pub(super) const DICOM_FILE_WRITE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
-static SPOOL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SpooledPixelDataFragment {
     pub(crate) spool_offset: u64,
     pub(crate) padded_len: u32,
-}
-
-pub(crate) struct PixelDataSpool {
-    path: PathBuf,
-    file: BufWriter<File>,
-    pub(super) index: FrameIndexSpool,
-    next_spool_offset: u64,
-    next_extended_offset: u64,
-    total_raw_bytes: u64,
-}
-
-impl PixelDataSpool {
-    pub(crate) fn create(path: PathBuf, _frame_count: usize) -> Result<Self, Error> {
-        let index = FrameIndexSpool::create(frame_index_spool_path(&path))?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(&path)
-            .map_err(|source| Error::Io {
-                path: path.clone(),
-                source,
-            })?;
-        Ok(Self {
-            path,
-            file: BufWriter::with_capacity(256 * 1024, file),
-            index,
-            next_spool_offset: 0,
-            next_extended_offset: 0,
-            total_raw_bytes: 0,
-        })
-    }
-
-    pub(crate) fn push_frame(&mut self, codestream: &[u8]) -> Result<(), Error> {
-        let raw_len = u64::try_from(codestream.len()).map_err(|_| Error::Unsupported {
-            reason: "encoded frame length exceeds u64".into(),
-        })?;
-        let padded_len_u32 = padded_fragment_len(raw_len)?;
-        let padded_len = u64::from(padded_len_u32);
-        let spool_offset = self.next_spool_offset;
-        let next_spool_offset =
-            spool_offset
-                .checked_add(padded_len)
-                .ok_or_else(|| Error::Unsupported {
-                    reason: "pixel-data spool offset overflow".into(),
-                })?;
-        self.file
-            .write_all(codestream)
-            .map_err(|source| Error::Io {
-                path: self.path.clone(),
-                source,
-            })?;
-        if raw_len != padded_len {
-            self.file.write_all(&[0]).map_err(|source| Error::Io {
-                path: self.path.clone(),
-                source,
-            })?;
-        }
-        self.index
-            .push(spool_offset, self.next_extended_offset, raw_len)?;
-        self.next_spool_offset = next_spool_offset;
-        self.total_raw_bytes =
-            self.total_raw_bytes
-                .checked_add(raw_len)
-                .ok_or_else(|| Error::Unsupported {
-                    reason: "total encoded PixelData length overflow".into(),
-                })?;
-        self.next_extended_offset = self
-            .next_extended_offset
-            .checked_add(8)
-            .and_then(|offset| offset.checked_add(padded_len))
-            .ok_or_else(|| Error::Unsupported {
-                reason: "extended offset table overflow".into(),
-            })?;
-        Ok(())
-    }
-
-    pub(crate) fn stream_frames_to(
-        &mut self,
-        writer: &mut StreamingPixelDataFrameWriter<'_>,
-    ) -> Result<(), Error> {
-        self.file.flush().map_err(|source| Error::Io {
-            path: self.path.clone(),
-            source,
-        })?;
-        let mut current_offset =
-            self.file
-                .get_mut()
-                .seek(SeekFrom::Start(0))
-                .map_err(|source| Error::Io {
-                    path: self.path.clone(),
-                    source,
-                })?;
-        let mut file = BufReader::with_capacity(256 * 1024, self.file.get_mut());
-        let path = self.path.clone();
-        self.index.replay(|record| {
-            if record.source_offset < current_offset {
-                current_offset =
-                    file.seek(SeekFrom::Start(record.source_offset))
-                        .map_err(|source| Error::Io {
-                            path: path.clone(),
-                            source,
-                        })?;
-            } else if record.source_offset > current_offset {
-                let gap = record.source_offset - current_offset;
-                let skipped = io::copy(&mut Read::by_ref(&mut file).take(gap), &mut io::sink())
-                    .map_err(|source| Error::Io {
-                        path: path.clone(),
-                        source,
-                    })?;
-                if skipped != gap {
-                    return Err(Error::DicomWrite {
-                        path: path.clone(),
-                        message: "spooled PixelData gap ended before next frame".into(),
-                    });
-                }
-                current_offset = record.source_offset;
-            }
-            writer.push_frame_from_reader(record.raw_len, &mut file)?;
-            current_offset =
-                current_offset
-                    .checked_add(record.raw_len)
-                    .ok_or_else(|| Error::Unsupported {
-                        reason: "spooled PixelData frame offset overflow".into(),
-                    })?;
-            Ok(())
-        })
-    }
-}
-
-pub(crate) trait PixelDataSink {
-    fn push_frame(&mut self, codestream: &[u8]) -> Result<(), Error>;
-
-    fn push_owned_frame(&mut self, codestream: Vec<u8>) -> Result<(), Error> {
-        self.push_frame(&codestream)
-    }
-
-    fn stream_frames_to(
-        &mut self,
-        writer: &mut StreamingPixelDataFrameWriter<'_>,
-    ) -> Result<(), Error>;
-
-    fn total_raw_bytes(&self) -> u64;
-}
-
-pub(crate) enum BufferedPixelDataSink {
-    InMemory(InMemoryPixelDataSink),
-    Spool(BackgroundPixelDataSpool),
-}
-
-impl BufferedPixelDataSink {
-    pub(crate) fn create(
-        spool_path: PathBuf,
-        frame_count: usize,
-        use_in_memory_buffer: bool,
-    ) -> Result<Self, Error> {
-        if use_in_memory_buffer {
-            Ok(Self::InMemory(InMemoryPixelDataSink::with_capacity(
-                frame_count,
-            )?))
-        } else {
-            Ok(Self::Spool(BackgroundPixelDataSpool::create(
-                spool_path,
-                frame_count,
-            )?))
-        }
-    }
-}
-
-impl PixelDataSink for BufferedPixelDataSink {
-    fn push_frame(&mut self, codestream: &[u8]) -> Result<(), Error> {
-        match self {
-            Self::InMemory(buffer) => buffer.push_frame(codestream),
-            Self::Spool(spool) => spool.push_owned_frame(codestream.to_vec()),
-        }
-    }
-
-    fn push_owned_frame(&mut self, codestream: Vec<u8>) -> Result<(), Error> {
-        match self {
-            Self::InMemory(buffer) => buffer.push_owned_frame(codestream),
-            Self::Spool(spool) => spool.push_owned_frame(codestream),
-        }
-    }
-
-    fn stream_frames_to(
-        &mut self,
-        writer: &mut StreamingPixelDataFrameWriter<'_>,
-    ) -> Result<(), Error> {
-        match self {
-            Self::InMemory(buffer) => buffer.stream_frames_to(writer),
-            Self::Spool(spool) => spool.stream_frames_to(writer),
-        }
-    }
-
-    fn total_raw_bytes(&self) -> u64 {
-        match self {
-            Self::InMemory(buffer) => buffer.total_raw_bytes(),
-            Self::Spool(spool) => spool.total_raw_bytes(),
-        }
-    }
-}
-
-pub(crate) struct InMemoryPixelDataSink {
-    frames: Vec<Vec<u8>>,
-}
-
-impl InMemoryPixelDataSink {
-    fn with_capacity(frame_count: usize) -> Result<Self, Error> {
-        let mut frames = Vec::new();
-        frames
-            .try_reserve_exact(frame_count)
-            .map_err(|_| Error::Unsupported {
-                reason: "in-memory PixelData frame index allocation exceeds available memory"
-                    .into(),
-            })?;
-        Ok(Self { frames })
-    }
-}
-
-impl PixelDataSink for InMemoryPixelDataSink {
-    fn push_frame(&mut self, codestream: &[u8]) -> Result<(), Error> {
-        checked_frame_len(codestream.len())?;
-        let mut owned = Vec::new();
-        owned
-            .try_reserve_exact(codestream.len())
-            .map_err(|_| Error::Unsupported {
-                reason: "encoded frame allocation exceeds available memory".into(),
-            })?;
-        owned.extend_from_slice(codestream);
-        self.push_owned_frame(owned)?;
-        Ok(())
-    }
-
-    fn push_owned_frame(&mut self, codestream: Vec<u8>) -> Result<(), Error> {
-        checked_frame_len(codestream.len())?;
-        self.frames.try_reserve(1).map_err(|_| Error::Unsupported {
-            reason: "in-memory PixelData frame index allocation exceeds available memory".into(),
-        })?;
-        self.frames.push(codestream);
-        Ok(())
-    }
-
-    fn stream_frames_to(
-        &mut self,
-        writer: &mut StreamingPixelDataFrameWriter<'_>,
-    ) -> Result<(), Error> {
-        for frame in &self.frames {
-            writer.push_frame(frame)?;
-        }
-        Ok(())
-    }
-
-    fn total_raw_bytes(&self) -> u64 {
-        self.frames
-            .iter()
-            .map(|frame| u64::try_from(frame.len()).unwrap_or(u64::MAX))
-            .fold(0, u64::saturating_add)
-    }
-}
-
-impl Drop for PixelDataSpool {
-    fn drop(&mut self) {
-        if let Err(err) = fs::remove_file(&self.path) {
-            if err.kind() != io::ErrorKind::NotFound {
-                eprintln!(
-                    "wsi-dicom: failed to remove pixel-data spool {}: {err}",
-                    self.path.display()
-                );
-            }
-        }
-    }
 }
 
 #[cfg(any(test, feature = "bench-internals"))]
@@ -316,47 +43,6 @@ pub(crate) fn pixel_data_offsets_from_lengths(lengths: &[u64]) -> Result<Vec<u64
             })?;
     }
     Ok(offsets)
-}
-
-#[cfg(test)]
-pub(crate) fn write_dicom_object_with_spooled_pixel_data(
-    path: &Path,
-    mut object: InMemDicomObject,
-    meta: FileMetaTableBuilder,
-    overwrite: bool,
-    spool: &mut PixelDataSpool,
-) -> Result<(), Error> {
-    spool.file.flush().map_err(|source| Error::Io {
-        path: spool.path.clone(),
-        source,
-    })?;
-    let mut fragments = Vec::new();
-    let mut offsets = Vec::new();
-    let mut lengths = Vec::new();
-    spool.index.replay(|record| {
-        fragments.push(SpooledPixelDataFragment {
-            spool_offset: record.source_offset,
-            padded_len: padded_fragment_len(record.raw_len)?,
-        });
-        offsets.push(record.extended_offset);
-        lengths.push(record.raw_len);
-        Ok(())
-    })?;
-    object.put(DataElement::new(
-        tags::EXTENDED_OFFSET_TABLE,
-        VR::OV,
-        PrimitiveValue::U64(offsets.into()),
-    ));
-    object.put(DataElement::new(
-        tags::EXTENDED_OFFSET_TABLE_LENGTHS,
-        VR::OV,
-        PrimitiveValue::U64(lengths.into()),
-    ));
-
-    write_dicom_object_with_pixel_data(path, object, meta, overwrite, |file| {
-        spool.file.get_mut().seek(SeekFrom::Start(0))?;
-        write_encapsulated_pixel_data_from_spool(file, spool.file.get_mut(), &fragments)
-    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -583,22 +269,22 @@ pub(crate) fn write_dicom_object_with_streamed_pixel_data(
         frame_count,
         deferred_lossy_compression,
     } = plan;
-    // The plan that positions each frame decides the organization. Number of
-    // Optical Paths and Total Pixel Matrix Focal Planes stay: they are
-    // required for TILED_FULL and may be present otherwise.
-    if per_frame_plan.is_sparse() {
-        object.put(DataElement::new(
-            tags::DIMENSION_ORGANIZATION_TYPE,
-            VR::CS,
-            "TILED_SPARSE",
-        ));
-        // Viewers draw absent frames black, as partial frames are padded
-        // (CIELab L*=0, a*=b*=0; PS3.3 C.10.7.1.1).
-        object.put(DataElement::new(
-            tags::RECOMMENDED_ABSENT_PIXEL_CIE_LAB_VALUE,
-            VR::US,
-            PrimitiveValue::U16([0x0000, 0x8080, 0x8080].as_slice().into()),
-        ));
+    let organization = object
+        .element(tags::DIMENSION_ORGANIZATION_TYPE)
+        .ok()
+        .and_then(|element| element.to_str().ok().map(|value| value.trim().to_string()));
+    let expected = if per_frame_plan.is_sparse() {
+        "TILED_SPARSE"
+    } else {
+        "TILED_FULL"
+    };
+    if organization.as_deref() != Some(expected) {
+        return Err(Error::DicomWrite {
+            path: path.to_path_buf(),
+            message: format!(
+                "Dimension Organization Type {organization:?} does not match the {expected} frame plan"
+            ),
+        });
     }
     if usize::try_from(per_frame_plan.frame_count()).ok() != Some(frame_count) {
         return Err(Error::DicomWrite {
@@ -839,32 +525,6 @@ pub(crate) fn write_single_frame_dicom_object(
 
 pub(super) fn dicom_file_writer(file: File) -> BufWriter<File> {
     BufWriter::with_capacity(DICOM_FILE_WRITE_BUFFER_BYTES, file)
-}
-
-pub(crate) fn unique_spool_path(output_path: &Path) -> PathBuf {
-    let counter = SPOOL_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let extension = output_path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or("dcm");
-    output_path.with_extension(format!(
-        "{extension}.pixeldata.{}.{}.tmp",
-        std::process::id(),
-        counter
-    ))
-}
-
-fn frame_index_spool_path(data_or_output_path: &Path) -> PathBuf {
-    let counter = SPOOL_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let extension = data_or_output_path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or("dcm");
-    data_or_output_path.with_extension(format!(
-        "{extension}.frameindex.{}.{}.tmp",
-        std::process::id(),
-        counter
-    ))
 }
 
 #[cfg(test)]

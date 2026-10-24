@@ -53,96 +53,118 @@ fn in_item(id: C, root: &InMemDicomObject, item: &InMemDicomObject) -> Requireme
     evaluate(id, &top.child(item))
 }
 
+#[track_caller]
+fn expect(id: C, root: &InMemDicomObject, expected: Requirement) {
+    assert_eq!(at_root(id, root), expected, "{id:?}");
+}
+
+#[track_caller]
+fn expect_in_item(id: C, root: &InMemDicomObject, item: &InMemDicomObject, expected: Requirement) {
+    assert_eq!(in_item(id, root, item), expected, "{id:?}");
+}
+
+fn photometric(value: &str) -> InMemDicomObject {
+    data_set(vec![text(
+        tags::PHOTOMETRIC_INTERPRETATION,
+        VR::CS,
+        &[value],
+    )])
+}
+
 #[test]
 fn image_flavor_conditions_follow_image_type_value_three() {
     let volume = image("VOLUME");
     let label = image("LABEL");
     let overview = image("OVERVIEW");
-    assert_eq!(
-        at_root(C::ImagedVolumeWidth_96eff9, &volume),
-        Requirement::Required
+    expect(C::ImagedVolumeWidth_96eff9, &volume, Requirement::Required);
+    expect(C::ImagedVolumeWidth_96eff9, &label, Requirement::Optional);
+    expect(C::ModuleSlideLabel_82fe14, &label, Requirement::Required);
+    expect(C::ModuleSlideLabel_82fe14, &volume, Requirement::Optional);
+    expect(
+        C::ModuleFrameOfReference_10a326,
+        &image("THUMBNAIL"),
+        Requirement::Required,
     );
-    assert_eq!(
-        at_root(C::ImagedVolumeWidth_96eff9, &label),
-        Requirement::Optional
+    expect(
+        C::ModuleFrameOfReference_10a326,
+        &overview,
+        Requirement::Optional,
     );
-    assert_eq!(
-        at_root(C::ModuleSlideLabel_82fe14, &label),
-        Requirement::Required
+    expect(
+        C::ModuleMultiResolutionPyramid_c66402,
+        &overview,
+        Requirement::Forbidden,
     );
-    assert_eq!(
-        at_root(C::ModuleSlideLabel_82fe14, &volume),
-        Requirement::Optional
-    );
-    assert_eq!(
-        at_root(C::ModuleFrameOfReference_10a326, &image("THUMBNAIL")),
-        Requirement::Required
-    );
-    assert_eq!(
-        at_root(C::ModuleFrameOfReference_10a326, &overview),
-        Requirement::Optional
-    );
-    assert_eq!(
-        at_root(C::ModuleMultiResolutionPyramid_c66402, &overview),
-        Requirement::Forbidden
-    );
-    assert_eq!(
-        at_root(C::ModuleMultiResolutionPyramid_c66402, &volume),
-        Requirement::Optional
+    expect(
+        C::ModuleMultiResolutionPyramid_c66402,
+        &volume,
+        Requirement::Optional,
     );
     // A conditional Enumerated Values list "applies" (Required) or not.
-    assert_eq!(
-        at_root(C::NumberOfFrames_8113e0, &label),
-        Requirement::Required
-    );
-    assert_eq!(
-        at_root(C::NumberOfFrames_8113e0, &volume),
-        Requirement::Optional
-    );
+    expect(C::NumberOfFrames_8113e0, &label, Requirement::Required);
+    expect(C::NumberOfFrames_8113e0, &volume, Requirement::Optional);
 }
 
 #[test]
 fn conditions_without_an_otherwise_clause_forbid_presence() {
     let color = data_set(vec![unsigned(tags::SAMPLES_PER_PIXEL, 3)]);
     let gray = data_set(vec![unsigned(tags::SAMPLES_PER_PIXEL, 1)]);
-    assert_eq!(
-        at_root(C::PlanarConfiguration_290ffd, &color),
-        Requirement::Required
-    );
-    assert_eq!(
-        at_root(C::PlanarConfiguration_290ffd, &gray),
-        Requirement::Forbidden
-    );
+    expect(C::PlanarConfiguration_290ffd, &color, Requirement::Required);
+    expect(C::PlanarConfiguration_290ffd, &gray, Requirement::Forbidden);
 
     let lossy = data_set(vec![text(tags::LOSSY_IMAGE_COMPRESSION, VR::CS, &["01"])]);
     let lossless = data_set(vec![text(tags::LOSSY_IMAGE_COMPRESSION, VR::CS, &["00"])]);
-    assert_eq!(
-        at_root(C::LossyImageCompressionRatio_84e963, &lossy),
-        Requirement::Required
+    expect(
+        C::LossyImageCompressionRatio_84e963,
+        &lossy,
+        Requirement::Required,
     );
-    assert_eq!(
-        at_root(C::LossyImageCompressionRatio_84e963, &lossless),
-        Requirement::Forbidden
+    expect(
+        C::LossyImageCompressionRatio_84e963,
+        &lossless,
+        Requirement::Forbidden,
     );
 
-    let mono = data_set(vec![text(
-        tags::PHOTOMETRIC_INTERPRETATION,
-        VR::CS,
-        &["MONOCHROME2"],
+    let mono = photometric("MONOCHROME2");
+    let rgb = photometric("RGB");
+    expect(C::PresentationLUTShape_dde08b, &mono, Requirement::Required);
+    expect(C::PresentationLUTShape_dde08b, &rgb, Requirement::Forbidden);
+}
+
+#[test]
+fn every_jpip_referenced_syntax_replaces_pixel_data_with_its_url() {
+    // PS3.3 Table C.7-11a names only JPIP Referenced (Deflate); PS3.5 A.11
+    // and A.12 encode the JPIP HTJ2K Referenced syntaxes the same way.
+    let url = data_set(vec![text(
+        tags::PIXEL_DATA_PROVIDER_URL,
+        VR::UR,
+        &["https://example.org/jpip?target=slide.jph"],
     )]);
-    let rgb = data_set(vec![text(
-        tags::PHOTOMETRIC_INTERPRETATION,
-        VR::CS,
-        &["RGB"],
-    )]);
-    assert_eq!(
-        at_root(C::PresentationLUTShape_dde08b, &mono),
-        Requirement::Required
-    );
-    assert_eq!(
-        at_root(C::PresentationLUTShape_dde08b, &rgb),
-        Requirement::Forbidden
-    );
+    let in_syntax = |id, root, syntax| evaluate(id, &Scope::top(root, syntax));
+    for syntax in [
+        "1.2.840.10008.1.2.4.94",
+        "1.2.840.10008.1.2.4.95",
+        "1.2.840.10008.1.2.4.204",
+        "1.2.840.10008.1.2.4.205",
+    ] {
+        assert_eq!(
+            in_syntax(C::PixelDataProviderURL_83d79f, &url, syntax),
+            Requirement::Required,
+            "{syntax}"
+        );
+        assert_eq!(
+            in_syntax(C::PixelData_f3a5dd, &url, syntax),
+            Requirement::Forbidden,
+            "{syntax}"
+        );
+    }
+    for syntax in [EXPLICIT_VR_LITTLE_ENDIAN, "1.2.840.10008.1.2.4.203"] {
+        assert_eq!(
+            in_syntax(C::PixelDataProviderURL_83d79f, &url, syntax),
+            Requirement::Forbidden,
+            "{syntax}"
+        );
+    }
 }
 
 #[test]
@@ -157,79 +179,121 @@ fn may_be_present_otherwise_conditions_never_forbid() {
         VR::CS,
         &["TILED_FULL"],
     )]);
-    assert_eq!(
-        at_root(C::FgPlanePositionSlide_dc3941, &sparse),
-        Requirement::Required
+    expect(
+        C::FgPlanePositionSlide_dc3941,
+        &sparse,
+        Requirement::Required,
     );
-    assert_eq!(
-        at_root(C::FgPlanePositionSlide_dc3941, &full),
-        Requirement::Optional
+    expect(C::FgPlanePositionSlide_dc3941, &full, Requirement::Optional);
+    expect(
+        C::TotalPixelMatrixFocalPlanes_d443dd,
+        &full,
+        Requirement::Required,
     );
-    assert_eq!(
-        at_root(C::TotalPixelMatrixFocalPlanes_d443dd, &full),
-        Requirement::Required
+    expect(
+        C::TotalPixelMatrixFocalPlanes_d443dd,
+        &sparse,
+        Requirement::Optional,
     );
-    assert_eq!(
-        at_root(C::TotalPixelMatrixFocalPlanes_d443dd, &sparse),
-        Requirement::Optional
+    expect(
+        C::DimensionIndexSequence_aaaa80,
+        &data_set(vec![]),
+        Requirement::Required,
     );
-    assert_eq!(
-        at_root(C::DimensionIndexSequence_aaaa80, &data_set(vec![])),
-        Requirement::Required
-    );
-    assert_eq!(
-        at_root(C::DimensionIndexSequence_aaaa80, &full),
-        Requirement::Optional
+    expect(
+        C::DimensionIndexSequence_aaaa80,
+        &full,
+        Requirement::Optional,
     );
     // Image Orientation (Slide) is required for TILED_FULL, so Patient
     // Orientation is not (see the predicate's reading of the condition).
-    assert_eq!(
-        at_root(C::PatientOrientation_964c1d, &full),
-        Requirement::Optional
-    );
+    expect(C::PatientOrientation_964c1d, &full, Requirement::Optional);
 
     let root = data_set(vec![]);
     let with_color = data_set(vec![sequence(
         tags::ILLUMINATION_COLOR_CODE_SEQUENCE,
         vec![data_set(vec![])],
     )]);
-    assert_eq!(
-        in_item(C::IlluminationWaveLength_66d7d2, &root, &data_set(vec![])),
-        Requirement::Required
+    expect_in_item(
+        C::IlluminationWaveLength_66d7d2,
+        &root,
+        &data_set(vec![]),
+        Requirement::Required,
     );
-    assert_eq!(
-        in_item(C::IlluminationWaveLength_66d7d2, &root, &with_color),
-        Requirement::Optional
+    expect_in_item(
+        C::IlluminationWaveLength_66d7d2,
+        &root,
+        &with_color,
+        Requirement::Optional,
     );
 }
 
 #[test]
 fn facts_the_object_cannot_carry_are_undeterminable() {
     let root = data_set(vec![]);
-    assert_eq!(
-        at_root(C::PatientSpeciesDescription_6364e6, &root),
-        Requirement::Undeterminable
+    expect(
+        C::PatientSpeciesDescription_6364e6,
+        &root,
+        Requirement::Undeterminable,
     );
     let with_code = data_set(vec![sequence(
         tags::PATIENT_SPECIES_CODE_SEQUENCE,
         vec![data_set(vec![])],
     )]);
-    assert_eq!(
-        at_root(C::PatientSpeciesDescription_6364e6, &with_code),
-        Requirement::Optional
+    expect(
+        C::PatientSpeciesDescription_6364e6,
+        &with_code,
+        Requirement::Optional,
     );
-    assert_eq!(
-        at_root(C::ModuleFrameExtraction_221a2c, &root),
-        Requirement::Undeterminable
+    expect(
+        C::ModuleFrameExtraction_221a2c,
+        &root,
+        Requirement::Undeterminable,
     );
-    assert_eq!(
-        in_item(
-            C::ChannelDescriptionCodeSequence_5684e2,
-            &root,
-            &data_set(vec![])
-        ),
-        Requirement::Undeterminable
+    expect_in_item(
+        C::ChannelDescriptionCodeSequence_5684e2,
+        &root,
+        &data_set(vec![]),
+        Requirement::Undeterminable,
     );
+}
+
+#[test]
+fn a_coded_species_decides_whether_the_patient_is_non_human() {
+    let species = |scheme: &str, value: &str| {
+        data_set(vec![sequence(
+            tags::PATIENT_SPECIES_CODE_SEQUENCE,
+            vec![data_set(vec![
+                text(tags::CODE_VALUE, VR::SH, &[value]),
+                text(tags::CODING_SCHEME_DESIGNATOR, VR::SH, &[scheme]),
+            ])],
+        )])
+    };
+    let mouse = species("SCT", "447612001");
+    let human = species("SCT", "337915000");
+    let legacy_human = species("SRT", "L-85B00");
+    expect(
+        C::PatientBreedCodeSequence_878016,
+        &mouse,
+        Requirement::Required,
+    );
+    expect(
+        C::ResponsibleOrganization_a81ee5,
+        &mouse,
+        Requirement::Required,
+    );
+    for human in [&human, &legacy_human] {
+        expect(
+            C::PatientBreedCodeSequence_878016,
+            human,
+            Requirement::Forbidden,
+        );
+        expect(
+            C::ResponsibleOrganization_a81ee5,
+            human,
+            Requirement::Optional,
+        );
+    }
 }
 
 #[test]
@@ -245,96 +309,77 @@ fn code_sequence_identifier_conditions_partition_code_values() {
     let code_value = data_set(vec![text(tags::CODE_VALUE, VR::SH, &["433466003"])]);
     let empty = data_set(vec![]);
     // A short, non-URN identifier belongs in Code Value.
-    assert_eq!(
-        in_item(C::CodeValue_c75d2f, &root, &short_long),
-        Requirement::Required
+    expect_in_item(
+        C::CodeValue_c75d2f,
+        &root,
+        &short_long,
+        Requirement::Required,
     );
-    assert_eq!(
-        in_item(C::CodeValue_c75d2f, &root, &long_long),
-        Requirement::Forbidden
+    expect_in_item(
+        C::CodeValue_c75d2f,
+        &root,
+        &long_long,
+        Requirement::Forbidden,
     );
-    assert_eq!(
-        in_item(C::CodeValue_c75d2f, &root, &empty),
-        Requirement::Required
+    expect_in_item(C::CodeValue_c75d2f, &root, &empty, Requirement::Required);
+    expect_in_item(
+        C::LongCodeValue_318ae8,
+        &root,
+        &code_value,
+        Requirement::Forbidden,
     );
-    assert_eq!(
-        in_item(C::LongCodeValue_318ae8, &root, &code_value),
-        Requirement::Forbidden
+    expect_in_item(
+        C::LongCodeValue_318ae8,
+        &root,
+        &long_long,
+        Requirement::Required,
     );
-    assert_eq!(
-        in_item(C::LongCodeValue_318ae8, &root, &long_long),
-        Requirement::Required
+    expect_in_item(C::URNCodeValue_3efa2e, &root, &urn, Requirement::Required);
+    expect_in_item(
+        C::URNCodeValue_3efa2e,
+        &root,
+        &long_long,
+        Requirement::Forbidden,
     );
-    assert_eq!(
-        in_item(C::URNCodeValue_3efa2e, &root, &urn),
-        Requirement::Required
-    );
-    assert_eq!(
-        in_item(C::URNCodeValue_3efa2e, &root, &long_long),
-        Requirement::Forbidden
-    );
-    assert_eq!(
-        in_item(C::CodingSchemeDesignator_117155, &root, &code_value),
-        Requirement::Required
+    expect_in_item(
+        C::CodingSchemeDesignator_117155,
+        &root,
+        &code_value,
+        Requirement::Required,
     );
 }
 
 #[test]
 fn item_conditions_read_root_and_item_attributes() {
-    let rgb = data_set(vec![text(
-        tags::PHOTOMETRIC_INTERPRETATION,
-        VR::CS,
-        &["RGB"],
-    )]);
-    let mono = data_set(vec![text(
-        tags::PHOTOMETRIC_INTERPRETATION,
-        VR::CS,
-        &["MONOCHROME2"],
-    )]);
+    let rgb = photometric("RGB");
+    let mono = photometric("MONOCHROME2");
     let palette = data_set(vec![sequence(
         tags::PALETTE_COLOR_LOOKUP_TABLE_SEQUENCE,
         vec![data_set(vec![])],
     )]);
     let plain = data_set(vec![]);
-    assert_eq!(
-        in_item(C::ICCProfile_3b45af, &rgb, &plain),
-        Requirement::Required
-    );
-    assert_eq!(
-        in_item(C::ICCProfile_3b45af, &mono, &plain),
-        Requirement::Forbidden
-    );
-    assert_eq!(
-        in_item(C::ICCProfile_3b45af, &mono, &palette),
-        Requirement::Required
-    );
+    expect_in_item(C::ICCProfile_3b45af, &rgb, &plain, Requirement::Required);
+    expect_in_item(C::ICCProfile_3b45af, &mono, &plain, Requirement::Forbidden);
+    expect_in_item(C::ICCProfile_3b45af, &mono, &palette, Requirement::Required);
 
     let with_pixels = data_set(vec![
         DataElement::new(tags::PIXEL_DATA, VR::OB, PrimitiveValue::from(vec![0u8; 2])),
         unsigned(tags::PIXEL_PADDING_RANGE_LIMIT, 0),
     ]);
-    assert_eq!(
-        at_root(C::PixelPaddingValue_894c69, &with_pixels),
-        Requirement::Required
+    expect(
+        C::PixelPaddingValue_894c69,
+        &with_pixels,
+        Requirement::Required,
     );
-    assert_eq!(
-        at_root(C::PixelPaddingValue_894c69, &plain),
-        Requirement::Forbidden
-    );
+    expect(C::PixelPaddingValue_894c69, &plain, Requirement::Forbidden);
 
     let meta = data_set(vec![text(
         tags::PRIVATE_INFORMATION_CREATOR_UID,
         VR::UI,
         &["1.2.3"],
     )]);
-    assert_eq!(
-        at_root(C::PrivateInformation_5c0ac1, &meta),
-        Requirement::Required
-    );
-    assert_eq!(
-        at_root(C::PrivateInformation_5c0ac1, &plain),
-        Requirement::Forbidden
-    );
+    expect(C::PrivateInformation_5c0ac1, &meta, Requirement::Required);
+    expect(C::PrivateInformation_5c0ac1, &plain, Requirement::Forbidden);
 }
 
 #[test]
@@ -526,6 +571,9 @@ fn value_format_follows_ps3_5_section_6_2() {
         (VR::DS, "-1.5e3"),
         (VR::DS, " .5 "),
         (VR::UI, "1.2.840.10008.5.1.4.1.1.77.1.6"),
+        // Registered in PS3.6 Tables A-3 (Context Group) and A-4 (Template).
+        (VR::UI, "1.2.840.10008.6.1.1"),
+        (VR::UI, "1.2.840.10008.9.1"),
         (VR::UI, "1.0.2"),
         (VR::CS, "TILED_FULL"),
         (VR::PN, "Doe^John^^Dr^=^="),
@@ -550,6 +598,8 @@ fn value_format_follows_ps3_5_section_6_2() {
         (VR::DS, "1,5"),
         (VR::DS, "12345678901234567"),
         (VR::UI, "1.02.3"),
+        // The DICOM root, but registered nowhere in PS3.6 Annex A (PS3.5 9.2).
+        (VR::UI, "1.2.840.10008.999.1"),
         (VR::UI, "1.2 "),
         (VR::UI, &"1.2".repeat(30)),
         (VR::CS, "tiled"),
@@ -571,4 +621,50 @@ fn value_format_follows_ps3_5_section_6_2() {
     assert!(check_value(VR::LO, "Müller", false).is_err());
     assert_eq!(check_value(VR::LO, "Müller", true), Ok(()));
     assert!(check_value(VR::CS, "MÜLLER", true).is_err());
+}
+
+#[test]
+fn unknown_vr_stands_in_for_a_short_vr_whose_value_exceeds_65534_bytes() {
+    let vr_vm_status = |length: u32| {
+        let object = data_set(vec![DataElement::new_with_len(
+            tags::INSTITUTION_NAME,
+            VR::UN,
+            dicom_core::Length(length),
+            PrimitiveValue::U8(vec![b'A'; length as usize].into()),
+        )]);
+        let (mut vr_vm, mut format) = (
+            super::report::Family::default(),
+            super::report::Family::default(),
+        );
+        super::values::ValueChecks {
+            vr_vm: &mut vr_vm,
+            format: &mut format,
+            encoding: super::values::Encoding {
+                explicit_vr: true,
+                extended_characters: false,
+            },
+        }
+        .data_set(&object, "", 0);
+        vr_vm
+            .check(std::path::Path::new(""), "vr-vm", "PS3.6")
+            .status
+    };
+    // PS3.5 6.2.2: LO has a 16-bit Value Length Field.
+    assert_eq!(
+        vr_vm_status(65536),
+        crate::validation::ValidationStatus::Passed
+    );
+    assert_eq!(vr_vm_status(8), crate::validation::ValidationStatus::Failed);
+}
+
+#[test]
+fn code_extension_values_are_counted_by_the_encoding_check() {
+    // Sixteen two-byte characters and two escape sequences, as decoded by
+    // Value 1 alone: 38 characters here, 16 in the encoded bytes.
+    let station = format!("\u{1b}$B{}\u{1b}(B", "0!".repeat(16));
+    assert_eq!(check_value(VR::SH, &station, true), Ok(()));
+    assert!(check_value(VR::SH, &"A".repeat(17), true).is_err());
+    // "^" bytes inside two-byte characters are no component delimiters.
+    let name = format!("A=\u{1b}$B{}\u{1b}(B", "0^".repeat(40));
+    assert_eq!(check_value(VR::PN, &name, true), Ok(()));
 }

@@ -106,7 +106,7 @@ fn shipped_binary_rejects_malformed_compressed_pixel_data_without_external_tools
         )
     });
     assert_eq!(report["schema_version"], "wsi-dicom-validation-report-v1");
-    assert_eq!(report["rule_set_id"], "wsi-dicom-general-v2");
+    assert_eq!(report["rule_set_id"], "wsi-dicom-general-v3");
     let checks = report["checks"].as_array().expect("validation checks");
     assert!(checks.iter().any(|check| {
         check["name"] == "intrinsic-pixel-structure" && check["status"] == "failed"
@@ -388,8 +388,8 @@ fn shipped_binary_conformance_flags_select_optional_or_required_output() {
             String::from_utf8_lossy(&validated.stdout)
         );
         let report: Value = serde_json::from_slice(&validated.stdout).unwrap();
-        let absent = report["optional_absent"].as_array().unwrap();
-        absent_counts.push(absent[0]["absent"].as_array().unwrap().len());
+        let optional = report["optional"].as_array().unwrap();
+        absent_counts.push(optional[0]["absent"].as_array().unwrap().len());
 
         let required = wsi_dicom()
             .args(["validate", "--required", "--json"])
@@ -397,7 +397,7 @@ fn shipped_binary_conformance_flags_select_optional_or_required_output() {
             .output()
             .expect("validate the output at the required level");
         let report: Value = serde_json::from_slice(&required.stdout).unwrap();
-        assert_eq!(report["optional_absent"], Value::Array(Vec::new()));
+        assert_eq!(report["optional"], Value::Array(Vec::new()));
     }
     // Required output omits optional attributes that Optional output writes.
     assert!(absent_counts[1] > absent_counts[0], "{absent_counts:?}");

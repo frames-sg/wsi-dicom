@@ -89,8 +89,9 @@ pub use request::{
     RouteProgressSink, SlideRouteCoverageRequest,
 };
 pub use validation::{
-    doctor_dicom_environment, validate_dicom_path, DoctorOptions, DoctorReport, DoctorStatus,
-    DoctorTool, ExecutionFailure, OptionalAbsence, ValidationCheck, ValidationExecution,
+    doctor_dicom_environment, requirement_catalog, validate_dicom_path, DoctorOptions,
+    DoctorReport, DoctorStatus, DoctorTool, ExecutionFailure, OptionalConformance,
+    RequirementDisposition, RequirementEntry, ValidationCheck, ValidationExecution,
     ValidationOptions, ValidationProfile, ValidationReport, ValidationStatus,
 };
 

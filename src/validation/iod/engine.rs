@@ -1,24 +1,31 @@
 //! Attribute presence, Enumerated Values and Sequence Item checks for one Data Set.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 
 use dicom_core::VR;
+use dicom_dictionary_std::tags;
 use dicom_object::mem::InMemElement;
+use dicom_object::InMemDicomObject;
 
 use super::conditions::evaluate;
-use super::model::{Attribute, AttributeType, ItemCount, Node, Table};
+use super::model::{Attribute, AttributeType, ItemCount, Node, Table, ValueSet};
 use super::report::{condition_suffix, tag_text, Findings};
-use super::scope::{element_has_value, integer_value, tag_of, Requirement, Scope};
+use super::scope::{element_has_value, integer_value, raw_tag, tag_of, Requirement, Scope};
 use super::MAX_NESTING;
+use super::{codes, templates};
 
 /// Bound on "Include Table" indirection at one nesting level.
 const MAX_INCLUDE_DEPTH: usize = 16;
 
-/// One table row that applies to a Data Set, with the table that defines it.
+/// One table row that applies to a Data Set, with the table that defines it and
+/// the Value Set that applies where the table is included.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Definition {
     pub(super) attribute: &'static Attribute,
     pub(super) table: &'static Table,
+    pub(super) value_set: Option<ValueSet>,
 }
 
 impl Definition {
@@ -32,28 +39,73 @@ impl Definition {
 
 /// Expands Macro inclusions into the rows that apply at this nesting level.
 pub(super) fn flatten(nodes: &'static [Node], table: &'static Table, out: &mut Vec<Definition>) {
-    flatten_bounded(nodes, table, out, 0);
+    flatten_bounded(nodes, table, &[], out, 0);
 }
 
 fn flatten_bounded(
     nodes: &'static [Node],
     table: &'static Table,
+    bound: &'static [(u32, ValueSet)],
     out: &mut Vec<Definition>,
     depth: usize,
 ) {
     for node in nodes {
         match node {
-            Node::Attribute(attribute) => out.push(Definition { attribute, table }),
-            Node::Include(included) if depth < MAX_INCLUDE_DEPTH => {
-                flatten_bounded(included.nodes, included, out, depth + 1);
+            Node::Attribute(attribute) => out.push(Definition {
+                attribute,
+                table,
+                value_set: bound
+                    .iter()
+                    .find(|(tag, _)| *tag == attribute.tag)
+                    .map(|(_, value_set)| *value_set)
+                    .or(attribute.value_set),
+            }),
+            Node::Include(included, bound) if depth < MAX_INCLUDE_DEPTH => {
+                flatten_bounded(included.nodes, included, bound, out, depth + 1);
             }
-            Node::Include(_) => {}
+            Node::Include(..) => {}
         }
     }
 }
 
 /// The rows that apply to a Data Set, grouped by tag.
 pub(super) type ByTag = BTreeMap<u32, Vec<Definition>>;
+
+/// The (attribute, table) addresses of the rows that define a Sequence.
+type SequenceRows = Vec<(usize, usize)>;
+
+thread_local! {
+    /// Item rows by the Sequence rows that hold them. Rows are static, and a
+    /// Per-Frame Functional Groups Sequence repeats the same Sequences in every
+    /// Item, so the grouping is built once per thread.
+    static CHILDREN: RefCell<HashMap<SequenceRows, Rc<ByTag>>> = RefCell::default();
+}
+
+/// The rows of the Items of the Sequences that `group` defines.
+fn child_definitions(group: &[Definition]) -> Rc<ByTag> {
+    let key: SequenceRows = group
+        .iter()
+        .map(|definition| {
+            (
+                std::ptr::from_ref(definition.attribute) as usize,
+                std::ptr::from_ref(definition.table) as usize,
+            )
+        })
+        .collect();
+    CHILDREN.with(|cache| {
+        Rc::clone(cache.borrow_mut().entry(key).or_insert_with(|| {
+            let mut children = Vec::new();
+            for definition in group {
+                flatten(
+                    definition.attribute.children,
+                    definition.table,
+                    &mut children,
+                );
+            }
+            Rc::new(by_tag(&children))
+        }))
+    })
+}
 
 pub(super) fn by_tag(definitions: &[Definition]) -> ByTag {
     let mut grouped = ByTag::new();
@@ -99,6 +151,7 @@ impl Walk<'_> {
             };
             self.enumerations(scope, path, group, element);
             if let Some(items) = element.items() {
+                self.value_sets(path, group, items);
                 self.sequence(scope, path, group, items, depth);
             }
         }
@@ -116,27 +169,29 @@ impl Walk<'_> {
         let Some(lowest) = group.iter().map(|d| d.attribute.kind).min() else {
             return;
         };
-        let mut governing = Vec::new();
-        for definition in group.iter().filter(|d| d.attribute.kind == lowest) {
+        let governing = || group.iter().filter(move |d| d.attribute.kind == lowest);
+        let Some(first) = governing().next() else {
+            return;
+        };
+        let (mut required, mut optional, mut forbidden) = (None, false, true);
+        for definition in governing() {
             let requirement = requirement(definition, scope);
-            if requirement == Requirement::Undeterminable && presence == Presence::Evaluate {
-                if let Some(condition) = definition.attribute.condition {
-                    self.findings.presence.undetermined(condition);
+            match requirement {
+                Requirement::Required => required = required.or(Some(definition)),
+                Requirement::Optional => optional = true,
+                Requirement::Undeterminable if presence == Presence::Evaluate => {
+                    if let Some(condition) = definition.attribute.condition {
+                        self.findings.presence.undetermined(condition);
+                    }
                 }
+                _ => {}
             }
-            governing.push((definition, requirement));
+            forbidden &= requirement == Requirement::Forbidden;
         }
-        let required = governing
-            .iter()
-            .find(|(_, requirement)| *requirement == Requirement::Required);
-        let forbidden = governing
-            .iter()
-            .all(|(_, requirement)| *requirement == Requirement::Forbidden);
-        let (first, _) = governing[0];
         let attribute = first.attribute;
         let label = || format!("{path}{} {}", attribute.name, tag_text(attribute.tag));
         match (element, required) {
-            (None, Some((definition, _))) => self.findings.presence.push(|| {
+            (None, Some(definition)) => self.findings.presence.push(|| {
                 format!(
                     "{}: Type {} missing ({})",
                     label(),
@@ -144,7 +199,7 @@ impl Walk<'_> {
                     definition.citation()
                 )
             }),
-            (Some(element), Some((definition, _)))
+            (Some(element), Some(definition))
                 if definition.attribute.kind.requires_value()
                     && !element_has_value(element.value()) =>
             {
@@ -157,14 +212,10 @@ impl Walk<'_> {
                     )
                 });
             }
-            (None, None)
-                if presence == Presence::Evaluate
-                    && governing
-                        .iter()
-                        .any(|(_, requirement)| *requirement == Requirement::Optional) =>
-            {
-                self.findings.optional_absent.row(*first);
+            (None, None) if optional && presence == Presence::Evaluate => {
+                self.findings.optional.row(*first, false);
             }
+            (Some(_), None) if optional => self.findings.optional.row(*first, true),
             (Some(_), None) if forbidden && presence == Presence::Evaluate => {
                 self.findings.presence.push(|| {
                     format!(
@@ -221,7 +272,11 @@ impl Walk<'_> {
                 };
                 for (index, raw) in selected {
                     let value = raw.trim_matches(|c| c == ' ' || c == '\0');
-                    if value.is_empty() || enumerated(value, enumeration.values, numeric) {
+                    // A wholly empty element is the presence check's to judge; an
+                    // empty Value among others is not a valid Value (PS3.5 6.3).
+                    if (value.is_empty() && values.len() == 1)
+                        || enumerated(value, enumeration.values, numeric)
+                    {
                         continue;
                     }
                     let which = if values.len() > 1 || enumeration.value.is_some() {
@@ -248,7 +303,7 @@ impl Walk<'_> {
         scope: &Scope<'_>,
         path: &str,
         group: &[Definition],
-        items: &[dicom_object::InMemDicomObject],
+        items: &[InMemDicomObject],
         depth: usize,
     ) {
         let name = group[0].attribute.name;
@@ -258,18 +313,10 @@ impl Walk<'_> {
         if depth >= MAX_NESTING {
             return; // the value-format check reports the nesting bound
         }
-        let mut children = Vec::new();
-        for definition in group {
-            flatten(
-                definition.attribute.children,
-                definition.table,
-                &mut children,
-            );
-        }
+        let children = child_definitions(group);
         if children.is_empty() {
             return;
         }
-        let children = by_tag(&children);
         for (index, item) in items.iter().enumerate() {
             let child = scope.child(item);
             let item_path = format!("{path}{name}[{}] > ", index + 1);
@@ -277,40 +324,76 @@ impl Walk<'_> {
         }
     }
 
+    /// Context Group and Template constraints on the Items of a Code or Content
+    /// Item Sequence.
+    fn value_sets(&mut self, path: &str, group: &[Definition], items: &[InMemDicomObject]) {
+        for definition in group {
+            let attribute = definition.attribute;
+            let label = format!("{path}{}", attribute.name);
+            match definition.value_set {
+                Some(ValueSet::ContextGroups(strength, groups)) => {
+                    codes::check_items(
+                        self.findings,
+                        &label,
+                        attribute.tag,
+                        strength,
+                        groups,
+                        items,
+                    );
+                }
+                Some(ValueSet::Template(strength, template)) => {
+                    templates::check_items(self.findings, &label, strength, template, items);
+                }
+                None => {}
+            }
+        }
+    }
+
     fn item_count(&mut self, scope: &Scope<'_>, path: &str, definition: &Definition, count: usize) {
         let attribute = definition.attribute;
-        // An empty Type 1 Sequence is a presence violation; an empty Type 2 or 3
-        // Sequence is permitted (PS3.5 7.4.3, 7.4.6).
+        // An empty Type 1 Sequence is a presence violation, an empty Type 2
+        // Sequence is permitted, and a Type 3 Sequence shall not be present
+        // with zero Items (PS3.5 7.4.3, 7.4.5).
         if count == 0 {
+            if attribute.kind == AttributeType::Three {
+                self.findings.sequence_items.push(|| {
+                    format!(
+                        "{path}{} {}: Type 3 Sequence present with zero Items (PS3.5 7.4.5; {})",
+                        attribute.name,
+                        tag_text(attribute.tag),
+                        definition.citation()
+                    )
+                });
+            }
             return;
         }
         let count = u32::try_from(count).unwrap_or(u32::MAX);
-        let expected = match attribute.items {
-            ItemCount::Unconstrained | ItemCount::NumberOfFrames => return,
-            ItemCount::Exactly(n) => (count != n).then(|| format!("exactly {n}")),
-            ItemCount::AtLeast(n) => (count < n).then(|| format!("at least {n}")),
-            ItemCount::AtMost(n) => (count > n).then(|| format!("at most {n}")),
-            ItemCount::ValueOf(primary, fallback) => {
-                let source = [primary, fallback]
-                    .into_iter()
-                    .find_map(|tag| integer_value(scope.root, tag_of(tag)).map(|n| (tag, n)));
-                source.and_then(|(tag, n)| {
-                    (i64::from(count) != n).then(|| format!("{n} (the Value of {})", tag_text(tag)))
-                })
-            }
+        let of_value = |tag: u32, n: i64| {
+            (i64::from(count) != n)
+                .then(|| (format!("{n} (the Value of {})", tag_text(tag)), false))
         };
-        if let Some(expected) = expected {
+        let expected = match attribute.items {
+            ItemCount::Unconstrained => None,
+            ItemCount::Exactly(n) => (count != n).then(|| (format!("exactly {n}"), n == 1)),
+            ItemCount::AtLeast(n) => (count < n).then(|| (format!("at least {n}"), false)),
+            ItemCount::AtMost(n) => (count > n).then(|| (format!("at most {n}"), n == 1)),
+            ItemCount::NumberOfFrames => {
+                let tag = raw_tag(tags::NUMBER_OF_FRAMES);
+                integer_value(scope.root, tags::NUMBER_OF_FRAMES).and_then(|n| of_value(tag, n))
+            }
+            ItemCount::ValueOf(primary, fallback) => [primary, fallback]
+                .into_iter()
+                .find_map(|tag| integer_value(scope.root, tag_of(tag)).map(|n| (tag, n)))
+                .and_then(|(tag, n)| of_value(tag, n)),
+        };
+        if let Some((expected, singular)) = expected {
             self.findings.sequence_items.push(|| {
                 format!(
                     "{path}{} {}: {count} Item{} where {expected} {} required ({})",
                     attribute.name,
                     tag_text(attribute.tag),
                     if count == 1 { "" } else { "s" },
-                    if expected.starts_with("exactly 1") || expected.starts_with("at most 1") {
-                        "is"
-                    } else {
-                        "are"
-                    },
+                    if singular { "is" } else { "are" },
                     definition.citation()
                 )
             });

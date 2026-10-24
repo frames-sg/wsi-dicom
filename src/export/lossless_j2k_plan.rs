@@ -52,9 +52,7 @@ impl LosslessJ2kPlannedFrame {
     pub(super) fn directly_follows(&self, previous: &Self) -> bool {
         self.row == previous.row && previous.col.checked_add(1) == Some(self.col)
     }
-}
 
-impl LosslessJ2kPlannedFrame {
     pub(super) fn rect(&self) -> OutputFrameRect {
         OutputFrameRect::new(self.x, self.y, self.width, self.height)
     }
@@ -173,7 +171,11 @@ pub(super) fn plan_lossless_j2k_frames_with_preflight(
                 .ok_or_else(|| Error::Unsupported {
                     reason: "J2K row planning tile column overflow".into(),
                 })?;
-            if per_frame_plan.is_none_or(|plan| plan.includes_grid_position(row, col)) {
+            if crate::writer::PerFrameFunctionalGroupsPlan::writes_grid_position(
+                per_frame_plan,
+                row,
+                col,
+            ) {
                 positions.push((row, col));
             }
         }

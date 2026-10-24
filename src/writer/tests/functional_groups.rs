@@ -52,7 +52,28 @@ fn per_frame_metadata_rejects_an_impossible_plan_from_its_structural_lower_bound
 #[test]
 fn decimal_string_formatting_stays_within_dicom_limit() {
     assert_eq!(format_ds(0.0002528), "0.0002528");
-    assert!(format_ds(123_456.789_123_456).len() <= 16);
+    for value in [
+        0.0,
+        -0.0,
+        1e-13,
+        f64::EPSILON,
+        -1e-120,
+        f64::MAX,
+        f64::from_bits(1),
+        123_456.789_123_456,
+    ] {
+        let encoded = format_ds(value);
+        assert!(encoded.len() <= 16, "{encoded}");
+        let decoded = encoded.parse::<f64>().unwrap();
+        assert!(decoded.is_finite(), "{encoded}");
+        assert_eq!(decoded == 0.0, value == 0.0, "{value} became {encoded}");
+        if value != 0.0 {
+            assert!(
+                (decoded / value - 1.0).abs() < 1e-8,
+                "{value} became {encoded}"
+            );
+        }
+    }
 }
 
 #[test]

@@ -53,6 +53,23 @@ pub(super) struct Enumeration {
     pub(super) values: &'static [&'static str],
 }
 
+/// Whether a Value Set is suggested (Baseline) or required (Defined); PS3.16 6.1
+/// and the PS3.3 Definitions of BCID, DCID, BTID and DTID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Strength {
+    Baseline,
+    Defined,
+}
+
+/// The Value Set of a Code Sequence or Content Item Sequence.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum ValueSet {
+    /// Codes of any of these PS3.16 Context Groups.
+    ContextGroups(Strength, &'static [u32]),
+    /// Content Items of this PS3.16 Template.
+    Template(Strength, u32),
+}
+
 #[derive(Debug)]
 pub(super) struct Attribute {
     pub(super) tag: u32,
@@ -61,6 +78,7 @@ pub(super) struct Attribute {
     pub(super) condition: Option<ConditionId>,
     pub(super) enumerations: &'static [Enumeration],
     pub(super) items: ItemCount,
+    pub(super) value_set: Option<ValueSet>,
     /// Item content of a Sequence Attribute.
     pub(super) children: &'static [Node],
 }
@@ -68,8 +86,9 @@ pub(super) struct Attribute {
 #[derive(Debug)]
 pub(super) enum Node {
     Attribute(Attribute),
-    /// "Include Table ..." row: the Macro's rows at this nesting level.
-    Include(&'static Table),
+    /// "Include Table ..." row: the Macro's rows at this nesting level, with the
+    /// Value Sets the including row binds to the Macro's Code Sequences.
+    Include(&'static Table, &'static [(u32, ValueSet)]),
 }
 
 /// One PS3.3 Module or Macro table.
@@ -163,4 +182,90 @@ pub(super) struct DictionaryEntry {
     pub(super) vr: &'static [VR],
     pub(super) vm: ValueMultiplicity,
     pub(super) retired: bool,
+}
+
+/// One normative sentence of the standard, as extracted.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Statement {
+    pub(super) part: &'static str,
+    pub(super) section: &'static str,
+    /// The Attribute whose description holds the sentence.
+    pub(super) keyword: Option<&'static str>,
+    pub(super) text: &'static str,
+}
+
+/// A PS3.16 coded concept; `legacy` is its SNOMED-RT identifier, if any.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Code {
+    pub(super) scheme: &'static str,
+    pub(super) value: &'static str,
+    pub(super) meaning: &'static str,
+    pub(super) legacy: &'static str,
+}
+
+#[derive(Debug)]
+pub(super) struct ContextGroup {
+    pub(super) id: u32,
+    pub(super) name: &'static str,
+    pub(super) extensible: bool,
+    /// Coding Schemes the group comprises whole (e.g. UCUM for CID 82).
+    pub(super) schemes: &'static [&'static str],
+    /// Sorted by Coding Scheme Designator, then Code Value.
+    pub(super) codes: &'static [Code],
+}
+
+/// The Concept Name a Template row constrains.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Concept {
+    /// EV: exactly this code.
+    Enumerated(Code),
+    /// DT: this code, or one of the same meaning.
+    Defined(Code),
+    /// A Context Group of names, or for an INCLUDE row the included Template.
+    Set(ValueSet),
+}
+
+/// PS3.16 6.1.7 Requirement Type of a Template row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RowRequirement {
+    M,
+    Mc,
+    U,
+}
+
+/// PS3.16 6.1.8 Condition of a Template row; `iff` forbids the row otherwise.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum TemplateCondition {
+    RowAbsent {
+        iff: bool,
+        row: &'static str,
+    },
+    RowValue {
+        iff: bool,
+        row: &'static str,
+        scheme: &'static str,
+        value: &'static str,
+    },
+}
+
+#[derive(Debug)]
+pub(super) struct TemplateRow {
+    pub(super) row: &'static str,
+    pub(super) value_type: &'static str,
+    pub(super) concept: Concept,
+    pub(super) min: u32,
+    pub(super) max: Option<u32>,
+    pub(super) requirement: RowRequirement,
+    pub(super) condition: Option<TemplateCondition>,
+    pub(super) constraint: Option<ValueSet>,
+}
+
+#[derive(Debug)]
+pub(super) struct Template {
+    pub(super) id: u32,
+    pub(super) name: &'static str,
+    pub(super) extensible: bool,
+    /// Content Items appear in row order.
+    pub(super) ordered: bool,
+    pub(super) rows: &'static [TemplateRow],
 }

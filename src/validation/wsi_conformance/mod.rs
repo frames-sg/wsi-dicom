@@ -1,18 +1,26 @@
 mod corpus;
+mod dimensions;
 mod fields;
 mod functional_groups;
 mod geometry;
 mod identity;
 mod instance;
+mod pixel_attributes;
+mod pixel_syntax;
+mod relations;
+mod series_set;
+#[cfg(test)]
+mod tests;
+mod wsi_image;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use dicom_object::DefaultDicomObject;
 
 pub(super) use corpus::{
     run_clinical_identity_set_check, run_identity_set_check, run_pyramid_geometry_set_check,
-    run_slide_coordinate_set_check, run_source_relationship_set_check, run_specimen_uid_set_check,
-    WsiConformanceCorpus,
+    run_series_set_check, run_slide_coordinate_set_check, run_source_relationship_set_check,
+    run_specimen_uid_set_check, WsiConformanceCorpus,
 };
 
 use geometry::{
@@ -25,9 +33,11 @@ use instance::{
     validate_core_image_profile_rule, validate_icc_rule, validate_image_metadata_rule,
     validate_lossy_rule, validate_monochrome_rule, validate_optical_path_structure_rule,
 };
+use pixel_attributes::validate_pixel_attributes_rule;
 
-use super::iod::{declares_vl_wsi, run_iod_checks};
-use super::{ValidationCheck, ValidationProfile, ValidationStatus};
+use super::codestream::run_codestream_check;
+use super::iod::{declares_vl_wsi, run_iod_checks, OptionalNotes};
+use super::{intrinsic_check, ValidationCheck, ValidationProfile, ValidationStatus};
 
 const ICC_RULE: &str = "intrinsic-wsi-dicom-2026c-icc-profile";
 const MONOCHROME_RULE: &str = "intrinsic-wsi-dicom-2026c-monochrome-presentation";
@@ -37,19 +47,23 @@ const DIMENSION_RULE: &str = "intrinsic-wsi-dicom-2026c-dimension-order";
 const TILE_GEOMETRY_RULE: &str = "intrinsic-wsi-dicom-2026c-tile-geometry";
 const IDENTITY_SET_RULE: &str = "intrinsic-wsi-dicom-2026c-identity-set";
 const IMAGE_METADATA_RULE: &str = "intrinsic-wsi-dicom-2026c-image-metadata";
+const PIXEL_ATTRIBUTES_RULE: &str = "intrinsic-wsi-dicom-2026c-pixel-attributes";
 const CORE_IMAGE_PROFILE_RULE: &str = "intrinsic-wsi-dicom-2026c-core-image-profile";
 const SLIDE_COORDINATE_RULE: &str = "intrinsic-wsi-dicom-2026c-slide-coordinate-system";
 const OPTICAL_PATH_STRUCTURE_RULE: &str = "intrinsic-wsi-dicom-2026c-optical-path-structure";
 const SPECIMEN_CONTAINER_RULE: &str = "intrinsic-wsi-dicom-2026c-specimen-container";
+const WSI_IMAGE_RULE: &str = "intrinsic-wsi-dicom-2026c-wsi-image";
+const RELATIONS_RULE: &str = "intrinsic-wsi-dicom-2026c-attribute-relations";
 
-/// The intrinsic checks of one object, with the optional IOD items it lacks.
+/// The intrinsic checks of one object, with its optional conformance notes.
 pub(super) fn run_intrinsic_wsi_conformance_checks(
     path: &Path,
     object: &DefaultDicomObject,
     profile: ValidationProfile,
     conformance: crate::ConformanceLevel,
-) -> (Vec<ValidationCheck>, Option<Vec<String>>) {
-    let (iod_checks, optional_absent) = run_iod_checks(path, object, conformance);
+    max_pixel_frame_bytes: usize,
+) -> (Vec<ValidationCheck>, Option<OptionalNotes>) {
+    let (iod_checks, notes) = run_iod_checks(path, object, conformance);
     if !declares_vl_wsi(object) {
         let mut checks = if profile == ValidationProfile::Core2026c {
             vec![rule_check(
@@ -62,7 +76,7 @@ pub(super) fn run_intrinsic_wsi_conformance_checks(
             Vec::new()
         };
         checks.extend(iod_checks);
-        return (checks, optional_absent);
+        return (checks, notes);
     }
 
     let mut checks = vec![
@@ -114,7 +128,26 @@ pub(super) fn run_intrinsic_wsi_conformance_checks(
             "DICOM PS3.3 2026c C.7.6.3",
             validate_image_metadata_rule(object),
         ),
+        rule_check(
+            path,
+            WSI_IMAGE_RULE,
+            "DICOM PS3.3 2026c C.8.12",
+            wsi_image::validate_wsi_image_rule(object),
+        ),
+        rule_check(
+            path,
+            RELATIONS_RULE,
+            "DICOM PS3.3 2026c 8.6, 10.17, C.7, C.8.12.5 and C.12",
+            relations::validate_relations_rule(object),
+        ),
+        rule_check(
+            path,
+            PIXEL_ATTRIBUTES_RULE,
+            "DICOM PS3.3 2026c C.7.5.1.1.2, C.7.6.1.1.6, C.7.6.3.1 and C.7.9",
+            validate_pixel_attributes_rule(object),
+        ),
     ];
+    checks.push(run_codestream_check(path, object, max_pixel_frame_bytes));
     checks.extend(iod_checks);
     if profile == ValidationProfile::Core2026c {
         checks.extend([
@@ -144,7 +177,7 @@ pub(super) fn run_intrinsic_wsi_conformance_checks(
             ),
         ]);
     }
-    (checks, optional_absent)
+    (checks, notes)
 }
 
 fn rule_check(
@@ -157,14 +190,26 @@ fn rule_check(
         Ok(()) => (ValidationStatus::Passed, format!("{citation}: conformant")),
         Err(reason) => (ValidationStatus::Failed, format!("{citation}: {reason}")),
     };
-    ValidationCheck {
-        execution: None,
-        name: name.to_string(),
-        path: (!path.as_os_str().is_empty()).then(|| path.to_path_buf()),
-        status,
-        command: Vec::new(),
-        message,
-        stdout: String::new(),
-        stderr: String::new(),
+    intrinsic_check(name, rule_path(path), status, message)
+}
+
+/// Violations shown in a rule's message; the rest are counted.
+const MAX_SHOWN: usize = 20;
+
+/// A rule's violations as its result: the first `MAX_SHOWN`, then how many more.
+pub(super) fn violation_result(violations: Vec<String>) -> Result<(), String> {
+    if violations.is_empty() {
+        return Ok(());
     }
+    let hidden = violations.len().saturating_sub(MAX_SHOWN);
+    let mut message = violations[..violations.len() - hidden].join("; ");
+    if hidden > 0 {
+        message.push_str(&format!("; and {hidden} more"));
+    }
+    Err(message)
+}
+
+/// The checked file; an empty path marks a check of the whole set.
+pub(super) fn rule_path(path: &Path) -> Option<PathBuf> {
+    (!path.as_os_str().is_empty()).then(|| path.to_path_buf())
 }

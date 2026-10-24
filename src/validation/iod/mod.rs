@@ -4,17 +4,25 @@
 //! sources by `scripts/generate-iod-tables.py`; `conditions.rs` holds one
 //! hand-written predicate per generated condition.
 
+mod codes;
 mod conditions;
 #[rustfmt::skip]
 mod dictionary;
+mod dispositions;
 mod engine;
 mod file_meta;
+mod item_character_set;
 mod model;
 mod modules;
 mod report;
+#[rustfmt::skip]
+mod requirements;
 mod scope;
 #[rustfmt::skip]
 mod tables;
+mod templates;
+#[rustfmt::skip]
+mod value_sets;
 mod values;
 
 #[cfg(test)]
@@ -25,10 +33,21 @@ use std::path::Path;
 use dicom_dictionary_std::{tags, uids};
 use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
-use super::ValidationCheck;
+use super::{RequirementDisposition, RequirementEntry, ValidationCheck};
 use report::Findings;
 use scope::Scope;
 use values::{Encoding, ValueChecks};
+
+// Shared with the encoding check, which re-reads the Data Set from its bytes.
+pub(in crate::validation) use file_meta::{data_set_start, long_length};
+pub(in crate::validation) use item_character_set::item_admits_specific_character_set;
+pub(in crate::validation) use report::{tag_text, Family};
+pub(in crate::validation) use values::{dictionary_vrs, element_label};
+// Attribute readers and coded entries the WSI rules share.
+pub(in crate::validation) use codes::Coded;
+pub(in crate::validation) use scope::{
+    integer_value, is_private, items, raw_tag, string_value, tag_values,
+};
 
 const IOD_MODULES_RULE: &str = "intrinsic-wsi-dicom-2026c-iod-modules";
 const IOD_ATTRIBUTE_PRESENCE_RULE: &str = "intrinsic-wsi-dicom-2026c-iod-attribute-presence";
@@ -36,25 +55,40 @@ const IOD_ENUMERATED_VALUES_RULE: &str = "intrinsic-wsi-dicom-2026c-iod-enumerat
 const IOD_VR_VM_RULE: &str = "intrinsic-wsi-dicom-2026c-iod-vr-vm";
 const IOD_VALUE_FORMAT_RULE: &str = "intrinsic-wsi-dicom-2026c-iod-value-format";
 const IOD_SEQUENCE_ITEMS_RULE: &str = "intrinsic-wsi-dicom-2026c-iod-sequence-items";
+const IOD_VALUE_SETS_RULE: &str = "intrinsic-wsi-dicom-2026c-iod-value-sets";
 const FILE_META_RULE: &str = "intrinsic-wsi-dicom-2026c-file-meta";
 
 /// Deepest Sequence nesting walked; deeper Items are reported, not checked.
-const MAX_NESTING: usize = 32;
+pub(in crate::validation) const MAX_NESTING: usize = 32;
+/// The DICOM edition the requirement tables are generated from.
+pub(in crate::validation) const EDITION: &str = tables::EDITION;
+
+/// One object's optional conformance: the optional items it encodes and those
+/// it does not, and its departures from Baseline Context Groups and Templates
+/// and undeclared Context Group extensions.
+pub(in crate::validation) struct OptionalNotes {
+    pub(in crate::validation) present: Vec<String>,
+    pub(in crate::validation) absent: Vec<String>,
+    pub(in crate::validation) advisories: Vec<String>,
+}
 
 /// Runs every IOD requirement family when either the Data Set or File Meta
 /// Information declares a VL Whole Slide Microscopy SOP Instance, with the
-/// optional items the object lacks when `conformance` is `Optional`.
+/// optional notes when `conformance` is `Optional`.
 pub(super) fn run_iod_checks(
     path: &Path,
     object: &DefaultDicomObject,
     conformance: crate::ConformanceLevel,
-) -> (Vec<ValidationCheck>, Option<Vec<String>>) {
+) -> (Vec<ValidationCheck>, Option<OptionalNotes>) {
     if !parsed_file_applies(object) {
         return (Vec::new(), None);
     }
     let findings = evaluate(path, object);
-    let optional_absent = (conformance == crate::ConformanceLevel::Optional)
-        .then(|| findings.optional_absent.describe());
+    let notes = conformance.is_optional().then(|| OptionalNotes {
+        present: findings.optional.describe_present(),
+        absent: findings.optional.describe_absent(),
+        advisories: findings.advisories.describe(),
+    });
     let edition = tables::EDITION;
     let checks = vec![
         findings.modules.check(
@@ -87,11 +121,16 @@ pub(super) fn run_iod_checks(
             IOD_SEQUENCE_ITEMS_RULE,
             &format!("DICOM PS3.3 {edition} A.32.8 Sequence Item counts"),
         ),
+        findings.value_sets.check(
+            path,
+            IOD_VALUE_SETS_RULE,
+            &format!("DICOM PS3.3 {edition} 8.8 and PS3.16 {edition} Defined Context Groups and Templates"),
+        ),
         findings
             .file_meta
             .check(path, FILE_META_RULE, &file_meta_citation()),
     ];
-    (checks, optional_absent)
+    (checks, notes)
 }
 
 fn parsed_file_applies(object: &DefaultDicomObject) -> bool {
@@ -150,6 +189,50 @@ fn evaluate(path: &Path, object: &DefaultDicomObject) -> Findings {
     }
     .data_set(root, "", 0);
     findings
+}
+
+/// Every normative statement in the scope of the IOD, with how validation
+/// holds an object to it.
+pub(in crate::validation) fn catalog() -> Vec<RequirementEntry> {
+    let entry = |id, statement: model::Statement, disposition| RequirementEntry {
+        id,
+        part: statement.part,
+        section: statement.section,
+        keyword: statement.keyword,
+        text: statement.text,
+        disposition,
+    };
+    requirements::TABLE_ENFORCED
+        .iter()
+        .map(|statement| entry(None, *statement, RequirementDisposition::Tables))
+        .chain(requirements::Requirement::ALL.iter().map(|requirement| {
+            entry(
+                Some(requirement.id()),
+                requirement.statement(),
+                requirement.disposition(),
+            )
+        }))
+        .collect()
+}
+
+/// PS3.5 6.2 Value format of one Value as the IOD value-format check applies
+/// it, with any repertoire permitted; the writer validates metadata with it.
+pub(crate) fn check_value_format(vr: dicom_core::VR, value: &str) -> Result<(), String> {
+    values::check_value(vr, value, true)
+}
+
+/// Whether `uid` is a PS3.6 Image Storage SOP Class.
+pub(crate) fn is_image_storage_sop_class(uid: &str) -> bool {
+    dictionary::IMAGE_STORAGE_SOP_CLASSES
+        .binary_search(&uid)
+        .is_ok()
+}
+
+/// The PS3.6 VR alternatives and Value Multiplicity bounds of a registered tag.
+pub(crate) fn registered(
+    tag: dicom_core::Tag,
+) -> Option<(&'static [dicom_core::VR], u32, Option<u32>)> {
+    values::entry(tag).map(|entry| (entry.vr, entry.vm.min, entry.vm.max))
 }
 
 /// Whether Specific Character Set names a repertoire beyond ISO-IR 6.

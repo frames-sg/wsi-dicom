@@ -77,6 +77,8 @@ fn corrected_producer_output_passes_all_versioned_intrinsic_wsi_rules() {
         "intrinsic-wsi-dicom-2026c-identity-set",
         "intrinsic-wsi-dicom-2026c-clinical-identity-set",
         "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-2026c-pixel-attributes",
+        "intrinsic-wsi-dicom-2026c-codestream",
     ] {
         assert!(
             report

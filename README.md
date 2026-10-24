@@ -284,6 +284,7 @@ wsi-dicom doctor --strict --json
 wsi-dicom self-test --json --out self-test-evidence --keep-output
 wsi-dicom validate dicom-out --strict --json
 wsi-dicom coverage slide.ndpi --json
+wsi-dicom requirements --json
 ```
 
 For the complete cataloged DICOM-side evaluation and one unified per-slide evidence bundle, install
@@ -291,10 +292,10 @@ the independently versioned [WSI-DICOM Bench](https://github.com/frames-sg/wsi-d
 
 ```sh
 python -m pip wheel \
-  "git+https://github.com/frames-sg/wsi-dicom-bench@56fd99fafccac7dfbf2a320022abb0c2ccaa8f62" \
+  "git+https://github.com/frames-sg/wsi-dicom-bench@968b25ded082a7e7e0a20d4ca5b3283fb636588b" \
   --wheel-dir .benchmark-wheel
 python -m pip install .benchmark-wheel/wsi_dicom_bench-*.whl
-profile="$(python -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("rules/wsi-dicom-core-profile-2026c-v2.json"))')"
+profile="$(python -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("rules/wsi-dicom-core-profile-2026c-v4.json"))')"
 wsi-dicom-bench-workbench dicom-out \
   --output evidence/slide-id \
   --wsi-dicom target/release/wsi-dicom \
@@ -305,26 +306,67 @@ Validation never runs an external codec. Every validation run performs
 intrinsic checks before the optional external DICOM conformance validators
 (dicom3tools `dciodvfy`/`dcentvfy`, `validate_iods`, and `dcmvalidate` when an
 IOD file is given). The Pixel Data structure check verifies Number of Frames,
-native versus encapsulated representation, nonempty data, and bounded frame
-mapping through Basic or Extended Offset Tables. VL Whole Slide Microscopy Image objects additionally
+native versus encapsulated representation as each Transfer Syntax requires,
+nonempty data, the Native length, and bounded frame mapping through Basic or
+Extended Offset Tables. The `encoding` check re-reads every file's Data Set
+from its bytes: element order and uniqueness, VR and reserved bytes, Value
+Lengths and trailing bytes, the encapsulated Pixel Data VR, Fragment Item
+lengths and delimiters, Group Lengths, private blocks and Private Creators,
+Specific Character Set and the repertoire of text Values, Person Name
+component groups and deflated Data Sets. VL Whole Slide Microscopy Image objects additionally
 run stable `intrinsic-wsi-dicom-2026c-*` checks for ICC profiles, monochrome
-presentation attributes, lossy declarations, specimen identity, and dimension
-ordering, plus a set-level Specimen UID consistency check.
+presentation attributes, lossy declarations, specimen identity, dimension
+indices and ordering, the WSI image constraints the tables cannot express
+(`wsi-image`: four-valued Image and Frame Type, Specimen Label in Image, Tiles
+Overlap, Imaged Volume Depth, slide-corner Frame of Reference, optical path
+identifiers, lossy derivation, pixel spacing and the regular tiling), pixel
+description content (`pixel-attributes`: Pixel Padding, Pixel Aspect Ratio,
+Icon Images and palette tables), the codestream headers of each encapsulated
+Frame against the Image Pixel attributes and the Transfer Syntax (`codestream`:
+JPEG, JPEG-LS, JPEG 2000, HTJ2K, JPEG XL and RLE; headers are read, nothing is
+decoded) and the constraints between Attributes in every Data Set and Item
+(`attribute-relations`: Selector Attribute macro, Context Identifiers,
+Referenced Frame Numbers, identification Items against names, calibration
+dates, patient orientation and laterality, specimen preparation order, Color
+Space against the ICC Profile primaries, signed element lists, Original
+Attributes, measured values and reference SOP Classes). A validated directory
+also runs set-level checks: Specimen UID consistency and `series-set` (one
+Frame of Reference per Series and per slide, UID roles, Instance Numbers,
+Concatenation agreement and numbering, Dimension Organization UIDs, localizer
+Frames of Reference, Specimen Identifiers within a Study, Frame Extraction
+history and patient group arrangements).
 
 They also run the VL WSI IOD requirements generated from the pinned DICOM
 2026c tables (PS3.3 A.32.8 and the module and macro tables it includes, PS3.6
 data dictionary, PS3.10 file meta): `iod-modules` (module and functional group
 usage, Per-Frame item count), `iod-attribute-presence` (Type 1, 1C, 2 and 2C,
 recursively in Sequence Items, with each condition evaluated), `iod-enumerated-values`,
-`iod-vr-vm`, `iod-value-format` (PS3.5 6.2), `iod-sequence-items` and
-`file-meta`. Conditions that depend on facts an object cannot carry are counted
-as undeterminable rather than failed. With `--optional` (the default),
-validation also lists the optional modules, functional groups and attributes
-each object lacks, in `optional_absent` of the JSON report; they are not
-failures. Most need facts a slide file does not hold (clinical trial, physician
-or procedure details). `--required` skips the list. Context Group (CID) code constraints are
-not checked. `scripts/generate-iod-tables.py --check` verifies the generated
-tables against the pinned DocBook sources. These checks do not decode pixel
+`iod-vr-vm`, `iod-value-format` (PS3.5 6.2), `iod-sequence-items` (including
+Type 3 Sequences present with zero Items), `iod-value-sets` and `file-meta`
+(including Presentation Addresses). `iod-value-sets` checks coded entries
+against the PS3.16 Context Groups and Templates bound in the tables: a code
+outside a Defined non-extensible group, or a Content Item tree that departs
+from a Defined Template, fails; codes outside a Defined extensible group (Context
+Group Extension Flag not `Y`) or a Baseline group, and departures from a
+Baseline Template, are advisories. Conditions that depend on facts an object
+cannot carry are counted as undeterminable rather than failed. With
+`--optional` (the default), the JSON report's `optional` lists, for each
+object, the optional modules, functional groups and attributes it encodes
+(`present`) and lacks (`absent`), and the suggested codes and templates it
+does not follow (`advisories`); none of them are failures. Most absent ones
+need facts a slide file does not hold (clinical trial, physician or procedure
+details). `--required` skips the list.
+
+`wsi-dicom requirements` prints the catalog of the 919 normative statements of
+PS3.3, PS3.5 and PS3.10 in the VL WSI scope, each with its disposition: enforced
+by the generated tables, the intrinsic check that enforces it, the check family
+it awaits, or why an encoded object cannot be held to it (another IOD or
+encoding, application behavior, or a fact the bytes cannot show). `--json`
+emits the `wsi-dicom-requirements-v1` schema;
+`wsi_dicom::requirement_catalog()` returns the same entries.
+`scripts/generate-iod-tables.py --check` verifies the generated tables,
+dictionary, requirement catalog and value sets against the pinned DocBook
+sources. These checks do not decode pixel
 values or infer unknowable compression history predating the object. Missing
 external tools are reported as skipped unless `--strict` is set. Directory
 validation is bounded by file count, depth, timeout, and child
@@ -453,12 +495,14 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
   levels and thumbnails, a black Recommended Absent Pixel CIELab Value for
   `TILED_SPARSE`). `--required`
   (`Export::conformance(ConformanceLevel::Required)`) writes only the pyramid
-  levels, `TILED_FULL` with absent frames padded, and leaves out the optional
-  descriptive attributes (Multi-Resolution Pyramid module, Acquisition Date and
-  Time, Representative Frame Number, specimen and optical path descriptions,
-  General Reference links). It keeps what the encoding depends on: Dimension
-  Organization Type, offset tables, per-frame positions and the Derivation
-  Image functional group of resampled levels.
+  levels, `TILED_FULL` with absent frames padded and without a Per-Frame
+  Functional Groups Sequence, and leaves out the optional descriptive
+  attributes (Multi-Resolution Pyramid module, Acquisition Date and Time,
+  Representative Frame Number, Dimension Index Sequence, shared Optical Path
+  Identification, Illumination Wave Length, specimen and optical path
+  descriptions, General Reference links). It keeps what the encoding depends
+  on: Dimension Organization Type, offset tables and the Derivation Image
+  functional group of resampled levels.
 - Associated images are written by default as single-frame instances in the
   Series of the first plane: the label (`associated-label.dcm`,
   ORIGINAL\PRIMARY\LABEL\NONE, with an empty Slide Label module), the overview

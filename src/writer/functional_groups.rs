@@ -71,6 +71,8 @@ pub(crate) struct PerFrameFunctionalGroupsPlan {
     column_spacing_mm: f64,
     encoded_bytes: Option<u64>,
     frame_indices: Option<std::sync::Arc<[u32]>>,
+    /// Whether the Per-Frame Functional Groups Sequence is written.
+    items: bool,
 }
 
 impl PerFrameFunctionalGroupsPlan {
@@ -103,7 +105,17 @@ impl PerFrameFunctionalGroupsPlan {
             column_spacing_mm,
             encoded_bytes: None,
             frame_indices: None,
+            items: true,
         })
+    }
+
+    /// Omits the Per-Frame Functional Groups Sequence. Its only content is
+    /// the frame position, which TILED_FULL implies (PS3.3 C.7.6.17.3), so it
+    /// is not required when the organization stays TILED_FULL.
+    pub(crate) fn without_items(mut self) -> Self {
+        self.items = false;
+        self.encoded_bytes = None;
+        self
     }
 
     /// Select present frames by their original row-major grid index. Keeping
@@ -142,6 +154,19 @@ impl PerFrameFunctionalGroupsPlan {
             })
     }
 
+    /// The dense-grid index of the `ordinal`th written frame; with no plan,
+    /// every frame of the grid is written in order.
+    pub(crate) fn grid_frame(plan: Option<&Self>, ordinal: usize) -> usize {
+        plan.map_or(ordinal, |plan| {
+            plan.grid_frame_index(ordinal as u32) as usize
+        })
+    }
+
+    /// Whether the frame at a grid position is written; with no plan, all are.
+    pub(crate) fn writes_grid_position(plan: Option<&Self>, row: u64, column: u64) -> bool {
+        plan.is_none_or(|plan| plan.includes_grid_position(row, column))
+    }
+
     pub(crate) fn grid_frame_index(&self, ordinal: u32) -> u32 {
         self.frame_indices
             .as_ref()
@@ -158,6 +183,7 @@ impl PerFrameFunctionalGroupsPlan {
             && self.frame_grid == other.frame_grid
             && self.row_spacing_mm == other.row_spacing_mm
             && self.column_spacing_mm == other.column_spacing_mm
+            && self.items == other.items
     }
 
     #[cfg(test)]
@@ -166,6 +192,9 @@ impl PerFrameFunctionalGroupsPlan {
     }
 
     pub(crate) fn minimum_encoded_len(&self) -> Result<u64, Error> {
+        if !self.items {
+            return Ok(0);
+        }
         u64::from(self.frame_count)
             .checked_mul(MIN_PER_FRAME_ITEM_BYTES)
             .and_then(|bytes| bytes.checked_add(PER_FRAME_SEQUENCE_CONTAINER_BYTES))
@@ -230,6 +259,9 @@ impl PerFrameFunctionalGroupsPlan {
     }
 
     fn write_encoded(&self, output: &mut impl Write) -> io::Result<()> {
+        if !self.items {
+            return Ok(());
+        }
         write_sequence_header(output, tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)?;
         for frame_index in 0..self.frame_count {
             let location = self

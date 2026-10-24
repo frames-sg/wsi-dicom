@@ -7,8 +7,9 @@ use super::{
 };
 use crate::TransferSyntax;
 use dicom_core::value::DataSetSequence;
-use dicom_core::{DataElement, PrimitiveValue, VR};
+use dicom_core::{DataElement, PrimitiveValue, Tag, VR};
 use dicom_dictionary_std::tags;
+use dicom_object::mem::InMemElement;
 use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -73,12 +74,18 @@ impl ValidationCommandRunner for FakeRunner {
     }
 }
 
+mod codestream;
 mod conformance;
 mod doctor;
+mod encoding;
 mod iod;
 mod orchestration;
+mod pixel_structure;
 mod profile_contract;
+mod relations;
 mod runner;
+mod series_set;
+mod wsi_image;
 
 fn write_encapsulated_dicom(path: &Path, transfer_syntax: &str, frame: &[u8]) {
     let mut object = InMemDicomObject::new_empty();
@@ -205,6 +212,22 @@ fn export_valid_color_wsi_grid_for_validation(
     height: u32,
     tile_size: u32,
 ) -> PathBuf {
+    export_color_wsi(
+        root,
+        name,
+        (width, height, tile_size),
+        TransferSyntax::Jpeg2000Lossless,
+    )
+}
+
+/// The first instance exported from a synthetic RGB source of `width` by
+/// `height` pixels in `tile_size` tiles.
+fn export_color_wsi(
+    root: &Path,
+    name: &str,
+    (width, height, tile_size): (u32, u32, u32),
+    transfer_syntax: TransferSyntax,
+) -> PathBuf {
     let source = root.join(format!("{name}-source.dcm"));
     let pixels = crate::synthetic_source::deterministic_rgb_pixels(width, height).unwrap();
     crate::synthetic_source::write_rgb_source_dicom(
@@ -221,7 +244,7 @@ fn export_valid_color_wsi_grid_for_validation(
         output_dir: root.join(format!("{name}-out")),
         options: crate::ExportOptions {
             tile_size,
-            transfer_syntax: TransferSyntax::Jpeg2000Lossless,
+            transfer_syntax,
             encode_backend: crate::EncodeBackendPreference::CpuOnly,
             ..crate::ExportOptions::default()
         },
@@ -233,6 +256,72 @@ fn export_valid_color_wsi_grid_for_validation(
     .instances
     .remove(0)
     .path
+}
+
+/// Exports a valid WSI, applies `edit`, and writes it back.
+fn edited_wsi(
+    root: &Path,
+    name: &str,
+    edit: impl FnOnce(&mut dicom_object::DefaultDicomObject),
+) -> PathBuf {
+    edited(export_valid_color_wsi_for_validation(root, name), edit)
+}
+
+/// Rewrites the DICOM file at `path` after applying `edit`.
+fn edited(path: PathBuf, edit: impl FnOnce(&mut dicom_object::DefaultDicomObject)) -> PathBuf {
+    let mut object = dicom_object::open_file(&path).unwrap();
+    edit(&mut object);
+    object.write_to_file(&path).unwrap();
+    path
+}
+
+type Edit = fn(&mut dicom_object::DefaultDicomObject);
+
+/// The status and message of check `rule` for the object at `path`.
+fn rule_result(path: &Path, rule: &str) -> (ValidationStatus, String) {
+    let report = validate_dicom_path_with_runner(
+        path,
+        &ValidationOptions::default(),
+        &FakeRunner::default(),
+    )
+    .unwrap();
+    let check = report
+        .checks
+        .into_iter()
+        .find(|check| check.name == rule)
+        .unwrap_or_else(|| panic!("missing check {rule}"));
+    (check.status, check.message)
+}
+
+fn text(tag: Tag, vr: VR, value: &str) -> InMemElement {
+    DataElement::new(tag, vr, PrimitiveValue::from(value))
+}
+
+fn item(elements: Vec<InMemElement>) -> InMemDicomObject {
+    InMemDicomObject::from_element_iter(elements)
+}
+
+fn sq(tag: Tag, items: Vec<InMemDicomObject>) -> InMemElement {
+    DataElement::new(tag, VR::SQ, DataSetSequence::from(items))
+}
+
+fn code(scheme: &str, value: &str, meaning: &str) -> InMemDicomObject {
+    item(vec![
+        text(tags::CODE_VALUE, VR::SH, value),
+        text(tags::CODING_SCHEME_DESIGNATOR, VR::SH, scheme),
+        text(tags::CODE_MEANING, VR::LO, meaning),
+    ])
+}
+
+/// Applies `edit` to the Items of the Sequence `tag` of `object`.
+fn edit_items(object: &mut InMemDicomObject, tag: Tag, edit: impl FnOnce(&mut [InMemDicomObject])) {
+    let mut element = object.take(tag).unwrap();
+    edit(element.items_mut().unwrap());
+    object.put(element);
+}
+
+fn first_item(object: &mut InMemDicomObject, tag: Tag, edit: impl FnOnce(&mut InMemDicomObject)) {
+    edit_items(object, tag, |items| edit(&mut items[0]));
 }
 
 fn assert_intrinsic_rule_fails(path: &Path, name: &str) {

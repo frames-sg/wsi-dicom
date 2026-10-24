@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 use wsi_dicom::{
-    doctor_dicom_environment, run_dicom_self_test, validate_dicom_path, DoctorOptions,
-    DoctorReport, Error, SelfTestOptions, SelfTestReport, ValidationOptions, ValidationProfile,
-    ValidationReport,
+    doctor_dicom_environment, requirement_catalog, run_dicom_self_test, validate_dicom_path,
+    DoctorOptions, DoctorReport, Error, RequirementDisposition, RequirementEntry, SelfTestOptions,
+    SelfTestReport, ValidationOptions, ValidationProfile, ValidationReport,
 };
 
 use crate::cli_args::SelfTestArgs;
@@ -12,8 +12,9 @@ use crate::cli_output::print_cli_output;
 
 const DOCTOR_REPORT_SCHEMA: &str = "wsi-dicom-doctor-report-v1";
 const VALIDATION_REPORT_SCHEMA: &str = "wsi-dicom-validation-report-v1";
-const GENERAL_RULE_SET: &str = "wsi-dicom-general-v2";
-const CORE_2026C_RULE_SET: &str = "wsi-dicom-core-profile-2026c-v3";
+const REQUIREMENTS_SCHEMA: &str = "wsi-dicom-requirements-v1";
+const GENERAL_RULE_SET: &str = "wsi-dicom-general-v3";
+const CORE_2026C_RULE_SET: &str = "wsi-dicom-core-profile-2026c-v4";
 
 #[derive(Serialize)]
 struct DoctorCliReport<'a> {
@@ -95,6 +96,57 @@ pub(crate) fn handle_doctor(
     }
 }
 
+#[derive(Serialize)]
+struct RequirementsCliReport {
+    schema_version: &'static str,
+    requirements: Vec<RequirementEntry>,
+}
+
+pub(crate) fn handle_requirements(json: bool) -> Result<(), Error> {
+    let report = RequirementsCliReport {
+        schema_version: REQUIREMENTS_SCHEMA,
+        requirements: requirement_catalog(),
+    };
+    print_cli_output(json, &report, |report| {
+        format_requirements_summary(&report.requirements)
+    })
+}
+
+/// Counts per Part and disposition, then each statement no check enforces yet.
+fn format_requirements_summary(requirements: &[RequirementEntry]) -> String {
+    let kind = |disposition: &RequirementDisposition| match disposition {
+        RequirementDisposition::Tables => "generated tables",
+        RequirementDisposition::Checked(_) => "checked",
+        RequirementDisposition::Unchecked(_) => "not yet checked",
+        RequirementDisposition::OutsideScope(_) => "outside the VL WSI scope",
+        RequirementDisposition::Behavior(_) => "application behavior",
+        RequirementDisposition::Undecidable(_) => "undecidable from the objects",
+        _ => "other",
+    };
+    let mut counts = std::collections::BTreeMap::<(&str, &str), usize>::new();
+    for entry in requirements {
+        *counts
+            .entry((entry.part, kind(&entry.disposition)))
+            .or_insert(0) += 1;
+    }
+    let mut summary = format!(
+        "{} normative statements in the VL WSI scope",
+        requirements.len()
+    );
+    for ((part, kind), count) in counts {
+        summary.push_str(&format!("\n  {part} {kind}: {count}"));
+    }
+    for entry in requirements {
+        if let RequirementDisposition::Unchecked(family) = entry.disposition {
+            summary.push_str(&format!(
+                "\nnot yet checked ({family}): {} {}: {}",
+                entry.part, entry.section, entry.text
+            ));
+        }
+    }
+    summary
+}
+
 fn rule_set_id(profile: ValidationProfile) -> &'static str {
     if profile == ValidationProfile::Core2026c {
         CORE_2026C_RULE_SET
@@ -134,22 +186,41 @@ fn format_validation_summary(report: &ValidationReport) -> String {
         report.failed_checks(),
         report.skipped_checks()
     );
-    let mut absent = std::collections::BTreeMap::<&str, usize>::new();
-    for object in &report.optional_absent {
-        for item in &object.absent {
-            *absent.entry(item).or_insert(0) += 1;
-        }
-    }
-    if !absent.is_empty() {
-        summary.push_str(&format!(
-            "\noptional VL WSI items absent ({} distinct, not failures; --required skips this):",
-            absent.len()
-        ));
-        for (item, files) in absent {
-            summary.push_str(&format!("\n  {item} [{files} file(s)]"));
-        }
-    }
+    let optional = &report.optional;
+    append_counts(
+        &mut summary,
+        "optional VL WSI items present",
+        optional.iter().flat_map(|object| &object.present),
+    );
+    append_counts(
+        &mut summary,
+        "optional VL WSI items absent",
+        optional.iter().flat_map(|object| &object.absent),
+    );
+    append_counts(
+        &mut summary,
+        "suggested codes and templates not followed",
+        optional.iter().flat_map(|object| &object.advisories),
+    );
     summary
+}
+
+/// Appends each distinct entry with the number of files that list it.
+fn append_counts<'a>(summary: &mut String, title: &str, entries: impl Iterator<Item = &'a String>) {
+    let mut counts = std::collections::BTreeMap::<&str, usize>::new();
+    for entry in entries {
+        *counts.entry(entry).or_insert(0) += 1;
+    }
+    if counts.is_empty() {
+        return;
+    }
+    summary.push_str(&format!(
+        "\n{title} ({} distinct, not failures; --required skips this):",
+        counts.len()
+    ));
+    for (entry, files) in counts {
+        summary.push_str(&format!("\n  {entry} [{files} file(s)]"));
+    }
 }
 
 fn format_doctor_summary(report: &DoctorReport) -> String {

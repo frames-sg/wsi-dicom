@@ -909,3 +909,23 @@ pub(super) fn declare_lossy_history_for_test(
         object.put(dicom_core::DataElement::new(tag, vr, value));
     }
 }
+
+/// 32-pixel JPEG Baseline tiles, which keep JPEG sources in the compressed domain.
+pub(super) fn passthrough_jpeg_options() -> ExportOptions {
+    ExportOptions {
+        tile_size: 32,
+        transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+        ..ExportOptions::default()
+    }
+}
+
+pub(super) fn instance(
+    report: &ExportReport,
+    flavor: crate::report::ImageFlavor,
+) -> &crate::report::InstanceReport {
+    report
+        .instances
+        .iter()
+        .find(|instance| instance.flavor == flavor)
+        .unwrap_or_else(|| panic!("no {flavor:?} instance"))
+}

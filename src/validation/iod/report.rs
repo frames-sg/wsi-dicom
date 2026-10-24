@@ -5,15 +5,18 @@ use std::path::Path;
 
 use super::engine::Definition;
 use super::tables::ConditionId;
-use crate::validation::{ValidationCheck, ValidationStatus};
+use crate::validation::wsi_conformance::rule_path;
+use crate::validation::{intrinsic_check, ValidationCheck, ValidationStatus};
 
 /// Violations shown per check; the rest are counted.
 const MAX_SHOWN: usize = 20;
+/// Distinct advisories kept per object; the rest are counted.
+const MAX_ADVISORIES: usize = 200;
 /// Longest condition excerpt quoted in a message.
 const MAX_CONDITION_EXCERPT: usize = 100;
 
 #[derive(Debug, Default)]
-pub(super) struct Family {
+pub(in crate::validation) struct Family {
     shown: Vec<String>,
     total: usize,
     undetermined: BTreeMap<ConditionId, usize>,
@@ -21,7 +24,7 @@ pub(super) struct Family {
 
 impl Family {
     /// Counts a violation; `message` is formatted only while it will be shown.
-    pub(super) fn push(&mut self, message: impl FnOnce() -> String) {
+    pub(in crate::validation) fn push(&mut self, message: impl FnOnce() -> String) {
         self.total += 1;
         if self.shown.len() < MAX_SHOWN {
             self.shown.push(message());
@@ -71,21 +74,18 @@ impl Family {
         message
     }
 
-    pub(super) fn check(&self, path: &Path, name: &str, citation: &str) -> ValidationCheck {
-        ValidationCheck {
-            execution: None,
-            name: name.to_string(),
-            path: (!path.as_os_str().is_empty()).then(|| path.to_path_buf()),
-            status: if self.total == 0 {
-                ValidationStatus::Passed
-            } else {
-                ValidationStatus::Failed
-            },
-            command: Vec::new(),
-            message: self.message(citation),
-            stdout: String::new(),
-            stderr: String::new(),
-        }
+    pub(in crate::validation) fn check(
+        &self,
+        path: &Path,
+        name: &str,
+        citation: &str,
+    ) -> ValidationCheck {
+        let status = if self.total == 0 {
+            ValidationStatus::Passed
+        } else {
+            ValidationStatus::Failed
+        };
+        intrinsic_check(name, rule_path(path), status, self.message(citation))
     }
 }
 
@@ -98,32 +98,84 @@ pub(super) struct Findings {
     pub(super) vr_vm: Family,
     pub(super) value_format: Family,
     pub(super) sequence_items: Family,
+    pub(super) value_sets: Family,
     pub(super) file_meta: Family,
-    pub(super) optional_absent: OptionalAbsent,
+    pub(super) optional: OptionalItems,
+    pub(super) advisories: Advisories,
 }
 
-/// Optional modules, functional groups and rows the object does not encode.
-/// A row is recorded once however many Items lack it.
+/// Distinct departures from Baseline Context Groups and Templates and from
+/// undeclared Context Group extensions: suggestions, not failures.
 #[derive(Debug, Default)]
-pub(super) struct OptionalAbsent {
-    groups: BTreeSet<String>,
-    rows: BTreeMap<(usize, usize), Definition>,
+pub(super) struct Advisories {
+    messages: BTreeSet<String>,
+    omitted: usize,
 }
 
-impl OptionalAbsent {
-    pub(super) fn group(&mut self, label: String) {
-        self.groups.insert(label);
+impl Advisories {
+    pub(super) fn add(&mut self, message: String) {
+        if self.messages.len() < MAX_ADVISORIES || self.messages.contains(&message) {
+            self.messages.insert(message);
+        } else {
+            self.omitted += 1;
+        }
     }
 
-    pub(super) fn row(&mut self, definition: Definition) {
+    pub(super) fn describe(&self) -> Vec<String> {
+        let mut described: Vec<String> = self.messages.iter().cloned().collect();
+        if self.omitted > 0 {
+            described.push(format!("and {} more advisories", self.omitted));
+        }
+        described
+    }
+}
+
+/// Optional modules, functional groups and rows, those the object encodes and
+/// those it does not. A row is recorded once however many Items hold or lack it.
+#[derive(Debug, Default)]
+pub(super) struct OptionalItems {
+    present: OptionalSet,
+    absent: OptionalSet,
+}
+
+impl OptionalItems {
+    pub(super) fn group(&mut self, label: String, present: bool) {
+        self.set(present).groups.insert(label);
+    }
+
+    pub(super) fn row(&mut self, definition: Definition, present: bool) {
         let key = (
             std::ptr::from_ref(definition.attribute) as usize,
             std::ptr::from_ref(definition.table) as usize,
         );
-        self.rows.entry(key).or_insert(definition);
+        self.set(present).rows.entry(key).or_insert(definition);
     }
 
-    pub(super) fn describe(&self) -> Vec<String> {
+    fn set(&mut self, present: bool) -> &mut OptionalSet {
+        if present {
+            &mut self.present
+        } else {
+            &mut self.absent
+        }
+    }
+
+    pub(super) fn describe_present(&self) -> Vec<String> {
+        self.present.describe()
+    }
+
+    pub(super) fn describe_absent(&self) -> Vec<String> {
+        self.absent.describe()
+    }
+}
+
+#[derive(Debug, Default)]
+struct OptionalSet {
+    groups: BTreeSet<String>,
+    rows: BTreeMap<(usize, usize), Definition>,
+}
+
+impl OptionalSet {
+    fn describe(&self) -> Vec<String> {
         let mut rows = self
             .rows
             .values()
@@ -142,7 +194,7 @@ impl OptionalAbsent {
 }
 
 /// "(gggg,eeee)".
-pub(super) fn tag_text(tag: u32) -> String {
+pub(in crate::validation) fn tag_text(tag: u32) -> String {
     format!("({:04X},{:04X})", tag >> 16, tag & 0xFFFF)
 }
 

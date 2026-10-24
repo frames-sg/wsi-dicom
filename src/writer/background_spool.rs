@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::thread::JoinHandle;
 
-use super::pixel_data::{checked_frame_len, padded_fragment_len, PixelDataSpool};
-use super::StreamingPixelDataFrameWriter;
+use super::pixel_data::{checked_frame_len, padded_fragment_len, StreamingPixelDataFrameWriter};
+use super::pixel_storage::PixelDataSpool;
 use crate::Error;
 
 /// Frames queued for the writer thread. Encoded frames are at most a few

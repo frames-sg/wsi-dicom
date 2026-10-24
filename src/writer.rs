@@ -5,6 +5,9 @@ mod functional_groups;
 mod object_construction;
 mod persistence;
 mod pixel_data;
+mod pixel_sink;
+mod pixel_storage;
+mod spool_path;
 
 #[cfg(test)]
 use crate::icc::{synthetic_display_p3_icc_profile, synthetic_srgb_icc_profile};
@@ -28,16 +31,19 @@ use pixel_data::{
     dicom_file_writer, write_dicom_object_with_pixel_data, DICOM_FILE_WRITE_BUFFER_BYTES,
 };
 pub(crate) use pixel_data::{
-    extended_offset_table_metadata_bytes, unique_spool_path,
-    write_dicom_object_with_streamed_pixel_data, write_single_frame_dicom_object,
-    BufferedPixelDataSink, DeferredLossyCompression, PixelDataSink, StreamedDicomWritePlan,
+    extended_offset_table_metadata_bytes, write_dicom_object_with_streamed_pixel_data,
+    write_single_frame_dicom_object, DeferredLossyCompression, StreamedDicomWritePlan,
     StreamingPixelDataFrameWriter,
 };
 #[cfg(test)]
 pub(crate) use pixel_data::{
-    write_dicom_object_with_spooled_pixel_data, write_encapsulated_pixel_data_from_frames,
-    write_encapsulated_pixel_data_from_spool, PixelDataSpool, SpooledPixelDataFragment,
+    write_encapsulated_pixel_data_from_frames, write_encapsulated_pixel_data_from_spool,
+    SpooledPixelDataFragment,
 };
+pub(crate) use pixel_sink::{BufferedPixelDataSink, PixelDataSink};
+#[cfg(test)]
+pub(crate) use pixel_storage::{write_dicom_object_with_spooled_pixel_data, PixelDataSpool};
+pub(crate) use spool_path::unique_spool_path;
 
 #[cfg(test)]
 mod tests;

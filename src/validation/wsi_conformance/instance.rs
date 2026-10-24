@@ -5,6 +5,7 @@ use super::fields::{
     require_numeric_value, required_finite_float64, required_positive_u64, required_string,
     required_type_two_string, sequence_items,
 };
+use super::pixel_syntax::{reject_motion_syntax, validate_photometric_for_syntax};
 use crate::icc::validate_dicom_icc_profile;
 use crate::lossy::method_for_lossy_transfer_syntax;
 
@@ -238,6 +239,23 @@ pub(super) fn validate_icc_rule(object: &DefaultDicomObject) -> Result<(), Strin
             Err(_) => {}
         }
     }
+    // C.11.15.1.1 constrains every ICC Profile, an Icon Image's included.
+    let icons = object
+        .element(tags::ICON_IMAGE_SEQUENCE)
+        .ok()
+        .and_then(|element| element.items())
+        .unwrap_or(&[]);
+    for (index, icon) in icons.iter().enumerate() {
+        let Ok(element) = icon.element(tags::ICC_PROFILE) else {
+            continue;
+        };
+        let bytes = element.to_bytes().map_err(|err| {
+            format!("Icon Image Sequence item {index} ICC Profile is not binary: {err}")
+        })?;
+        validate_dicom_icc_profile(bytes.as_ref()).map_err(|err| {
+            format!("Icon Image Sequence item {index} has an invalid ICC Profile: {err}")
+        })?;
+    }
     Ok(())
 }
 
@@ -330,6 +348,8 @@ pub(super) fn validate_lossy_rule(object: &DefaultDicomObject) -> Result<(), Str
 }
 
 pub(super) fn validate_image_metadata_rule(object: &DefaultDicomObject) -> Result<(), String> {
+    let syntax = object.meta().transfer_syntax.trim_end_matches('\0');
+    reject_motion_syntax(object, syntax)?;
     let samples = required_positive_u64(object, tags::SAMPLES_PER_PIXEL, "Samples per Pixel")?;
     let photometric = required_string(
         object,
@@ -389,24 +409,5 @@ pub(super) fn validate_image_metadata_rule(object: &DefaultDicomObject) -> Resul
             0.0,
         )?;
     }
-    let syntax = object.meta().transfer_syntax.trim_end_matches('\0');
-    let compatible = if photometric == "MONOCHROME2" || photometric == "RGB" {
-        true
-    } else {
-        match syntax {
-            "1.2.840.10008.1.2.4.50" => photometric == "YBR_FULL_422",
-            "1.2.840.10008.1.2.4.90" | "1.2.840.10008.1.2.4.201" | "1.2.840.10008.1.2.4.202" => {
-                photometric == "YBR_RCT"
-            }
-            // These syntaxes permit reversible and irreversible codestreams.
-            "1.2.840.10008.1.2.4.91" | "1.2.840.10008.1.2.4.203" => {
-                matches!(photometric.as_str(), "YBR_RCT" | "YBR_ICT")
-            }
-            _ => false,
-        }
-    };
-    if !compatible || (syntax == "1.2.840.10008.1.2.4.50" && allocated != 8) {
-        return Err(format!("Photometric Interpretation {photometric} and {allocated}-bit samples are incompatible with transfer syntax {syntax}"));
-    }
-    Ok(())
+    validate_photometric_for_syntax(syntax, &photometric, allocated)
 }
