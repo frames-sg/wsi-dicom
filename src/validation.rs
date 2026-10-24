@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -9,6 +10,7 @@ use crate::Error;
 
 mod codestream;
 mod command_checks;
+mod dicom_json;
 mod digital_signatures;
 mod discovery;
 mod doctor;
@@ -19,7 +21,13 @@ mod process;
 mod transfer_syntaxes;
 mod wsi_conformance;
 
+pub(crate) use codestream::check_retrieved_frames;
 use command_checks::*;
+pub(crate) use dicom_json::{
+    bulk_references, json_text_error, read_json_data_sets, validate_json_bytes, JsonRun,
+    Source as JsonSource,
+};
+pub use dicom_json::{validate_dicom_json_path, DicomJsonOptions};
 use discovery::discover_dicom_files;
 pub use doctor::doctor_dicom_environment;
 #[cfg(test)]
@@ -241,17 +249,18 @@ pub struct OptionalConformance {
     pub advisories: Vec<String>,
 }
 
-/// One normative statement of the pinned DICOM edition in the scope of the VL
-/// Whole Slide Microscopy Image IOD (PS3.3 IOD, Module, Macro and Attribute
-/// descriptions it reaches; PS3.5 encoding; PS3.10 file format), and how
-/// validation holds an object to it.
+/// One normative statement of the pinned DICOM edition in the scope of the
+/// pathology-slide IODs (the PS3.3 IOD, Module, Macro and Attribute
+/// descriptions each reaches; the PS3.4 specializations of their SOP Classes;
+/// PS3.5 encoding; PS3.10 file format), and how validation holds their
+/// objects to it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct RequirementEntry {
     /// The statement's stable identifier, which an evaluation case can name;
     /// statements the generated tables enforce have none.
     pub id: Option<&'static str>,
-    /// "PS3.3", "PS3.5" or "PS3.10".
+    /// "PS3.3", "PS3.4", "PS3.5" or "PS3.10".
     pub part: &'static str,
     /// The section or table label that states it.
     pub section: &'static str,
@@ -259,8 +268,15 @@ pub struct RequirementEntry {
     pub keyword: Option<&'static str>,
     /// The sentence, as the standard words it.
     pub text: &'static str,
-    /// How validation treats it.
+    /// How validation treats it: in VL Whole Slide Microscopy objects when
+    /// that IOD is among `iods`, otherwise in the objects of each IOD in
+    /// `iods` that `iod_dispositions` does not name.
     pub disposition: RequirementDisposition,
+    /// The PS3.3 sections of the IODs whose scope holds it, e.g. "A.32.8".
+    pub iods: Vec<&'static str>,
+    /// How validation treats it in each IOD of `iods` where that differs from
+    /// `disposition`.
+    pub iod_dispositions: BTreeMap<&'static str, RequirementDisposition>,
 }
 
 /// How validation holds an object to one normative statement.
@@ -277,7 +293,7 @@ pub enum RequirementDisposition {
     /// Decidable from the encoded objects but not yet checked; the check
     /// family it awaits.
     Unchecked(&'static str),
-    /// Binds IODs, encodings or contexts a VL WSI object cannot carry.
+    /// Binds IODs, encodings or contexts the IOD's objects cannot carry.
     OutsideScope(&'static str),
     /// Binds applications or processes rather than the encoded objects.
     Behavior(&'static str),
@@ -285,8 +301,9 @@ pub enum RequirementDisposition {
     Undecidable(&'static str),
 }
 
-/// Every normative statement in the VL WSI scope of the pinned DICOM edition,
-/// with how validation treats it.
+/// Every normative statement of the pinned DICOM edition in the scope of the
+/// pathology-slide IODs, with the IODs it applies to and how validation
+/// treats it in each.
 pub fn requirement_catalog() -> Vec<RequirementEntry> {
     iod::catalog()
 }
@@ -498,7 +515,7 @@ pub(crate) fn validate_dicom_path_with_runner(
                     Some(file),
                     format!("failed to read DICOM file: {err}"),
                 ));
-                checks.extend(iod::run_unparsed_file_meta_check(file));
+                checks.push(iod::run_unparsed_file_meta_check(file));
                 checks.push(encoding::run_encoding_check(
                     file,
                     None,

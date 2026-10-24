@@ -85,6 +85,36 @@ pub(super) fn contains(group: &ContextGroup, coded: &Coded) -> bool {
                 .any(|code| code.scheme == "SCT" && code.legacy == coded.value))
 }
 
+/// Checks that each Code Sequence Item holds `code`, which the IOD Content
+/// Constraint of PS3.3 `section` requires.
+pub(super) fn check_code(
+    findings: &mut Findings,
+    label: &str,
+    tag: u32,
+    code: Code,
+    section: &str,
+    items: &[InMemDicomObject],
+) {
+    for (index, item) in items.iter().enumerate() {
+        let Some(coded) = Coded::of(item) else {
+            continue; // the Code Sequence Macro presence checks report it
+        };
+        if !coded.is(code.scheme, code.value) {
+            findings.value_sets.push(|| {
+                format!(
+                    "{label} {}[{}]: {} is not ({}, {}, \"{}\"), which PS3.3 {section} requires",
+                    tag_text(tag),
+                    index + 1,
+                    coded.describe(),
+                    code.value,
+                    code.scheme,
+                    code.meaning
+                )
+            });
+        }
+    }
+}
+
 /// Checks the coded entry of each Code Sequence Item against `groups`.
 ///
 /// A code outside a Defined non-extensible group is a violation; one outside a

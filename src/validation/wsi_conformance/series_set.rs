@@ -1,6 +1,6 @@
 //! Relations between the objects of a validated set that hold in every profile
-//! (PS3.3 C.7.1.4.1.1.1, C.7.4.1, C.7.6.16.1, C.7.6.16.2.2.4, C.7.6.16.2.5.1,
-//! C.7.6.17.2, C.7.6.22.1.2 and C.12.3; PS3.5 9).
+//! (PS3.3 C.7.1.4.1.1, C.7.4.1, C.7.6.1.1.5, C.7.6.16.1, C.7.6.16.2.2.4,
+//! C.7.6.16.2.5.1, C.7.6.17.2, C.7.6.22.1.2 and C.12.3; PS3.5 9).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -17,6 +17,22 @@ use crate::validation::iod::{dicom_edition, EDITION};
 pub(super) const SERIES_SET_RULE: &str = "intrinsic-wsi-dicom-series-set";
 /// Localizer, the Purpose of Reference of a planning image (C.7.6.16.2.5.1).
 const LOCALIZER: (&str, &str) = ("DCM", "121311");
+/// Patient Module Attributes (C.7.1.1) of a group of organisms imaged
+/// together that each member imaged alone also describes.
+const GROUP_SHARED: [(dicom_core::Tag, &str); 6] = [
+    (tags::PATIENT_BIRTH_DATE, "Patient's Birth Date (0010,0030)"),
+    (tags::PATIENT_BIRTH_TIME, "Patient's Birth Time (0010,0032)"),
+    (tags::PATIENT_SEX, "Patient's Sex (0010,0040)"),
+    (tags::STRAIN_DESCRIPTION, "Strain Description (0010,0212)"),
+    (
+        tags::PATIENT_SPECIES_DESCRIPTION,
+        "Patient Species Description (0010,2201)",
+    ),
+    (
+        tags::PATIENT_BREED_DESCRIPTION,
+        "Patient Breed Description (0010,2292)",
+    ),
+];
 /// Attributes that may differ between the SOP Instances of a Concatenation
 /// (C.7.6.16.2.2.4), with those compared separately and the Pixel Data.
 const CONCATENATION_VARIANT: [dicom_core::Tag; 11] = [
@@ -40,6 +56,11 @@ pub(super) struct SeriesFacts {
     study: Option<String>,
     series: Option<String>,
     sop_instance: Option<String>,
+    patient_id: Option<String>,
+    /// The present GROUP_SHARED Values, by their position in that list.
+    patient: Vec<(usize, String)>,
+    /// Lossy Image Compression (0028,2110).
+    lossy: Option<String>,
     frame_of_reference: Option<String>,
     /// Container Identifier of the imaged slide.
     container: Option<String>,
@@ -153,6 +174,13 @@ impl SeriesFacts {
             study: string(root, tags::STUDY_INSTANCE_UID),
             series: string(root, tags::SERIES_INSTANCE_UID),
             sop_instance: string(root, tags::SOP_INSTANCE_UID),
+            patient_id: string(root, tags::PATIENT_ID),
+            patient: GROUP_SHARED
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (tag, _))| Some((index, string(root, *tag)?)))
+                .collect(),
+            lossy: string(root, tags::LOSSY_IMAGE_COMPRESSION),
             frame_of_reference: string(root, tags::FRAME_OF_REFERENCE_UID),
             container: string(root, tags::CONTAINER_IDENTIFIER),
             instance_number: integer(root, tags::INSTANCE_NUMBER),
@@ -261,13 +289,15 @@ pub(super) fn run_series_set_check(facts: &[SeriesFacts]) -> Option<ValidationCh
     specimen_identifiers(facts, &mut violations);
     frame_extractions(facts, &mut violations);
     arrangements(facts, &mut violations);
+    group_attributes(facts, &mut violations);
+    lossy_versions(facts, &mut violations);
     Some(rule_check(
         Path::new(""),
         SERIES_SET_RULE,
         concat!(
             "DICOM PS3.3 ",
             dicom_edition!(),
-            " C.7.1.4, C.7.4.1, C.7.6.16, C.7.6.22 and C.12.3, and PS3.5 ",
+            " C.7.1.4, C.7.4.1, C.7.6.1.1.5, C.7.6.16, C.7.6.22 and C.12.3, and PS3.5 ",
             dicom_edition!(),
             " 9"
         ),
@@ -666,6 +696,64 @@ fn arrangements(facts: &[SeriesFacts], violations: &mut Vec<String>) {
             Some(_) => {}
             None => {
                 seen.insert(key, (&arrangement.positions, &object.path));
+            }
+        }
+    }
+}
+
+/// C.7.1.4.1.1: Patient Module Attributes present for a group of non-human
+/// organisms imaged together are those the entire group shares, so none
+/// differs from the same Attribute of a member imaged alone in the set.
+fn group_attributes(facts: &[SeriesFacts], violations: &mut Vec<String>) {
+    let individuals: BTreeMap<&str, &SeriesFacts> = facts
+        .iter()
+        .filter(|object| object.arrangement.is_none())
+        .filter_map(|object| Some((object.patient_id.as_deref()?, object)))
+        .collect();
+    for object in facts {
+        let Some(arrangement) = &object.arrangement else {
+            continue;
+        };
+        let differing = arrangement.members.iter().find_map(|member| {
+            let individual = individuals.get(member.as_str())?;
+            object.patient.iter().find_map(|(index, value)| {
+                individual
+                    .patient
+                    .iter()
+                    .find(|(other, own)| other == index && own != value)
+                    .map(|(_, own)| (member, *index, value, own, &individual.path))
+            })
+        });
+        if let Some((member, index, value, own, path)) = differing {
+            violations.push(format!(
+                "{} images the group {} with {} \"{value}\", but member {member} is \"{own}\" in {}; the Patient Module Attributes of a group are those its entire group shares (PS3.3 {EDITION} C.7.1.4.1.1)",
+                object.path.display(),
+                arrangement.group,
+                GROUP_SHARED[index].1,
+                path.display()
+            ));
+        }
+    }
+}
+
+/// C.7.6.1.1.5: Lossy Image Compression is not reset once 01, and a lossy
+/// compressed version of an image is a new SOP Instance, so two files of one
+/// SOP Instance agree on it.
+fn lossy_versions(facts: &[SeriesFacts], violations: &mut Vec<String>) {
+    let mut seen = BTreeMap::<&str, (&str, &Path)>::new();
+    for object in facts {
+        let (Some(uid), Some(lossy)) = (&object.sop_instance, &object.lossy) else {
+            continue;
+        };
+        match seen.get(uid.as_str()) {
+            Some((existing, path)) if *existing != lossy.as_str() => violations.push(format!(
+                "SOP Instance {uid} has Lossy Image Compression (0028,2110) {existing} in {} and {lossy} in {}; once 01 it is not reset, and a lossy compressed version of an image is a new SOP Instance (PS3.3 {EDITION} C.7.6.1.1.5)",
+                path.display(),
+                object.path.display()
+            )),
+            Some(_) => {}
+            None => {
+                seen.insert(uid, (lossy, &object.path));
             }
         }
     }

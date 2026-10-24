@@ -20,7 +20,7 @@ use super::{codes, templates};
 const MAX_INCLUDE_DEPTH: usize = 16;
 
 /// One table row that applies to a Data Set, with the table that defines it and
-/// the Value Set that applies where the table is included.
+/// its Value Set.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Definition {
     pub(super) attribute: &'static Attribute,
@@ -39,13 +39,12 @@ impl Definition {
 
 /// Expands Macro inclusions into the rows that apply at this nesting level.
 pub(super) fn flatten(nodes: &'static [Node], table: &'static Table, out: &mut Vec<Definition>) {
-    flatten_bounded(nodes, table, &[], out, 0);
+    flatten_bounded(nodes, table, out, 0);
 }
 
 fn flatten_bounded(
     nodes: &'static [Node],
     table: &'static Table,
-    bound: &'static [(u32, ValueSet)],
     out: &mut Vec<Definition>,
     depth: usize,
 ) {
@@ -54,16 +53,12 @@ fn flatten_bounded(
             Node::Attribute(attribute) => out.push(Definition {
                 attribute,
                 table,
-                value_set: bound
-                    .iter()
-                    .find(|(tag, _)| *tag == attribute.tag)
-                    .map(|(_, value_set)| *value_set)
-                    .or(attribute.value_set),
+                value_set: attribute.value_set,
             }),
-            Node::Include(included, bound) if depth < MAX_INCLUDE_DEPTH => {
-                flatten_bounded(included.nodes, included, bound, out, depth + 1);
+            Node::Include(included) if depth < MAX_INCLUDE_DEPTH => {
+                flatten_bounded(included.nodes, included, out, depth + 1);
             }
-            Node::Include(..) => {}
+            Node::Include(_) => {}
         }
     }
 }
@@ -133,6 +128,8 @@ pub(super) struct Walk<'f> {
 
 impl Walk<'_> {
     /// Checks one Data Set against `definitions`, recursing into Sequence Items.
+    /// A key differs from its rows' tag in a repeating group other than the
+    /// first (60xx Overlay Planes).
     pub(super) fn data_set(
         &mut self,
         scope: &Scope<'_>,
@@ -144,12 +141,12 @@ impl Walk<'_> {
         for (tag, group) in definitions {
             let element = scope.item.get(tag_of(*tag));
             if presence == Presence::Evaluate || element.is_some() {
-                self.presence(scope, path, group, element, presence);
+                self.presence(scope, path, *tag, group, element, presence);
             }
             let Some(element) = element else {
                 continue;
             };
-            self.enumerations(scope, path, group, element);
+            self.enumerations(scope, path, *tag, group, element);
             if let Some(items) = element.items() {
                 self.value_sets(path, group, items);
                 self.sequence(scope, path, group, items, depth);
@@ -161,6 +158,7 @@ impl Walk<'_> {
         &mut self,
         scope: &Scope<'_>,
         path: &str,
+        tag: u32,
         group: &[Definition],
         element: Option<&InMemElement>,
         presence: Presence,
@@ -189,7 +187,7 @@ impl Walk<'_> {
             forbidden &= requirement == Requirement::Forbidden;
         }
         let attribute = first.attribute;
-        let label = || format!("{path}{} {}", attribute.name, tag_text(attribute.tag));
+        let label = || format!("{path}{} {}", attribute.name, tag_text(tag));
         match (element, required) {
             (None, Some(definition)) => self.findings.presence.push(|| {
                 format!(
@@ -235,6 +233,7 @@ impl Walk<'_> {
         &mut self,
         scope: &Scope<'_>,
         path: &str,
+        tag: u32,
         group: &[Definition],
         element: &InMemElement,
     ) {
@@ -288,7 +287,7 @@ impl Walk<'_> {
                         format!(
                             "{path}{} {}{which} \"{value}\" is not an Enumerated Value [{}] ({})",
                             definition.attribute.name,
-                            tag_text(definition.attribute.tag),
+                            tag_text(tag),
                             enumeration.values.join(", "),
                             definition.citation()
                         )
@@ -343,6 +342,9 @@ impl Walk<'_> {
                 }
                 Some(ValueSet::Template(strength, template)) => {
                     templates::check_items(self.findings, &label, strength, template, items);
+                }
+                Some(ValueSet::Code(code, section)) => {
+                    codes::check_code(self.findings, &label, attribute.tag, code, section, items);
                 }
                 None => {}
             }

@@ -1,4 +1,6 @@
-//! Module usage (Table A.32.8-1) and Functional Group usage (Table A.32.8-2).
+//! Module usage and Functional Group usage of an IOD (its Module and
+//! Functional Group Macros tables), and the Modules its IOD Content
+//! Constraints forbid or permit only one of.
 
 use std::collections::BTreeSet;
 
@@ -6,21 +8,102 @@ use dicom_dictionary_std::tags;
 use dicom_object::InMemDicomObject;
 
 use super::conditions::evaluate;
-use super::engine::{by_tag, flatten, Definition, Presence, Walk};
-use super::model::{AttributeType, FunctionalGroupMacro, Module, Placement, Usage};
+use super::engine::{by_tag, flatten, ByTag, Definition, Presence, Walk};
+use super::model::{AttributeType, FunctionalGroupMacro, Iod, Module, Placement, Usage};
 use super::report::{condition_suffix, tag_text, Findings};
 use super::scope::{has, is_private, items, raw_tag, tag_of, Frame, Requirement, Scope};
-use super::tables::{ConditionId, FUNCTIONAL_GROUPS, MODULES};
+use super::tables::ConditionId;
+use super::values;
+
+/// The groups of the repeating Overlay Plane Attributes (60xx,eeee), PS3.5 7.6.
+const FIRST_OVERLAY_GROUP: u16 = 0x6000;
+const LAST_OVERLAY_GROUP: u16 = 0x601E;
+/// Tags named in one forbidden Module message.
+const MAX_TAGS_SHOWN: usize = 4;
 
 /// Evaluates the Modules of the IOD and the Attributes of those that apply.
-pub(super) fn check_modules(findings: &mut Findings, scope: &Scope<'_>) {
-    let mut definitions = Vec::new();
-    for module in MODULES {
-        if module_applies(findings, scope, module) {
-            flatten(module.table.nodes, module.table, &mut definitions);
+pub(super) fn check_modules(findings: &mut Findings, scope: &Scope<'_>, iod: &Iod) {
+    let overlays = overlay_groups(scope.root);
+    let mut definitions = ByTag::new();
+    for module in iod.modules {
+        if module_applies(findings, scope, iod, module, &overlays) {
+            add_rows(&mut definitions, module, &overlays);
         }
     }
-    Walk { findings }.data_set(scope, "", &by_tag(&definitions), Presence::Evaluate, 0);
+    check_forbidden_modules(findings, scope.root, iod, &overlays);
+    check_exclusive_modules(findings, scope.root, iod, &overlays);
+    Walk { findings }.data_set(scope, "", &definitions, Presence::Evaluate, 0);
+}
+
+/// The Module's top-level rows by tag; an Overlay Plane Module applies once
+/// in each overlay group the object encodes.
+fn add_rows(definitions: &mut ByTag, module: &Module, overlays: &[u16]) {
+    let offsets: Vec<u32> = if repeats(module) {
+        overlays
+            .iter()
+            .map(|group| u32::from(group - FIRST_OVERLAY_GROUP) << 16)
+            .collect()
+    } else {
+        vec![0]
+    };
+    let rows = top_level_rows(module);
+    for offset in offsets {
+        for definition in &rows {
+            definitions
+                .entry(definition.attribute.tag + offset)
+                .or_default()
+                .push(*definition);
+        }
+    }
+}
+
+/// Whether the Module's Attributes are the repeating 60xx group.
+fn repeats(module: &Module) -> bool {
+    module
+        .signature
+        .first()
+        .copied()
+        .or_else(|| {
+            top_level_rows(module)
+                .first()
+                .map(|definition| definition.attribute.tag)
+        })
+        .is_some_and(is_overlay_tag)
+}
+
+fn is_overlay_tag(tag: u32) -> bool {
+    tag >> 16 == u32::from(FIRST_OVERLAY_GROUP)
+        && values::entry(tag_of(tag)).is_some_and(|entry| entry.mask != u32::MAX)
+}
+
+/// The overlay groups 6000 to 601E (even) holding any Data Element.
+fn overlay_groups(root: &InMemDicomObject) -> Vec<u16> {
+    (FIRST_OVERLAY_GROUP..=LAST_OVERLAY_GROUP)
+        .step_by(2)
+        .filter(|group| {
+            root.iter()
+                .any(|element| element.header().tag.group() == *group)
+        })
+        .collect()
+}
+
+/// The tags among `signature` the object encodes, in every overlay group for
+/// an Overlay Plane tag.
+fn present_tags(root: &InMemDicomObject, signature: &[u32], overlays: &[u16]) -> Vec<u32> {
+    let mut present = Vec::new();
+    for tag in signature {
+        if is_overlay_tag(*tag) {
+            present.extend(
+                overlays
+                    .iter()
+                    .map(|group| tag + (u32::from(group - FIRST_OVERLAY_GROUP) << 16))
+                    .filter(|candidate| has(root, tag_of(*candidate))),
+            );
+        } else if has(root, tag_of(*tag)) {
+            present.push(*tag);
+        }
+    }
+    present
 }
 
 fn usage_requirement(
@@ -35,8 +118,14 @@ fn usage_requirement(
     }
 }
 
-fn module_applies(findings: &mut Findings, scope: &Scope<'_>, module: &Module) -> bool {
-    let present = optional_module_present(scope.root, module);
+fn module_applies(
+    findings: &mut Findings,
+    scope: &Scope<'_>,
+    iod: &Iod,
+    module: &Module,
+    overlays: &[u16],
+) -> bool {
+    let present = module_present(scope.root, module, overlays);
     let requirement = usage_requirement(module.usage, module.condition, scope);
     let label = format!(
         "{} Module (PS3.3 {}, Usage {})",
@@ -56,18 +145,26 @@ fn module_applies(findings: &mut Findings, scope: &Scope<'_>, module: &Module) -
                     AttributeType::One | AttributeType::Two
                 )
             });
-            if mandatory
-                && !rows
-                    .iter()
-                    .any(|definition| has(scope.root, tag_of(definition.attribute.tag)))
-            {
+            let encoded = rows
+                .iter()
+                .any(|definition| has(scope.root, tag_of(definition.attribute.tag)));
+            if mandatory && !encoded && !repeats(module) {
                 findings.modules.push(|| {
                     format!(
-                        "{label}: required by Table A.32.8-1 but none of its Attributes is present"
+                        "{label}: required by Table {} but none of its Attributes is present",
+                        iod.module_table
                     )
                 });
             }
             true
+        }
+        // Other Modules of the IOD define every Attribute of a Module without
+        // a signature, so its Attributes do not show that it is present.
+        Requirement::Forbidden if present && module.signature.is_empty() && !repeats(module) => {
+            if let Some(condition) = module.condition {
+                findings.modules.undetermined(condition);
+            }
+            false
         }
         Requirement::Forbidden => {
             if present {
@@ -95,8 +192,12 @@ fn module_applies(findings: &mut Findings, scope: &Scope<'_>, module: &Module) -
 
 /// An optional Module is present when an Attribute that only it defines is
 /// present (PS3.3 C.1.2.3 lets Modules share Attributes); one without such an
-/// Attribute is present when any of its top-level rows is.
-fn optional_module_present(root: &InMemDicomObject, module: &Module) -> bool {
+/// Attribute is present when any of its top-level rows is, and an Overlay
+/// Plane Module when any overlay group is.
+fn module_present(root: &InMemDicomObject, module: &Module, overlays: &[u16]) -> bool {
+    if repeats(module) {
+        return !overlays.is_empty();
+    }
     if !module.signature.is_empty() {
         return module.signature.iter().any(|tag| has(root, tag_of(*tag)));
     }
@@ -111,14 +212,90 @@ fn top_level_rows(module: &Module) -> Vec<Definition> {
     definitions
 }
 
-/// Evaluates Functional Group usage and the Attributes of each group Item.
-pub(super) fn check_functional_groups(findings: &mut Findings, scope: &Scope<'_>) {
+/// Modules the IOD Content Constraints say shall not be present.
+fn check_forbidden_modules(
+    findings: &mut Findings,
+    root: &InMemDicomObject,
+    iod: &Iod,
+    overlays: &[u16],
+) {
+    for module in iod.forbidden_modules {
+        let present = present_tags(root, module.signature, overlays);
+        if present.is_empty() {
+            continue;
+        }
+        let shown = present
+            .iter()
+            .take(MAX_TAGS_SHOWN)
+            .map(|tag| tag_text(*tag))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = present.len().saturating_sub(MAX_TAGS_SHOWN);
+        findings.modules.push(|| {
+            format!(
+                "{} Module (PS3.3 {}): present ({shown}{}) although PS3.3 {} says it shall not be present in the {} IOD",
+                module.name,
+                module.section,
+                if more > 0 { format!(" and {more} more") } else { String::new() },
+                module.constraint,
+                iod.name
+            )
+        });
+    }
+}
+
+/// Modules of which the IOD Content Constraints require exactly one.
+fn check_exclusive_modules(
+    findings: &mut Findings,
+    root: &InMemDicomObject,
+    iod: &Iod,
+    overlays: &[u16],
+) {
+    for exclusive in iod.exclusive_modules {
+        let present: Vec<&str> = exclusive
+            .modules
+            .iter()
+            .copied()
+            .filter(|name| {
+                iod.modules
+                    .iter()
+                    .find(|module| module.name == *name)
+                    .is_some_and(|module| module_present(root, module, overlays))
+            })
+            .collect();
+        match present.len() {
+            1 => {}
+            0 => findings.modules.push(|| {
+                format!(
+                    "none of the {} Modules is present; PS3.3 {} requires one of them",
+                    exclusive.modules.join(", "),
+                    exclusive.constraint
+                )
+            }),
+            _ => findings.modules.push(|| {
+                format!(
+                    "the {} Modules are all present; PS3.3 {} permits only one of them",
+                    present.join(", "),
+                    exclusive.constraint
+                )
+            }),
+        }
+    }
+}
+
+/// Evaluates Functional Group usage and the Attributes of each group Item; an
+/// IOD without a Functional Group Macros table defines none.
+pub(super) fn check_functional_groups(findings: &mut Findings, scope: &Scope<'_>, iod: &Iod) {
+    let Some(table) = iod.functional_group_table else {
+        return;
+    };
     let root = scope.root;
     let shared = items(root, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE).first();
     let per_frame_present = has(root, tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE);
     let per_frame = items(root, tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE);
     let groups = group_items(shared, per_frame);
-    let permitted: BTreeSet<u32> = FUNCTIONAL_GROUPS
+    let permitted: BTreeSet<u32> = iod
+        .functional_groups
         .iter()
         .flat_map(|group| group.sequences.iter().copied())
         .collect();
@@ -128,14 +305,14 @@ pub(super) fn check_functional_groups(findings: &mut Findings, scope: &Scope<'_>
             if !is_private(tag) && !permitted.contains(&raw_tag(tag)) {
                 findings.modules.push(|| {
                     format!(
-                        "{path}{}: not a Functional Group Macro permitted by Table A.32.8-2",
+                        "{path}{}: not a Functional Group Macro permitted by Table {table}",
                         tag_text(raw_tag(tag))
                     )
                 });
             }
         }
     }
-    for group in FUNCTIONAL_GROUPS {
+    for group in iod.functional_groups {
         check_group_usage(findings, scope, group, shared, per_frame, per_frame_present);
         check_group_items(findings, scope, group, &groups);
     }

@@ -93,6 +93,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
         if: runner.os == 'Linux'
       - run: cargo clippy --workspace --no-default-features --all-targets --locked -- -D warnings
+      - run: cargo clippy --workspace --no-default-features --features dicomweb --all-targets --locked -- -D warnings
 
   test:
     strategy:
@@ -114,6 +115,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
         if: runner.os == 'Linux'
       - run: cargo test --workspace --no-default-features --all-targets --locked
+      - name: Test the DICOMweb checks against the in-process origin server
+        run: cargo test --no-default-features --features dicomweb --lib --locked -- dicomweb:: validation::dicom_json::
 
   external-conformance:
     runs-on: ubuntu-latest

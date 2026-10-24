@@ -100,9 +100,11 @@ pub(super) struct FrameProfiles<'a> {
 
 impl<'a> FrameProfiles<'a> {
     pub(super) fn read(object: &'a InMemDicomObject) -> Self {
+        // A zero-length ICC Profile is absent (PS3.5 7.4.5).
         let bytes = |item: &'a InMemDicomObject| {
             item.get(tags::ICC_PROFILE)
                 .and_then(|element| element.to_bytes().ok())
+                .filter(|bytes| !bytes.is_empty())
         };
         let paths = items(object, tags::OPTICAL_PATH_SEQUENCE)
             .iter()

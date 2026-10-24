@@ -68,6 +68,8 @@ pub(super) enum ValueSet {
     ContextGroups(Strength, &'static [u32]),
     /// Content Items of this PS3.16 Template.
     Template(Strength, u32),
+    /// This one code, which the IOD Content Constraint of this section requires.
+    Code(Code, &'static str),
 }
 
 #[derive(Debug)]
@@ -86,9 +88,9 @@ pub(super) struct Attribute {
 #[derive(Debug)]
 pub(super) enum Node {
     Attribute(Attribute),
-    /// "Include Table ..." row: the Macro's rows at this nesting level, with the
-    /// Value Sets the including row binds to the Macro's Code Sequences.
-    Include(&'static Table, &'static [(u32, ValueSet)]),
+    /// "Include Table ..." row: the Macro's rows at this nesting level. A
+    /// row binding Value Sets in the Macro includes a copy that carries them.
+    Include(&'static Table),
 }
 
 /// One PS3.3 Module or Macro table.
@@ -118,7 +120,8 @@ impl Usage {
     }
 }
 
-/// Functional Group placement constraint from Table A.32.8-2.
+/// Functional Group placement constraint from the IOD's Functional Group
+/// Macros table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Placement {
     Any,
@@ -133,8 +136,50 @@ pub(super) struct Module {
     pub(super) table: &'static Table,
     pub(super) usage: Usage,
     pub(super) condition: Option<ConditionId>,
-    /// Top-level tags defined by no other Module of the IOD.
+    /// Top-level tags defined by no other Module of the IOD; empty when other
+    /// Modules define all its Attributes.
     pub(super) signature: &'static [u32],
+}
+
+/// A Module an IOD Content Constraint forbids, identified by the top-level
+/// Attributes no Module of the IOD defines.
+#[derive(Debug)]
+pub(super) struct ForbiddenModule {
+    pub(super) name: &'static str,
+    pub(super) section: &'static str,
+    /// The section stating the constraint.
+    pub(super) constraint: &'static str,
+    pub(super) signature: &'static [u32],
+}
+
+/// Modules of which an IOD Content Constraint requires exactly one.
+#[derive(Debug)]
+pub(super) struct ExclusiveModules {
+    pub(super) constraint: &'static str,
+    pub(super) modules: &'static [&'static str],
+}
+
+/// A Storage SOP Class of PS3.4 Table B.5-1.
+#[derive(Debug)]
+pub(super) struct SopClass {
+    pub(super) uid: &'static str,
+    pub(super) name: &'static str,
+}
+
+/// One PS3.3 Annex A IOD: its Module and Functional Group Macro tables and
+/// the IOD Content Constraints the tables cannot express.
+#[derive(Debug)]
+pub(super) struct Iod {
+    /// "A.32.8".
+    pub(super) section: &'static str,
+    pub(super) name: &'static str,
+    pub(super) module_table: &'static str,
+    pub(super) functional_group_table: Option<&'static str>,
+    pub(super) sop_classes: &'static [SopClass],
+    pub(super) modules: &'static [Module],
+    pub(super) functional_groups: &'static [FunctionalGroupMacro],
+    pub(super) forbidden_modules: &'static [ForbiddenModule],
+    pub(super) exclusive_modules: &'static [ExclusiveModules],
 }
 
 #[derive(Debug)]
@@ -192,6 +237,8 @@ pub(super) struct Statement {
     /// The Attribute whose description holds the sentence.
     pub(super) keyword: Option<&'static str>,
     pub(super) text: &'static str,
+    /// The sections of the IODs whose scope holds the sentence.
+    pub(super) iods: &'static [&'static str],
 }
 
 /// A PS3.16 coded concept; `legacy` is its SNOMED-RT identifier, if any.
@@ -231,16 +278,18 @@ pub(super) enum RowRequirement {
     M,
     Mc,
     U,
+    Uc,
 }
 
 /// PS3.16 6.1.8 Condition of a Template row; `iff` forbids the row otherwise.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum TemplateCondition {
-    RowAbsent {
-        iff: bool,
-        row: &'static str,
-    },
-    RowValue {
+    /// "IF[F] Row N is absent".
+    Absent { iff: bool, row: &'static str },
+    /// "IF[F] Row N is present".
+    Present { iff: bool, row: &'static str },
+    /// "IF[F] Row N value is (code)".
+    HasCode {
         iff: bool,
         row: &'static str,
         scheme: &'static str,

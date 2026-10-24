@@ -172,6 +172,7 @@ pub(super) fn run_encoding_check(
         Attributes {
             findings: &mut findings,
             little_endian: (!encoding.syntax.layout.big_endian).then_some(encoding.syntax.annex),
+            explicit_vr: encoding.syntax.layout.explicit_vr,
         }
         .check(root);
     }

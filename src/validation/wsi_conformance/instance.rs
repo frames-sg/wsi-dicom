@@ -5,9 +5,9 @@ use super::fields::{
     require_numeric_value, required_finite_float64, required_positive_u64, required_string,
     required_type_two_string, sequence_items,
 };
+use super::lossy_encoding::{lossiness, Lossiness};
 use super::pixel_syntax::{reject_motion_syntax, validate_photometric_for_syntax};
 use crate::icc::validate_dicom_icc_profile;
-use crate::lossy::method_for_lossy_transfer_syntax;
 
 pub(super) fn validate_core_image_profile_rule(object: &DefaultDicomObject) -> Result<(), String> {
     let image_type = object
@@ -21,14 +21,19 @@ pub(super) fn validate_core_image_profile_rule(object: &DefaultDicomObject) -> R
             image_type.len()
         ));
     }
+    if image_type[2].trim() != "VOLUME" {
+        return Err(format!(
+            "Image Type Value 3 is {}; the core profile accepts VOLUME images only, not LABEL, OVERVIEW or THUMBNAIL images",
+            image_type[2].trim()
+        ));
+    }
     if !matches!(image_type[0].trim(), "ORIGINAL" | "DERIVED")
         || image_type[1].trim() != "PRIMARY"
-        || image_type[2].trim() != "VOLUME"
         || !matches!(image_type[3].trim(), "NONE" | "RESAMPLED")
     {
         return Err(format!(
-            "Image Type {:?} is outside the core VOLUME profile",
-            image_type
+            "Image Type is {}; the core profile accepts ORIGINAL or DERIVED\\PRIMARY\\VOLUME\\NONE or RESAMPLED only",
+            image_type.join("\\")
         ));
     }
     super::functional_groups::validate_functional_groups(object)?;
@@ -48,7 +53,10 @@ pub(super) fn validate_core_image_profile_rule(object: &DefaultDicomObject) -> R
         return Err("Imaged Volume Depth must be positive".into());
     }
     if object.element(tags::CONCATENATION_UID).is_ok() {
-        return Err("concatenations are outside the core profile".into());
+        return Err(
+            "Concatenation UID (0020,9161) is present; the core profile excludes Concatenations, so each image is one SOP Instance"
+                .into(),
+        );
     }
     required_string(object, tags::ACQUISITION_DATE_TIME, "Acquisition DateTime")?;
     sequence_items(
@@ -75,38 +83,50 @@ pub(super) fn validate_core_image_profile_rule(object: &DefaultDicomObject) -> R
     )?;
     if dimension_type != "TILED_FULL" {
         return Err(format!(
-            "Dimension Organization Type is {dimension_type}, expected TILED_FULL"
+            "Dimension Organization Type is {dimension_type}; the core profile accepts TILED_FULL only, not TILED_SPARSE or 3D"
         ));
     }
-    if required_positive_u64(
+    let planes = required_positive_u64(
         object,
         tags::TOTAL_PIXEL_MATRIX_FOCAL_PLANES,
         "Total Pixel Matrix Focal Planes",
-    )? != 1
-    {
-        return Err("Total Pixel Matrix Focal Planes must be one in the core profile".into());
+    )?;
+    if planes != 1 {
+        return Err(format!(
+            "Total Pixel Matrix Focal Planes is {planes}; the core profile accepts a single focal plane only"
+        ));
     }
-    for (tag, name, expected) in [
+    for (tag, name, expected, configuration) in [
         (
             tags::VOLUMETRIC_PROPERTIES,
             "Volumetric Properties",
             "VOLUME",
+            "images whose pixels represent the imaged volume",
         ),
         (
             tags::SPECIMEN_LABEL_IN_IMAGE,
             "Specimen Label in Image",
             "NO",
+            "images without the slide label",
         ),
-        (tags::BURNED_IN_ANNOTATION, "Burned In Annotation", "NO"),
+        (
+            tags::BURNED_IN_ANNOTATION,
+            "Burned In Annotation",
+            "NO",
+            "images without burned in annotation",
+        ),
         (
             tags::EXTENDED_DEPTH_OF_FIELD,
             "Extended Depth of Field",
             "NO",
+            "images without extended depth of field (focus stacking)",
         ),
     ] {
         let value = required_string(object, tag, name)?;
         if value != expected {
-            return Err(format!("{name} is {value}, expected {expected}"));
+            return Err(format!(
+                "{name} is {value}; the core profile accepts {configuration} only ({name} {expected})"
+            ));
         }
     }
     let focus_method = required_string(object, tags::FOCUS_METHOD, "Focus Method")?;
@@ -130,7 +150,7 @@ pub(super) fn validate_optical_path_structure_rule(
         sequence_items(object, tags::OPTICAL_PATH_SEQUENCE, "Optical Path Sequence")?;
     if declared != 1 || optical_paths.len() != 1 {
         return Err(format!(
-            "core profile requires one optical path; declared {declared}, found {}",
+            "Number of Optical Paths is {declared} and the Optical Path Sequence has {} Items; the core profile accepts a single optical path only",
             optical_paths.len()
         ));
     }
@@ -289,12 +309,13 @@ pub(super) fn validate_lossy_rule(object: &DefaultDicomObject) -> Result<(), Str
         tags::LOSSY_IMAGE_COMPRESSION,
         "Lossy Image Compression",
     )?;
+    let encoding = lossiness(object);
     match flag.as_str() {
         "00" => {
-            if method_for_lossy_transfer_syntax(&object.meta().transfer_syntax).is_some() {
-                return Err(
-                    "lossy transfer syntax is paired with Lossy Image Compression = 00".into(),
-                );
+            if let Lossiness::Lossy { evidence, .. } = encoding {
+                return Err(format!(
+                    "Lossy Image Compression is 00, but the Frames are {evidence}; an image that has undergone lossy compression is 01"
+                ));
             }
         }
         "01" => {
@@ -324,8 +345,10 @@ pub(super) fn validate_lossy_rule(object: &DefaultDicomObject) -> Result<(), Str
                     "Lossy Image Compression Ratio must contain positive finite values".into(),
                 );
             }
-            if let Some(expected_method) =
-                method_for_lossy_transfer_syntax(&object.meta().transfer_syntax)
+            if let Lossiness::Lossy {
+                method: Some(expected_method),
+                evidence,
+            } = encoding
             {
                 let actual_method = methods
                     .last()
@@ -333,7 +356,7 @@ pub(super) fn validate_lossy_rule(object: &DefaultDicomObject) -> Result<(), Str
                     .unwrap_or_default();
                 if actual_method != expected_method {
                     return Err(format!(
-                        "lossy transfer syntax requires final compression method {expected_method}, found {actual_method:?}"
+                        "the Frames are {evidence}, so the last Lossy Image Compression Method is {expected_method}, but it is {actual_method:?}"
                     ));
                 }
             }

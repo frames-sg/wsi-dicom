@@ -149,7 +149,7 @@ jobs:
           toolchain: "1.99.0"
           targets: ${{ matrix.target }}
       - name: Build CPU-only CLI
-        run: cargo build --release --locked --no-default-features --target ${{ matrix.target }}
+        run: cargo build --release --locked --no-default-features --features dicomweb --target ${{ matrix.target }}
       - name: Package Unix CLI archive
         if: matrix.archive == 'tar'
         shell: bash

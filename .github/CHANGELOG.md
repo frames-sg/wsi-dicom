@@ -30,6 +30,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `wsi-dicom validate-json` (`validate_dicom_json_path`) holds a DICOM JSON
+  document, such as a saved Retrieve Metadata response, to PS3.18 Annex F and
+  each Data Set to the checks of a file; checks that need Pixel Data, the
+  encoded bytes or the File Meta Information say so, a check whose verdict
+  depends on a Transfer Syntax the Metadata does not name is reported as
+  undecidable, and `--fetch-bulkdata` retrieves BulkDataURI Values.
+  `wsi-dicom dicomweb` (`check_dicomweb_server`) checks an origin server
+  against PS3.18 for Retrieve Capabilities, Search, Metadata, Frames, Bulk
+  Data, Rendered, Thumbnail and Instance retrieval, and Store only with
+  `--allow-store <FILE>`, citing each section, reporting absent optional
+  capabilities as unsupported, and validating the Metadata, Frames and
+  Instance it retrieves. Requests have timeouts, size limits and a budget,
+  follow same-origin redirects only, and take a bearer token from the
+  environment variable `--bearer-token-env` names (HTTPS through rustls).
+  The network stack is the optional `dicomweb` feature; release archives
+  enable it.
 - Validation checks each VL WSI instance against the VL Whole Slide Microscopy
   Image IOD: Modules and Functional Groups, Attribute presence and conditions,
   Enumerated Values, VR and VM, Value formats, Sequence Item counts, and File
@@ -44,9 +60,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Data Set as encoded in the file's bytes).
 - `digital-signatures` recomputes each Digital Signature's MAC and verifies
   its RSA signature and Certified Timestamp (PS3.3 C.12.1.1.3, PS3.15 Annex C).
+- The IOD checks cover every pathology-slide IOD, selected by SOP Class UID
+  from PS3.4 Table B.5-1: VL Whole Slide Microscopy, VL Microscopic, VL
+  Slide-Coordinates Microscopic, Confocal Microscopy, Confocal Microscopy Tiled
+  Pyramidal, Microscopy Bulk Simple Annotations, Segmentation and Parametric
+  Map. Other SOP Classes are reported as having no IOD rules.
 - `wsi-dicom requirements [--json]` lists every normative statement of the
-  pinned edition in the VL WSI scope, with a stable `id` and how validation
-  holds an object to it; `RequirementEntry` gains `id`.
+  pinned edition for those IODs, with a stable `id`, the IODs it applies to
+  and how validation holds an object of each to it; `RequirementEntry` gains
+  `id`, `iods` and `iod_dispositions`.
 - `convert` and `validate` take `--optional` (the default) and `--required`.
   `--optional` writes the associated images, TILED_SPARSE for absent tiles and
   the optional attributes the source fills truthfully; `validate --optional`

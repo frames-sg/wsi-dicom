@@ -5,12 +5,14 @@ mod functional_groups;
 mod geometry;
 mod identity;
 mod instance;
+mod lossy_encoding;
 mod pixel_attributes;
 mod pixel_syntax;
 mod relations;
 mod series_set;
 #[cfg(test)]
 mod tests;
+mod tiled_full;
 mod wsi_image;
 
 use std::path::{Path, PathBuf};

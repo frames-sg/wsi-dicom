@@ -2,7 +2,7 @@
 //! cannot express (PS3.3 C.8.12, C.7.4.1.1.2, C.7.6.1.1.5, C.7.6.16.2.1, 10.7.1.3
 //! and A.32.8.4.1.2), checked in every profile.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use dicom_dictionary_std::tags;
 use dicom_object::{DefaultDicomObject, InMemDicomObject};
@@ -38,6 +38,7 @@ pub(super) fn validate_wsi_image_rule(object: &DefaultDicomObject) -> Result<(),
         }
     }
     specimen_label(object, flavor, &mut violations);
+    single_frame(object, flavor, &mut violations);
     tiles_overlap(object, &mut violations);
     if number(object, tags::IMAGED_VOLUME_DEPTH) == Some(0.0) {
         violations.push(format!(
@@ -52,6 +53,7 @@ pub(super) fn validate_wsi_image_rule(object: &DefaultDicomObject) -> Result<(),
         }
     }
     optical_paths(object, &groups, &mut violations);
+    specimen_references(object, &groups, &mut violations);
     lossy_derivation(object, image_type.as_deref(), &groups, &mut violations);
     pixel_measures(object, &groups, &mut violations);
     tiling(object, &groups, &mut violations);
@@ -94,24 +96,121 @@ fn specimen_label(object: &InMemDicomObject, flavor: Option<&str>, violations: &
     }
 }
 
-fn tiles_overlap(object: &InMemDicomObject, violations: &mut Vec<String>) {
-    let tiled_full =
-        string(object, tags::DIMENSION_ORGANIZATION_TYPE).as_deref() == Some("TILED_FULL");
-    match string(object, tags::TILES_OVERLAP) {
-        Some(overlap) if tiled_full && overlap != "NONE" => violations.push(format!(
-            "Tiles Overlap (0048,0304) is {overlap}; it shall be NONE when Dimension Organization Type is TILED_FULL ({CITATION} C.8.12.14)"
-        )),
-        _ => {}
+/// C.8.12.4-1: THUMBNAIL, LABEL and OVERVIEW images are single-Frame.
+fn single_frame(object: &InMemDicomObject, flavor: Option<&str>, violations: &mut Vec<String>) {
+    let Some(flavor) = flavor else {
+        return;
+    };
+    if !matches!(flavor, "THUMBNAIL" | "LABEL" | "OVERVIEW") {
+        return;
+    }
+    if let Some(frames) = integer(object, tags::NUMBER_OF_FRAMES).filter(|frames| *frames != 1) {
+        violations.push(format!(
+            "Number of Frames (0028,0008) is {frames}; it is 1 for Image Type Value 3 {flavor} ({CITATION} C.8.12.4)"
+        ));
     }
 }
 
-/// C.8.12.5-1 and C.8.12.6.2: identifiers are unique, and every Frame's
-/// Optical Path Identification names one of them.
+/// C.8.12.14-1: TILED_FULL tiles do not overlap, and NONE assures that no
+/// two Frames of one optical path encode the same tile of one focal plane.
+fn tiles_overlap(object: &InMemDicomObject, violations: &mut Vec<String>) {
+    let Some(overlap) = string(object, tags::TILES_OVERLAP) else {
+        return;
+    };
+    let tiled_full =
+        string(object, tags::DIMENSION_ORGANIZATION_TYPE).as_deref() == Some("TILED_FULL");
+    if tiled_full && overlap != "NONE" {
+        violations.push(format!(
+            "Tiles Overlap (0048,0304) is {overlap}; it shall be NONE when Dimension Organization Type is TILED_FULL ({CITATION} C.8.12.14)"
+        ));
+        return;
+    }
+    if overlap != "NONE" {
+        return;
+    }
+    let shared = sequence(object, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE).first();
+    let mut tiles = BTreeMap::<(i64, i64, i64, Option<String>), usize>::new();
+    for (index, frame) in sequence(object, tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)
+        .iter()
+        .enumerate()
+    {
+        let Some(position) = sequence(frame, tags::PLANE_POSITION_SLIDE_SEQUENCE).first() else {
+            continue;
+        };
+        let (Some(row), Some(column)) = (
+            integer(position, tags::ROW_POSITION_IN_TOTAL_IMAGE_PIXEL_MATRIX),
+            integer(position, tags::COLUMN_POSITION_IN_TOTAL_IMAGE_PIXEL_MATRIX),
+        ) else {
+            continue;
+        };
+        // Z Offset in µm, compared to the nanometre.
+        let depth = number(position, tags::Z_OFFSET_IN_SLIDE_COORDINATE_SYSTEM)
+            .map_or(0, |depth| (depth * 1000.0).round() as i64);
+        let path = sequence(frame, tags::OPTICAL_PATH_IDENTIFICATION_SEQUENCE)
+            .first()
+            .or_else(|| {
+                shared.and_then(|shared| {
+                    sequence(shared, tags::OPTICAL_PATH_IDENTIFICATION_SEQUENCE).first()
+                })
+            })
+            .and_then(|identification| string(identification, tags::OPTICAL_PATH_IDENTIFIER));
+        if let Some(first) = tiles.insert((row, column, depth, path), index + 1) {
+            violations.push(format!(
+                "Tiles Overlap (0048,0304) is NONE, but Per-Frame Functional Groups Sequence Items {first} and {} encode the same tile: row {row}, column {column}, the same focal plane and optical path ({CITATION} C.8.12.14)",
+                index + 1
+            ));
+            return;
+        }
+    }
+}
+
+/// C.8.12.6.3 and C.7.6.22-2: a specimen a Frame references is visible in it,
+/// so the Specimen Description Sequence identifies it.
+fn specimen_references(
+    object: &InMemDicomObject,
+    groups: &[(String, &InMemDicomObject)],
+    violations: &mut Vec<String>,
+) {
+    let described: BTreeSet<String> = sequence(object, tags::SPECIMEN_DESCRIPTION_SEQUENCE)
+        .iter()
+        .filter_map(|specimen| string(specimen, tags::SPECIMEN_UID))
+        .collect();
+    let mut undescribed = 0;
+    let mut first = None;
+    for (path, item) in groups {
+        for reference in sequence(item, tags::SPECIMEN_REFERENCE_SEQUENCE) {
+            let Some(uid) = string(reference, tags::SPECIMEN_UID) else {
+                continue;
+            };
+            if !described.contains(&uid) {
+                undescribed += 1;
+                first.get_or_insert_with(|| (path.clone(), uid));
+            }
+        }
+    }
+    if let Some((path, uid)) = first {
+        violations.push(format!(
+            "{path}Specimen Reference Sequence (0048,0110) > Specimen UID {uid} is not in the Specimen Description Sequence (0040,0560), which identifies each specimen imaged in the Pixel Data ({undescribed} reference(s); {CITATION} C.8.12.6.3 and C.7.6.22)"
+        ));
+    }
+}
+
+/// C.8.12.5-1 and C.8.12.6.2: Number of Optical Paths counts the Items,
+/// identifiers are unique, and every Frame's Optical Path Identification
+/// names one of them.
 fn optical_paths(
     object: &InMemDicomObject,
     groups: &[(String, &InMemDicomObject)],
     violations: &mut Vec<String>,
 ) {
+    let items = sequence(object, tags::OPTICAL_PATH_SEQUENCE).len();
+    if let Some(declared) = integer(object, tags::NUMBER_OF_OPTICAL_PATHS) {
+        if declared != items as i64 {
+            violations.push(format!(
+                "Number of Optical Paths (0048,0302) is {declared}, but the Optical Path Sequence (0048,0105) has {items} Items; it is the number of Items in that Sequence ({CITATION} C.8.12.5)"
+            ));
+        }
+    }
     let mut identifiers = BTreeSet::new();
     for (index, item) in sequence(object, tags::OPTICAL_PATH_SEQUENCE)
         .iter()
@@ -173,6 +272,11 @@ fn lossy_derivation(
     let value_1 = image_type
         .and_then(|values| values.first())
         .map(String::as_str);
+    if lossy && string(object, tags::LOSSY_IMAGE_COMPRESSION).as_deref() != Some("01") {
+        violations.push(format!(
+            "a Derivation Image Functional Group declares (113040, DCM, \"Lossy Compression\") but Lossy Image Compression (0028,2110) is not 01; a lossy compressed version of another image is 01 ({CITATION} C.7.6.1.1.5)"
+        ));
+    }
     if lossy && value_1 != Some("DERIVED") {
         violations.push(format!(
             "a Derivation Image Functional Group declares (113040, DCM, \"Lossy Compression\") but Image Type Value 1 is {}; a compressed version of another image shall be DERIVED ({CITATION} C.7.6.1.1.5)",
@@ -313,7 +417,7 @@ fn numbers(object: &InMemDicomObject, tag: dicom_core::Tag) -> Option<Vec<f64>> 
     object.element(tag).ok()?.to_multi_float64().ok()
 }
 
-fn number(object: &InMemDicomObject, tag: dicom_core::Tag) -> Option<f64> {
+pub(super) fn number(object: &InMemDicomObject, tag: dicom_core::Tag) -> Option<f64> {
     numbers(object, tag)?.first().copied()
 }
 

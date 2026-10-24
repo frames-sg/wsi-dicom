@@ -327,3 +327,90 @@ fn lookup_table_descriptors_are_little_endian() {
     let check = encoding_check(&path);
     assert!(!check.message.contains("(0028,1223)"), "{}", check.message);
 }
+
+/// The status and message of check `rule` for the object at `path`.
+fn named_check(path: &Path, rule: &str) -> ValidationCheck {
+    validate_dicom_path_with_runner(path, &ValidationOptions::default(), &FakeRunner::default())
+        .unwrap()
+        .checks
+        .into_iter()
+        .find(|check| check.name == rule)
+        .unwrap_or_else(|| panic!("missing check {rule}"))
+}
+
+#[test]
+fn waveform_and_extended_lookup_data_keep_their_value_representations() {
+    let tmp = tempfile::tempdir().unwrap();
+    let binary = |tag, vr| DataElement::new(tag, vr, PrimitiveValue::U8(vec![0; 8].into()));
+    let path = edited_wsi(tmp.path(), "waveform", |object| {
+        object.put(DataElement::new(
+            tags::WAVEFORM_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![item(vec![
+                DataElement::new(
+                    tags::WAVEFORM_BITS_ALLOCATED,
+                    VR::US,
+                    PrimitiveValue::from(16u16),
+                ),
+                binary(tags::WAVEFORM_PADDING_VALUE, VR::OW),
+                binary(tags::WAVEFORM_DATA, VR::OB),
+            ])]),
+        ));
+        // Standard Type 3 Attributes beyond the IOD (Standard Extended SOP
+        // Class), in the wrong VR.
+        object.put(binary(tags::BLENDING_LOOKUP_TABLE_DATA, VR::OB));
+        object.put(binary(tags::TRACK_POINT_INDEX_LIST, VR::OW));
+    });
+    assert_encoding_failure(
+        &path,
+        "WaveformSequence (5400,0100)[1] > WaveformData (5400,1010): VR OB with Waveform Bits Allocated (5400,1004) 16; Waveform Data shall be OW",
+    );
+    assert_encoding_failure(
+        &path,
+        "WaveformPaddingValue (5400,100A): VR OW where Waveform Data (5400,1010) is OB",
+    );
+    let vr_vm = named_check(&path, "intrinsic-wsi-dicom-iod-vr-vm");
+    assert_eq!(vr_vm.status, ValidationStatus::Failed, "{}", vr_vm.message);
+    for expected in [
+        "BlendingLookupTableData (0028,1408): VR OB where PS3.6 specifies OW",
+        "TrackPointIndexList (0066,0129): VR OW where PS3.6 specifies OL",
+    ] {
+        assert!(
+            vr_vm.message.contains(expected),
+            "{expected}: {}",
+            vr_vm.message
+        );
+    }
+}
+
+#[test]
+fn data_set_trailing_padding_is_accepted_at_any_level_and_its_value_ignored() {
+    let tmp = tempfile::tempdir().unwrap();
+    let padding = || {
+        DataElement::new(
+            tags::DATA_SET_TRAILING_PADDING,
+            VR::OB,
+            PrimitiveValue::U8(vec![0xDE, 0xAD, 0xBE, 0xEF].into()),
+        )
+    };
+    let path = edited_wsi(tmp.path(), "padding", |object| {
+        object.put(padding());
+        let mut paths = object.take(tags::OPTICAL_PATH_SEQUENCE).unwrap();
+        paths.items_mut().unwrap()[0].put(padding());
+        object.put(paths);
+    });
+    for rule in [
+        ENCODING_RULE,
+        "intrinsic-wsi-dicom-iod-vr-vm",
+        "intrinsic-wsi-dicom-iod-value-format",
+        "intrinsic-pixel-structure",
+    ] {
+        let check = named_check(&path, rule);
+        assert_eq!(
+            check.status,
+            ValidationStatus::Passed,
+            "{rule}: {}",
+            check.message
+        );
+    }
+}

@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use super::conditions::evaluate;
 use super::model::{Placement, Usage, ValueMultiplicity};
 use super::scope::{Frame, Requirement, Scope};
-use super::tables::{ConditionId as C, EDITION, FUNCTIONAL_GROUPS, MODULES, SOURCE_SHA256};
+use super::tables::{ConditionId as C, EDITION, IODS, SOURCE_SHA256};
 use super::values::{check_value, entry};
 
 const EXPLICIT_VR_LITTLE_ENDIAN: &str = "1.2.840.10008.1.2.1";
@@ -461,7 +461,8 @@ fn every_condition_evaluates_and_honours_may_be_present_otherwise() {
         let unconditional_otherwise = text.contains("may be present otherwise")
             && !text.contains("only if")
             && !text.contains("shall not be present")
-            && !text.contains("otherwise, if");
+            && !text.contains("otherwise, if")
+            && !text.contains("otherwise if");
         for root in fixtures() {
             for requirement in [at_root(*id, &root), in_item(*id, &root, &data_set(vec![]))] {
                 if unconditional_otherwise {
@@ -495,18 +496,27 @@ fn condition_variants_are_named_by_a_digest_of_their_text() {
     }
 }
 
+fn iod(section: &str) -> &'static super::model::Iod {
+    IODS.iter()
+        .find(|iod| iod.section == section)
+        .unwrap_or_else(|| panic!("no IOD {section}"))
+}
+
 #[test]
 fn tables_cover_the_iod_module_and_functional_group_tables() {
     assert_eq!(EDITION, "2026d");
-    assert_eq!(MODULES.len(), 27);
-    assert_eq!(FUNCTIONAL_GROUPS.len(), 9);
-    let slide_label = MODULES
+    let wsi = iod("A.32.8");
+    assert_eq!(wsi.modules.len(), 27);
+    assert_eq!(wsi.functional_groups.len(), 9);
+    let slide_label = wsi
+        .modules
         .iter()
         .find(|module| module.name == "Slide Label")
         .unwrap();
     assert_eq!(slide_label.usage, Usage::Conditional);
     assert_eq!(slide_label.condition, Some(C::ModuleSlideLabel_82fe14));
-    let pixel_measures = FUNCTIONAL_GROUPS
+    let pixel_measures = wsi
+        .functional_groups
         .iter()
         .find(|group| group.name == "Pixel Measures")
         .unwrap();
@@ -516,6 +526,380 @@ fn tables_cover_the_iod_module_and_functional_group_tables() {
     assert!(SOURCE_SHA256
         .iter()
         .all(|(name, digest)| name.ends_with(".xml") && digest.len() == 64));
+    assert!(SOURCE_SHA256.iter().any(|(name, _)| *name == "part04.xml"));
+}
+
+#[test]
+fn every_pathology_slide_iod_is_dispatched_by_its_ps3_4_sop_classes() {
+    let sections: Vec<&str> = IODS.iter().map(|iod| iod.section).collect();
+    assert_eq!(
+        sections,
+        ["A.32.8", "A.32.2", "A.32.3", "A.90.1", "A.90.2", "A.87", "A.51", "A.75"]
+    );
+    let uids = |section: &str| {
+        iod(section)
+            .sop_classes
+            .iter()
+            .map(|class| class.uid)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(uids("A.32.8"), [crate::VL_WSI_SOP_CLASS_UID]);
+    assert_eq!(
+        uids("A.51"),
+        [
+            "1.2.840.10008.5.1.4.1.1.66.4",
+            "1.2.840.10008.5.1.4.1.1.66.7"
+        ]
+    );
+    assert_eq!(uids("A.87"), ["1.2.840.10008.5.1.4.1.1.91.1"]);
+    // Height Map Segmentation (A.91) is not a pathology-slide IOD.
+    assert!(IODS.iter().all(|iod| iod
+        .sop_classes
+        .iter()
+        .all(|class| class.uid != "1.2.840.10008.5.1.4.1.1.66.8")));
+    assert_eq!(iod("A.32.2").functional_group_table, None);
+    assert!(iod("A.32.2").functional_groups.is_empty());
+    let forbidden: Vec<&str> = iod("A.51")
+        .forbidden_modules
+        .iter()
+        .map(|module| module.name)
+        .collect();
+    assert_eq!(forbidden, ["VOI LUT", "Modality LUT", "Overlay Plane"]);
+    assert_eq!(
+        iod("A.75").exclusive_modules[0].modules,
+        [
+            "Image Pixel",
+            "Floating Point Image Pixel",
+            "Double Floating Point Image Pixel"
+        ]
+    );
+}
+
+fn segmentation_root(segmentation_type: &str, extra: Vec<InMemElement>) -> InMemDicomObject {
+    let mut root = data_set(vec![
+        text(
+            tags::SOP_CLASS_UID,
+            VR::UI,
+            &["1.2.840.10008.5.1.4.1.1.66.4"],
+        ),
+        text(tags::SEGMENTATION_TYPE, VR::CS, &[segmentation_type]),
+    ]);
+    for element in extra {
+        root.put(element);
+    }
+    root
+}
+
+#[test]
+fn segmentation_conditions_follow_the_segmentation_type_and_sop_class() {
+    let binary = segmentation_root("BINARY", vec![]);
+    let label_map = segmentation_root("LABELMAP", vec![]);
+    expect(C::SegmentationType_c84858, &binary, Requirement::Required);
+    expect(C::SegmentationType_fd2ec6, &binary, Requirement::Optional);
+    expect(
+        C::PixelPaddingRangeLimit_ae4d69,
+        &label_map,
+        Requirement::Forbidden,
+    );
+    // Pixel Padding Value is forbidden unless LABELMAP, and then follows the
+    // General Equipment Module condition (permitted with Pixel Data).
+    let with_pixels = segmentation_root(
+        "LABELMAP",
+        vec![DataElement::new(
+            tags::PIXEL_DATA,
+            VR::OB,
+            PrimitiveValue::from(vec![0u8; 2]),
+        )],
+    );
+    expect(C::PixelPaddingValue_d4f36e, &binary, Requirement::Forbidden);
+    expect(
+        C::PixelPaddingValue_d4f36e,
+        &with_pixels,
+        Requirement::Optional,
+    );
+    expect(
+        C::SegmentationFractionalType_63bbc3,
+        &binary,
+        Requirement::Forbidden,
+    );
+    expect(
+        C::SegmentationFractionalType_63bbc3,
+        &segmentation_root("FRACTIONAL", vec![]),
+        Requirement::Required,
+    );
+    expect(C::BitsAllocated_c43232, &binary, Requirement::Required);
+    expect(C::BitsAllocated_c43232, &label_map, Requirement::Optional);
+    expect(C::FgSegmentation_99fd82, &binary, Requirement::Required);
+    expect(C::FgSegmentation_99fd82, &label_map, Requirement::Forbidden);
+}
+
+fn shared_groups(groups: Vec<InMemElement>, extra: Vec<InMemElement>) -> InMemDicomObject {
+    let mut root = data_set(vec![sequence(
+        tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE,
+        vec![data_set(groups)],
+    )]);
+    for element in extra {
+        root.put(element);
+    }
+    root
+}
+
+fn frame_of_reference() -> InMemElement {
+    text(tags::FRAME_OF_REFERENCE_UID, VR::UI, &["1.2.3"])
+}
+
+#[test]
+fn frames_of_reference_are_slide_or_patient_by_the_positions_encoded() {
+    let derivation = || sequence(tags::DERIVATION_IMAGE_SEQUENCE, vec![data_set(vec![])]);
+    let patient = shared_groups(
+        vec![sequence(
+            tags::PLANE_ORIENTATION_SEQUENCE,
+            vec![data_set(vec![])],
+        )],
+        vec![frame_of_reference()],
+    );
+    let slide = shared_groups(
+        vec![sequence(
+            tags::PLANE_POSITION_SLIDE_SEQUENCE,
+            vec![data_set(vec![])],
+        )],
+        vec![frame_of_reference()],
+    );
+    let unplaced = shared_groups(vec![], vec![frame_of_reference()]);
+    let derived = shared_groups(vec![derivation()], vec![]);
+    // Pixel Measures, Plane Position and Orientation (Patient) of Table A.51-2.
+    expect(C::FgPixelMeasures_3dce04, &patient, Requirement::Required);
+    expect(C::FgPixelMeasures_3dce04, &derived, Requirement::Forbidden);
+    expect(
+        C::FgPixelMeasures_3dce04,
+        &unplaced,
+        Requirement::Undeterminable,
+    );
+    expect(
+        C::FgPixelMeasures_3dce04,
+        &slide,
+        Requirement::Undeterminable,
+    );
+    // Derivation Image is required where the positions are not encoded.
+    expect(C::FgDerivationImage_a322fc, &derived, Requirement::Required);
+    expect(
+        C::FgPlanePositionPatient_183b05,
+        &patient,
+        Requirement::Required,
+    );
+    expect(
+        C::FgPlanePositionPatient_183b05,
+        &slide,
+        Requirement::Forbidden,
+    );
+    expect(
+        C::FgPlanePositionSlide_7fb0bc,
+        &slide,
+        Requirement::Required,
+    );
+    expect(
+        C::FgPlanePositionSlide_7fb0bc,
+        &derived,
+        Requirement::Forbidden,
+    );
+    let tiled = shared_groups(
+        vec![sequence(
+            tags::PLANE_POSITION_SLIDE_SEQUENCE,
+            vec![data_set(vec![])],
+        )],
+        vec![
+            frame_of_reference(),
+            text(tags::DIMENSION_ORGANIZATION_TYPE, VR::CS, &["TILED_FULL"]),
+        ],
+    );
+    expect(
+        C::FgPlanePositionSlide_c1ecaa,
+        &slide,
+        Requirement::Required,
+    );
+    expect(
+        C::FgPlanePositionSlide_c1ecaa,
+        &tiled,
+        Requirement::Optional,
+    );
+    expect(
+        C::FgPlanePositionSlide_c1ecaa,
+        &patient,
+        Requirement::Forbidden,
+    );
+    // A patient Frame of Reference orients the image, so Patient Orientation
+    // is not required.
+    expect(
+        C::PatientOrientation_964c1d,
+        &patient,
+        Requirement::Optional,
+    );
+    expect(
+        C::PatientOrientation_964c1d,
+        &derived,
+        Requirement::Required,
+    );
+}
+
+#[test]
+fn bulk_annotation_conditions_read_the_annotation_group() {
+    let coordinates = |kind: &str| {
+        data_set(vec![text(
+            tags::ANNOTATION_COORDINATE_TYPE,
+            VR::CS,
+            &[kind],
+        )])
+    };
+    let planar = coordinates("2D");
+    let volume = coordinates("3D");
+    expect(
+        C::ModuleFrameOfReference_9c03a6,
+        &volume,
+        Requirement::Required,
+    );
+    expect(
+        C::ModuleFrameOfReference_9c03a6,
+        &planar,
+        Requirement::Forbidden,
+    );
+    expect(
+        C::PixelOriginInterpretation_577198,
+        &planar,
+        Requirement::Required,
+    );
+    let points = |values: &[f32]| {
+        data_set(vec![DataElement::new(
+            tags::POINT_COORDINATES_DATA,
+            VR::OF,
+            PrimitiveValue::F32(values.iter().copied().collect()),
+        )])
+    };
+    // All points at Z 5 need Common Z Coordinate Value; points at two Z do not.
+    expect_in_item(
+        C::CommonZCoordinateValue_a8e676,
+        &volume,
+        &points(&[1.0, 2.0, 5.0, 3.0, 4.0, 5.0]),
+        Requirement::Required,
+    );
+    expect_in_item(
+        C::CommonZCoordinateValue_a8e676,
+        &volume,
+        &points(&[1.0, 2.0, 5.0, 3.0, 4.0, 6.0]),
+        Requirement::Forbidden,
+    );
+    let polygon = data_set(vec![text(tags::GRAPHIC_TYPE, VR::CS, &["POLYGON"])]);
+    expect_in_item(
+        C::LongPrimitivePointIndexList_bb9fb2,
+        &planar,
+        &polygon,
+        Requirement::Required,
+    );
+    // Annotation Index List: fewer Floating Point Values than Annotations.
+    let group = data_set(vec![DataElement::new(
+        tags::NUMBER_OF_ANNOTATIONS,
+        VR::UL,
+        PrimitiveValue::from(3u32),
+    )]);
+    let measurements = data_set(vec![]);
+    let values = |count: usize| {
+        data_set(vec![DataElement::new(
+            tags::FLOATING_POINT_VALUES,
+            VR::OF,
+            PrimitiveValue::F32(vec![1.0; count].into()),
+        )])
+    };
+    let top = Scope::top(&planar, EXPLICIT_VR_LITTLE_ENDIAN);
+    let group_scope = top.child(&group);
+    let measurements_scope = group_scope.child(&measurements);
+    let subset = values(2);
+    let all = values(3);
+    assert_eq!(
+        evaluate(
+            C::AnnotationIndexList_0474f0,
+            &measurements_scope.child(&subset)
+        ),
+        Requirement::Required
+    );
+    assert_eq!(
+        evaluate(
+            C::AnnotationIndexList_0474f0,
+            &measurements_scope.child(&all)
+        ),
+        Requirement::Forbidden
+    );
+}
+
+#[test]
+fn parametric_map_modules_follow_the_pixel_data_attribute() {
+    let float = data_set(vec![DataElement::new(
+        tags::FLOAT_PIXEL_DATA,
+        VR::OF,
+        PrimitiveValue::F32(vec![0.0f32; 4].into()),
+    )]);
+    expect(
+        C::ModuleFloatingPointImagePixel_202cb1,
+        &float,
+        Requirement::Required,
+    );
+    expect(C::ModuleImagePixel_f11529, &float, Requirement::Forbidden);
+    expect(C::BitsAllocated_2af7e7, &float, Requirement::Required);
+    expect(C::BitsAllocated_38792c, &float, Requirement::Optional);
+    expect(C::BitsStored_44fd83, &float, Requirement::Forbidden);
+    let color = data_set(vec![text(
+        tags::PIXEL_PRESENTATION,
+        VR::CS,
+        &["COLOR_RANGE"],
+    )]);
+    expect(C::ICCProfile_875087, &color, Requirement::Required);
+    expect(
+        C::PaletteColorLookupTableUID_c285e7,
+        &color,
+        Requirement::Required,
+    );
+    expect(
+        C::ModulePaletteColorLookupTable_501a20,
+        &color,
+        Requirement::Required,
+    );
+    expect(
+        C::FgStoredValueColorRange_fd7048,
+        &float,
+        Requirement::Forbidden,
+    );
+}
+
+#[test]
+fn microscopy_module_usage_reads_the_slide_evidence() {
+    let slide = data_set(vec![sequence(
+        tags::CONTAINER_TYPE_CODE_SEQUENCE,
+        vec![data_set(vec![
+            text(tags::CODE_VALUE, VR::SH, &["433466003"]),
+            text(tags::CODING_SCHEME_DESIGNATOR, VR::SH, &["SCT"]),
+        ])],
+    )]);
+    let unknown = data_set(vec![]);
+    expect(
+        C::ModuleMicroscopeSlideLayerTileOrganization_031caa,
+        &slide,
+        Requirement::Required,
+    );
+    expect(
+        C::ModuleMicroscopeSlideLayerTileOrganization_031caa,
+        &unknown,
+        Requirement::Undeterminable,
+    );
+    let icc = data_set(vec![DataElement::new(
+        tags::ICC_PROFILE,
+        VR::OB,
+        PrimitiveValue::from(vec![0u8; 4]),
+    )]);
+    expect(C::ModuleOpticalPath_e06f79, &icc, Requirement::Forbidden);
+    expect(C::ModuleOpticalPath_e06f79, &unknown, Requirement::Optional);
+    expect(
+        C::ModuleMultiResolutionPyramid_dfce04,
+        &image("OVERVIEW"),
+        Requirement::Forbidden,
+    );
 }
 
 #[test]

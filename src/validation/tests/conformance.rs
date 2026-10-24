@@ -363,8 +363,9 @@ fn versioned_intrinsic_wsi_rules_reject_targeted_metadata_mutations() {
 
     let dimension = export_valid_color_wsi_for_validation(tmp.path(), "dimension");
     let mut object = dicom_object::open_file(&dimension).unwrap();
+    // Each Frame keeps two Dimension Index Values for what is now one Item.
     let mut sequence = object.take(tags::DIMENSION_INDEX_SEQUENCE).unwrap();
-    sequence.items_mut().unwrap().swap(0, 1);
+    sequence.items_mut().unwrap().pop();
     object.put(sequence);
     object.write_to_file(&dimension).unwrap();
     assert_intrinsic_rule_fails(&dimension, "intrinsic-wsi-dicom-dimension-order");

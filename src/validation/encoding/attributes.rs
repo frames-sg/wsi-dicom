@@ -1,8 +1,8 @@
-//! Attribute Values whose encoding PS3.3 C.12.1, PS3.5 6.2, 9 and Annex A
+//! Attribute Values whose encoding PS3.3 C.12.1, PS3.5 6.2, 8.3, 9 and Annex A
 //! constrain beyond their VR, read from the parsed Data Set.
 
 use dicom_core::value::{PrimitiveValue, Value};
-use dicom_core::Tag;
+use dicom_core::{Tag, VR};
 use dicom_dictionary_std::{tags, uids};
 use dicom_object::mem::InMemElement;
 use dicom_object::InMemDicomObject;
@@ -53,6 +53,9 @@ pub(super) struct Attributes<'f> {
     /// The Annex A section of a Little Endian Transfer Syntax; `None` for
     /// Big Endian, whose byte order rules differ.
     pub(super) little_endian: Option<&'static str>,
+    /// Whether the Transfer Syntax conveys the VR, so the parsed VR is the
+    /// encoded one.
+    pub(super) explicit_vr: bool,
 }
 
 impl Attributes<'_> {
@@ -63,6 +66,9 @@ impl Attributes<'_> {
 
     fn data_set(&mut self, object: &InMemDicomObject, path: &str, depth: usize) {
         self.private_definition(object, path);
+        if self.explicit_vr {
+            self.waveform(object, path);
+        }
         for element in object.iter() {
             self.element(element, path);
             let Some(items) = element.items() else {
@@ -201,6 +207,58 @@ impl Attributes<'_> {
         }
     }
 
+    /// PS3.5 8.3: in an Explicit VR Transfer Syntax Waveform Data is OB when
+    /// Waveform Bits Allocated is 8 and OW otherwise, and Channel Minimum
+    /// Value, Channel Maximum Value and Waveform Padding Value have its VR.
+    /// A zero-length element means the same as an absent one (PS3.5 7.4.5).
+    fn waveform(&mut self, item: &InMemDicomObject, path: &str) {
+        let Some(data) = valued(item, tags::WAVEFORM_DATA) else {
+            return;
+        };
+        let vr = data.vr();
+        let label = |tag| element_label(path, tag);
+        let bits = item
+            .get(tags::WAVEFORM_BITS_ALLOCATED)
+            .and_then(|element| element.to_int::<u16>().ok());
+        // Without Waveform Bits Allocated, a presence violation the IOD
+        // checks report, the required VR is unknown.
+        if let Some(bits) = bits {
+            let expected = if bits == 8 { VR::OB } else { VR::OW };
+            if vr != expected {
+                self.findings.push(|| format!(
+                    "{}: VR {vr:?} with Waveform Bits Allocated (5400,1004) {bits}; Waveform Data shall be OW, and OB where Waveform Bits Allocated is 8 in an Explicit VR Transfer Syntax (PS3.5 8.3)",
+                    label(tags::WAVEFORM_DATA)
+                ));
+            }
+        }
+        let channels = item
+            .get(tags::CHANNEL_DEFINITION_SEQUENCE)
+            .and_then(|element| element.items())
+            .unwrap_or_default();
+        let related = std::iter::once((path.to_string(), item, tags::WAVEFORM_PADDING_VALUE))
+            .chain(channels.iter().enumerate().flat_map(|(index, channel)| {
+                let channel_path = format!(
+                    "{}[{}] > ",
+                    element_label(path, tags::CHANNEL_DEFINITION_SEQUENCE),
+                    index + 1
+                );
+                [tags::CHANNEL_MINIMUM_VALUE, tags::CHANNEL_MAXIMUM_VALUE]
+                    .map(|tag| (channel_path.clone(), channel, tag))
+            }));
+        for (holder_path, holder, tag) in related {
+            let Some(element) = valued(holder, tag) else {
+                continue;
+            };
+            if element.vr() != vr {
+                self.findings.push(|| format!(
+                    "{}: VR {:?} where Waveform Data (5400,1010) is {vr:?}; it shall be encoded with the same VR as Waveform Data (PS3.5 8.3)",
+                    element_label(&holder_path, tag),
+                    element.vr()
+                ));
+            }
+        }
+    }
+
     /// PS3.5 A.1, A.2 and A.4: a Descriptor's third Value (bits per entry,
     /// 8 to 16) read byte-swapped shows a Big Endian encoding.
     fn descriptor(&mut self, element: &InMemElement, label: &str) {
@@ -276,6 +334,13 @@ impl Attributes<'_> {
             }
         }
     }
+}
+
+/// Element `tag` of `holder`, unless absent or of zero length.
+fn valued(holder: &InMemDicomObject, tag: Tag) -> Option<&InMemElement> {
+    holder.get(tag).filter(|element| {
+        !matches!(element.value(), Value::Primitive(primitive) if primitive.calculate_byte_len() == 0)
+    })
 }
 
 /// Two or three Values whose minimum and (non-zero) maximum are equal.

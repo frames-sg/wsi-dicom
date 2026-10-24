@@ -157,10 +157,10 @@ fn reports_show_the_first_violations_and_count_the_rest() {
 
 #[test]
 fn transfer_syntaxes_without_a_known_codestream_pass_with_nothing_to_check() {
+    // Deflated Image Frame Compression is inflated; see tests/deflate.rs.
     for syntax in [
         "1.2.840.10008.1.2.1",
         "1.2.840.10008.1.2.4.94",
-        "1.2.840.10008.1.2.8.1",
         "1.2.840.10008.1.2.4.100",
     ] {
         let object = file(image((8, 16), 1, "MONOCHROME2", vec![grey_jpeg()]), syntax);
@@ -212,6 +212,18 @@ fn embedded_icc_profiles_equal_the_icc_profile_of_the_frame() {
         &check(&object(with_icc(&grey_jpeg(), &profile(5), 2))),
         "Frame 1: APP2 ICC_PROFILE segments concatenate to a 301-byte profile that is not identical to the 301-byte ICC Profile (0028,2000) of Optical Path Sequence Item 1 (PS3.5 2026d 8.2.1)",
     );
+    // A zero-length ICC Profile is the same as none (PS3.5 7.4.5).
+    let mut empty = image(
+        (8, 16),
+        1,
+        "MONOCHROME2",
+        vec![with_icc(&grey_jpeg(), &icc, 2)],
+    );
+    empty.put(sequence(
+        tags::OPTICAL_PATH_SEQUENCE,
+        vec![optical_path("1", &[])],
+    ));
+    assert_conformant(&check(&file(empty, BASELINE)));
     let first_chunk_only = icc_segments(&icc, 2);
     let first_chunk_only = &first_chunk_only[..4 + 14 + 151];
     assert_violation(

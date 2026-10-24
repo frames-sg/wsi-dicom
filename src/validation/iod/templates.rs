@@ -94,6 +94,7 @@ impl<'a> Item<'a> {
                 .iter()
                 .filter_map(|id| codes::group(*id))
                 .any(|group| codes::contains(group, concept)),
+            Concept::Set(ValueSet::Code(code, _)) => concept.is(code.scheme, code.value),
             Concept::Set(ValueSet::Template(..)) => false,
         }
     }
@@ -157,10 +158,9 @@ impl<'a> Matching<'a> {
 
     fn holds(&self, template: &Template, condition: TemplateCondition) -> bool {
         match condition {
-            TemplateCondition::RowAbsent { row, .. } => {
-                self.matched(template, row).next().is_none()
-            }
-            TemplateCondition::RowValue {
+            TemplateCondition::Absent { row, .. } => self.matched(template, row).next().is_none(),
+            TemplateCondition::Present { row, .. } => self.matched(template, row).next().is_some(),
+            TemplateCondition::HasCode {
                 row, scheme, value, ..
             } => self
                 .matched(template, row)
@@ -175,13 +175,15 @@ impl<'a> Matching<'a> {
         let iff = matches!(
             row.condition,
             Some(
-                TemplateCondition::RowAbsent { iff: true, .. }
-                    | TemplateCondition::RowValue { iff: true, .. }
+                TemplateCondition::Absent { iff: true, .. }
+                    | TemplateCondition::Present { iff: true, .. }
+                    | TemplateCondition::HasCode { iff: true, .. }
             )
         );
+        // PS3.16 6.1.7: MC and UC rows are absent when an IFF condition fails.
         match (row.requirement, met) {
             (RowRequirement::M, _) | (RowRequirement::Mc, Some(true)) => Need::Required,
-            (RowRequirement::Mc, Some(false)) if iff => Need::Forbidden,
+            (RowRequirement::Mc | RowRequirement::Uc, Some(false)) if iff => Need::Forbidden,
             _ => Need::Optional,
         }
     }
@@ -311,5 +313,8 @@ fn concept_text(concept: Concept) -> String {
             .collect::<Vec<_>>()
             .join(" or "),
         Concept::Set(ValueSet::Template(_, id)) => format!("TID {id}"),
+        Concept::Set(ValueSet::Code(code, _)) => {
+            format!("({}, {}, \"{}\")", code.value, code.scheme, code.meaning)
+        }
     }
 }

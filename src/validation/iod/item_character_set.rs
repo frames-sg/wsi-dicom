@@ -1,5 +1,5 @@
-//! PS3.5 7.5.3: which Sequences of the IOD define Specific Character Set
-//! (0008,0005) for their Items.
+//! PS3.5 7.5.3: which Sequences of the pathology-slide IODs define Specific
+//! Character Set (0008,0005) for their Items.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -9,24 +9,27 @@ use dicom_core::{Tag, VR};
 use super::engine::{flatten, Definition};
 use super::model::{Node, Table};
 use super::scope::raw_tag;
-use super::tables::{FUNCTIONAL_GROUPS, MODULES};
+use super::tables::IODS;
 use super::values::entry;
 use super::MAX_NESTING;
 
 const SPECIFIC_CHARACTER_SET: u32 = 0x0008_0005;
 
 /// Whether an Item of `sequence` may include Specific Character Set: `None`
-/// when no table of the IOD defines the Sequence. A Sequence whose Items the
-/// tables leave open (e.g. Modified Attributes Sequence) admits it.
+/// when no table of the pathology-slide IODs defines the Sequence. A Sequence
+/// whose Items the tables leave open (e.g. Modified Attributes Sequence), or
+/// that any of the IODs lets define it, admits it.
 pub(in crate::validation) fn item_admits_specific_character_set(sequence: Tag) -> Option<bool> {
     static ADMITS: OnceLock<BTreeMap<u32, bool>> = OnceLock::new();
     ADMITS
         .get_or_init(|| {
             let mut admits = BTreeMap::new();
-            let tables = MODULES
-                .iter()
-                .map(|module| module.table)
-                .chain(FUNCTIONAL_GROUPS.iter().map(|group| group.table));
+            let tables = IODS.iter().flat_map(|iod| {
+                iod.modules
+                    .iter()
+                    .map(|module| module.table)
+                    .chain(iod.functional_groups.iter().map(|group| group.table))
+            });
             for table in tables {
                 collect(table.nodes, table, &mut admits, 0);
             }

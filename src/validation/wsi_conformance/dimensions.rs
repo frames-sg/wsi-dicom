@@ -151,6 +151,7 @@ fn frame_indices(
     let mut indices: Vec<BTreeMap<u32, Vec<Option<Indexed>>>> =
         vec![BTreeMap::new(); dimensions.len()];
     let mut miscounted = 0;
+    let mut zeroed = 0;
     for frame in per_frame {
         let Some(values) = sequence(frame, tags::FRAME_CONTENT_SEQUENCE)
             .first()
@@ -159,6 +160,9 @@ fn frame_indices(
         else {
             continue;
         };
+        if values.contains(&0) {
+            zeroed += 1;
+        }
         if values.len() != dimensions.len() {
             miscounted += 1;
             continue;
@@ -170,6 +174,11 @@ fn frame_indices(
                 entry.push(indexed);
             }
         }
+    }
+    if zeroed > 0 {
+        violations.push(format!(
+            "{zeroed} Frame(s) have a Dimension Index Value of 0; each index value is an ordinal number starting from 1 ({CITATION})"
+        ));
     }
     if miscounted > 0 {
         violations.push(format!(

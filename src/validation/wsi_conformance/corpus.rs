@@ -70,7 +70,7 @@ pub(in crate::validation) fn run_series_set_check(
 pub(in crate::validation) fn run_slide_coordinate_set_check(
     corpus: &WsiConformanceCorpus,
 ) -> Option<ValidationCheck> {
-    let mut pyramids = BTreeMap::<String, (&SlideCoordinateIdentity, &Path)>::new();
+    let mut pyramids = BTreeMap::<String, (&SlideCoordinateIdentity, f64, &Path)>::new();
     let mut compared = false;
     let mut failure = None;
     for facts in &corpus.instances {
@@ -90,9 +90,14 @@ pub(in crate::validation) fn run_slide_coordinate_set_check(
                 break;
             }
         };
-        if let Some((existing, existing_path)) = pyramids.get(uid) {
+        // Levels place the same image data (PS3.3 C.7.11); their pixel 1\1
+        // locations agree within a pixel of the coarser level.
+        let pixel = pyramid.extent.as_ref().map_or(0.0, |extent| {
+            extent.spacing.row().max(extent.spacing.column())
+        });
+        if let Some((existing, existing_pixel, existing_path)) = pyramids.get(uid) {
             compared = true;
-            if !coordinates_equal(existing, coordinate) {
+            if !coordinates_equal(existing, coordinate, pixel.max(*existing_pixel)) {
                 failure = Some(format!(
                     "Pyramid UID {uid} has conflicting total-matrix origin or orientation in {} and {}",
                     existing_path.display(),
@@ -101,7 +106,7 @@ pub(in crate::validation) fn run_slide_coordinate_set_check(
                 break;
             }
         } else {
-            pyramids.insert(uid.clone(), (coordinate, facts.path.as_path()));
+            pyramids.insert(uid.clone(), (coordinate, pixel, facts.path.as_path()));
         }
     }
     compared.then(|| {
@@ -114,19 +119,31 @@ pub(in crate::validation) fn run_slide_coordinate_set_check(
     })
 }
 
-fn coordinates_equal(left: &SlideCoordinateIdentity, right: &SlideCoordinateIdentity) -> bool {
-    left.origin
+/// Origins agree within `pixel` mm in X and Y, Z offsets and direction
+/// cosines to 1e-6.
+fn coordinates_equal(
+    left: &SlideCoordinateIdentity,
+    right: &SlideCoordinateIdentity,
+    pixel: f64,
+) -> bool {
+    let planar = pixel.max(1e-6);
+    let origin = left.origin[..2]
         .iter()
-        .chain(left.orientation.iter())
-        .zip(right.origin.iter().chain(right.orientation.iter()))
-        .all(|(left, right)| (left - right).abs() <= 1e-6)
+        .zip(&right.origin[..2])
+        .all(|(left, right)| (left - right).abs() <= planar);
+    origin
+        && left.origin[2..]
+            .iter()
+            .chain(left.orientation.iter())
+            .zip(right.origin[2..].iter().chain(right.orientation.iter()))
+            .all(|(left, right)| (left - right).abs() <= 1e-6)
 }
 
 pub(in crate::validation) fn run_clinical_identity_set_check(
     corpus: &WsiConformanceCorpus,
 ) -> Option<ValidationCheck> {
     let mut studies = BTreeMap::<String, (String, String, PathBuf)>::new();
-    let mut series = BTreeMap::<String, (String, String, PathBuf)>::new();
+    let mut series = BTreeMap::<String, (String, Option<String>, PathBuf)>::new();
     let mut frames =
         BTreeMap::<String, (String, String, String, Option<IssuerIdentity>, PathBuf)>::new();
     let mut failure = None;
@@ -161,7 +178,12 @@ pub(in crate::validation) fn run_clinical_identity_set_check(
         }
 
         if let Some((study_uid, frame_uid, path)) = series.get(&identity.series_uid) {
-            if study_uid != &identity.study_uid || frame_uid != &identity.frame_of_reference_uid {
+            // A LABEL or OVERVIEW image without a Frame of Reference may share
+            // the Series of registered images (PS3.3 A.32.8).
+            let frames_differ = frame_uid.is_some()
+                && identity.frame_of_reference_uid.is_some()
+                && frame_uid != &identity.frame_of_reference_uid;
+            if study_uid != &identity.study_uid || frames_differ {
                 failure = Some(format!(
                     "Series Instance UID {} maps to conflicting Study or Frame of Reference UIDs in {} and {}",
                     identity.series_uid,
@@ -181,8 +203,11 @@ pub(in crate::validation) fn run_clinical_identity_set_check(
             );
         }
 
+        let Some(frame_of_reference_uid) = &identity.frame_of_reference_uid else {
+            continue;
+        };
         if let Some((study_uid, patient_name, container, issuer, path)) =
-            frames.get(&identity.frame_of_reference_uid)
+            frames.get(frame_of_reference_uid)
         {
             if study_uid != &identity.study_uid
                 || patient_name != &identity.patient_name
@@ -191,7 +216,7 @@ pub(in crate::validation) fn run_clinical_identity_set_check(
             {
                 failure = Some(format!(
                     "Frame of Reference UID {} maps to conflicting study, patient, or container identity in {} and {}",
-                    identity.frame_of_reference_uid,
+                    frame_of_reference_uid,
                     path.display(),
                     facts.path.display()
                 ));
@@ -199,7 +224,7 @@ pub(in crate::validation) fn run_clinical_identity_set_check(
             }
         } else {
             frames.insert(
-                identity.frame_of_reference_uid.clone(),
+                frame_of_reference_uid.clone(),
                 (
                     identity.study_uid.clone(),
                     identity.patient_name.clone(),

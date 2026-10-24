@@ -2,6 +2,7 @@
 //! small vectors from dcmtk and libjxl where the crate has no encoder), and
 //! malformed ones made by patching their marker bytes.
 
+mod deflate;
 mod j2k;
 mod jpeg;
 mod jpeg_ls;

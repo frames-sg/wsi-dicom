@@ -47,6 +47,16 @@ fn permitted(uid: &str) -> Permitted {
             false,
             "8.2.4 Table 8.2.4-1",
         ),
+        // Table 8.2.4-1 lists the Part 1 syntaxes only, but 8.2.4 makes a Part
+        // 1 reversible (irreversible) color transformation YBR_RCT (YBR_ICT)
+        // in any JPEG 2000 syntax, and C.8.12.4.1.5 admits YBR_RCT or RGB for
+        // every reversible one and YBR_ICT or RGB for every irreversible one.
+        uids::JPEG2000MC_LOSSLESS => (&["MONOCHROME2", "YBR_RCT", "RGB"], false, "8.2.4"),
+        uids::JPEG2000MC => (
+            &["MONOCHROME2", "YBR_RCT", "YBR_ICT", "RGB"],
+            false,
+            "8.2.4",
+        ),
         uids::HTJ2K_LOSSLESS | uids::HTJ2K_LOSSLESS_RPCL => (
             &["MONOCHROME2", "YBR_RCT", "RGB"],
             false,
@@ -74,8 +84,7 @@ fn permitted(uid: &str) -> Permitted {
             (&["MONOCHROME2", "YBR_ICT", "YBR_RCT"], false, "A.11")
         }
         // Native, Encapsulated Uncompressed and Deflated Image Frame syntaxes
-        // have no color transformation (PS3.5 8.2, 8.2.16), nor do syntaxes
-        // without a PS3.5 table, such as JPEG 2000 Part 2 multi-component.
+        // have no color transformation (PS3.5 8.2, 8.2.16).
         _ => (MONOCHROME_OR_RGB, false, "8.2"),
     };
     Permitted {

@@ -2,6 +2,7 @@
 // Regenerate with: scripts/generate-iod-tables.py --source-dir <dir> [--fetch]
 // Verify with:     scripts/generate-iod-tables.py --source-dir <dir> --check
 // Source part03.xml SHA-256 3ae695b956ba57c490933a49220b515aeaedb5ece86f05c4bf7e94ee0fbcc6ef
+// Source part04.xml SHA-256 25a5549ff75b37ec9f096d441ec71cff017db72721999a7b5e4eb72334b901a6
 // Source part05.xml SHA-256 05183ea889f097cba51a938bf961a62f308bc6044a12f24d71282f08469de835
 // Source part06.xml SHA-256 fa9f0f8d67eba692dcf95cfeae0a8f4e071beeb7844215a860bc4b9d5dfaad25
 // Source part10.xml SHA-256 4e08e2ef3ad0b57d79cf6903c0076c56b670ef2172afa2f6c42da0792ff645d5

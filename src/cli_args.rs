@@ -121,6 +121,12 @@ pub(crate) enum Command {
         json: bool,
     },
     Validate(ValidateArgs),
+    /// Validates a DICOM JSON document (PS3.18 Annex F), such as a saved
+    /// Retrieve Metadata response, and each of its Data Sets as a file.
+    ValidateJson(ValidateJsonArgs),
+    /// Checks a DICOMweb origin server against PS3.18 for the transactions a
+    /// whole-slide viewer uses, and validates what it returns.
+    Dicomweb(DicomwebArgs),
     Doctor {
         #[arg(long)]
         strict: bool,
@@ -444,6 +450,98 @@ pub(crate) struct ValidateArgs {
     pub(crate) conformance: ConformanceArgs,
     #[arg(long)]
     pub(crate) json: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ValidateJsonArgs {
+    pub(crate) path: PathBuf,
+    /// Rule set: `general` or `core`.
+    #[arg(long, default_value = "general", value_parser = validation_profile)]
+    pub(crate) profile: wsi_dicom::ValidationProfile,
+    #[command(flatten)]
+    pub(crate) conformance: ConformanceArgs,
+    /// The Transfer Syntax UID the Pixel Data is encoded in, if known;
+    /// Metadata names none (PS3.18 10.4.1.1.2).
+    #[arg(long, value_name = "UID")]
+    pub(crate) transfer_syntax: Option<String>,
+    /// Fetch the Values given as BulkDataURI, other than Pixel Data.
+    #[arg(long)]
+    pub(crate) fetch_bulkdata: bool,
+    /// The Metadata request URL relative BulkDataURIs resolve against; a
+    /// bearer token is sent to its origin only.
+    #[arg(long, value_name = "URL", requires = "fetch_bulkdata")]
+    pub(crate) bulkdata_base_url: Option<String>,
+    #[command(flatten)]
+    pub(crate) http: HttpArgs,
+    #[arg(long, default_value_t = 256 * 1024 * 1024)]
+    pub(crate) max_input_bytes: u64,
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DicomwebArgs {
+    /// Base URI of the Studies Service, e.g. https://host/dicomweb.
+    pub(crate) base_url: String,
+    /// Study to target; a slide's Study is searched for when absent.
+    #[arg(long, value_name = "UID")]
+    pub(crate) study: Option<String>,
+    #[arg(long, value_name = "UID", requires = "study")]
+    pub(crate) series: Option<String>,
+    #[arg(long, value_name = "UID", requires = "series")]
+    pub(crate) instance: Option<String>,
+    /// Frame Numbers to retrieve (comma-separated); 1 and 2 by default.
+    #[arg(long, value_delimiter = ',', value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+    pub(crate) frames: Vec<u32>,
+    /// Transactions to leave out (comma-separated).
+    #[arg(long, value_enum, value_delimiter = ',', value_name = "TRANSACTION")]
+    pub(crate) skip: Vec<wsi_dicom::DicomWebTransaction>,
+    /// Store this PS3.10 file with STOW-RS and read it back. This changes
+    /// the server's state: use it only on a server you own.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) allow_store: Option<PathBuf>,
+    /// Requests sent at most.
+    #[arg(long, default_value_t = 64, value_parser = clap::value_parser!(u64).range(1..))]
+    pub(crate) max_requests: u64,
+    #[command(flatten)]
+    pub(crate) http: HttpArgs,
+    /// Rule set the retrieved objects are held to: `general` or `core`.
+    #[arg(long, default_value = "general", value_parser = validation_profile)]
+    pub(crate) profile: wsi_dicom::ValidationProfile,
+    #[command(flatten)]
+    pub(crate) conformance: ConformanceArgs,
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
+/// HTTP settings of DICOMweb requests.
+#[derive(Debug, Clone, Args)]
+pub(crate) struct HttpArgs {
+    /// Name of the environment variable that holds a bearer token; the token
+    /// itself is never taken on the command line.
+    #[arg(long, value_name = "ENV_VAR")]
+    pub(crate) bearer_token_env: Option<String>,
+    /// Timeout of each request, in seconds.
+    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
+    pub(crate) timeout_secs: u64,
+    /// Largest response body read, in MiB.
+    #[arg(long, default_value_t = 64, value_parser = clap::value_parser!(u64).range(1..))]
+    pub(crate) max_response_mib: u64,
+    /// PEM file of the root certificates to trust instead of the Mozilla roots.
+    #[arg(long, value_name = "PEM")]
+    pub(crate) ca_file: Option<PathBuf>,
+}
+
+impl HttpArgs {
+    pub(crate) fn options(&self) -> Result<wsi_dicom::DicomWebHttpOptions, Error> {
+        let mut options = wsi_dicom::DicomWebHttpOptions::default();
+        options.bearer_token_env = self.bearer_token_env.clone();
+        options.timeout_secs = self.timeout_secs;
+        options.max_response_bytes =
+            checked_metadata_mib_to_bytes("max_response_mib", self.max_response_mib)?;
+        options.ca_file = self.ca_file.clone();
+        Ok(options)
+    }
 }
 
 /// `--profile`; the edition-named profiles of earlier releases are pointed at

@@ -3,10 +3,12 @@
 //! process (PS3.5 8.2, A.4 and Annex G).
 //!
 //! Only headers and markers are parsed and nothing is decoded, so a Frame
-//! costs its header (and, for JPEG 2000, one hop per tile-part). RLE is the
-//! exception: its packets are walked, which validates the encoding without
-//! reconstructing the image.
+//! costs its header (and, for JPEG 2000, one hop per tile-part). RLE and
+//! Deflated Image Frames are the exceptions: RLE packets are walked, which
+//! validates the encoding without reconstructing the image, and a Deflate bit
+//! stream is inflated and counted, which no header could describe.
 
+mod deflate;
 mod icc;
 mod j2k;
 mod jpeg;
@@ -32,22 +34,22 @@ use super::{intrinsic_check, ValidationCheck, ValidationStatus};
 const CODESTREAM_RULE: &str = "intrinsic-wsi-dicom-codestream";
 
 /// The codestream check of one object. A Transfer Syntax that encapsulates no
-/// codestream this rule parses (native, deflated, video, JPIP referenced or
-/// private syntaxes) passes with nothing to check; the syntax itself is the
-/// pixel-structure and image-metadata checks' to judge.
+/// codestream this rule parses (native, Deflated Explicit VR, video, JPIP
+/// referenced or private syntaxes) passes with nothing to check; the syntax
+/// itself is the pixel-structure and image-metadata checks' to judge.
 pub(super) fn run_codestream_check(
     path: &Path,
     object: &DefaultDicomObject,
     max_frame_bytes: usize,
 ) -> ValidationCheck {
     let syntax = object.meta().transfer_syntax.trim_end_matches('\0');
-    let Some(codec) = Codec::of(syntax) else {
+    let Some(codec) = Codec::of(syntax).map(|codec| codec.limited_to(max_frame_bytes)) else {
         return intrinsic_check(
             CODESTREAM_RULE,
             rule_path(path),
             ValidationStatus::Passed,
             format!(
-                "Transfer Syntax {syntax} encapsulates no JPEG, JPEG-LS, JPEG 2000, JPEG XL or RLE codestream; nothing to check"
+                "Transfer Syntax {syntax} encapsulates no JPEG, JPEG-LS, JPEG 2000, JPEG XL, RLE or Deflated Image Frame codestream; nothing to check"
             ),
         );
     };
@@ -56,6 +58,44 @@ pub(super) fn run_codestream_check(
         family.push(|| reason);
     }
     family.check(path, CODESTREAM_RULE, &codec.citation())
+}
+
+/// The codestream check of Frames retrieved apart from their Data Set, such
+/// as the parts of a DICOMweb Frames response (PS3.18 10.4.1.1.6), which hold
+/// "only the compressed octet stream without the fragment delimiters" (PS3.18
+/// 8.7.3.3.2). Each `(Frame Number, bytes)` is held to the Image Pixel
+/// attributes of `object` and to `syntax`, the Transfer Syntax its media type
+/// names, a Deflated Image Frame inflated up to `max_frame_bytes`. `None` when
+/// `syntax` encapsulates no codestream this rule parses.
+pub(crate) fn check_retrieved_frames(
+    path: &Path,
+    object: &InMemDicomObject,
+    syntax: &str,
+    frames: &[(usize, &[u8])],
+    max_frame_bytes: usize,
+) -> Option<ValidationCheck> {
+    let codec = Codec::of(syntax)?.limited_to(max_frame_bytes);
+    let mut family = Family::default();
+    let declared = Declared::read(object, syntax);
+    let profiles = matches!(codec, Codec::Jpeg(_)).then(|| icc::FrameProfiles::read(object));
+    for &(number, bytes) in frames {
+        let input = Frame {
+            bytes,
+            fragment_starts: &[],
+            declared: &declared,
+            profile: profiles
+                .as_ref()
+                .and_then(|profiles| profiles.for_frame(number.saturating_sub(1))),
+        };
+        codec.check(
+            &input,
+            &mut FrameReport {
+                family: &mut family,
+                number,
+            },
+        );
+    }
+    Some(family.check(path, CODESTREAM_RULE, &codec.citation()))
 }
 
 fn check_frames(
@@ -133,7 +173,12 @@ enum Codec {
     J2k(j2k::Syntax),
     JpegXl(jpeg_xl::Mode),
     Rle,
+    Deflate { max_frame_bytes: usize },
 }
+
+/// The Frame limit up to which a Deflated Image Frame is inflated, unless a
+/// validation run's options set another: the default `max_pixel_frame_bytes`.
+const DEFAULT_MAX_FRAME_BYTES: usize = 512 * 1024 * 1024;
 
 impl Codec {
     fn of(syntax: &str) -> Option<Self> {
@@ -152,8 +197,19 @@ impl Codec {
             uids::JPEGXLJPEG_RECOMPRESSION => Self::JpegXl(jpeg_xl::Mode::JpegRecompression),
             uids::JPEGXL => Self::JpegXl(jpeg_xl::Mode::Any),
             uids::RLE_LOSSLESS => Self::Rle,
+            uids::DEFLATED_IMAGE_FRAME_COMPRESSION => Self::Deflate {
+                max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
+            },
             _ => Self::J2k(j2k::Syntax::of(syntax)?),
         })
+    }
+
+    /// This codec with the Frame limit of a validation run.
+    fn limited_to(self, max_frame_bytes: usize) -> Self {
+        match self {
+            Self::Deflate { .. } => Self::Deflate { max_frame_bytes },
+            other => other,
+        }
     }
 
     fn citation(self) -> String {
@@ -164,6 +220,7 @@ impl Codec {
             Self::J2k(_) => "8.2.4 and A.4.4",
             Self::JpegXl(_) => "8.2.15 and A.4.12",
             Self::Rle => "8.2.2 and Annex G",
+            Self::Deflate { .. } => "8.2.16 and A.4.13",
         };
         format!("DICOM PS3.5 {EDITION} {sections}")
     }
@@ -175,6 +232,7 @@ impl Codec {
             Self::J2k(syntax) => j2k::check(frame, syntax, report),
             Self::JpegXl(mode) => jpeg_xl::check(frame, mode, report),
             Self::Rle => rle::check(frame, report),
+            Self::Deflate { max_frame_bytes } => deflate::check(frame, max_frame_bytes, report),
         }
     }
 }

@@ -360,11 +360,20 @@ does not follow (`advisories`); none of them are failures. Most absent ones
 need facts a slide file does not hold (clinical trial, physician or procedure
 details). `--required` skips the list.
 
-`wsi-dicom requirements` prints the catalog of the 919 normative statements of
-PS3.3, PS3.5 and PS3.10 in the VL WSI scope, each with its disposition: enforced
-by the generated tables, the intrinsic check that enforces it, the check family
-it awaits, or why an encoded object cannot be held to it (another IOD or
-encoding, application behavior, or a fact the bytes cannot show). `--json`
+The IOD requirements apply to every pathology-slide IOD, chosen by SOP Class
+UID as PS3.4 Table B.5-1 assigns it: VL Whole Slide Microscopy Image, VL
+Microscopic Image, VL Slide-Coordinates Microscopic Image, Confocal Microscopy
+Image, Confocal Microscopy Tiled Pyramidal Image, Microscopy Bulk Simple
+Annotations, Segmentation (including Label Map Segmentation) and Parametric
+Map. An object of another SOP Class is reported as one to which no IOD rules
+apply.
+
+`wsi-dicom requirements` prints the catalog of the normative statements of
+PS3.3, PS3.5 and PS3.10 for those IODs, with the IODs each applies to and its
+disposition for each: enforced by the generated tables, the intrinsic check
+that enforces it, the check family it awaits, or why an encoded object cannot
+be held to it (another IOD or encoding, application behavior, or a fact the
+bytes cannot show). `--json`
 emits the `wsi-dicom-requirements-v1` schema;
 `wsi_dicom::requirement_catalog()` returns the same entries.
 `scripts/generate-iod-tables.py --check` verifies the generated tables,
@@ -374,6 +383,29 @@ values or infer unknowable compression history predating the object. Missing
 external tools are reported as skipped unless `--strict` is set. Directory
 validation is bounded by file count, depth, timeout, and child
 output capture limits; symlink traversal is refused.
+
+`wsi-dicom validate-json metadata.json` holds a DICOM JSON document (PS3.18
+Annex F), such as a saved Retrieve Metadata response, to the JSON Model and
+each Data Set to the same checks as a file; checks that need Pixel Data, the
+PS3.5 encoding or the File Meta Information report that they cannot run, a
+check that depends on the Transfer Syntax the Metadata does not name runs with
+each one of PS3.18 Table 8.7.3-2 and is undecidable when they disagree
+(`--transfer-syntax` names it), and `--fetch-bulkdata` retrieves BulkDataURI
+Values. `wsi-dicom dicomweb https://host/dicomweb [--study UID]` checks a
+DICOMweb origin server for the transactions a slide viewer uses: Retrieve
+Capabilities, Study, Series and Instance Search with matching, includefield
+and paging, Series and Instance Metadata (JSON and XML), Frames in their own
+and in uncompressed media types, Bulk Data, Rendered Frames, Thumbnails and
+Instance retrieval; each check cites PS3.18, missing optional capabilities are
+`unsupported`, and the Metadata, Frames and Instance retrieved are validated as
+files are. Store runs only with `--allow-store <FILE>`. Requests have
+per-request timeouts, response-size limits and a request budget, follow
+redirects only to the same origin, and send the bearer token held by the
+environment variable `--bearer-token-env` names to the base URL's origin only.
+`dicomweb` and `--fetch-bulkdata` need the network stack of the `dicomweb`
+feature (`cargo install wsi-dicom --features dicomweb`), which the release
+archives include; without it they report that the build has no DICOMweb
+transport.
 
 ## Rust API
 

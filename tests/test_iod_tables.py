@@ -12,7 +12,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GENERATOR = REPO_ROOT / "scripts" / "generate-iod-tables.py"
 OUTPUT_DIR = REPO_ROOT / "src" / "validation" / "iod"
-# Directory holding the pinned DocBook part03.xml, part06.xml and part10.xml.
+# Directory holding the pinned DocBook sources the generator's SOURCES names.
 SOURCE_DIR_VARIABLE = "WSI_DICOM_DOCBOOK_DIR"
 
 
@@ -70,6 +70,53 @@ class IodTableTests(unittest.TestCase):
             result = run_generator("--source-dir", str(sources), "--output-dir", str(output), "--check")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("stale generated tables", result.stderr)
+
+    def test_storage_sop_classes_name_each_pathology_slide_iod(self):
+        sources = source_dir()
+        if sources is None:
+            self.skipTest(f"set {SOURCE_DIR_VARIABLE} to the pinned DocBook sources")
+        generator = load_generator()
+        part04 = generator.verified_sources(sources, False)["part04.xml"]
+        storage = generator.parse_storage_sop_classes(generator.Document(part04))
+        for section, _, _ in generator.IODS:
+            self.assertIn(section, storage)
+        self.assertEqual(
+            [(uid, specialization) for uid, _, specialization in storage["sect_A.51"]],
+            [
+                ("1.2.840.10008.5.1.4.1.1.66.4", "sect_B.5.1.25"),
+                ("1.2.840.10008.5.1.4.1.1.66.7", "sect_B.5.1.25"),
+            ],
+        )
+        self.assertEqual(
+            [uid for uid, _, _ in storage["sect_A.32.8"]], ["1.2.840.10008.5.1.4.1.1.77.1.6"]
+        )
+        # Height Map Segmentation (A.91) locates layer surfaces in a 3D volume
+        # positioned in the patient; it is not a pathology-slide IOD.
+        self.assertIn("1.2.840.10008.5.1.4.1.1.66.8", [uid for uid, _, _ in storage["sect_A.91"]])
+        self.assertNotIn("sect_A.91", [section for section, _, _ in generator.IODS])
+
+    def test_sop_class_specializations_read_one_or_more_enumerated_values(self):
+        pattern = load_generator().SOP_CLASS_SPECIALIZATION
+        single = pattern.match(
+            "The Label Map Segmentation Storage SOP Class shall use the PS3.3 Section A.51 with an"
+            " Enumerated Value of LABELMAP for Segmentation Type (0062,0001)."
+        )
+        self.assertIsNotNone(single)
+        self.assertEqual(
+            (single["iod"], single["values"], single["group"], single["element"]),
+            ("A.51", "LABELMAP", "0062", "0001"),
+        )
+        several = pattern.match(
+            "The Segmentation Storage SOP Class shall use the PS3.3 Section A.51 with an"
+            " Enumerated Value of BINARY or FRACTIONAL for Segmentation Type (0062,0001)."
+        )
+        self.assertEqual(several["values"].split(" or "), ["BINARY", "FRACTIONAL"])
+        self.assertIsNone(
+            pattern.match(
+                "The Segmentation Storage SOP Class shall use the PS3.3 Section A.51 with an"
+                " Enumerated Value of BINARY for Segmentation Type (0062,0001) when encoded."
+            )
+        )
 
     def test_unpinned_sources_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

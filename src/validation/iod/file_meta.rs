@@ -112,8 +112,9 @@ pub(in crate::validation) fn data_set_start(path: &Path) -> Result<(u64, String)
 }
 
 /// Checks the encoded group 0002 of `path` on its own: framing, Table 7.1-1
-/// presence, VR, VM and value format, and the version. Returns the group as
-/// a data set, or `None` (after recording why) when it cannot be read.
+/// presence, VR, VM and value format, and the version. Returns the group's
+/// Table 7.1-1 elements as a data set, or `None` (after recording why) when
+/// it cannot be read.
 fn check_encoded_group(path: &Path, family: &mut Family) -> Option<InMemDicomObject> {
     let group = match read_group(path, family) {
         Ok(group) => group,
@@ -123,7 +124,24 @@ fn check_encoded_group(path: &Path, family: &mut Family) -> Option<InMemDicomObj
         }
     };
     let elements = &group.elements;
-    let meta = meta_object(elements);
+    for element in elements.iter().filter(|element| element.vr == VR::UN) {
+        family.push(|| {
+            format!(
+                "{}: VR UN, which shall not be used for File Meta Information Data Elements (PS3.5 {} 6.2.2, {CITATION})",
+                tag_text(raw_tag(element.tag)),
+                super::tables::EDITION
+            )
+        });
+    }
+    let mut definitions = Vec::new();
+    flatten(FILE_META.nodes, FILE_META, &mut definitions);
+    let definitions = by_tag(&definitions);
+    // "any Tag (0002,xxxx) not defined in Table 7.1-1 shall be ignored" (PS3.10 7.1).
+    let meta = meta_object(
+        elements
+            .iter()
+            .filter(|element| definitions.contains_key(&raw_tag(element.tag))),
+    );
     let transfer_syntax = string_value(&meta, tags::TRANSFER_SYNTAX_UID, 1).unwrap_or_default();
     // A Deflated Data Set is compressed, so the bytes after group 0002 are not a tag.
     if group.next_group == Some(0x0002)
@@ -142,12 +160,10 @@ fn check_encoded_group(path: &Path, family: &mut Family) -> Option<InMemDicomObj
     }
     let scope = Scope::top(&meta, &transfer_syntax);
     let mut table_findings = Findings::default();
-    let mut definitions = Vec::new();
-    flatten(FILE_META.nodes, FILE_META, &mut definitions);
     Walk {
         findings: &mut table_findings,
     }
-    .data_set(&scope, "", &by_tag(&definitions), Presence::Evaluate, 0);
+    .data_set(&scope, "", &definitions, Presence::Evaluate, 0);
     ValueChecks {
         vr_vm: &mut table_findings.vr_vm,
         format: &mut table_findings.value_format,
@@ -368,8 +384,8 @@ fn u16_at(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
 }
 
-/// The group as an in-memory Data Set, so the generic checks apply to it.
-fn meta_object(elements: &[RawElement]) -> InMemDicomObject {
+/// The elements as an in-memory Data Set, so the generic checks apply to them.
+fn meta_object<'a>(elements: impl Iterator<Item = &'a RawElement>) -> InMemDicomObject {
     let mut object = InMemDicomObject::new_empty();
     for element in elements {
         let value = match element.vr {

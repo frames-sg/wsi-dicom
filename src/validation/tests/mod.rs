@@ -75,6 +75,7 @@ impl ValidationCommandRunner for FakeRunner {
 }
 
 mod codestream;
+mod configurations;
 mod conformance;
 mod digital_signatures;
 mod doctor;

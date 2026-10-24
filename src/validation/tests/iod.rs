@@ -537,6 +537,41 @@ fn remove_file_meta_elements(path: &Path, elements: &[u16]) {
     });
 }
 
+/// Adds (0002,0200), which Table 7.1-1 does not define, as `vr` with Value
+/// "FUTURE", in ascending tag order.
+fn add_undefined_file_meta_tag(path: &Path, vr: [u8; 2]) {
+    rewrite_file_meta(path, |encoded| {
+        let mut element = vec![0x02, 0x00, 0x00, 0x02, vr[0], vr[1]];
+        if vr == *b"UN" {
+            element.extend_from_slice(&[0, 0, 6, 0, 0, 0]);
+        } else {
+            element.extend_from_slice(&[6, 0]);
+        }
+        element.extend_from_slice(b"FUTURE");
+        let at = encoded
+            .iter()
+            .position(|(number, _)| *number > 0x0200)
+            .unwrap_or(encoded.len());
+        encoded.insert(at, (0x0200, element));
+    });
+}
+
+#[test]
+fn file_meta_ignores_tags_table_7_1_1_does_not_define_unless_encoded_as_un() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = export_valid_color_wsi_for_validation(tmp.path(), "future-meta-tag");
+    add_undefined_file_meta_tag(&path, *b"LO");
+    assert_iod_passes(&path, "intrinsic-wsi-dicom-file-meta");
+
+    let path = export_valid_color_wsi_for_validation(tmp.path(), "future-meta-tag-un");
+    add_undefined_file_meta_tag(&path, *b"UN");
+    assert_iod_failure(
+        &path,
+        "intrinsic-wsi-dicom-file-meta",
+        "(0002,0200): VR UN, which shall not be used for File Meta Information Data Elements",
+    );
+}
+
 #[test]
 fn presentation_addresses_follow_their_transport() {
     let tmp = tempfile::tempdir().unwrap();
@@ -690,9 +725,10 @@ fn references_to_other_instances_must_be_listed_in_the_common_instance_reference
     );
 }
 
-/// Statements decidable from the encoded objects that no check enforces yet.
-/// It only falls; a release has none.
-const UNCHECKED_LIMIT: usize = 0;
+/// Statement and IOD pairs decidable from the encoded objects that no check
+/// enforces yet: the semantic checks the IODs beside VL WSI await. It only
+/// falls, and it must return to 0 before the bench is rebuilt.
+const UNCHECKED_LIMIT: usize = 1784;
 
 #[test]
 fn requirement_catalog_names_only_emitted_rules_and_unchecked_statements_only_fall() {
@@ -729,22 +765,37 @@ fn requirement_catalog_names_only_emitted_rules_and_unchecked_statements_only_fa
             seen.insert((entry.part, entry.section, entry.keyword, entry.text)),
             "duplicate statement {entry:?}"
         );
-        match entry.disposition {
-            RequirementDisposition::Checked(rule) => {
-                assert!(emitted.contains(rule), "{rule} is not emitted: {entry:?}");
+        assert!(!entry.iods.is_empty(), "{entry:?} applies to no IOD");
+        assert!(
+            entry
+                .iod_dispositions
+                .keys()
+                .all(|iod| entry.iods.contains(iod) && *iod != "A.32.8"),
+            "{entry:?} has a disposition for an IOD it does not apply to, or for VL WSI"
+        );
+        for iod in &entry.iods {
+            let disposition = entry
+                .iod_dispositions
+                .get(iod)
+                .copied()
+                .unwrap_or(entry.disposition);
+            match disposition {
+                RequirementDisposition::Checked(rule) => {
+                    assert!(emitted.contains(rule), "{rule} is not emitted: {entry:?}");
+                }
+                RequirementDisposition::Unchecked(_) => unchecked += 1,
+                RequirementDisposition::OutsideScope(reason)
+                | RequirementDisposition::Behavior(reason)
+                | RequirementDisposition::Undecidable(reason) => {
+                    assert!(!reason.is_empty(), "{entry:?}");
+                }
+                RequirementDisposition::Tables => {}
             }
-            RequirementDisposition::Unchecked(_) => unchecked += 1,
-            RequirementDisposition::OutsideScope(reason)
-            | RequirementDisposition::Behavior(reason)
-            | RequirementDisposition::Undecidable(reason) => {
-                assert!(!reason.is_empty(), "{entry:?}");
-            }
-            RequirementDisposition::Tables => {}
         }
     }
     match unchecked.cmp(&UNCHECKED_LIMIT) {
         std::cmp::Ordering::Greater => {
-            panic!("{unchecked} unchecked statements exceed the limit of {UNCHECKED_LIMIT}")
+            panic!("{unchecked} unchecked statement and IOD pairs exceed the limit of {UNCHECKED_LIMIT}")
         }
         std::cmp::Ordering::Less => panic!("lower UNCHECKED_LIMIT to {unchecked}"),
         std::cmp::Ordering::Equal => {}
@@ -1037,3 +1088,5 @@ fn baseline_templates_only_advise() {
         "TID 8001 \"Specimen Preparation\" Row 3 CODE (111701, DCM, \"Processing type\") missing",
     );
 }
+
+mod pathology;

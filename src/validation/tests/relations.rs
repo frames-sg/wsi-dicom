@@ -539,6 +539,30 @@ fn source_instances_are_not_images() {
     );
 }
 
+/// Table C.7-11c: an Icon Image's Color Space names the well-known space its
+/// ICC Profile defines; the top level has neither beside the Optical Path
+/// Sequence.
+#[test]
+fn icon_image_color_space_names_the_space_of_its_icc_profile() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = edited_wsi(tmp.path(), "icon-color-space", |object| {
+        let profile = crate::icc::synthetic_srgb_icc_profile().unwrap();
+        object.put(sq(
+            tags::ICON_IMAGE_SEQUENCE,
+            vec![item(vec![
+                DataElement::new(tags::ICC_PROFILE, VR::OB, PrimitiveValue::from(profile)),
+                text(tags::COLOR_SPACE, VR::CS, "ADOBERGB"),
+            ])],
+        ));
+    });
+    let (status, message) = rule_result(&path, RELATIONS);
+    assert_eq!(status, ValidationStatus::Failed, "{message}");
+    assert!(
+        message.contains("IconImageSequence (0088,0200)[1] > Color Space (0028,2002) is ADOBERGB"),
+        "{message}"
+    );
+}
+
 /// A directory with an export and a copy that is another SOP Instance, with
 /// `edit` applied to the copy and `original` to the export.
 fn pair(root: &Path, name: &str, original: Edit, edit: Edit) -> PathBuf {
@@ -583,7 +607,7 @@ fn group(patient: &str, positions: [u16; 3]) -> InMemElement {
 
 #[test]
 fn set_relations_fail_their_violations() {
-    let cases: [(&str, Edit, Edit, &str); 2] = [
+    let cases: [(&str, Edit, Edit, &str); 4] = [
         (
             "frame-extraction",
             // The parent, itself extracted from an Instance outside the set.
@@ -610,6 +634,36 @@ fn set_relations_fail_their_violations() {
                 object.put(group("M1", [2, 1, 1]));
             },
             "names a group arranged differently",
+        ),
+        (
+            "group-shared",
+            // Organism M1 imaged in a group the export describes as male...
+            |object| {
+                object.put(group("M1", [1, 1, 1]));
+                object.put(text(tags::PATIENT_SEX, VR::CS, "M"));
+            },
+            // ...and imaged alone as female.
+            |object| {
+                object.put(text(tags::PATIENT_ID, VR::LO, "M1"));
+                object.put(text(tags::PATIENT_SEX, VR::CS, "F"));
+            },
+            "with Patient's Sex (0010,0040) \"M\", but member M1 is \"F\"",
+        ),
+        (
+            "lossy-version",
+            // Two files of one SOP Instance, the later reset to 00.
+            |object| {
+                object.put(text(tags::SOP_INSTANCE_UID, VR::UI, PARENT));
+                object.meta_mut().media_storage_sop_instance_uid = PARENT.to_string();
+                object.put(text(tags::LOSSY_IMAGE_COMPRESSION, VR::CS, "01"));
+                object.put(text(tags::LOSSY_IMAGE_COMPRESSION_RATIO, VR::DS, "10"));
+                object.put(text(tags::LOSSY_IMAGE_COMPRESSION_METHOD, VR::CS, "ISO_10918_1"));
+            },
+            |object| {
+                object.put(text(tags::SOP_INSTANCE_UID, VR::UI, PARENT));
+                object.meta_mut().media_storage_sop_instance_uid = PARENT.to_string();
+            },
+            "has Lossy Image Compression (0028,2110) 01 in",
         ),
     ];
     let tmp = tempfile::tempdir().unwrap();
