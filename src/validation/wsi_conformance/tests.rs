@@ -196,6 +196,28 @@ fn jpip_referenced_syntaxes_admit_monochrome_ict_and_rct() {
 }
 
 #[test]
+fn monochrome_mpeg2_metadata_is_permitted_for_wsi() {
+    for syntax in [uids::MPEG2MPML, uids::MPEG2MPMLF] {
+        validate_image_metadata_rule(&image(syntax, "MONOCHROME2", 8), VL_WSI).unwrap();
+    }
+    for syntax in [uids::MPEG2MPHL, uids::MPEG2MPHLF] {
+        let mut attributes = pixels(1, "MONOCHROME2", 8);
+        attributes.extend([unsigned(tags::ROWS, 720), unsigned(tags::COLUMNS, 1280)]);
+        validate_image_metadata_rule(&object(syntax, attributes), VL_WSI).unwrap();
+    }
+    let mut attributes = pixels(1, "MONOCHROME2", 8);
+    attributes.extend([
+        unsigned(tags::ROWS, 1080),
+        unsigned(tags::COLUMNS, 1920),
+        text(tags::CINE_RATE, VR::IS, "30"),
+    ]);
+    let mut full_hd = object(uids::MPEG2MPHL, attributes);
+    validate_image_metadata_rule(&full_hd, VL_WSI).unwrap();
+    full_hd.put(text(tags::CINE_RATE, VR::IS, "60"));
+    metadata_error(&full_hd, "1080 Rows permit only 25 or 30 frames per second");
+}
+
+#[test]
 fn motion_syntaxes_are_rejected_with_their_attribute_departures() {
     for syntax in [
         uids::MPEG2MPML,
@@ -223,7 +245,7 @@ fn motion_syntaxes_are_rejected_with_their_attribute_departures() {
             "{error}"
         );
     }
-    // Even a stream matching its PS3.5 attributes is not a VL WSI encoding.
+    // The multi-component MPEG2 format requires YBR_PARTIAL_420, which WSI excludes.
     let mut conformant = pixels(3, "YBR_PARTIAL_420", 8);
     conformant.extend([unsigned(tags::ROWS, 1080), unsigned(tags::COLUMNS, 1920)]);
     let error =
@@ -235,7 +257,7 @@ fn motion_syntaxes_are_rejected_with_their_attribute_departures() {
 
     metadata_error(
         &image(uids::MPEG2MPML, "MONOCHROME2", 16),
-        "the image also departs from PS3.5 2026d 8.2.5: Bits Allocated 16 (shall be 8), Bits Stored 16 (shall be 8), High Bit 15 (shall be 7)",
+        "Bits Allocated 16 (shall be 8)",
     );
     metadata_error(
         &image(uids::HEVCM10P51, "YBR_PARTIAL_420", 16),

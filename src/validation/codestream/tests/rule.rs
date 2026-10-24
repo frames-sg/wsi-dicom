@@ -30,7 +30,7 @@ fn sequence(tag: Tag, items: Vec<InMemDicomObject>) -> InMemElement {
 }
 
 /// A VL WSI Data Set whose Pixel Data holds `frames`, one Fragment each.
-fn image(
+pub(super) fn image(
     (rows, columns): (u16, u16),
     samples: u16,
     photometric: &str,

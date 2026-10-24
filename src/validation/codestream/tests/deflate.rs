@@ -48,7 +48,7 @@ fn check_limited(
     Codec::Deflate { max_frame_bytes }.check(
         &Frame {
             bytes,
-            fragment_starts: &[],
+            fragment_starts: Some(&[]),
             declared,
             profile: None,
         },

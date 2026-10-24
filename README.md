@@ -56,7 +56,7 @@ wsi-dicom = { version = "0.8.0", features = ["cuda"] } # CUDA-capable Linux
 ```
 
 This source tree requires Rust 1.99.0 and targets J2K 0.12.0, `wsi-rs` 0.8.0,
-and `wsi-dicom-annotations` 0.2.0. Release builds resolve these dependencies
+and `wsi-dicom-annotations` 0.2.1. Release builds resolve these dependencies
 from crates.io:
 
 ```sh
@@ -378,6 +378,13 @@ be held to it (another IOD or encoding, application behavior, or a fact the
 bytes cannot show). `--json`
 emits the `wsi-dicom-requirements-v1` schema;
 `wsi_dicom::requirement_catalog()` returns the same entries.
+Single-component MPEG2 can represent a monochrome WSI or Segmentation.
+Its declared pixel attributes and encapsulation are checked, but MPEG2 stream
+headers, container contents and audio restrictions are not yet validated.
+The catalog marks those five requirements as unchecked. Byte-order validation
+of network JPIP Data Sets also remains unchecked: JPIP cannot be stored in a
+Part 10 file, and JSON metadata carries no Data Set byte encoding. The
+completeness gate remains blocked until these requirements are implemented.
 `scripts/generate-iod-tables.py --check` verifies the generated tables,
 dictionary, requirement catalog and value sets against the pinned DocBook
 sources. These checks do not decode pixel
@@ -401,7 +408,10 @@ PS3.5 encoding or the File Meta Information report that they cannot run, a
 check that depends on the Transfer Syntax the Metadata does not name runs with
 each one of PS3.18 Table 8.7.3-2 and is undecidable when they disagree
 (`--transfer-syntax` names it), and `--fetch-bulkdata` retrieves BulkDataURI
-Values. `wsi-dicom dicomweb https://host/dicomweb [--study UID]` checks a
+Values. With a JPIP Referenced Transfer Syntax, the Provider URL and exclusion
+of inline Pixel Data are checked directly from the metadata.
+
+`wsi-dicom dicomweb https://host/dicomweb [--study UID]` checks a
 DICOMweb origin server for the transactions a slide viewer uses: Retrieve
 Capabilities, Study, Series and Instance Search with matching, includefield
 and paging, Series and Instance Metadata (JSON and XML), Frames in their own

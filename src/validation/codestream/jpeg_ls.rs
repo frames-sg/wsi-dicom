@@ -93,7 +93,8 @@ pub(super) fn check(frame: &Frame<'_>, near_lossless: bool, report: &mut FrameRe
             "does not end with EOI (FFD9H), so the Frame is not one complete, separately encoded JPEG-LS stream".into()
         });
     }
-    if let Some(fragment) = second_stream_fragment(bytes, frame.fragment_starts) {
+    if let Some(fragment) = second_stream_fragment(bytes, frame.fragment_starts.unwrap_or_default())
+    {
         report.violation(INTERCHANGE, || {
             format!("its Fragment {fragment} begins another JPEG-LS stream after the previous Fragment ended one, so its Fragments hold data of more than one Frame")
         });

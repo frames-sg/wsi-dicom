@@ -96,7 +96,7 @@ pub(super) fn reworded(requirement: Requirement, iod: &str) -> Option<Requiremen
         ),
         // The frame packing a 2D AVC bit stream may not use (PS3.5 10.11).
         Ps5_10_11_194813 if iod == SEGMENTATION || iod == PARAMETRIC_MAP => OutsideScope(
-            "video bit streams are not validated: a pathology Segmentation or Parametric Map is not video; the syntax itself is reported as an advisory",
+            "Binds AVC/H.264 encodings, which require three YBR_PARTIAL_420 samples; Tables C.8.20-2 and C.8.32-2 require one sample per pixel, so neither image IOD uses these encodings",
         ),
         _ => return None,
     };

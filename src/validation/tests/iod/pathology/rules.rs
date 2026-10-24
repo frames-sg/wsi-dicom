@@ -455,7 +455,7 @@ fn a_segmentation_or_parametric_map_in_a_video_syntax_is_an_advisory() {
         assert_eq!(check.status, status, "{name}: {}", check.message);
         assert!(
             check.message.contains("advisory: Transfer Syntax")
-                && check.message.contains("which is not validated: a pathology Segmentation or Parametric Map is not video")
+                && check.message.contains("the compressed video stream is not validated")
                 && check.message.contains(&advice),
             "{name}: {}",
             check.message

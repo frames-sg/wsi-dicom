@@ -9,7 +9,7 @@ use super::lossy_encoding::{lossiness, Lossiness};
 use super::nested::Nested;
 use super::pixel_syntax::{
     is_motion_syntax, is_native, motion_departures, planar_configuration_section,
-    reject_motion_syntax, standard_photometric, validate_photometric_for_syntax, NOT_NATIVE,
+    standard_photometric, validate_motion_syntax, validate_photometric_for_syntax, NOT_NATIVE,
 };
 use super::VL_WSI;
 use crate::icc::validate_dicom_icc_profile;
@@ -433,19 +433,18 @@ fn lossy_history(
     Ok(())
 }
 
-/// The image's sample format and its Transfer Syntax: PS3.5 8.1.1 and 8.2
-/// with the PS3.3 C.7.6.3.1.2 Photometric Interpretation rules in every image
-/// IOD, held to the stricter VL WSI Values (C.8.12.4.1.5 and Table
-/// C.8.12.4-1) in VL WSI.
-/// The advisory for a Segmentation or Parametric Map whose Pixel Data a video
-/// Transfer Syntax encodes: its bit stream is not validated, and every video
-/// syntax is lossy, which PS3.3 advises against for both IODs.
+/// The advisory for an image in a video Transfer Syntax: its compressed
+/// stream is not validated. PS3.3 also advises against lossy compression
+/// of Segmentations and Parametric Maps.
 pub(super) fn video_syntax_advisory(object: &DefaultDicomObject, iod: &str) -> Option<String> {
     let syntax = object.meta().transfer_syntax.trim_end_matches(['\0', ' ']);
     if !is_motion_syntax(syntax) {
         return None;
     }
     let advice = match iod {
+        VL_WSI => format!(
+            "PS3.3 {EDITION} C.8.12.4.1.5 permits the MONOCHROME2 pixel format of single-component MPEG2"
+        ),
         "A.51" => format!(
             "it is not advisable to lossy compress a Segmentation Instance, and in particular BINARY or LABELMAP Segmentation Instances should not be lossy compressed (PS3.3 {EDITION} C.8.20.2.2)"
         ),
@@ -455,10 +454,12 @@ pub(super) fn video_syntax_advisory(object: &DefaultDicomObject, iod: &str) -> O
         _ => return None,
     };
     Some(format!(
-        "Transfer Syntax {syntax} encodes the Pixel Data as a lossy video bit stream, which is not validated: a pathology Segmentation or Parametric Map is not video; {advice}"
+        "Transfer Syntax {syntax} encodes the Pixel Data as a lossy video bit stream; the compressed video stream is not validated; {advice}"
     ))
 }
 
+/// The image's sample format and Transfer Syntax (PS3.5 8.1.1 and 8.2),
+/// held to the stricter VL WSI values where that IOD applies.
 pub(super) fn validate_image_metadata_rule(
     object: &DefaultDicomObject,
     iod: &str,
@@ -469,7 +470,7 @@ pub(super) fn validate_image_metadata_rule(
         general_image_metadata(object, syntax, &mut violations);
         return super::violation_result(violations);
     }
-    reject_motion_syntax(object, syntax)?;
+    validate_motion_syntax(object, syntax)?;
     let samples = required_positive_u64(object, tags::SAMPLES_PER_PIXEL, "Samples per Pixel")?;
     let photometric = required_string(
         object,

@@ -45,7 +45,7 @@ const NO_PIXELS_TO_CLEAN: RequirementDisposition = OutsideScope(
 );
 /// The check family of the recommendations ("should") no check holds yet.
 const RECOMMENDATIONS: &str = "recommendations";
-/// The image IODs whose Pixel Data a motion Transfer Syntax may encode.
+/// The other image IODs whose pixel restrictions constrain motion encodings.
 const IMAGE_IODS: [&str; 2] = ["A.51", "A.75"];
 /// The IODs with Plane Orientation (Patient) Functional Groups.
 const PATIENT_PLANE_IODS: [&str; 2] = ["A.51", "A.75"];
@@ -128,10 +128,6 @@ impl Requirement {
             | Ps3_C_18_4_1_IconImageSequence_9594fc
             | Ps3_C_18_6_1_GraphicData_fb751a
             | Ps3_C_18_7_1_ReferencedSamplePositions_581602
-            | Ps3_C_18_10_1_TabulatedValuesSequence_1093d3
-            | Ps3_C_18_10_1_TableRowDefinitionSequence_da170e
-            | Ps3_C_18_10_1_TableColumnDefinitionSequence_7fba82
-            | Ps3_C_18_10_1_CellValuesSequence_9090da
                 if iod == FILE_SET =>
             {
                 Checked("intrinsic-wsi-dicom-file-set")
@@ -181,7 +177,13 @@ impl Requirement {
                 Behavior("Binds how a conversion matches Private Attribute Values")
             }
             Ps3_C_7_6_3_1_5_1d78b7 if iod == "A.51" => family_rule(iod).map_or(Unchecked(family), Checked),
-            Ps5_8_2_0fadc3 | Ps5_8_2_18602a | Ps5_8_2_4bcda5 if iod == "A.75" => family_rule(iod).map_or(Unchecked(family), Checked),
+            // An encapsulated Float or Double Float Pixel Data Value is an
+            // invalid file encoding before the Parametric Map family can
+            // inspect its pixels.
+            Ps5_8_2_0fadc3 if iod == "A.75" => Checked("intrinsic-wsi-dicom-encoding"),
+            Ps5_8_2_18602a | Ps5_8_2_4bcda5 if iod == "A.75" => {
+                family_rule(iod).map_or(Unchecked(family), Checked)
+            }
             // Table C.8.32-2 takes Image Type Values 3 and 4 from C.8.16.1.3 and C.8.16.1.4.
             Ps3_C_8_16_1_3_66c2ea | Ps3_C_8_16_1_4_0067a1 | Ps3_C_8_16_1_4_e1a716
                 if iod == "A.75" =>
@@ -191,7 +193,19 @@ impl Requirement {
             Ps3_C_8_16_1_4_2f3775 if iod == "A.75" => Undecidable(
                 "Whether a pixel contrast was derived, and how, is not encoded apart from Value 4 itself",
             ),
-            _ if is_motion(self) && IMAGE_IODS.contains(&iod) => motion(self),
+            _ if is_motion(self) && IMAGE_IODS.contains(&iod) => motion(self, iod),
+            _ if is_motion(self) && iod == FILE_SET => OutsideScope(
+                "A DICOMDIR has no top-level Pixel Data; its Icon Image Sequence uses native Pixel Data and no motion encoding (PS3.3 F.7)",
+            ),
+            Ps5_A_6_871dd9 | Ps5_A_11_a86261 => OutsideScope(
+                "Binds Overlay Data; no Module of the supported pathology IOD or a DICOMDIR Icon Image carries Overlay Data",
+            ),
+            Ps5_A_6_e0a5fd | Ps5_A_11_ce7500 if IMAGE_IODS.contains(&iod) => {
+                Unchecked("jpip-dataset-encoding")
+            }
+            Ps5_A_6_e0a5fd | Ps5_A_11_ce7500 => OutsideScope(
+                "JPIP Referenced encodings require top-level integer Pixel Data (PS3.5 A.6 and A.11); this IOD has none, and DICOMDIR Icon Images use native Pixel Data",
+            ),
             // A Bulk Annotations object has no Pixel Data whose stream the
             // codestream check compares with the syntax; parsing the Data Set
             // in the syntax the File Meta Information names holds it.
@@ -259,71 +273,43 @@ impl Requirement {
     }
 }
 
-/// A motion syntax statement of PS3.5 in an image IOD other than VL WSI.
-/// The attribute values each syntax fixes (Tables 8.2.5-1 to 8.2.11-1),
-/// which the statements requiring the Data Elements of the Pixel Data
-/// encoding to match the stream state, intrinsic-wsi-dicom-image-metadata
-/// checks; the rest binds the video bit stream itself, which is not
-/// validated, and that check reports the syntax as an advisory instead.
-fn motion(requirement: Requirement) -> RequirementDisposition {
-    match requirement {
-        Ps5_8_2_5_5c5c79
-        | Ps5_8_2_6_405812
-        | Ps5_8_2_7_7886b4
-        | Ps5_8_2_8_d6c85e
-        | Ps5_8_2_10_c1679c
-        | Ps5_8_2_11_455596 => Checked("intrinsic-wsi-dicom-image-metadata"),
-        _ => OutsideScope(
-            "video bit streams are not validated: a pathology Segmentation or Parametric Map is not video; the syntax itself is reported as an advisory",
-        ),
+/// Motion encoding restrictions follow the intersection of the Transfer
+/// Syntax and IOD tables. Single-component MPEG2 fits 8-bit Segmentation;
+/// no video syntax fits the Parametric Map's 16-bit MONOCHROME2 samples.
+fn motion(requirement: Requirement, iod: &str) -> RequirementDisposition {
+    let section = requirement.statement().section;
+    if iod == "A.75" {
+        return OutsideScope("Table C.8.32-2 requires one MONOCHROME2 sample with 16 stored bits (or native floating-point pixels); MPEG2 requires 8 bits, while AVC/H.264 and HEVC/H.265 require three YBR_PARTIAL_420 samples, so no Parametric Map uses a motion encoding");
     }
+    if matches!(section, "8.2.5" | "8.2.6" | "A.4.5") {
+        return match requirement {
+            Ps5_8_2_5_0943da => OutsideScope("Table C.8.20-2 requires one sample per pixel; Table 8.2.5-1 requires Planar Configuration to be absent for single-component MPEG2, so the value-0 rule for multi-component data does not apply"),
+            other => other.disposition(),
+        };
+    }
+    OutsideScope("Table C.8.20-2 requires one sample and MONOCHROME2 or PALETTE COLOR; AVC/H.264 and HEVC/H.265 require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11), so no Segmentation uses these encodings")
 }
 
-/// The motion Transfer Syntax statements of PS3.5 8.2.5 to 8.2.12 and A.4.5
-/// to A.4.10, outside the VL WSI scope (C.8.12.4.1.5).
 fn is_motion(requirement: Requirement) -> bool {
-    matches!(
-        requirement,
-        Ps5_8_2_5_5c5c79
-            | Ps5_8_2_5_c5b5a7
-            | Ps5_8_2_5_6cde8d
-            | Ps5_8_2_6_405812
-            | Ps5_8_2_6_4d8fa8
-            | Ps5_8_2_6_571188
-            | Ps5_8_2_7_7886b4
-            | Ps5_8_2_7_7773fd
-            | Ps5_8_2_7_ce01ab
-            | Ps5_8_2_7_3618e9
-            | Ps5_8_2_7_d08204
-            | Ps5_8_2_8_d6c85e
-            | Ps5_8_2_8_9d4541
-            | Ps5_8_2_8_68acb5
-            | Ps5_8_2_8_7fe9c4
-            | Ps5_8_2_8_34a4e3
-            | Ps5_8_2_9_c7bb6c
-            | Ps5_8_2_9_b1098e
-            | Ps5_8_2_9_a52046
-            | Ps5_8_2_10_c1679c
-            | Ps5_8_2_10_7e5161
-            | Ps5_8_2_10_17fcd6
-            | Ps5_8_2_10_64b5e7
-            | Ps5_8_2_10_af1171
-            | Ps5_8_2_11_455596
-            | Ps5_8_2_11_84bfbd
-            | Ps5_8_2_11_a9912e
-            | Ps5_8_2_11_ce01f7
-            | Ps5_8_2_11_7456b1
-            | Ps5_8_2_12_b38f9a
-            | Ps5_A_4_5_54be61
-            | Ps5_A_4_6_eaaff4
-            | Ps5_A_4_7_7502f5
-            | Ps5_A_4_7_313c85
-            | Ps5_A_4_7_d07e3a
-            | Ps5_A_4_7_9b3674
-            | Ps5_A_4_8_c22295
-            | Ps5_A_4_9_85a504
-            | Ps5_A_4_10_7a2eb4
-    )
+    let statement = requirement.statement();
+    statement.part == "PS3.5"
+        && matches!(
+            statement.section,
+            "8.2.5"
+                | "8.2.6"
+                | "8.2.7"
+                | "8.2.8"
+                | "8.2.9"
+                | "8.2.10"
+                | "8.2.11"
+                | "8.2.12"
+                | "A.4.5"
+                | "A.4.6"
+                | "A.4.7"
+                | "A.4.8"
+                | "A.4.9"
+                | "A.4.10"
+        )
 }
 
 impl Requirement {
@@ -628,5 +614,33 @@ mod tests {
                 "Ps3_C_7_5_1_1_2_62cd75 A.87",
             ]
         );
+    }
+
+    #[test]
+    fn proven_pathology_statement_bindings_are_pinned() {
+        assert_eq!(
+            Ps3__C_37_1_2_GraphicType_707986.disposition(),
+            Checked("intrinsic-wsi-dicom-iod-enumerated-values")
+        );
+        assert_eq!(
+            Ps5_8_2_0fadc3.iod_dispositions().get("A.75").copied(),
+            Some(Checked("intrinsic-wsi-dicom-encoding"))
+        );
+
+        for requirement in [
+            Ps3_C_18_10_1_TabulatedValuesSequence_1093d3,
+            Ps3_C_18_10_1_TableRowDefinitionSequence_da170e,
+            Ps3_C_18_10_1_TableColumnDefinitionSequence_7fba82,
+            Ps3_C_18_10_1_CellValuesSequence_9090da,
+        ] {
+            let base = requirement.disposition();
+            let dispositions = requirement.iod_dispositions();
+            for iod in requirement.statement().iods {
+                assert!(matches!(
+                    dispositions.get(iod).copied().unwrap_or(base),
+                    OutsideScope(_)
+                ));
+            }
+        }
     }
 }

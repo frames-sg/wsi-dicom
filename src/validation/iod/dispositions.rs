@@ -10,7 +10,7 @@
 
 use super::requirements::Requirement::{self, *};
 use crate::validation::RequirementDisposition::{
-    self, Behavior, Checked, OutsideScope, Undecidable,
+    self, Behavior, Checked, OutsideScope, Tables, Unchecked, Undecidable,
 };
 
 impl Requirement {
@@ -32,13 +32,13 @@ impl Requirement {
             // Malformed element headers fail parsing, reported generically as an unreadable file
             Ps5_7_1_f793ac => Checked("intrinsic-pixel-structure"),
             // Byte-swapped tags and lengths fail parsing; byte order of Values is otherwise undecidable
-            Ps5_7_3_3c0c4e => Checked("intrinsic-pixel-structure"),
+            Ps5_7_3_3c0c4e => Checked("intrinsic-wsi-dicom-encoding"),
             // Item or delimiter tags written with a VR field misframe and fail parsing
             Ps5_7_5_1593f5 => Checked("intrinsic-pixel-structure"),
             // Non-(FFFE,E000) tag at an Item position fails parsing (UnexpectedTag)
             Ps5_7_5_1_16ec1d => Checked("intrinsic-pixel-structure"),
             // Any length other than FFFFFFFFH is defined; misuse misframes and fails parsing
-            Ps5_7_5_1_272077 => Checked("intrinsic-pixel-structure"),
+            Ps5_7_5_1_272077 => Undecidable("Every Item Length other than FFFFFFFFH denotes a defined-length Item; whether it was intended to be undefined is not encoded, so no distinct negative encoding exists"),
             // Undefined-length Item without Item Delimitation ends in a PrematureEnd parse error
             Ps5_7_5_1_4c33bb => Checked("intrinsic-pixel-structure"),
             // Item content that is not Data Elements fails parsing
@@ -52,7 +52,7 @@ impl Requirement {
             // Non-zero length for an empty Sequence misframes and fails parsing
             Ps5_7_5_2_5a0961 => Checked("intrinsic-pixel-structure"),
             // Lengths other than FFFFFFFFH are defined lengths; misuse misframes and fails parsing
-            Ps5_7_5_2_5f93c9 => Checked("intrinsic-pixel-structure"),
+            Ps5_7_5_2_5f93c9 => Undecidable("Every Sequence Length other than FFFFFFFFH denotes a defined-length Sequence; whether it was intended to be undefined is not encoded, so no distinct negative encoding exists"),
             // Sequence length mismatch raises InconsistentSequenceEnd or misframes; generic parse failure
             Ps5_7_5_2_83af70 => Checked("intrinsic-pixel-structure"),
             // Lead-in: a Sequence ends by length or delimiter; framing errors fail parsing
@@ -70,7 +70,7 @@ impl Requirement {
             // Umbrella for Data Set encoding; only parser rejection enforces it; items classified separately
             Ps5_A_2_cd3108 => Checked("intrinsic-pixel-structure"),
             // Only a malformed (undefined) BOT length can violate it; parser rejects UndefinedItemLength
-            Ps5_A_4_1a92fb => Checked("intrinsic-pixel-structure"),
+            Ps5_A_4_1a92fb => Undecidable("An Item Length of zero denotes an absent Item Value, while a nonzero length denotes that many Value bytes; a different intended absence is not encoded"),
             // Nested native Pixel Data with undefined length fails item parsing; no explicit check
             Ps5_A_4_890675 => Checked("intrinsic-pixel-structure"),
             // Non-item tag in pixel sequence raises dicom-core UnexpectedTag; reported as read failure
@@ -114,19 +114,19 @@ impl Requirement {
             // Bits Allocated restricted to 8 or 16; also WSI enumerated-values rule
             Ps5_8_1_1_65182e => Checked("intrinsic-wsi-dicom-image-metadata"),
             // WSI Pixel Representation must be 0; every bit field is then a valid unsigned integer
-            Ps5_8_1_1_873394 => Checked("intrinsic-wsi-dicom-image-metadata"),
+            Ps5_8_1_1_873394 => Undecidable("Every stored bit field admits the unsigned or twos-complement interpretation that Pixel Representation specifies; the bytes cannot reveal an intended different interpretation"),
             // High Bit equal to Bits Stored minus 1 enforced
             Ps5_8_1_1_b0091d => Checked("intrinsic-wsi-dicom-image-metadata"),
             // WSI forbids Pixel Representation 1 (enforced), so 2's complement samples cannot conformantly occur
-            Ps5_8_1_1_c9d618 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Planar Configuration 0 enforced when Samples 3, forbidden when 1; motion TS itself still unflagged
-            Ps5_8_2_10_06b5ac => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // WSI requires Pixel Representation 0 unconditionally; motion TS itself still unflagged
-            Ps5_8_2_10_4bebe5 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Planar Configuration 0 enforced when Samples 3, forbidden when 1; motion TS itself still unflagged
-            Ps5_8_2_11_d5254e => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // WSI requires Pixel Representation 0 unconditionally; motion TS itself still unflagged
-            Ps5_8_2_11_f04f36 => Checked("intrinsic-wsi-dicom-image-metadata"),
+            Ps5_8_1_1_c9d618 => Undecidable("For a declared signed field, High Bit defines the sign bit by interpretation; the bytes cannot reveal an intended different sign-bit position"),
+            // Planar Configuration depends on the syntax and sample count
+            Ps5_8_2_10_06b5ac => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The pixel sample representation is constrained by the IOD and syntax
+            Ps5_8_2_10_4bebe5 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // Planar Configuration depends on the syntax and sample count
+            Ps5_8_2_11_d5254e => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The pixel sample representation is constrained by the IOD and syntax
+            Ps5_8_2_11_f04f36 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             // Planar Configuration 0 enforced when Samples 3; forbidden when 1 (presence rule)
             Ps5_8_2_14_b2f50a => Checked("intrinsic-wsi-dicom-image-metadata"),
             // YBR_RCT for .201/.202/.203, YBR_ICT only .203, YBR_FULL_422 rejected; matches Table 8.2.14-1
@@ -143,16 +143,16 @@ impl Requirement {
             Ps5_8_2_4_d71faf => Checked("intrinsic-wsi-dicom-image-metadata"),
             // YBR_RCT only .90/.91, YBR_ICT only .91, YBR_FULL_422 rejected; matches Table 8.2.4-1 for WSI values
             Ps5_8_2_4_fad88b => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Planar Configuration 0 enforced when Samples 3, forbidden when 1; motion TS itself still unflagged
-            Ps5_8_2_5_0943da => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // WSI requires Pixel Representation 0 unconditionally; motion TS itself still unflagged
-            Ps5_8_2_7_3ffde9 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Planar Configuration 0 enforced when Samples 3, forbidden when 1; motion TS itself still unflagged
-            Ps5_8_2_7_b89ecb => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // WSI requires Pixel Representation 0 unconditionally; motion TS itself still unflagged
-            Ps5_8_2_8_6614d4 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Planar Configuration 0 enforced when Samples 3, forbidden when 1; motion TS itself still unflagged
-            Ps5_8_2_8_7f832e => Checked("intrinsic-wsi-dicom-image-metadata"),
+            // Planar Configuration depends on the syntax and sample count
+            Ps5_8_2_5_0943da => OutsideScope("Table 8.2.5-1 requires Planar Configuration to be absent for single-component MPEG2; its value 0 applies only to multi-component YBR_PARTIAL_420, which C.8.12.4.1.5 excludes from VL WSI"),
+            // The pixel sample representation is constrained by the IOD and syntax
+            Ps5_8_2_7_3ffde9 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // Planar Configuration depends on the syntax and sample count
+            Ps5_8_2_7_b89ecb => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The pixel sample representation is constrained by the IOD and syntax
+            Ps5_8_2_8_6614d4 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // Planar Configuration depends on the syntax and sample count
+            Ps5_8_2_8_7f832e => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             // YBR_RCT/ICT rejected outside J2K/HTJ2K syntaxes; YBR_PARTIAL_420 rejected by WSI enumerations
             Ps5_8_2_8a024f => Checked("intrinsic-wsi-dicom-image-metadata"),
             // Long/URN Code Value forbidden when Code Value present; short code requires Code Value (conditions.rs:70)
@@ -196,15 +196,15 @@ impl Requirement {
             // Decidable part: Pixel Data (Type 1C) presence enforced; image data hidden elsewhere undecidable; overlays not in IOD
             Ps5_8_1_80d60f => Checked("intrinsic-wsi-dicom-iod-attribute-presence"),
             // Pixel Aspect Ratio forbidden when Pixel Spacing specified (conditions.rs:388); WSI always specifies it
-            Ps5_8_2_10_3d6c2c => Checked("intrinsic-wsi-dicom-iod-attribute-presence"),
+            Ps5_8_2_10_3d6c2c => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             // Pixel Aspect Ratio forbidden when Pixel Spacing specified (conditions.rs:388); WSI always specifies it
-            Ps5_8_2_11_d69e04 => Checked("intrinsic-wsi-dicom-iod-attribute-presence"),
+            Ps5_8_2_11_d69e04 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             // Pixel Aspect Ratio forbidden when Pixel Spacing specified (conditions.rs:388); WSI always specifies it
             Ps5_8_2_6_d4f25d => Checked("intrinsic-wsi-dicom-iod-attribute-presence"),
             // Pixel Aspect Ratio forbidden when Pixel Spacing specified (conditions.rs:388); WSI always specifies it
-            Ps5_8_2_7_391ee8 => Checked("intrinsic-wsi-dicom-iod-attribute-presence"),
+            Ps5_8_2_7_391ee8 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             // Pixel Aspect Ratio forbidden when Pixel Spacing specified (conditions.rs:388); WSI always specifies it
-            Ps5_8_2_8_302528 => Checked("intrinsic-wsi-dicom-iod-attribute-presence"),
+            Ps5_8_2_8_302528 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             // C.8.12.4-1 IDENTITY-only enumeration applies to every PI; monochrome rule also checks (instance.rs:258)
             Ps3_C_7_9_PresentationLUTShape_92f0e9 => Checked("intrinsic-wsi-dicom-iod-enumerated-values"),
             // Value 2 Enumerated PRIMARY; Frame Type same at tables.rs:2237
@@ -212,11 +212,11 @@ impl Requirement {
             // Value 1 Enumerated ORIGINAL/DERIVED; Frame Type same at tables.rs:2237
             Ps3_C_8_12_4_1_1_296245 => Checked("intrinsic-wsi-dicom-iod-enumerated-values"),
             // Multi-Resolution Pyramid Module forbidden unless Image Type Value 3 is VOLUME or THUMBNAIL
-            Ps3_A_32_8_3_4f8395 => Checked("intrinsic-wsi-dicom-iod-modules"),
+            Ps3_A_32_8_3_4f8395 => Tables,
             // NotShared placement flags Frame Content in Shared Functional Groups
-            Ps3_A_32_8_4_408ebf => Checked("intrinsic-wsi-dicom-iod-modules"),
+            Ps3_A_32_8_4_408ebf => Tables,
             // SharedOnly placement flags Pixel Measures or Frame Type groups in Per-Frame Items
-            Ps3_A_32_8_4_706768 => Checked("intrinsic-wsi-dicom-iod-modules"),
+            Ps3_A_32_8_4_706768 => Tables,
             // Enforced for standard WSI Functional Groups; private Functional Groups are not compared
             Ps3_C_7_6_16_1_1_e8853c => Checked("intrinsic-wsi-dicom-iod-modules"),
             // Item counts from Attribute Descriptions enforced; presence by Type at engine.rs:139
@@ -298,7 +298,7 @@ impl Requirement {
             // Odd Value Length of the whole Value Field flagged
             Ps5_6_4_3472c2 => Checked("intrinsic-wsi-dicom-iod-value-format"),
             // Binary Value Length must be a multiple of the element size; delimiters break this or VM
-            Ps5_6_4_7a0ae1 => Checked("intrinsic-wsi-dicom-iod-value-format"),
+            Ps5_6_4_7a0ae1 => Checked("intrinsic-pixel-structure"),
             // Lead-in to 6.4 delimiting; parser splits strings on 5CH and binary Values by size
             Ps5_6_4_8bab9c => Checked("intrinsic-wsi-dicom-iod-value-format"),
             // Padding removed only from the last Value; padding on earlier Values fails restricted formats
@@ -328,17 +328,17 @@ impl Requirement {
             // UID over 64 characters rejected; a padded 65-byte Value is also flagged as odd length
             Ps5_9_1_fcd445 => Checked("intrinsic-wsi-dicom-iod-value-format"),
             // Decidable part: OW even length enforced; LUT entry byte order undecidable
-            Ps5_A_1_04740e => Checked("intrinsic-wsi-dicom-iod-value-format"),
+            Ps5_A_1_04740e => Checked("intrinsic-pixel-structure"),
             // Decidable part: OW implies even Value Length, enforced; sample byte order undecidable (Bits Stored = Allocated)
-            Ps5_A_1_0482a6 => Checked("intrinsic-wsi-dicom-iod-value-format"),
+            Ps5_A_1_0482a6 => Checked("intrinsic-pixel-structure"),
             // Umbrella for per-VR encoding under Implicit VR; even-length rule enforced; items classified separately
-            Ps5_A_1_0a4a49 => Checked("intrinsic-wsi-dicom-iod-value-format"),
+            Ps5_A_1_0a4a49 => Checked("intrinsic-pixel-structure"),
             // Umbrella for OB/OL/OV/OW; Value Length multiples enforced (values.rs:116-130); items separate
-            Ps5_A_1_8481bf => Checked("intrinsic-wsi-dicom-iod-value-format"),
+            Ps5_A_1_8481bf => Checked("intrinsic-pixel-structure"),
             // Standard Extended Modality/VOI LUT only; even length enforced; byte order undecidable
-            Ps5_A_1_86c594 => Checked("intrinsic-wsi-dicom-iod-value-format"),
+            Ps5_A_1_86c594 => Checked("intrinsic-pixel-structure"),
             // Overlay only as Standard Extended attribute; OW even length enforced; byte order undecidable
-            Ps5_A_1_ea8197 => Checked("intrinsic-wsi-dicom-iod-value-format"),
+            Ps5_A_1_ea8197 => Checked("intrinsic-pixel-structure"),
             // PS3.6 VM 2 enforced; anatomical meaning of the two directions is undecidable
             Ps3_C_7_6_1_1_1_b53257 => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
             // Parser splits on 5CH, so stray backslash becomes extra Value; VM-1 elements flagged; UR rejects values.rs:574
@@ -362,7 +362,7 @@ impl Requirement {
             // Explicit VR SQ mismatch flagged; parser re-types undefined-length non-SQ elements as SQ (read.rs:573)
             Ps5_7_5_251684 => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
             // A Sequence element holds one Sequence by construction; VM 1 always
-            Ps5_7_5_379e6d => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
+            Ps5_7_5_379e6d => Undecidable("SQ defines one Sequence Value regardless of its Item count; an intended different Value Multiplicity is not encoded"),
             // Retired entries' VR/VM checked; formats use current rules, older-version specifics unchecked
             Ps5_7_7_b39a73 => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
             // Walk recurses into private Sequences; standard tags' explicit VR compared with PS3.6
@@ -372,9 +372,9 @@ impl Requirement {
             // Umbrella for per-VR encoding; VR enforced generically vs PS3.6; items classified separately
             Ps5_A_11_75f6c4 => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
             // VR OB/OW enforced vs PS3.6; overlay only as Standard Extended attribute; byte order undecidable
-            Ps5_A_11_a86261 => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
+            Ps5_A_11_a86261 => OutsideScope("Binds Overlay Data; the VL WSI IOD has no Overlay Plane Module"),
             // Umbrella for OB/OW per tag under JPIP HTJ2K TS; items classified separately
-            Ps5_A_11_ef1304 => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
+            Ps5_A_11_ef1304 => OutsideScope("The following OB/OW rules bind only Pixel Data and Overlay Data: JPIP replaces Pixel Data with a Provider URL, and the supported pathology IODs have no Overlay Plane Module"),
             // Umbrella for per-VR encoding; VR enforced generically vs PS3.6; items classified separately
             Ps5_A_2_45d343 => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
             // Umbrella for OB/OL/OV/OW per tag; PS3.6 VR enforced; items classified separately
@@ -400,11 +400,11 @@ impl Requirement {
             // VR US/OW enforced vs PS3.6; only via Standard Extended Modality/VOI LUT; byte order undecidable
             Ps5_A_4_995a1f => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
             // VR OB/OW enforced vs PS3.6; overlay only as Standard Extended attribute; byte order undecidable
-            Ps5_A_6_871dd9 => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
+            Ps5_A_6_871dd9 => OutsideScope("Binds Overlay Data; the VL WSI IOD has no Overlay Plane Module"),
             // Umbrella for per-VR encoding; VR enforced generically vs PS3.6; items classified separately
             Ps5_A_6_a6e1bb => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
             // Umbrella for OB/OW per tag under JPIP TS; items classified separately
-            Ps5_A_6_c1784c => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
+            Ps5_A_6_c1784c => OutsideScope("The following OB/OW rules bind only Pixel Data and Overlay Data: JPIP replaces Pixel Data with a Provider URL, and the supported pathology IODs have no Overlay Plane Module"),
             // Equal method/ratio VM enforced when flag is 01; per-step correspondence otherwise undecidable
             Ps3_C_7_6_1_1_5_1_f408e9 => Checked("intrinsic-wsi-dicom-lossy-history"),
             // Equal ratio/method VM enforced when flag is 01; per-step correspondence otherwise undecidable
@@ -662,7 +662,7 @@ impl Requirement {
             // Native length checked; consistency with codestream headers is the codestream family
             Ps5_8_1_8ae787 => Checked("intrinsic-pixel-structure"),
             // Cell count fixes the Native length; bit packing within a cell is not encoded
-            Ps5_8_1_1_993326 => Checked("intrinsic-pixel-structure"),
+            Ps5_8_1_1_993326 => Undecidable("The declared Pixel Cell width defines one sample field; the bytes cannot reveal an intended subdivision into multiple sample fields"),
             // Native Pixel Data holds exactly the Frames, padded to even length
             Ps5_8_1_1_2b593e => Checked("intrinsic-pixel-structure"),
             // Native Pixel Data holds exactly the Frames, padded to even length
@@ -671,104 +671,104 @@ impl Requirement {
             Ps5_8_1_1_018c03 => Checked("intrinsic-pixel-structure"),
             // Native Pixel Data holds exactly the Frames, padded to even length
             Ps5_8_1_1_5123f3 => Checked("intrinsic-pixel-structure"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
             Ps5_8_2_5_2ae16d => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
             Ps5_8_2_5_eab09f => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_6_d69f14 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_6_d69f14 => OutsideScope("MPEG2 Main Profile always applies the irreversible multi-component transformation specified by 8.2.5 and 8.2.6; the condition that no multi-component transformation was applied cannot occur in these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
             Ps5_8_2_6_601be2 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
             Ps5_8_2_6_303ae3 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntax fails image-metadata; Cine timing and codec level limits are outside the IOD
+            // The image-metadata check enforces the syntax-specific dimensions and declared frame-rate limits
             Ps5_8_2_5_7430f5 => Checked("intrinsic-wsi-dicom-image-metadata"),
             // Video streams follow their Fragment and offset table rules, for every object
             Ps5_8_2_5_8536a7 => Checked("intrinsic-pixel-structure"),
             // Video streams follow their Fragment and offset table rules, for every object
             Ps5_8_2_5_f85091 => Checked("intrinsic-pixel-structure"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
             Ps5_8_2_6_862741 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
             Ps5_8_2_6_ae499d => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntax fails image-metadata; Cine timing and codec level limits are outside the IOD
+            // The image-metadata check enforces the syntax-specific dimensions and declared frame-rate limits
             Ps5_8_2_6_fdcabf => Checked("intrinsic-wsi-dicom-image-metadata"),
             // Video streams follow their Fragment and offset table rules, for every object
             Ps5_8_2_6_a4b86d => Checked("intrinsic-pixel-structure"),
             // Video streams follow their Fragment and offset table rules, for every object
             Ps5_8_2_6_6b3ca2 => Checked("intrinsic-pixel-structure"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_7_e55180 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_7_020679 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_7_53db66 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_7_8993db => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_7_bb3858 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntax fails image-metadata; Cine timing and codec level limits are outside the IOD
-            Ps5_8_2_7_c328ad => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_7_7c3a60 => Checked("intrinsic-wsi-dicom-image-metadata"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_7_e55180 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_7_020679 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_7_53db66 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_7_8993db => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_7_bb3858 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The image-metadata check enforces the syntax-specific dimensions and declared frame-rate limits
+            Ps5_8_2_7_c328ad => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_7_7c3a60 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             // Video streams follow their Fragment and offset table rules, for every object
-            Ps5_8_2_7_9565ae => Checked("intrinsic-pixel-structure"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_8_1d080a => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_8_6f91d1 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_8_8fdb21 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_8_fedd49 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_8_1973b2 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntax fails image-metadata; Cine timing and codec level limits are outside the IOD
-            Ps5_8_2_8_7718ba => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_8_bc3138 => Checked("intrinsic-wsi-dicom-image-metadata"),
+            Ps5_8_2_7_9565ae => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_8_1d080a => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_8_6f91d1 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_8_8fdb21 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_8_fedd49 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_8_1973b2 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The image-metadata check enforces the syntax-specific dimensions and declared frame-rate limits
+            Ps5_8_2_8_7718ba => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_8_bc3138 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             // Video streams follow their Fragment and offset table rules, for every object
-            Ps5_8_2_8_e51cd9 => Checked("intrinsic-pixel-structure"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_9_ff677c => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_10_b7f63b => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_10_226719 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_10_bd5c63 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_10_58520f => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_10_d25e20 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntax fails image-metadata; Cine timing and codec level limits are outside the IOD
-            Ps5_8_2_10_84b09e => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_11_e52f4e => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_11_514e75 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_11_9c3b42 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_11_649e03 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntaxes fail image-metadata in VL WSI (C.8.12.4.1.5), naming the departure
-            Ps5_8_2_11_385c34 => Checked("intrinsic-wsi-dicom-image-metadata"),
-            // Motion syntax fails image-metadata; Cine timing and codec level limits are outside the IOD
-            Ps5_8_2_11_f9f4eb => Checked("intrinsic-wsi-dicom-image-metadata"),
+            Ps5_8_2_8_e51cd9 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_9_ff677c => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_10_b7f63b => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_10_226719 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_10_bd5c63 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_10_58520f => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_10_d25e20 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The image-metadata check enforces the syntax-specific dimensions and declared frame-rate limits
+            Ps5_8_2_10_84b09e => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_11_e52f4e => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_11_514e75 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_11_9c3b42 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_11_649e03 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The syntax-specific attributes are checked; color-only motion encodings have no conformant VL WSI form
+            Ps5_8_2_11_385c34 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            // The image-metadata check enforces the syntax-specific dimensions and declared frame-rate limits
+            Ps5_8_2_11_f9f4eb => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             // A Data Set not encoded in the declared syntax misframes and fails; trailing bytes fail
             Ps5_A_1_3fcdef => Checked("intrinsic-pixel-structure"),
             // A Data Set not encoded in the declared syntax misframes and fails; trailing bytes fail
-            Ps5_A_1_777bab => Checked("intrinsic-pixel-structure"),
+            Ps5_A_1_777bab => Checked("intrinsic-wsi-dicom-encoding"),
             // A Data Set not encoded in the declared syntax misframes and fails; trailing bytes fail
-            Ps5_A_1_2efc4a => Checked("intrinsic-pixel-structure"),
+            Ps5_A_1_2efc4a => Undecidable("Defines the UID assigned to this Transfer Syntax; an alternative UID identifies a different syntax, and the encoded bytes do not record an intended different UID assignment"),
             // A Data Set not encoded in the declared syntax misframes and fails; trailing bytes fail
-            Ps5_A_2_2fd46a => Checked("intrinsic-pixel-structure"),
+            Ps5_A_2_2fd46a => Checked("intrinsic-wsi-dicom-encoding"),
             // A Data Set not encoded in the declared syntax misframes and fails; trailing bytes fail
-            Ps5_A_2_6239c9 => Checked("intrinsic-pixel-structure"),
+            Ps5_A_2_6239c9 => Undecidable("Defines the UID assigned to this Transfer Syntax; an alternative UID identifies a different syntax, and the encoded bytes do not record an intended different UID assignment"),
             // Pixel Data, Float and Double Float Pixel Data follow the Transfer Syntax
             Ps5_A_4_61f90c => Checked("intrinsic-pixel-structure"),
             // A Data Set not encoded in the declared syntax misframes and fails; trailing bytes fail
-            Ps5_A_4_238b32 => Checked("intrinsic-pixel-structure"),
+            Ps5_A_4_238b32 => Checked("intrinsic-wsi-dicom-encoding"),
             // Encapsulated Uncompressed Fragments hold one Native-encoded Frame each
             Ps5_A_4_33a347 => Checked("intrinsic-pixel-structure"),
             // Fragment Items have an even length of at least two bytes, from the encoded bytes
@@ -786,7 +786,7 @@ impl Requirement {
             // One-Fragment-per-Frame syntaxes reject Frames split across Fragments
             Ps5_A_4_4_72c08f => Checked("intrinsic-pixel-structure"),
             // Encapsulated Uncompressed Fragments hold one Native-encoded Frame each
-            Ps5_A_4_11_3b48ff => Checked("intrinsic-pixel-structure"),
+            Ps5_A_4_11_3b48ff => Undecidable("Defines the UID assigned to this Transfer Syntax; an alternative UID identifies a different syntax, and the encoded bytes do not record an intended different UID assignment"),
             // Encapsulated Uncompressed Fragments hold one Native-encoded Frame each
             Ps5_A_4_11_dd388a => Checked("intrinsic-pixel-structure"),
             // Encapsulated Uncompressed Fragments hold one Native-encoded Frame each
@@ -802,25 +802,25 @@ impl Requirement {
             // One-Fragment-per-Frame syntaxes reject Frames split across Fragments
             Ps5_A_4_13_14f644 => Checked("intrinsic-pixel-structure"),
             // Deflated Data Sets inflate; undeflated bytes declaring the syntax fail parsing
-            Ps5_A_5_97bfdd => Checked("intrinsic-pixel-structure"),
+            Ps5_A_5_97bfdd => Undecidable("Defines the UID assigned to this Transfer Syntax; an alternative UID identifies a different syntax, and the encoded bytes do not record an intended different UID assignment"),
             // Pixel Data, Float and Double Float Pixel Data follow the Transfer Syntax
             Ps5_A_6_dcb6d6 => Checked("intrinsic-pixel-structure"),
             // A Data Set not encoded in the declared syntax misframes and fails; trailing bytes fail
-            Ps5_A_6_e0a5fd => Checked("intrinsic-pixel-structure"),
+            Ps5_A_6_e0a5fd => Unchecked("jpip-dataset-encoding"),
             // JPIP Referenced syntaxes admit MONOCHROME1/2, YBR_ICT and YBR_RCT only
             Ps5_A_6_71e374 => Checked("intrinsic-wsi-dicom-image-metadata"),
             // Pixel Data, Float and Double Float Pixel Data follow the Transfer Syntax
             Ps5_A_11_3cba9b => Checked("intrinsic-pixel-structure"),
             // A Data Set not encoded in the declared syntax misframes and fails; trailing bytes fail
-            Ps5_A_11_ce7500 => Checked("intrinsic-pixel-structure"),
+            Ps5_A_11_ce7500 => Unchecked("jpip-dataset-encoding"),
             // Pixel Data forbidden and Pixel Data Provider URL required under all four JPIP syntaxes
             Ps5_A_11_3b11ba => Checked("intrinsic-pixel-structure"),
             // JPIP Referenced syntaxes admit MONOCHROME1/2, YBR_ICT and YBR_RCT only
             Ps5_A_11_5f6235 => Checked("intrinsic-wsi-dicom-image-metadata"),
             // Pixel Data Provider URL required with .4.204/.4.205 too (PS3.5 A.11, A.12)
-            Ps5_A_11_47ddc0 => Checked("intrinsic-wsi-dicom-iod-attribute-presence"),
+            Ps5_A_11_47ddc0 => Undecidable("Assigns the JPIP Referenced Transfer Syntax UID; an alternative UID identifies another syntax, and the bytes do not record an intended different assignment"),
             // Pixel Data Provider URL required with .4.204/.4.205 too (PS3.5 A.11, A.12)
-            Ps5_A_12_6b70c4 => Checked("intrinsic-wsi-dicom-iod-attribute-presence"),
+            Ps5_A_12_6b70c4 => Undecidable("Defines the UID assigned to this Transfer Syntax; an alternative UID identifies a different syntax, and the encoded bytes do not record an intended different UID assignment"),
             // JPEG Extended admits only its listed Photometric Interpretations
             Ps5_8_2_1_fe09df => Checked("intrinsic-wsi-dicom-image-metadata"),
             // JPEG XL Photometric Interpretation follows Table 8.2.15-1
@@ -832,9 +832,9 @@ impl Requirement {
             // Pixel Data forbidden and Pixel Data Provider URL required under all four JPIP syntaxes
             Ps5_A_6_be37ad => Checked("intrinsic-pixel-structure"),
             // PS3.10 files declaring .4.94 or .4.95 fail file-meta; the stream type is on the server
-            Ps5_A_6_3ef132 => Checked("intrinsic-wsi-dicom-file-meta"),
+            Ps5_A_6_3ef132 => Undecidable("Assigns the JPIP Referenced Transfer Syntax UID; an alternative UID identifies another syntax, and the bytes do not record an intended different assignment"),
             // PS3.10 files declaring .4.94 or .4.95 fail file-meta; the stream type is on the server
-            Ps5_A_7_e5c0fa => Checked("intrinsic-wsi-dicom-file-meta"),
+            Ps5_A_7_e5c0fa => Undecidable("Defines the UID assigned to this Transfer Syntax; an alternative UID identifies a different syntax, and the encoded bytes do not record an intended different UID assignment"),
             // All components share size precision and sign
             Ps3_C_7_6_3_1_1_c17c68 => Checked("intrinsic-wsi-dicom-codestream"),
             // Every frame is checked against the attributes that define it
@@ -1197,38 +1197,38 @@ impl Requirement {
             Ps5_8_1_2_3b62f6 => OutsideScope("Overlay Data bit packing; no Overlay Plane Module in VL WSI IOD"),
             Ps5_8_1_2_70a5ff => OutsideScope("Overlay Data frame concatenation (8.1.2); no Overlay Plane Module in VL WSI IOD"),
             Ps5_8_2_0fadc3 => OutsideScope("Float Pixel Data belongs to no VL WSI IOD module; only Pixel Data (7FE0,0010) carried"),
-            Ps5_8_2_10_17fcd6 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_10_64b5e7 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_10_7e5161 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_10_af1171 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_10_c1679c => OutsideScope("Needs the attributes compared with a video bit stream; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), so intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, listing its departures from the syntax's PS3.5 8.2 attribute rules"),
-            Ps5_8_2_11_455596 => OutsideScope("Needs the attributes compared with a video bit stream; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), so intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, listing its departures from the syntax's PS3.5 8.2 attribute rules"),
-            Ps5_8_2_11_7456b1 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_11_84bfbd => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_11_a9912e => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_11_ce01f7 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_12_b38f9a => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
+            Ps5_8_2_10_17fcd6 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_10_64b5e7 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_10_7e5161 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_10_af1171 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_10_c1679c => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_11_455596 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_11_7456b1 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_11_84bfbd => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_11_a9912e => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_11_ce01f7 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_12_b38f9a => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             Ps5_8_2_18602a => OutsideScope("Float Pixel Data (Floating Point Image Pixel Module) not in VL WSI IOD"),
             Ps5_8_2_4bcda5 => OutsideScope("Double Float Pixel Data (Double Floating Point Image Pixel Module) not in VL WSI IOD"),
-            Ps5_8_2_5_5c5c79 => OutsideScope("Needs the attributes compared with a video bit stream; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), so intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, listing its departures from the syntax's PS3.5 8.2 attribute rules"),
-            Ps5_8_2_5_6cde8d => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_5_c5b5a7 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_6_405812 => OutsideScope("Needs the attributes compared with a video bit stream; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), so intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, listing its departures from the syntax's PS3.5 8.2 attribute rules"),
-            Ps5_8_2_6_4d8fa8 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_6_571188 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_7_3618e9 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_7_7773fd => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_7_7886b4 => OutsideScope("Needs the attributes compared with a video bit stream; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), so intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, listing its departures from the syntax's PS3.5 8.2 attribute rules"),
-            Ps5_8_2_7_ce01ab => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_7_d08204 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_8_34a4e3 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_8_68acb5 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_8_7fe9c4 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_8_9d4541 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_8_d6c85e => OutsideScope("Needs the attributes compared with a video bit stream; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), so intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, listing its departures from the syntax's PS3.5 8.2 attribute rules"),
-            Ps5_8_2_9_a52046 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_9_b1098e => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_8_2_9_c7bb6c => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
+            Ps5_8_2_5_5c5c79 => Unchecked("mpeg2-stream"),
+            Ps5_8_2_5_6cde8d => Unchecked("mpeg2-stream"),
+            Ps5_8_2_5_c5b5a7 => OutsideScope("MPEG2 Main Profile always applies the irreversible multi-component transformation specified by 8.2.5 and 8.2.6; the condition that no multi-component transformation was applied cannot occur in these encodings"),
+            Ps5_8_2_6_405812 => Unchecked("mpeg2-stream"),
+            Ps5_8_2_6_4d8fa8 => Unchecked("mpeg2-stream"),
+            Ps5_8_2_6_571188 => Unchecked("mpeg2-stream"),
+            Ps5_8_2_7_3618e9 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_7_7773fd => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_7_7886b4 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_7_ce01ab => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_7_d08204 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_8_34a4e3 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_8_68acb5 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_8_7fe9c4 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_8_9d4541 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_8_d6c85e => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_9_a52046 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_9_b1098e => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_8_2_9_c7bb6c => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             // Explicit VR Waveform Data is OB when Waveform Bits Allocated is 8
             Ps5_8_3_7a124d => Checked("intrinsic-wsi-dicom-encoding"),
             // Channel Minimum/Maximum and Waveform Padding Value share the Waveform Data VR
@@ -1248,17 +1248,17 @@ impl Requirement {
             Ps5_A_2_5cbc84 => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
             // Explicit VR Blending Lookup Table Data is OW, wherever a Standard Extended object carries it
             Ps5_A_2_e15d71 => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
-            Ps5_A_4_10_7a2eb4 => OutsideScope("Assigns the UIDs of a motion syntax, so a file using one is that syntax by definition; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), which intrinsic-wsi-dicom-image-metadata rejects"),
+            Ps5_A_4_10_7a2eb4 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             // Explicit VR Blending Lookup Table Data is OW, wherever a Standard Extended object carries it
             Ps5_A_4_3dedae => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
-            Ps5_A_4_5_54be61 => OutsideScope("Assigns the UIDs of a motion syntax, so a file using one is that syntax by definition; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), which intrinsic-wsi-dicom-image-metadata rejects"),
-            Ps5_A_4_6_eaaff4 => OutsideScope("Assigns the UIDs of a motion syntax, so a file using one is that syntax by definition; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), which intrinsic-wsi-dicom-image-metadata rejects"),
-            Ps5_A_4_7_313c85 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_A_4_7_7502f5 => OutsideScope("Assigns the UIDs of a motion syntax, so a file using one is that syntax by definition; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), which intrinsic-wsi-dicom-image-metadata rejects"),
-            Ps5_A_4_7_9b3674 => OutsideScope("Assigns the UIDs of a motion syntax, so a file using one is that syntax by definition; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), which intrinsic-wsi-dicom-image-metadata rejects"),
-            Ps5_A_4_7_d07e3a => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
-            Ps5_A_4_8_c22295 => OutsideScope("Assigns the UIDs of a motion syntax, so a file using one is that syntax by definition; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), which intrinsic-wsi-dicom-image-metadata rejects"),
-            Ps5_A_4_9_85a504 => OutsideScope("Assigns the UIDs of a motion syntax, so a file using one is that syntax by definition; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), which intrinsic-wsi-dicom-image-metadata rejects"),
+            Ps5_A_4_5_54be61 => Undecidable("Assigns the MPEG2 Transfer Syntax UIDs; an alternative UID identifies a different syntax, and the bytes cannot reveal an intended different UID assignment"),
+            Ps5_A_4_6_eaaff4 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_A_4_7_313c85 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_A_4_7_7502f5 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_A_4_7_9b3674 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_A_4_7_d07e3a => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_A_4_8_c22295 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
+            Ps5_A_4_9_85a504 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             // Explicit VR Track Point Index List is OL, wherever a Standard Extended object carries it
             Ps5_A_4_cd73d1 => Checked("intrinsic-wsi-dicom-iod-vr-vm"),
             Ps5_A_4_cfe2f9 => Undecidable("The byte order of Waveform Data samples is not observable: their bytes read as some valid Little Endian sample. The VR the Explicit VR field gives is checked by intrinsic-wsi-dicom-encoding (PS3.5 8.3)"),
@@ -1327,8 +1327,8 @@ impl Requirement {
             Ps5_8_2_1_fe71fd => Behavior("Binds implementations that support a lossless JPEG syntax to support Process 14 Selection Value 1; support is not a property of a stored file"),
             Ps5_8_2_3_3b4454 => Behavior("Binds decoders to take the image characteristics from the JPEG-LS Interchange Format; the agreement of those characteristics with the Image Pixel attributes is checked as their own statements by intrinsic-wsi-dicom-codestream"),
             Ps5_8_2_4_c79fec => Behavior("Binds decoders to take the image characteristics from the JPEG 2000 bit stream; the agreement of those characteristics with the Image Pixel attributes is checked as their own statements by intrinsic-wsi-dicom-codestream"),
-            Ps5_8_2_5_fc541c => Behavior("Binds decoders to take the image characteristics from the MPEG2 bit stream; VL WSI images shall not use this syntax (PS3.3 C.8.12.4.1.5), which intrinsic-wsi-dicom-image-metadata rejects"),
-            Ps5_8_2_6_9618ea => Behavior("Binds decoders to take the image characteristics from the MPEG2 bit stream; VL WSI images shall not use this syntax (PS3.3 C.8.12.4.1.5), which intrinsic-wsi-dicom-image-metadata rejects"),
+            Ps5_8_2_5_fc541c => Behavior("Binds decoders to take the image characteristics from the MPEG2 bit stream; the encoded object cannot show which characteristics an application used"),
+            Ps5_8_2_6_9618ea => Behavior("Binds decoders to take the image characteristics from the MPEG2 bit stream; the encoded object cannot show which characteristics an application used"),
             Ps5_8_2_7_c4778c => Behavior("Binds decoders to take the image characteristics from the MPEG-4 AVC/H.264 bit stream; VL WSI images shall not use this syntax (PS3.3 C.8.12.4.1.5), which intrinsic-wsi-dicom-image-metadata rejects"),
             Ps5_8_2_8_f5ebd6 => Behavior("Binds decoders to take the image characteristics from the MPEG-4 AVC/H.264 bit stream; VL WSI images shall not use this syntax (PS3.3 C.8.12.4.1.5), which intrinsic-wsi-dicom-image-metadata rejects"),
             Ps5_8_4_1_0eb868 => Behavior("Binds the JPIP server's Content-type and the client's support for it; neither is in the file, which holds only the Pixel Data Provider URL"),
@@ -1475,8 +1475,11 @@ impl Requirement {
             Ps3_C_37_1_2_1_1_e4f629 => Checked("intrinsic-wsi-dicom-bulk-annotations"),
             // Annotation Group Numbers 1, 2, ... in Item order
             Ps3__C_37_1_2_AnnotationGroupNumber_5fe4bc => Checked("intrinsic-wsi-dicom-bulk-annotations"),
-            // Coplanar 3D points, minimum vertices, ellipse axes and rectangle corners
-            Ps3__C_37_1_2_GraphicType_707986 => Checked("intrinsic-wsi-dicom-bulk-annotations"),
+            // The statement is the Enumerated Values cell of Table C.37.1-2. The
+            // generated IOD check rejects every Value outside that closed list;
+            // the family check separately enforces the geometry each admitted
+            // Graphic Type implies.
+            Ps3__C_37_1_2_GraphicType_707986 => Checked("intrinsic-wsi-dicom-iod-enumerated-values"),
             // Point Coordinates Data holds whole (X, Y) or, without Common Z, (X, Y, Z) tuples
             Ps3__C_37_1_2_PointCoordinatesData_8218cf => Checked("intrinsic-wsi-dicom-bulk-annotations"),
             // Double Point Coordinates Data holds whole (X, Y) or, without Common Z, (X, Y, Z) tuples
@@ -1494,7 +1497,7 @@ impl Requirement {
             // Set check: Rows, Columns and Pixel Spacing of a referenced image without Frame of Reference
             Ps3_A_51_1_34d27f => Checked("intrinsic-wsi-dicom-segmentation"),
             // Shared Functional Group placement of Tables A.90.1.5-1, A.90.2.5-1, A.51-2 and A.75-2
-            Ps3_A_51_5_ac52d6 => Checked("intrinsic-wsi-dicom-iod-modules"),
+            Ps3_A_51_5_ac52d6 => Tables,
             // Each Frame has Pixel Measures and a patient plane or slide position (TILED_FULL implied)
             Ps3_A_51_5_1_1767c6 => Checked("intrinsic-wsi-dicom-segmentation"),
             // Each Frame has a Derivation Image Source Image; the set check matches its Rows and Columns
@@ -1530,7 +1533,7 @@ impl Requirement {
             Ps3_C_8_20_3_ReferencedSegmentNumber_36aaef => Checked("intrinsic-wsi-dicom-segmentation"),
             Ps3_A_75_4_24a8b8 => Undecidable("Its Attributes are those of the Palette Color Lookup Table Module the IOD uses; which Module encodes a palette is not encoded"),
             // Shared Functional Group placement of Tables A.90.1.5-1, A.90.2.5-1, A.51-2 and A.75-2
-            Ps3_A_75_5_eac12a => Checked("intrinsic-wsi-dicom-iod-modules"),
+            Ps3_A_75_5_eac12a => Tables,
             // LUT Descriptor first Value 0 for 2^16 LUT Data entries
             Ps3_C_11_2_1_1_fd1510 => Checked("intrinsic-wsi-dicom-parametric-map"),
             // Explicit VR LUT Descriptor US or SS by the signedness of the stored values
@@ -1706,10 +1709,10 @@ impl Requirement {
             Ps3_C_18_4_1_IconImageSequence_9594fc => Checked("intrinsic-wsi-dicom-structured-report"),
             Ps3_C_18_6_1_GraphicData_fb751a => Checked("intrinsic-wsi-dicom-structured-report"),
             Ps3_C_18_7_1_ReferencedSamplePositions_581602 => Checked("intrinsic-wsi-dicom-structured-report"),
-            Ps3_C_18_10_1_TabulatedValuesSequence_1093d3 => Checked("intrinsic-wsi-dicom-structured-report"),
-            Ps3_C_18_10_1_TableRowDefinitionSequence_da170e => Checked("intrinsic-wsi-dicom-structured-report"),
-            Ps3_C_18_10_1_TableColumnDefinitionSequence_7fba82 => Checked("intrinsic-wsi-dicom-structured-report"),
-            Ps3_C_18_10_1_CellValuesSequence_9090da => Checked("intrinsic-wsi-dicom-structured-report"),
+            Ps3_C_18_10_1_TabulatedValuesSequence_1093d3
+            | Ps3_C_18_10_1_TableRowDefinitionSequence_da170e
+            | Ps3_C_18_10_1_TableColumnDefinitionSequence_7fba82
+            | Ps3_C_18_10_1_CellValuesSequence_9090da => OutsideScope("TABLE is not an admitted Value Type of any supported A.35 SR or KOS IOD; an SR DOCUMENT or KEY OBJECT DOC Directory Record copies only legal HAS CONCEPT MOD Content Items from its referenced document, so it cannot legally carry a TABLE Item either"),
             Ps3_F_5_26_ContentSequence_3fb953 => Checked("intrinsic-wsi-dicom-file-set"),
             Ps3_C_17_3_DisplayURI_29ba6d => Checked("intrinsic-wsi-dicom-structured-report"),
             Ps3_C_17_3_DisplayURI_c5e304 => Undecidable("Which Study a URI identifies is known only to the service that resolves it"),
@@ -2179,8 +2182,8 @@ impl Requirement {
             Ps3_A_35_13_3_1_2_67a070 => Checked("intrinsic-wsi-dicom-structured-report"),
             Ps3_A_35_3_3_1_2_c338b5 => Checked("intrinsic-wsi-dicom-structured-report"),
             // Placement::SharedOnly and NotShared of the Unassigned Converted Attributes groups (Table A.75-2).
-            Ps3_A_75_5_6e2343 => Checked("intrinsic-wsi-dicom-iod-modules"),
-            Ps3_A_75_5_d8b43b => Checked("intrinsic-wsi-dicom-iod-modules"),
+            Ps3_A_75_5_6e2343 => Tables,
+            Ps3_A_75_5_d8b43b => Tables,
             Ps3_C_12_1_1_7_1_03edd3 => Checked("intrinsic-wsi-dicom-iod-value-format"),
             Ps3_C_7_6_3_1_2_2ac29a => OutsideScope("Binds the US Image Module, which neither these IODs nor an Icon Image includes"),
             Ps3_C_8_20_2_3_3_3dd2ed => Checked("intrinsic-wsi-dicom-segmentation"),
@@ -2196,7 +2199,7 @@ impl Requirement {
             Ps18_10_3_98a104 => OutsideScope("A blank cell binds the Transaction on that resource: the Store ones would change the origin server's state, so the store check sends none, and the Retrieve and Search ones name the URIs of the other Transaction's resources, so no request tells them apart"),
             // Table C.8.32-3 Values 1 and 2 are the generated tables'; MIXED is the Parametric Map check's.
             Ps3_C_8_32_3_FrameType_4a0dab => Checked("intrinsic-wsi-dicom-parametric-map"),
-            Ps5_10_11_194813 => OutsideScope("Constrains the bit stream of a motion syntax; VL WSI images shall not use motion syntaxes (PS3.3 C.8.12.4.1.5), intrinsic-wsi-dicom-image-metadata rejects any VL WSI that declares one, and no conformant VL WSI holds such a stream"),
+            Ps5_10_11_194813 => OutsideScope("Binds AVC/H.264 encodings, which require YBR_PARTIAL_420 (PS3.5 8.2.7 and 8.2.8); VL WSI excludes that Photometric Interpretation (PS3.3 C.8.12.4.1.5)"),
             Ps5_6_2_4f6b04 => Checked("intrinsic-wsi-dicom-iod-value-format"),
             Ps5_6_2_ce2868 => Checked("intrinsic-wsi-dicom-iod-value-format"),
             Ps5_6_2_e1decf => Checked("intrinsic-wsi-dicom-iod-value-format"),

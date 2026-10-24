@@ -13,6 +13,8 @@ use crate::validation::digital_signatures::run_digital_signatures_check;
 use crate::validation::iod::{
     is_image_storage_sop_class, Family, OptionalNotes, Unavailable, EDITION, MAX_NESTING,
 };
+use crate::validation::pixel_structure::run_intrinsic_pixel_structure_check;
+use crate::validation::transfer_syntaxes::{pixel_encoding, PixelEncoding};
 use crate::validation::wsi_conformance::run_intrinsic_wsi_conformance_checks_on;
 use crate::validation::{
     intrinsic_check, OptionalConformance, ValidationCheck, ValidationOptions, ValidationStatus,
@@ -146,7 +148,10 @@ pub(super) fn instance(
         );
         mark_bulk_dependence(&mut combined, &sparse_checks, &unresolved);
     }
-    override_unencoded(&mut combined, path, &object, &bulk, run.fetched);
+    let referenced = candidates
+        .iter()
+        .all(|syntax| matches!(pixel_encoding(syntax), PixelEncoding::Referenced));
+    override_unencoded(&mut combined, path, &object, &bulk, run.fetched, referenced);
     if candidates
         .iter()
         .any(|syntax| CODESTREAM_DECIDES_LOSS.contains(&syntax.as_str()))
@@ -239,6 +244,18 @@ fn object_checks(
         options.max_pixel_frame_bytes,
     );
     checks.push(run_digital_signatures_check(path, object));
+    // JPIP has no inline Pixel Data by definition. Its URL and mutually
+    // exclusive pixel elements can be checked from the Metadata alone.
+    if matches!(
+        pixel_encoding(object.meta().transfer_syntax()),
+        PixelEncoding::Referenced
+    ) {
+        checks.push(run_intrinsic_pixel_structure_check(
+            &path.to_path_buf(),
+            object,
+            options.max_pixel_frame_bytes,
+        ));
+    }
     (checks, notes)
 }
 
@@ -373,6 +390,7 @@ fn override_unencoded(
     object: &InMemDicomObject,
     bulk: &[BulkReference],
     fetched: &BTreeMap<String, Vec<u8>>,
+    referenced: bool,
 ) {
     let skipped = |name: &str, message: String| {
         intrinsic_check(
@@ -404,6 +422,9 @@ fn override_unencoded(
         ),
     ];
     for replacement in replacements {
+        if referenced && replacement.name == PIXEL_STRUCTURE_RULE {
+            continue;
+        }
         match checks
             .iter_mut()
             .find(|check| check.name == replacement.name)

@@ -81,7 +81,7 @@ pub(crate) fn check_retrieved_frames(
     for &(number, bytes) in frames {
         let input = Frame {
             bytes,
-            fragment_starts: &[],
+            fragment_starts: None,
             declared: &declared,
             profile: profiles
                 .as_ref()
@@ -149,7 +149,7 @@ fn check_frames(
                 .collect();
             let input = Frame {
                 bytes: &bytes,
-                fragment_starts: &fragment_starts,
+                fragment_starts: Some(&fragment_starts),
                 declared: &declared,
                 profile: profiles
                     .as_ref()
@@ -240,8 +240,9 @@ impl Codec {
 /// One Frame's encoded bytes with what the Data Set declares about it.
 struct Frame<'a> {
     bytes: &'a [u8],
-    /// Where the Frame's second and later Fragments begin in `bytes`.
-    fragment_starts: &'a [usize],
+    /// Known starts of the second and later Fragments; `Some([])` proves
+    /// one Fragment, while retrieved Frames omit Item delimiters (`None`).
+    fragment_starts: Option<&'a [usize]>,
     declared: &'a Declared,
     /// The ICC Profile that describes this Frame, when the codec can embed one.
     profile: Option<icc::Profile<'a>>,

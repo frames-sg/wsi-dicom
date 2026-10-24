@@ -308,6 +308,44 @@ fn with_syntax(uid: &str) -> DicomJsonOptions {
 }
 
 #[test]
+fn jpip_metadata_checks_its_reference_without_inline_pixel_bytes() {
+    for syntax in ["94", "95", "204", "205"] {
+        for (members, status, message) in [
+            (
+                r#", "00287FE0":{"vr":"UR","Value":["https://example.invalid/pixel"]}"#,
+                ValidationStatus::Passed,
+                "valid",
+            ),
+            (
+                "",
+                ValidationStatus::Failed,
+                "Pixel Data Provider URL (0028,7FE0) is missing",
+            ),
+            (
+                r#", "00287FE0":{"vr":"UR","Value":["ftp://example.invalid/pixel"]}"#,
+                ValidationStatus::Failed,
+                "does not use HTTP or HTTPS",
+            ),
+            (
+                r#", "00287FE0":{"vr":"UR","Value":["https://example.invalid/pixel"]},"7FE00010":{"vr":"OB","BulkDataURI":"https://example.invalid/bulk"}"#,
+                ValidationStatus::Failed,
+                "are present together",
+            ),
+        ] {
+            let checks = checks_of(
+                &document(&format!("{SOP}{members}")),
+                Source::Metadata,
+                &with_syntax(&format!("1.2.840.10008.1.2.4.{syntax}")),
+                &BTreeMap::new(),
+            );
+            let found = check(&checks, "intrinsic-pixel-structure");
+            assert_eq!(found.status, status, "{}", found.message);
+            assert!(found.message.contains(message), "{}", found.message);
+        }
+    }
+}
+
+#[test]
 fn an_exported_slide_metadata_passes_and_reports_what_needs_bytes() {
     let root = tempfile::tempdir().unwrap();
     let (json, icc) = exported(root.path(), TransferSyntax::Jpeg2000Lossless);

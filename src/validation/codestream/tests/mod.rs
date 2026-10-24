@@ -66,7 +66,7 @@ fn check_fragments(fragments: &[&[u8]], declared: &Declared) -> ValidationCheck 
     codec.check(
         &Frame {
             bytes: &bytes,
-            fragment_starts: &fragment_starts,
+            fragment_starts: Some(&fragment_starts),
             declared,
             profile: None,
         },

@@ -230,8 +230,8 @@ enum FrameSize {
     /// MPEG2 Main Level, Table 8-1: at most 720 Columns, and at most 480
     /// Rows at 30 (29.97) frames per second or 576 at 25.
     MainLevel,
-    /// Rows and Columns from this list, and one of these frame rates.
-    OneOf(&'static [(u64, u64)], &'static [f64]),
+    /// MPEG2 High Level: 720 or 1080 rows, with resolution-specific frame rates.
+    HighLevel,
     /// Rows, Columns and frame rates from this list (Table 8-4).
     Formats(&'static [(u64, u64, f64)]),
     /// Within the limits of a video coding level.
@@ -323,7 +323,7 @@ fn motion(uid: &str) -> Option<Motion> {
             section: "8.2.6",
             photometric: &["YBR_PARTIAL_420", "MONOCHROME2"],
             bits: [8, 8, 7],
-            frame: FrameSize::OneOf(HD_FRAMES, HD_RATES),
+            frame: FrameSize::HighLevel,
             square_pixels: true,
             stereo: None,
         },
@@ -412,11 +412,11 @@ fn frame_departures(frame: FrameSize, rows: u64, columns: u64, rates: &[f64]) ->
                 departures.push(format!("Rows {rows} (at most 576, Table 8-1)"));
             }
         }
-        FrameSize::OneOf(sizes, allowed) => {
-            if !sizes.contains(&(rows, columns)) {
+        FrameSize::HighLevel => {
+            if !HD_FRAMES.contains(&(rows, columns)) {
                 departures.push(format!(
                     "Rows {rows} and Columns {columns} (shall be {})",
-                    sizes
+                    HD_FRAMES
                         .iter()
                         .map(|(rows, columns)| format!("{rows} and {columns}"))
                         .collect::<Vec<_>>()
@@ -424,7 +424,17 @@ fn frame_departures(frame: FrameSize, rows: u64, columns: u64, rates: &[f64]) ->
                 ));
             }
             for rate in rates {
-                if !allowed.iter().any(|allowed| same_rate(*rate, *allowed)) {
+                // At 1080 rows, 50/60 are interlaced field rates, not frame
+                // rates (PS3.5 8.2.6 Table 8-3 and Note 5).
+                if rows == 1080
+                    && !HD_RATES[..3]
+                        .iter()
+                        .any(|allowed| same_rate(*rate, *allowed))
+                {
+                    departures.push(format!(
+                        "1080 Rows permit only 25 or 30 frames per second (including 30/1.001), found {rate:.3} (Table 8-3)"
+                    ));
+                } else if !HD_RATES.iter().any(|allowed| same_rate(*rate, *allowed)) {
                     departures.push(format!(
                         "frame rate {rate:.3} per second (25, 30, 50 or 60, or 30/1.001 or 60/1.001, Table 8-2)"
                     ));
@@ -583,14 +593,31 @@ pub(super) fn motion_departures(
     Some((motion.section, departures))
 }
 
-/// A motion syntax cannot encode a VL WSI image: PS3.3 C.8.12.4.1.5 does not
-/// permit their YBR_PARTIAL_420, and their other Values contradict the VL WSI
-/// Enumerated Values. The departures from the syntax's own PS3.5 attribute
-/// rules are listed too.
-pub(super) fn reject_motion_syntax(object: &DefaultDicomObject, uid: &str) -> Result<(), String> {
+/// PS3.3 C.8.12.4.1.5 excludes YBR_PARTIAL_420, not every motion syntax:
+/// single-component MPEG2 uses MONOCHROME2 (PS3.5 Table 8.2.5-1). Its fixed
+/// attributes must still conform to the syntax's own PS3.5 rules.
+pub(super) fn validate_motion_syntax(object: &DefaultDicomObject, uid: &str) -> Result<(), String> {
     let Some((section, departures)) = motion_departures(object, uid) else {
         return Ok(());
     };
+    let monochrome_mpeg2 = matches!(
+        uid,
+        uids::MPEG2MPML | uids::MPEG2MPMLF | uids::MPEG2MPHL | uids::MPEG2MPHLF
+    ) && optional_string(object, tags::PHOTOMETRIC_INTERPRETATION)
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some("MONOCHROME2");
+    if monochrome_mpeg2 {
+        return super::violation_result(
+            departures
+                .into_iter()
+                .map(|departure| {
+                    format!("Transfer Syntax {uid}: {departure} (PS3.5 {EDITION} {section})")
+                })
+                .collect(),
+        );
+    }
     let departures = if departures.is_empty() {
         String::new()
     } else {
@@ -600,6 +627,6 @@ pub(super) fn reject_motion_syntax(object: &DefaultDicomObject, uid: &str) -> Re
         )
     };
     Err(format!(
-        "Transfer Syntax {uid} is a motion compression syntax, which VL Whole Slide Microscopy images shall not use (PS3.3 {EDITION} C.8.12.4.1.5){departures}"
+        "Transfer Syntax {uid} is a motion compression syntax whose declared pixel format is incompatible with VL Whole Slide Microscopy (PS3.3 {EDITION} C.8.12.4.1.5 excludes YBR_PARTIAL_420; single-component MPEG2 may use MONOCHROME2){departures}"
     ))
 }

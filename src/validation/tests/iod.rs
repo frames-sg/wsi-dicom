@@ -849,9 +849,10 @@ fn references_to_other_instances_must_be_listed_in_the_common_instance_reference
     );
 }
 
-/// Statement and scope pairs decidable from the encoded objects that no check
-/// enforces yet. It only falls, and it must return to 0 before the bench is
-/// rebuilt; every family is at 0.
+/// Full standards coverage requires no decidable statement/scope pair to
+/// remain unchecked. Audit discoveries remain failing here; the limit is
+/// not raised to hide a missing implementation. A benchmark may record the
+/// resulting policy failure without claiming complete standards coverage.
 const UNCHECKED_LIMIT: usize = 0;
 
 #[test]

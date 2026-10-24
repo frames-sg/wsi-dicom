@@ -8,6 +8,8 @@
 mod coding;
 mod size;
 
+use std::collections::BTreeMap;
+
 use dicom_dictionary_std::uids;
 
 use super::{signature, without_trailing_padding, Declared, Frame, FrameReport, Reader};
@@ -31,6 +33,7 @@ const EOC: u16 = 0xFFD9;
 /// DCO, VMS, DFS, ADS, MCT, MCC, NLT, MCO, CBD and ATK (ISO/IEC 15444-2 Annex A).
 const PART2_MARKERS: std::ops::RangeInclusive<u16> = 0xFF70..=0xFF79;
 const MCC: u16 = 0xFF75;
+const MCO: u16 = 0xFF77;
 
 const JP2_SIGNATURE_BOX: [u8; 12] = [
     0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A,
@@ -155,7 +158,16 @@ struct MainHeader {
     capabilities: Option<u32>,
     tile_lengths: bool,
     part2_markers: Vec<u16>,
-    component_collections: Vec<u8>,
+    transforms: Transforms,
+}
+
+/// T.801 A.3.8/A.3.9: Imcc identifies a transformation stage, Qmcc
+/// counts collections within it, and MCO selects the stages actually used.
+#[derive(Clone, Default)]
+struct Transforms {
+    enabled: bool,
+    collections: BTreeMap<u8, u16>,
+    stages: Vec<u8>,
 }
 
 /// Where a marker segment is: the main header or a tile's header.
@@ -193,7 +205,7 @@ impl std::fmt::Display for Location {
 struct Context<'r, 'f, 'a> {
     declared: &'a Declared,
     uid: &'a str,
-    single_fragment: bool,
+    fragment_count: Option<usize>,
     syntax: Syntax,
     size: Size,
     report: &'r mut FrameReport<'f>,
@@ -224,7 +236,7 @@ pub(super) fn check(frame: &Frame<'_>, syntax: Syntax, report: &mut FrameReport<
     let mut context = Context {
         declared: frame.declared,
         uid: frame.declared.syntax.as_str(),
-        single_fragment: frame.fragment_starts.is_empty(),
+        fragment_count: frame.fragment_starts.map(|starts| starts.len() + 1),
         syntax,
         size,
         report,
@@ -247,7 +259,7 @@ pub(super) fn check(frame: &Frame<'_>, syntax: Syntax, report: &mut FrameReport<
         }
     }
     context.check_main_header(&main);
-    context.walk_tile_parts(bytes, position);
+    context.walk_tile_parts(bytes, position, &main.transforms);
 }
 
 fn parse_size(bytes: &[u8]) -> Option<(Size, usize)> {
@@ -323,13 +335,12 @@ impl Context<'_, '_, '_> {
         match marker {
             CAP => main.capabilities = Reader::new(payload).u32(),
             TLM => main.tile_lengths = true,
-            MCC => {
-                // Zmcc (2 bytes), then Imcc: the collection index (ISO/IEC 15444-2 Annex A).
-                if let Some(&index) = payload.get(2) {
-                    if !main.component_collections.contains(&index) {
-                        main.component_collections.push(index);
-                    }
-                }
+            COD => {
+                main.transforms.enabled = payload.get(4) == Some(&2);
+                self.coding_marker(marker, payload, Place::Main);
+            }
+            MCC | MCO => {
+                self.transform_marker(marker, payload, Place::Main, &mut main.transforms);
                 main.part2_markers.push(marker);
             }
             marker if PART2_MARKERS.contains(&marker) => main.part2_markers.push(marker),
@@ -359,14 +370,55 @@ impl Context<'_, '_, '_> {
         for &marker in &main.part2_markers {
             self.part2_marker(marker, Place::Main);
         }
-        if self.syntax.family == Family::Part2
-            && main.component_collections.len() > 1
-            && self.single_fragment
-        {
-            let collections = main.component_collections.len();
+    }
+
+    fn transform_marker(
+        &mut self,
+        marker: u16,
+        payload: &[u8],
+        place: Place,
+        transforms: &mut Transforms,
+    ) {
+        let parsed = (|| {
+            let mut reader = Reader::new(payload);
+            if marker == MCC {
+                let segment = reader.u16()?;
+                let index = reader.u8()?;
+                if segment == 0 {
+                    reader.u16()?; // Ymcc: last segment index, not a collection count.
+                    transforms.collections.insert(index, reader.u16()?);
+                }
+            } else {
+                let count = usize::from(reader.u8()?);
+                transforms.stages = reader.take(count)?.to_vec();
+            }
+            Some(())
+        })();
+        if parsed.is_none() {
+            let location = place.at(part2_marker_name(marker));
             self.report.violation(ENCAPSULATION, || {
-                format!("MCC marker segments define {collections} component collections in a codestream held by a single Fragment, but each Fragment contains data of one component collection")
+                format!("{location} transformation header is truncated")
             });
+        }
+    }
+
+    fn check_collections(&mut self, tile: u16, transforms: &Transforms) {
+        if self.syntax.family != Family::Part2 || !transforms.enabled {
+            return;
+        }
+        let Some(fragments) = self.fragment_count else {
+            return;
+        };
+        for index in &transforms.stages {
+            if let Some(&count) = transforms
+                .collections
+                .get(index)
+                .filter(|&&count| usize::from(count) > fragments)
+            {
+                self.report.violation(ENCAPSULATION, || {
+                    format!("tile {tile} MCC stage {index} defines {count} component collections in a codestream held by {fragments} Fragment(s), but each Fragment contains data of one component collection")
+                });
+            }
         }
     }
 
@@ -393,7 +445,7 @@ impl Context<'_, '_, '_> {
 
     /// Hops SOT to SOT by Psot and parses each tile-part header; the
     /// codestream ends with EOC, followed by nothing but padding.
-    fn walk_tile_parts(&mut self, bytes: &[u8], mut position: usize) {
+    fn walk_tile_parts(&mut self, bytes: &[u8], mut position: usize, main: &Transforms) {
         loop {
             let mut reader = Reader::new(bytes.get(position..).unwrap_or(&[]));
             match reader.u16() {
@@ -449,7 +501,11 @@ impl Context<'_, '_, '_> {
                 });
                 return;
             }
-            if !self.tile_part_header(bytes, position + 12, end, tile) {
+            // MCC/MCO occur only in the first tile-part header. Apply its
+            // overrides before checking, without retaining a copy per tile.
+            let mut transforms = (self.syntax.family == Family::Part2 && bytes[position + 10] == 0)
+                .then(|| main.clone());
+            if !self.tile_part_header(bytes, position + 12, end, tile, transforms.as_mut()) {
                 return;
             }
             position = end;
@@ -463,16 +519,33 @@ impl Context<'_, '_, '_> {
         mut position: usize,
         end: usize,
         tile: u16,
+        mut transforms: Option<&mut Transforms>,
     ) -> bool {
         let bytes = &bytes[..end];
         loop {
             let reason = match self.segment(bytes, position) {
-                Ok((SOD, _, _)) => return true,
+                Ok((SOD, _, _)) => {
+                    if let Some(transforms) = transforms {
+                        self.check_collections(tile, transforms);
+                    }
+                    return true;
+                }
                 Ok((SOT, _, _)) => "it reaches another SOT".to_string(),
                 Ok((marker, payload, next)) => {
                     if PART2_MARKERS.contains(&marker) {
                         self.part2_marker(marker, Place::Tile(tile));
+                        if let Some(transforms) = transforms
+                            .as_deref_mut()
+                            .filter(|_| matches!(marker, MCC | MCO))
+                        {
+                            self.transform_marker(marker, payload, Place::Tile(tile), transforms);
+                        }
                     } else {
+                        if let Some(transforms) =
+                            transforms.as_deref_mut().filter(|_| marker == COD)
+                        {
+                            transforms.enabled = payload.get(4) == Some(&2);
+                        }
                         self.coding_marker(marker, payload, Place::Tile(tile));
                     }
                     position = next;

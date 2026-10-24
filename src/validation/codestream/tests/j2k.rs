@@ -340,22 +340,107 @@ fn part2_transfer_syntaxes_admit_only_annex_j_extensions() {
 }
 
 #[test]
-fn a_fragment_holds_one_component_collection() {
-    let codestream = with_rsiz(&lossless_rgb(16, 8), 0x8100);
+fn a_fragment_holds_one_component_collection_per_transform_stage() {
+    let mut codestream = with_rsiz(&lossless_rgb(16, 8), 0x8100);
+    let cod = main_marker(&codestream, 0xFF52);
+    codestream[cod + 8] = 2; // Use the Annex J stages selected by MCO.
     let declared = color(PART2_LOSSLESS, (8, 16), "YBR_RCT");
-    let collection = |index: u8| [0xFF, 0x75, 0x00, 0x05, 0x00, 0x00, index];
-    let one = with_main_segment(&codestream, &collection(0));
-    assert_conformant(&check_frame(&one, &declared));
-    let two = with_main_segment(&one, &collection(1));
+    // T.801 A.3.8: Imcc indexes a stage; Qmcc counts its collections.
+    // Null array transforms preserve the components named in each group.
+    let collection = |index: u8, groups: &[&[u8]]| {
+        let mut payload = vec![0, 0, index, 0, 0, 0, groups.len() as u8];
+        for components in groups {
+            payload.extend([1, 0, components.len() as u8]);
+            payload.extend_from_slice(components);
+            payload.extend([0, components.len() as u8]);
+            payload.extend_from_slice(components);
+            payload.extend([0, 0, 0]);
+        }
+        let mut marker = vec![0xFF, 0x75];
+        marker.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+        marker.extend(payload);
+        marker
+    };
+    let mut stages = collection(0, &[&[0, 1, 2]]);
+    stages.extend(collection(1, &[&[0, 1, 2]]));
+    stages.extend([0xFF, 0x77, 0, 5, 2, 0, 1]);
+    assert_conformant(&check_frame(
+        &with_main_segment(&codestream, &stages),
+        &declared,
+    ));
+
+    let mut collections = collection(0, &[&[0], &[1, 2]]);
+    collections.extend([0xFF, 0x77, 0, 4, 1, 0]);
+    let two = with_main_segment(&codestream, &collections);
     assert_violation(
         &check_frame(&two, &declared),
-        "MCC marker segments define 2 component collections in a codestream held by a single Fragment, but each Fragment contains data of one component collection (PS3.5 2026d A.4.4)",
+        "MCC stage 0 defines 2 component collections",
     );
+    let in_tile = |stream: &[u8], marker: &[u8]| {
+        let sot = find(stream, &[0xFF, 0x90]);
+        let length = u32::from_be_bytes(stream[sot + 6..sot + 10].try_into().unwrap());
+        let mut changed = insert(stream, sot + 12, marker);
+        if length != 0 {
+            changed[sot + 6..sot + 10]
+                .copy_from_slice(&(length + marker.len() as u32).to_be_bytes());
+        }
+        changed
+    };
+    // A tile's collection definition overrides the same main-header Imcc.
+    let overridden = in_tile(&two, &collection(0, &[&[0, 1, 2]]));
+    assert_conformant(&check_frame(&overridden, &declared));
+    let tile_collections = in_tile(
+        &with_main_segment(&codestream, &stages),
+        &collection(0, &[&[0], &[1, 2]]),
+    );
+    assert_violation(
+        &check_frame(&tile_collections, &declared),
+        "MCC stage 0 defines 2 component collections",
+    );
+    // A first tile-part COD can independently enable or disable Annex J.
+    let cod_length = usize::from(u16::from_be_bytes(
+        codestream[cod + 2..cod + 4].try_into().unwrap(),
+    )) + 2;
+    let enabled_cod = &codestream[cod..cod + cod_length];
+    let mut disabled_cod = enabled_cod.to_vec();
+    disabled_cod[8] = 0;
+    let mut disabled_main = two.clone();
+    disabled_main[cod + 8] = 0;
+    let rgb = color(PART2_LOSSLESS, (8, 16), "RGB");
+    assert_violation(
+        &check_frame(&in_tile(&disabled_main, enabled_cod), &rgb),
+        "MCC stage 0 defines 2 component collections",
+    );
+    assert_conformant(&check_frame(&in_tile(&two, &disabled_cod), &rgb));
     let middle = two.len() / 2;
     assert_conformant(&check_fragments(
         &[&two[..middle], &two[middle..]],
         &declared,
     ));
+    // A retrieved Frame has no Item delimiters, so it gives no evidence
+    // that the source held its collections in only one Fragment.
+    let mut metadata = super::rule::image((8, 16), 3, "YBR_RCT", vec![two.clone()]);
+    metadata
+        .take(dicom_dictionary_std::tags::PIXEL_DATA)
+        .unwrap();
+    let retrieved = super::super::check_retrieved_frames(
+        std::path::Path::new("retrieved"),
+        &metadata,
+        PART2_LOSSLESS,
+        &[(1, two.as_slice())],
+        1 << 20,
+    )
+    .unwrap();
+    assert_conformant(&retrieved);
+
+    let mut three = collection(0, &[&[0], &[1], &[2]]);
+    three.extend([0xFF, 0x77, 0, 4, 1, 0]);
+    let three = with_main_segment(&codestream, &three);
+    let middle = three.len() / 2;
+    assert_violation(
+        &check_fragments(&[&three[..middle], &three[middle..]], &declared),
+        "MCC stage 0 defines 3 component collections",
+    );
 }
 
 #[test]
