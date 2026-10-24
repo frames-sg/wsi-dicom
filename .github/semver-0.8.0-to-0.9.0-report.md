@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 
 # wsi-dicom 0.8.0 to 0.9.0 semver report
 
@@ -14,4 +14,5 @@
   field htj2k_decoder of struct DoctorOptions, previously in file src/validation.rs:122
   field htj2k_decoder of struct ValidationOptions, previously in file src/validation.rs:72
   field max_pixel_frames of struct ValidationOptions, previously in file src/validation.rs:74
+  variant ValidationProfile::Core2026c, previously in file src/validation.rs:54
 ```

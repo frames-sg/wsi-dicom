@@ -17,6 +17,7 @@ use super::icons::check_icons;
 use super::records::{self, parse};
 use super::run_file_set_check;
 use super::structure::check_structure;
+use crate::test_support::find_command_for_test;
 use crate::validation::discovery::discover_dicom_files;
 use crate::validation::iod::Family;
 use crate::validation::{ValidationCheck, ValidationOptions, ValidationStatus};
@@ -303,16 +304,7 @@ fn a_dcmmkdir_file_set_passes_and_dciodvfy_agrees() {
         "{}",
         check.message
     );
-    let output = Command::new("dciodvfy")
-        .arg(file_set.dicomdir())
-        .output()
-        .expect("these tests need dicom3tools dciodvfy on PATH");
-    let report = String::from_utf8_lossy(&output.stderr).to_string()
-        + &String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !report.lines().any(|line| line.starts_with("Error")),
-        "dciodvfy rejects the baseline DICOMDIR: {report}"
-    );
+    assert_dciodvfy_accepts(&file_set.dicomdir(), "baseline");
 }
 
 #[test]
@@ -1139,15 +1131,26 @@ fn an_empty_file_set_passes_and_dciodvfy_agrees() {
     let checks = discovered_checks(dir.path(), &ValidationOptions::default());
     assert_eq!(checks.len(), 1, "{checks:?}");
     assert_passes(&checks[0]);
-    let output = Command::new("dciodvfy")
-        .arg(dir.path().join("DICOMDIR"))
+    assert_dciodvfy_accepts(&dir.path().join("DICOMDIR"), "empty");
+}
+
+/// dciodvfy, the independent oracle, reports no Error for `dicomdir`. Skipped
+/// when dciodvfy is not installed, unless `WSI_DICOM_REQUIRED_EXTERNAL_TOOLS`
+/// names it.
+fn assert_dciodvfy_accepts(dicomdir: &Path, which: &str) {
+    let Some(dciodvfy) = find_command_for_test("dciodvfy") else {
+        eprintln!("skipping dciodvfy validation: dciodvfy not found");
+        return;
+    };
+    let output = Command::new(dciodvfy)
+        .arg(dicomdir)
         .output()
-        .expect("these tests need dicom3tools dciodvfy on PATH");
+        .expect("run dciodvfy");
     let report = String::from_utf8_lossy(&output.stderr).to_string()
         + &String::from_utf8_lossy(&output.stdout);
     assert!(
         !report.lines().any(|line| line.starts_with("Error")),
-        "dciodvfy rejects the empty DICOMDIR: {report}"
+        "dciodvfy rejects the {which} DICOMDIR: {report}"
     );
 }
 

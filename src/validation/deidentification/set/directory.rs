@@ -1,8 +1,7 @@
-//! PS3.15 E.1.1 over the DICOMDIR of a File-set: "If a DICOMDIR File is
-//! required, it shall either be created from the de-identified DICOM Files
-//! it references, or an existing DICOMDIR File shall be de-identifed
-//! according to this Profile", and "Any existing non-de-identified DICOMDIR
-//! File shall be removed from the File-set".
+//! PS3.15 E.1.1 over the DICOMDIR of a File-set: a required DICOMDIR File is
+//! either created from the de-identified DICOM Files it references or is
+//! itself de-identified according to the Profile, and "Any existing
+//! non-de-identified DICOMDIR File shall be removed from the File-set".
 //!
 //! A record describes the File it references and, as a PATIENT, STUDY or
 //! SERIES record above it, the Files of the records below it. A record

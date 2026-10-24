@@ -1,7 +1,7 @@
 //! Bounded sequential reader over an encoded Data Set: the file after its
 //! File Meta Information, or the inflated stream of a Deflated Data Set.
 //!
-//! Values the rules do not inspect are skipped (seeked over in a file), so
+//! Values the rules do not inspect are skipped (a file seeks past them), so
 //! Pixel Data is never buffered whole.
 
 use std::fs::File;

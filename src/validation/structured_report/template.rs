@@ -161,7 +161,7 @@ fn key_object_root(declared: Option<&Declared>, findings: &mut Findings) {
     }
 }
 
-/// The CONTAINERs below the root that declare a Template and that the root
+/// The CONTAINER items below the root that declare a Template and that the root
 /// Template's walk did not reach: each is held to its own.
 fn subtrees(tree: &Tree<'_>, matcher: &mut Matcher<'_, '_>, findings: &mut Findings) {
     for index in 1..tree.nodes.len() {
