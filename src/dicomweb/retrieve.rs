@@ -40,6 +40,20 @@ impl Metadata {
             .find(|object| text(object, tags::SOP_INSTANCE_UID).as_deref() == Some(uid))
     }
 
+    /// The BulkDataURI of SOP Instance `uid`'s Pixel Data, resolved against
+    /// the Metadata request (10.4.1.1.6.1).
+    pub(super) fn pixel_data_uri(&self, uid: &str) -> Option<Url> {
+        let index = self
+            .objects
+            .iter()
+            .position(|object| text(object, tags::SOP_INSTANCE_UID).as_deref() == Some(uid))?;
+        let prefix = format!("/{index}/");
+        bulk_references(&self.bytes, JsonSource::Metadata)?
+            .into_iter()
+            .find(|reference| reference.pixel_data && reference.pointer.starts_with(&prefix))
+            .and_then(|reference| self.url.resolve(&reference.uri).ok())
+    }
+
     /// The Data Set of SOP Instance `uid` read again with the `fetched`
     /// BulkDataURI Values, such as the ICC Profile a Frame is compared with.
     pub(super) fn object_with(
@@ -94,6 +108,7 @@ fn read_metadata(
     session.retrieved = true;
     session.audit.representation(&exchange);
     super::response::expect_media_type(verdict, &exchange, JSON, "10.4.4 Table 10.4.4-1")?;
+    session.served("metadata");
     if !exchange.body.trim_ascii_start().starts_with(b"[") {
         verdict.fail(format!(
             "{}: the Metadata is not a top-level Array; JSON Metadata of one or more Instances is a single Array ({})",
@@ -379,6 +394,7 @@ fn instance_json(
         return;
     }
     let line = exchange.request_line();
+    session.instance_metadata = Some(exchange.body.clone());
     if !exchange.body.trim_ascii_start().starts_with(b"[") {
         verdict.fail(format!(
             "{line}: the Metadata is not a top-level Array ({})",

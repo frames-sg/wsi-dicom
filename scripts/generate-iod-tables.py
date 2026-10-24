@@ -5,8 +5,9 @@
 
 Reads the pinned DICOM DocBook sources (PS3.3 for the IOD, module and macro
 tables, PS3.4 for the Storage SOP Classes of each IOD, PS3.5 and PS3.10 for
-encoding and file format statements, PS3.6 for the data dictionary, PS3.16 for
-Context Groups and Templates) and writes src/validation/iod/tables.rs,
+encoding and file format statements, PS3.6 for the data dictionary, PS3.15
+for de-identification, PS3.16 for Context Groups and Templates, PS3.18 for
+DICOMweb origin servers and the DICOM JSON Model) and writes src/validation/iod/tables.rs,
 dictionary.rs, requirements.rs and value_sets.rs deterministically. Every 1C/2C
 condition, conditional module or functional group usage, conditional
 enumeration and Type 3 presence restriction becomes a ConditionId variant, and
@@ -36,7 +37,9 @@ SOURCES = {
     "part05.xml": "05183ea889f097cba51a938bf961a62f308bc6044a12f24d71282f08469de835",
     "part06.xml": "fa9f0f8d67eba692dcf95cfeae0a8f4e071beeb7844215a860bc4b9d5dfaad25",
     "part10.xml": "4e08e2ef3ad0b57d79cf6903c0076c56b670ef2172afa2f6c42da0792ff645d5",
+    "part15.xml": "1eb2a9724822476b3f1f3de23d15ae655a4c7f6e9d32bf16f2d9ef76d7d8437c",
     "part16.xml": "293912fbc2acefe5d53dffa449070db488134da29aaa452e31d610d403888899",
+    "part18.xml": "f68ef10579a9caad8ce41d5905f6418daf5ef8a353d66ad9e97c23e82a941d8f",
 }
 # NEMA serves the newest edition only under current/ until the next one is
 # published; the pinned digests decide which download is the edition.
@@ -46,7 +49,7 @@ SOURCE_URLS = (
 )
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "src" / "validation" / "iod"
-OUTPUT_FILES = ("tables.rs", "dictionary.rs", "requirements.rs", "value_sets.rs")
+OUTPUT_FILES = ("tables.rs", "dictionary.rs", "requirements.rs", "value_sets.rs", "confidentiality.rs")
 # The pathology-slide IODs: (IOD section, Module table, Functional Group Macro
 # table). VL Whole Slide Microscopy comes first so that its statements keep
 # their order. PS3.3 A.91 Height Map Segmentation is not among them: A.91.1
@@ -55,13 +58,16 @@ OUTPUT_FILES = ("tables.rs", "dictionary.rs", "requirements.rs", "value_sets.rs"
 # and its Module table has no Specimen Module or slide coordinates.
 IODS = (
     ("sect_A.32.8", "table_A.32.8-1", "table_A.32.8-2"),
-    ("sect_A.32.2", "table_A.32.1-2", None),
-    ("sect_A.32.3", "table_A.32.1-3", None),
-    ("sect_A.90.1", "table_A.90.1.3-1", "table_A.90.1.5-1"),
-    ("sect_A.90.2", "table_A.90.2.3-1", "table_A.90.2.5-1"),
     ("sect_A.87", "table_A.87-1", None),
     ("sect_A.51", "table_A.51-1", "table_A.51-2"),
     ("sect_A.75", "table_PS3.3_A.75-1", "table_PS3.3_A.75-2"),
+    # The Key Object Selection Document, which flags images (e.g. a scan's
+    # quality or completeness), and the SR documents that report on them.
+    ("sect_A.35.4", "table_A.35.4-1", None),
+    ("sect_A.35.1", "table_A.35.1-1", None),
+    ("sect_A.35.2", "table_A.35.2-1", None),
+    ("sect_A.35.3", "table_A.35.3-1", None),
+    ("sect_A.35.13", "table_A.35.13-1", None),
 )
 # PS3.4 Table B.5-1 Standard SOP Classes names the IOD of each Storage SOP
 # Class and the PS3.4 section specializing it.
@@ -73,18 +79,106 @@ SOP_CLASS_SPECIALIZATION = re.compile(
 FILE_META_TABLE = "table_7.1-1"
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
 
+# Scopes beside the IODs: the File-set of a DICOMDIR (PS3.3 Annex F and PS3.10
+# Chapter 8) and DICOMweb origin servers (PS3.18).
+FILE_SET = "file-set"
+DICOMWEB = "dicomweb"
+# PS3.18 chapters binding an origin server for the transactions the DICOMweb
+# checks cover: Conformance, the Common Aspects of the Web Services (Retrieve
+# Capabilities among them), the Studies Service (Retrieve, Store, Search), the
+# DICOM JSON Model, the Capabilities Description and the Store Instances
+# Response Module.
+DICOMWEB_CHAPTERS = ("chapter_6", "chapter_8", "chapter_10", "chapter_F", "chapter_H", "chapter_I")
+# PS3.3 Annex F Basic Directory IOD: (Annex, IOD section, Module table), and
+# the PS3.6 Table A-1 name of the SOP Class of the DICOMDIR (PS3.10 8.6).
+DIRECTORY = ("chapter_F", "sect_F.3", "table_F.3-1")
+DIRECTORY_SOP_CLASS = "Media Storage Directory Storage"
+DIRECTORY_RECORD_TABLE = "table_F.3-3"
+DIRECTORY_RECORD_TYPE = "00041430"
+DIRECTORY_RELATIONSHIPS = "table_F.4-1"
+ROOT_DIRECTORY_ENTITY = "(Root Directory Entity)"
+PRIVATE_LOWER_LEVEL = "(any of the above as privately defined)"
+# Key table rows permitting the other Attributes of the Information Entity.
+OTHER_KEYS = re.compile(r"Any (?:other )?Attribute of the .+\Z")
+# Conditions a 1C row states without a "Required if" sentence, bound to the
+# exact sentence of its description; generation fails if the sentence changes.
+BOUND_CONDITIONS = {
+    ("table_F.3-2", "00041142"): "Required to specify the expanded or replacement character set.",
+    ("table_F.3-3", "00041500"): (
+        "When the Directory Record does not reference any SOP Instance this Attribute shall not be present."
+    ),
+}
+
+# PS3.15 Annex E Attribute Confidentiality Profiles.
+CONFIDENTIALITY_CHAPTER = "chapter_E"
+CONFIDENTIALITY_TABLE = "table_E.1-1"
+ACTION_CODE_TABLE = "table_E.1-1a"
+STRUCTURED_CONTENT_TABLE = "table_E.3.4-1"
+# The Rust Variant of each Table E.1-1a De-identification Action Code.
+ACTION_VARIANTS = {
+    "D": "D", "Z": "Z", "X": "X", "K": "K", "C": "C", "U": "U",
+    "Z/D": "ZD", "X/Z": "XZ", "X/D": "XD", "X/Z/D": "XZD", "X/Z/U*": "XZUStar",
+}
+# CID 7050 De-identification Method codes of the Basic Profile (E.2) and of
+# each Option (E.3): (section, its title, CID 7050 Code Meaning, the Option's
+# column header in Tables E.1-1 and E.3.4-1 or None).
+DEIDENTIFICATION_METHODS = 7050
+BASIC_PROFILE = ("sect_E.2", "Basic Application Level Confidentiality Profile", "Basic Application Confidentiality Profile")
+CONFIDENTIALITY_OPTIONS = (
+    ("sect_E.3.1", "Clean Pixel Data Option", "Clean Pixel Data Option", None),
+    ("sect_E.3.2", "Clean Recognizable Visual Features Option", "Clean Recognizable Visual Features Option", None),
+    ("sect_E.3.3", "Clean Graphics Option", "Clean Graphics Option", "Clean Graph. Opt."),
+    ("sect_E.3.4", "Clean Structured Content Option", "Clean Structured Content Option", "Clean Struct. Cont. Opt."),
+    ("sect_E.3.5", "Clean Descriptors Option", "Clean Descriptors Option", "Clean Desc. Opt."),
+    (
+        "sect_E.3.6",
+        "Retain Longitudinal Temporal Information Options",
+        "Retain Longitudinal Temporal Information Full Dates Option",
+        "Rtn. Long. Full Dates Opt.",
+    ),
+    (
+        "sect_E.3.6",
+        "Retain Longitudinal Temporal Information Options",
+        "Retain Longitudinal Temporal Information Modified Dates Option",
+        "Rtn. Long. Modif. Dates Opt.",
+    ),
+    ("sect_E.3.7", "Retain Patient Characteristics Option", "Retain Patient Characteristics Option", "Rtn. Pat. Chars. Opt."),
+    ("sect_E.3.8", "Retain Device Identity Option", "Retain Device Identity Option", "Rtn. Dev. Id. Opt."),
+    ("sect_E.3.9", "Retain UIDs Option", "Retain UIDs Option", "Rtn. UIDs Opt."),
+    ("sect_E.3.10", "Retain Safe Private Option", "Retain Safe Private Option", "Rtn. Safe Priv. Opt."),
+    ("sect_E.3.11", "Retain Institution Identity Option", "Retain Institution Identity Option", "Rtn. Inst. Id. Opt."),
+)
+# The columns before the Option columns of Tables E.1-1 and E.3.4-1.
+CONFIDENTIALITY_COLUMNS = (
+    "Attribute Name", "Tag", "Retd. (from PS3.6 PS3.6)", "In Std. Comp. IOD (from PS3.3 PS3.3)", "Basic Prof.",
+)
+STRUCTURED_CONTENT_COLUMNS = (
+    "Code Meaning", "Code Value", "Coding Scheme Designator", "Value Type", "Retd. (from PS3.16 PS3.16)",
+    "In Std. Tpl. (from PS3.16 PS3.16)", "Basic Prof.",
+)
+CONFIDENTIALITY_TAG = re.compile(
+    r"\((?P<group>[0-9A-F]{2}(?:[0-9A-F]{2}|xx)),(?P<element>[0-9A-F]{4}|xxxx)\)\Z"
+)
+PRIVATE_ATTRIBUTES = "(gggg,eeee) where gggg is odd"
+SCHEME_VERSION = re.compile(r"(?P<scheme>\S+) \[(?P<version>[^\]]+)\]\Z")
+
 XML_ID = "{http://www.w3.org/XML/1998/namespace}id"
 TAG = re.compile(r"\(([0-9A-Fa-fx]{4}),([0-9A-Fa-fx]{4})\)\Z")
 CONDITION_START = re.compile(
     r"\b(?:Required (?:if|when|for|unless)\b|Required:|Shall be present if\b)"
 )
 TYPE3_RESTRICTION = re.compile(r"\bShall not be present\b[^.]*\.")
+# "Include Table C.18.1-1 if and only if Value Type (0040,A040) is NUM.": a
+# Macro included on a condition (Tables C.17-5 and C.17-6).
+INCLUDE_CONDITION = re.compile(r">*\s*Include Table [A-Z0-9.-]+ (?P<condition>(?:if|when)\b.+)\Z")
 ITEM_PATTERNS = (
     ("Only a single Item shall be included in this Sequence.", "Exactly(1)"),
     ("Only a single Item is permitted in this Sequence.", "AtMost(1)"),
     ("Zero or one Item shall be included in this Sequence.", "AtMost(1)"),
     ("One or more Items shall be included in this Sequence.", "AtLeast(1)"),
     ("A single Item shall be present.", "Exactly(1)"),
+    ("Exactly two Items shall be included in this Sequence.", "Exactly(2)"),
+    ("Only two Items shall be included in this Sequence.", "Exactly(2)"),
     (
         "The number of Items shall be the same as the number of Frames in the Multi-frame Image.",
         "NumberOfFrames",
@@ -117,6 +211,14 @@ VRS = (
 # bound to the exact sentence in the cited section, or in the row's own
 # description cell ("cell"); generation fails if the sentence changes so the
 # binding is reviewed against the new text.
+# Prose enumerations whose sentence states a rule beyond the Values they bind:
+# the generated tables enforce those Values, and the sentence stays a statement
+# for the rest, which a check holds.
+PARTLY_BOUND_SENTENCES = (
+    # Table C.8.32-3 Frame Type (0008,9007): "MIXED is not allowed".
+    "Enumerated Values and Defined Terms are the same as those for the four Values of"
+    " Image Type (0008,0008), except that the Value MIXED is not allowed.",
+)
 PROSE_ENUMERATIONS = (
     # (module or macro table, tag, section or "cell", exact sentence, value index, values)
     (
@@ -152,27 +254,6 @@ PROSE_ENUMERATIONS = (
         " Image Type (0008,0008).",
         2,
         ("PRIMARY",),
-    ),
-    (
-        "table_C.8.35.1-1",
-        "(0008,0008)",
-        "sect_C.8.35.1.1.1",
-        "Value 1 shall have a Value of ORIGINAL or DERIVED.",
-        1,
-        ("ORIGINAL", "DERIVED"),
-    ),
-    ("table_C.8.35.1-1", "(0008,0008)", "sect_C.8.35.1.1.1", "Value 2 shall have a Value of PRIMARY.", 2, ("PRIMARY",)),
-    *(
-        (
-            "table_C.8.35.4.1-1",
-            "(0008,9007)",
-            "cell",
-            "Enumerated Values and Defined Terms are the same as those for the four Values of"
-            " Image Type (0008,0008).",
-            value,
-            values,
-        )
-        for value, values in ((1, ("ORIGINAL", "DERIVED")), (2, ("PRIMARY",)))
     ),
     *(
         (
@@ -230,6 +311,7 @@ INCLUDE_VALUE_SETS = {
         ("table_10-8", "00082230", "D", (2,)),
     ),
     ("table_C.8.20-2", "table_10-19"): (("table_10-19", "0066002F", "B", (7162,)),),
+    ("table_C.17-2", "table_C.17-3"): (("table_C.17-3a", "0040A170", "D", (7009,)),),
 }
 # Inclusions whose Value Sets depend on the IOD or on the application, as they
 # resolve for the pathology-slide IODs, none of which is one of CONDITIONAL_IODS:
@@ -237,30 +319,9 @@ INCLUDE_VALUE_SETS = {
 # the union of the groups that may apply, or None where only another IOD or an
 # application the object does not state names one.
 CONDITIONAL_IODS = ("sect_A.32.4", "sect_A.32.5", "sect_A.32.11")
-CONDITIONAL_VALUE_SETS = {
-    (
-        "table_C.8-77",
-        "table_8.8-1",
-        "DCID 4040 for the Section A.32.5. BCID 4029 for the Section A.32.4 and Section A.32.11 for"
-        " dermatology applications. BCID 4031 for humans and BCID 7483 for non-human organisms."
-        " BCID 4028 for dental applications.",
-    ): ("B", (4031, 7483, 4028)),
-    (
-        "table_C.8-77",
-        "table_8.8-1",
-        "BCID 2. BCID 245 is defined for the Section A.32.4 and Section A.32.11 for dermatology"
-        " applications. BCID 247 is defined for the Section A.32.4 for dental applications.",
-    ): ("B", (2,)),
-    ("table_C.8-77", "table_8.8-1", "DCID 4062. DCID 4063 for dental applications."): ("D", (4062, 4063)),
-    ("table_C.8-77", "table_8.8-1", "DCID 4064. DCID 4065 for dental applications."): ("D", (4064, 4065)),
-    (
-        "table_C.8-77",
-        "table_10-8",
-        "CID 4061 for dental applications. These Type 3 Attributes are not appropriate when Specimen"
-        " Description Sequence (0040,0560) is present, as it includes the Primary Anatomic Structure"
-        " Macro for each specimen in the image.",
-    ): None,
-}
+# Table C.8-77 VL Image Module, whose inclusions name Value Sets per IOD and
+# application, is in none of the IODs.
+CONDITIONAL_VALUE_SETS = {}
 # IOD Content Constraints sections that bind Value Sets to Code Sequences of a
 # Module or Functional Group Macro named by the section title.
 IOD_CONSTRAINT_SECTIONS = {"sect_A.32.8": ("sect_A.32.8.3.1", "sect_A.32.8.4.1")}
@@ -272,9 +333,8 @@ IOD_CONSTRAINT_SECTIONS = {"sect_A.32.8": ("sect_A.32.8.3.1", "sect_A.32.8.4.1")
 # ("forbidden", table, tag) for an Attribute that shall not be present, when
 # its predicate in conditions.rs says so, ("absent", Module section) for a
 # Module that shall not be present, or ("one of", Module sections).
-# A constraint replaces the Value Set of its row. Not bound: A.90.1.4.4/5 and
-# A.90.2.4.4/5 suggest Context Groups "for dermatology applications" only;
-# A.75.5.1 restates for Quantity Definition Sequence (0040,9220) the Value Sets
+# A constraint replaces the Value Set of its row. Not bound: A.75.5.1 restates
+# for Quantity Definition Sequence (0040,9220) the Value Sets
 # of TID 15400, and suggests BCID 7222 and BCID 7203 where the Derivation Image
 # Macro defines DCID 7202 and DCID 7203, which a suggestion cannot relax (the
 # Measurement Units Code Sequence it binds is DCID 82 "unless otherwise defined
@@ -282,30 +342,6 @@ IOD_CONSTRAINT_SECTIONS = {"sect_A.32.8": ("sect_A.32.8.3.1", "sect_A.32.8.4.1")
 # Lookup Table Module, whose Attributes are all those of the Palette Color
 # Lookup Table Module the IOD uses.
 IOD_CONSTRAINTS = (
-    ("sect_A.32.2", "The Value of Modality (0008,0060) shall be GM.", ("values", "table_C.7-5a", "00080060", ("GM",))),
-    (
-        "sect_A.32.2",
-        "Microscopic Images with Slide Coordinates shall not be encoded with this IOD.",
-        ("absent", "sect_C.8.12.2"),
-    ),
-    ("sect_A.32.3", "The Value of Modality (0008,0060) shall be SM.", ("values", "table_C.7-5a", "00080060", ("SM",))),
-    *(
-        constraint
-        for iod in ("sect_A.90.1", "sect_A.90.2")
-        for constraint in (
-            (iod, "The Value of Modality (0008,0060) shall be CFM.", ("values", "table_C.7-5a", "00080060", ("CFM",))),
-            (
-                iod,
-                "The Defined TID for Acquisition Context Sequence (0040,0555) is TID 8300.",
-                ("template", "table_C.7.6.14-1", "00400555", "D", 8300),
-            ),
-        )
-    ),
-    (
-        "sect_A.90.2",
-        "For Specimen Preparation Step Content Item Sequence (0040,0612) DTID 8301.",
-        ("template", "table_C.7.6.22-2", "00400612", "D", 8301),
-    ),
     *(
         (iod, f"The Section {section} shall not be present.", ("absent", f"sect_{section}"))
         for iod, sections in (("sect_A.51", ("C.11.2", "C.11.1", "C.9.2")), ("sect_A.75", ("C.11.2", "C.11.1", "C.9.2")))
@@ -352,6 +388,30 @@ SCHEME_CONTEXT_GROUPS = {82: "UCUM"}
 SCHEME_SENTENCE = re.compile(
     r"Coding Scheme Designator(?: \(0008,0102\))? (?:shall be|is specified as) \"?([A-Za-z0-9_.-]+?)\"?\."
 )
+# The Content Constraints of the Structured Reporting IODs (A.35.x.3.1): the
+# Value Types of Content Sequence (0040,A730) Items, the Relationship Content
+# Constraints table, and the Template a document is constructed from at its
+# root, where the IOD names one.
+DOCUMENT_IOD = re.compile(r"sect_A\.35\.\d+\Z")
+DOCUMENT_VALUE_TYPES = (
+    "Value Type (0040,A040) in Content Sequence (0040,A730) of the Section C.17.3 is constrained to the"
+    " following Enumerated Values (see Table C.17.3-7 for Value Type definitions):"
+)
+ROOT_TEMPLATE = re.compile(r"The document shall be constructed from TID (?P<template>\d+) invoked at the root node\.\Z")
+ANY_VALUE_TYPE = "any type"
+SEE_BELOW = " (see below)"
+# The Templates of the KOS and SR IODs, which no IOD row binds: their root
+# Templates (TID 2010 Key Object Selection, A.35.4.3.1.3) and the Measurement
+# Report (TID 1500) pathology measurements use, with every Template they
+# include.
+SR_TEMPLATES = (2010, 1500)
+TEMPLATE_PARAMETER = re.compile(r"\$\w+")
+# A Value Set Constraint cell that only names Context Groups, a DCID or BCID
+# reference rendering as "DSection CID n"; and the default a cell may state
+# beside them ("DCID 270 Defaults to (121006, DCM, \"Person\")"), up to a
+# Context Group or UNITS constraint that follows it.
+CONSTRAINT_SETS = re.compile(r"[BD](?:Section )?CID \d+(?: or [BD](?:Section )?CID \d+)*\.?")
+CONSTRAINT_DEFAULT = re.compile(r"Defaults to .*?(?=\s+(?:UNITS = )?[BD](?:Section )?CID \d|$)")
 CODED_ENTRY = re.compile(r"(EV|DT) \((.+?), (\S+?)(?: \[.*?\])?, \"(.*)\"\)\Z")
 TEMPLATE_CONDITION = (
     (re.compile(r"(IFF?) Row (\w+) [\w ]*?value is \((.+?), (\S+?), \".*\"\)\Z", re.I), "value"),
@@ -359,10 +419,35 @@ TEMPLATE_CONDITION = (
     (re.compile(r"(IFF?) Row (\w+) is present\Z"), "present"),
 )
 
-# Normative statements: every sentence saying "shall" or "must" in the IOD, the
-# Module, Macro and Attribute description sections it reaches, the normative
-# chapters and annexes of PS3.5, and the file format chapters of PS3.10.
-NORMATIVE = re.compile(r"\b(?:shall|must)\b", re.IGNORECASE)
+# Normative statements: every sentence saying "shall" or "must", or prohibiting
+# with "is not permitted", "is not allowed", "is prohibited", "is forbidden" or
+# "may not be used"
+# (each precise on the sections below; "may not" alone is mostly "may or may
+# not"), in the IOD, the Module, Macro and Attribute description sections it
+# reaches, the normative chapters and annexes of PS3.5, and the file format
+# chapters of PS3.10.
+NORMATIVE = re.compile(
+    r"\b(?:shall|must|(?:is|are) (?:not permitted|not allowed|prohibited|forbidden)|may not be used)\b",
+    re.IGNORECASE,
+)
+# Prohibitions worded "may not" that no pattern separates from the "may not" of
+# possibility: on these sections a guarded "may not <verb>" is normative in 7
+# of 14 sentences, and "may not be used", the one precise form, is in
+# NORMATIVE. Generation fails when an edition rewords one, so the change is
+# reviewed.
+NORMATIVE_SENTENCES = (
+    # PS3.3 C.7.6.16.1.1
+    "A Private Functional Group may not replicate the Attributes of a Standard Functional Group.",
+    # PS3.3 C.8.16.1.3
+    "The Attribute Value may not be MIXED as this Value needs to be a summary of the primary purpose of the images, whether the Frames have the same Value or not.",
+)
+# "is required to be" and "are required to have" bind unless negated, as in
+# "not every cell is required to be populated".
+REQUIRED_TO = re.compile(r"\b(?:is|are) required to (?:be|have)\b", re.IGNORECASE)
+NEGATED_REQUIREMENT = re.compile(r"\bnot\b[^.;]*?\brequired to\b", re.IGNORECASE)
+# Recommendations: the sentences of the same sections that say "should" or
+# "is recommended", and no normative phrase.
+RECOMMENDATION = re.compile(r"\b(?:should|(?:is|are) recommended)\b", re.IGNORECASE)
 SENTENCE_BREAK = re.compile(r"(?<=[.;])\s+(?=[A-Z(\"“])")
 # PS3.3 sections a scope section may cite: code, macro and module definitions.
 LINKED_SECTION = re.compile(r"sect_(?:C|8|10)\.")
@@ -407,6 +492,14 @@ const fn a(
     children: &'static [Node],
 ) -> Node {
     Node::Attribute(Attribute { tag, name, kind, condition, enumerations, items, value_set, children })
+}
+
+const fn ic(table: &'static Table, condition: ConditionId) -> Node {
+    Node::IncludeIf(table, condition)
+}
+
+const fn k(selection: &'static Selection) -> Node {
+    Node::Select(selection)
 }
 
 const fn e(
@@ -635,6 +728,10 @@ def condition_text(document, cell, where):
             elif follow_name == "para" and re.match(
                 r"(May be present|May not be present|Shall not be present|Shall be absent)\b", follow_text
             ):
+                condition.append(follow_text)
+            elif follow_name == "para" and CONDITION_START.match(follow_text):
+                # Further cases of the condition (Table C.17-5 Concept Name
+                # Code Sequence).
                 condition.append(follow_text)
             else:
                 break
@@ -909,6 +1006,7 @@ class Model:
         if any(section in CONDITIONAL_IODS for section, _, _ in IODS):
             raise GenerationError("CONDITIONAL_VALUE_SETS resolve for IODs outside CONDITIONAL_IODS only")
         self.iods = [self.parse_iod(entry, storage) for entry in IODS]
+        self.directory = self.parse_directory(registry_uid(part06, DIRECTORY_SOP_CLASS))
         self.file_meta = self.parse_file_meta(part10)
         finalized = set()
         for table_id in list(self.order):
@@ -942,6 +1040,7 @@ class Model:
             "label": section.get("label"),
             "name": title.removesuffix(" IOD"),
             "ident": ident(section_id),
+            "document": self.parse_document_constraints(section_id) if DOCUMENT_IOD.match(section_id) else None,
             "module_table": module_table,
             "group_table": group_table,
             "modules": modules,
@@ -952,6 +1051,143 @@ class Model:
             "forbidden": [],
             "exclusive": [],
         }
+
+    def parse_document_constraints(self, section_id):
+        """A.35.x.3.1 of a Structured Reporting IOD: the Value Types of its
+        Content Items (A.35.x.3.1.1), its Relationship Content Constraints
+        (A.35.x.3.1.2) and the Template at its root (A.35.x.3.1.3)."""
+        document = self.part03
+        label = document.element(section_id).get("label")
+        value_section = document.element(f"{section_id}.3.1.1")
+        paragraphs = [document.render(para) for para in own_elements(document, value_section, "para")]
+        lists = list(value_section.iter(document.q("variablelist")))
+        if DOCUMENT_VALUE_TYPES not in paragraphs or len(lists) != 1:
+            raise GenerationError(f"{label}: Value Type constraint changed")
+        value_types = [document.render(entry.find(document.q("term"))) for entry in lists[0].findall(document.q("varlistentry"))]
+        table_id = f"table_{label}-2"
+        table = document.element(table_id)
+        if section_id + ".3.1.2" != enclosing_section(document, table).get(XML_ID):
+            raise GenerationError(f"{table_id} is not in {label}.3.1.2")
+        relationships = []
+        for row in table.find(document.q("tbody")).iter(document.q("tr")):
+            text = [document.render(cell) for cell in cells(document, row)]
+            if len(text) != 3:
+                raise GenerationError(f"{table_id}: unexpected row {text!r}")
+            sources = [] if text[0] == ANY_VALUE_TYPE else split_value_types(text[0], value_types, table_id)
+            targets = split_value_types(text[2], value_types, table_id)
+            relationships.append({"sources": sources, "relationship": text[1], "targets": targets})
+        root = None
+        root_id = f"{section_id}.3.1.3"
+        if root_id in document.ids:
+            found = [ROOT_TEMPLATE.match(sentence) for para in own_elements(document, document.element(root_id), "para")
+                     for sentence in sentences(document.render(para))]
+            found = [match for match in found if match]
+            if len(found) != 1:
+                raise GenerationError(f"{root_id}: root Template sentence changed")
+            root = int(found[0].group("template"))
+        return {"value_types": value_types, "table": table.get("label"), "relationships": relationships, "root": root}
+
+    def parse_directory(self, sop_class):
+        """PS3.3 Annex F: the Basic Directory IOD of the DICOMDIR, its Directory
+        Records (Table F.4-1 and the key tables of F.5 and F.6) and the
+        Record Selection Keys each Directory Record Type selects."""
+        annex, section_id, module_table = DIRECTORY
+        document = self.part03
+        title = document.render(document.element(section_id).find(document.q("title")))
+        if title != "Basic Directory IOD":
+            raise GenerationError(f"{section_id}: {title!r} is not the Basic Directory IOD")
+        table = document.element(module_table)
+        columns = header_index(document, table)
+        modules = []
+        for row in table.find(document.q("tbody")).iter(document.q("tr")):
+            row_cells = cells(document, row)
+            references = links(row_cells[columns["Reference"]])
+            if len(row_cells) != len(columns) or len(references) != 1:
+                raise GenerationError(f"{module_table}: unexpected row")
+            name = document.render(row_cells[columns["Module"]])
+            table_id = first_table(document, references[0]).get(XML_ID)
+            self.parse_table(table_id)
+            usage, _, condition = self.usage(document.render(row_cells[columns["Usage"]]), name, "Module", False)
+            modules.append({
+                "name": name,
+                "section": document.element(references[0]).get("label"),
+                "table": table_id,
+                "usage": usage,
+                "condition": condition,
+            })
+        self.sign_modules(modules)
+        records, root = self.parse_directory_records()
+        reached = set()
+        for table_id in [module["table"] for module in modules] + [record["keys"] for record in records if record["keys"]]:
+            self.reach(table_id, reached)
+        return {
+            "id": section_id,
+            "scope_root": annex,
+            "label": document.element(section_id).get("label"),
+            "name": title.removesuffix(" IOD"),
+            "ident": ident(section_id),
+            "module_table": module_table,
+            "group_table": None,
+            "modules": modules,
+            "functional_groups": [],
+            "sop_classes": [(sop_class, DIRECTORY_SOP_CLASS, None)],
+            "order": [table_id for table_id in self.order if table_id in reached],
+            "constraint_sentences": [],
+            "forbidden": [],
+            "exclusive": [],
+            "records": records,
+            "root_records": root,
+        }
+
+    def parse_directory_records(self):
+        """Table F.4-1: each Directory Record Type with its section, key table
+        and the Types its lower-level Directory Entity may include; checked
+        against the Enumerated Values of Directory Record Type (0004,1430)."""
+        document = self.part03
+        table = document.element(DIRECTORY_RELATIONSHIPS)
+        records, root = [], None
+        for row in table.find(document.q("tbody")).iter(document.q("tr")):
+            row_cells = cells(document, row)
+            if len(row_cells) != 3:
+                raise GenerationError(f"{DIRECTORY_RELATIONSHIPS}: unexpected row")
+            record_type = document.render(row_cells[0])
+            lower = [entry.strip() for entry in document.render(row_cells[2]).split(",")]
+            if record_type == ROOT_DIRECTORY_ENTITY:
+                root = lower
+                continue
+            sections = [link for link in links(row_cells[1]) if link.startswith("sect_")]
+            if len(sections) != 1:
+                raise GenerationError(f"{DIRECTORY_RELATIONSHIPS}: {record_type} names {len(sections)} sections")
+            section = document.element(sections[0])
+            tables = [found for found in own_elements(document, section, "table") if is_attribute_table(document, found)]
+            if len(tables) > 1:
+                raise GenerationError(f"{sections[0]}: more than one key table")
+            keys = tables[0].get(XML_ID) if tables else None
+            if keys:
+                self.parse_table(keys)
+            any_private = PRIVATE_LOWER_LEVEL in lower
+            records.append({
+                "type": record_type,
+                "section": section.get("label"),
+                "keys": keys,
+                "lower": [entry for entry in lower if entry != PRIVATE_LOWER_LEVEL],
+                "any_private": any_private,
+            })
+        types = [record["type"] for record in records]
+        enumerated = [
+            value
+            for row in self.tables[DIRECTORY_RECORD_TABLE]["rows"]
+            if row["kind"] == "attribute" and row["tag"] == DIRECTORY_RECORD_TYPE
+            for enumeration in row["enumerations"]
+            for value in enumeration["values"]
+        ]
+        if root is None or sorted(types) != sorted(enumerated):
+            raise GenerationError(f"{DIRECTORY_RELATIONSHIPS} and the Directory Record Type Enumerated Values differ")
+        for record in [*records, {"type": ROOT_DIRECTORY_ENTITY, "lower": root}]:
+            unknown = [entry for entry in record["lower"] if entry not in types]
+            if unknown:
+                raise GenerationError(f"{DIRECTORY_RELATIONSHIPS}: {record['type']} includes unknown {unknown}")
+        return records, root
 
     def ancestors(self, element):
         node = self.part03.parents.get(element)
@@ -1009,7 +1245,7 @@ class Model:
                         bound["used"] += 1
                         changed = True
                 parents.append((row["level"], row["tag"]))
-            else:
+            elif row["kind"] == "include" and row["base"] not in (*path, base):
                 target = self.specialize(row["target"], bindings, context, parent, (*path, base))
                 changed |= target != row["target"]
                 row["target"] = target
@@ -1192,6 +1428,7 @@ class Model:
         expected = {("conditional", key) for key in CONDITIONAL_VALUE_SETS}
         expected |= {("include", key) for key in INCLUDE_VALUE_SETS}
         expected |= {("constraint", (section, sentence)) for section, sentence, _ in IOD_CONSTRAINTS}
+        expected |= {("condition", key) for key in BOUND_CONDITIONS}
         unused = sorted(str(key) for key in expected - self.used)
         if unused:
             raise GenerationError(f"stale bindings: {', '.join(unused)}")
@@ -1239,6 +1476,9 @@ class Model:
                 continue
             first = document.render(row_cells[0])
             include = re.match(r"(>*)\s*Include\b", first)
+            if include and table_id == DIRECTORY_RECORD_TABLE and first.endswith("Include Record Selection Keys"):
+                record["rows"].append({"kind": "selection", "level": len(include.group(1))})
+                continue
             if include:
                 targets = [link for link in links(row_cells[0]) if link.startswith("table_")]
                 if not targets:
@@ -1246,6 +1486,14 @@ class Model:
                     # Functional Groups Module; the IOD lists the macros.
                     continue
                 references = [found for cell in row_cells for found in value_set_references(document, cell)]
+                condition = None
+                clause = INCLUDE_CONDITION.match(first)
+                if clause:
+                    if len(targets) != 1:
+                        raise GenerationError(f"{table_id}: conditional inclusion of {targets}")
+                    label = document.element(targets[0]).get("label")
+                    keyword = "Include" + re.sub(r"[^A-Za-z0-9]", "", label)
+                    condition = self.condition(clause.group("condition"), keyword, f"{table_id} {first}")
                 for target in targets:
                     record["rows"].append(
                         {
@@ -1256,13 +1504,16 @@ class Model:
                             "references": references,
                             "text": " ".join(document.render(cell) for cell in row_cells[1:]),
                             "bindings": [],
+                            "condition": condition,
                         }
                     )
                     self.parse_table(target)
                 continue
             if len(row_cells) != 4:
-                if first.startswith(">") and "Any Attribute" in first:
-                    continue  # wildcard row in Original Attributes Sequence
+                if first.startswith(">") and re.match(r">+Any\b", first):
+                    continue  # wildcard row, e.g. in Original Attributes Sequence
+                if OTHER_KEYS.match(first):
+                    continue  # the other Attributes of a Directory Record's IE, all Type 3
                 if len(row_cells) == 1:
                     continue  # section heading row inside a macro
                 raise GenerationError(f"{table_id}: unexpected row {first!r}")
@@ -1281,7 +1532,7 @@ class Model:
             description = row_cells[3]
             condition = None
             if kind in ("1C", "2C"):
-                condition = self.condition(condition_text(document, description, where), keyword, where)
+                condition = self.condition(self.condition_text(table_id, tag, description, where), keyword, where)
             elif kind == "3":
                 text = " ".join(document.render(b) for _, b in description_blocks(document, description))
                 restriction = TYPE3_RESTRICTION.search(text)
@@ -1311,7 +1562,48 @@ class Model:
                     "value_set": None,
                 }
             )
+        self.extend_includes(record)
         bind_value_sets(record, self.used)
+
+    def extend_includes(self, record):
+        """Rows nested under an "Include" row add to the Items of the included
+        Macro's last top-level Sequence (e.g. Referenced Frame Number under
+        the Composite Object Reference Macro of Table C.18.4-1); the row then
+        includes a copy of the Macro that holds them."""
+        rows, out, index = record["rows"], [], 0
+        while index < len(rows):
+            row = rows[index]
+            end = index + 1
+            while end < len(rows) and rows[end]["level"] > row["level"]:
+                end += 1
+            extension = rows[index + 1:end]
+            if row["kind"] != "include" or not extension:
+                out.append(row)
+                index += 1
+                continue
+            included = self.tables[row["target"]]["rows"]
+            last = max((position for position, candidate in enumerate(included) if candidate["level"] == 0), default=None)
+            if last is None or included[last]["kind"] != "attribute" or self.dictionary[included[last]["tag"]]["vrs"] != ["SQ"]:
+                raise GenerationError(f"{record['id']}: rows extend {row['target']}, whose last row is no Sequence")
+            shift = row["level"]
+            copy = included + [dict(child, level=child["level"] - shift) for child in extension]
+            name = f"{row['target']}__{ident(record['id'])}"
+            self.special[name] = dict(self.tables[row["target"]], id=name, base=row["target"], rows=copy)
+            self.special_order.append(name)
+            out.append(dict(row, target=name))
+            index = end
+        record["rows"] = out
+
+    def condition_text(self, table_id, tag, description, where):
+        """A 1C/2C row's condition: its "Required if" sentence, or the sentence
+        BOUND_CONDITIONS binds for the row."""
+        bound = BOUND_CONDITIONS.get((table_id, tag))
+        if bound is None:
+            return condition_text(self.part03, description, where)
+        if bound not in sentences(" ".join(self.part03.render(block) for _, block in description_blocks(self.part03, description))):
+            raise GenerationError(f"{where}: bound condition {bound!r} not found")
+        self.used.add(("condition", (table_id, tag)))
+        return bound
 
     def usage(self, text, name, keyword_prefix, allow_placement):
         match = re.match(r"([MCU])(?:\s*[-–]\s*(.*))?\Z", text)
@@ -1358,6 +1650,10 @@ class Model:
                     "condition": condition,
                 }
             )
+        self.sign_modules(modules)
+        return modules
+
+    def sign_modules(self, modules):
         tags = {module["name"]: self.top_level_tags(module["table"]) for module in modules}
         top_level = {}
         for module in modules:
@@ -1369,7 +1665,6 @@ class Model:
             module["signature"] = sorted(
                 tag for tag in tags[module["name"]] if top_level[tag] == {module["name"]}
             )
-        return modules
 
     def top_level_tags(self, table_id, level=0, seen=None):
         seen = set() if seen is None else seen
@@ -1498,13 +1793,37 @@ def is_attribute_table(document, table):
     return "Tag" in header and "Type" in header
 
 
-def statement(part, section, text, keyword=None, enforced=False):
-    return {"part": part, "section": section, "keyword": keyword, "text": text, "enforced": enforced}
+def statement(part, section, text, keyword=None, enforced=False, strength="shall"):
+    return {
+        "part": part,
+        "section": section,
+        "keyword": keyword,
+        "text": text,
+        "enforced": enforced,
+        "strength": strength,
+    }
+
+
+def sentence_strength(sentence):
+    """"shall" for a normative sentence, "should" for a recommendation, or
+    None for one that is neither."""
+    if (
+        sentence in NORMATIVE_SENTENCES
+        or NORMATIVE.search(sentence)
+        or (REQUIRED_TO.search(sentence) and not NEGATED_REQUIREMENT.search(sentence))
+    ):
+        return "shall"
+    if RECOMMENDATION.search(sentence):
+        return "should"
+    return None
 
 
 class Requirements:
-    """Normative statements in the scope of each IOD, the tables included; a
-    statement several IODs reach is recorded once and lists them."""
+    """Normative statements in each scope: each IOD, the tables included, the
+    de-identified objects of every pathology-slide IOD (PS3.15 Annex E), the
+    File-set (PS3.3 Annex F and PS3.10 Chapter 8), and DICOMweb origin
+    servers (PS3.18, `DICOMWEB_CHAPTERS`). A statement several
+    scopes reach is recorded once and lists them."""
 
     def __init__(self, model, parts):
         self.model = model
@@ -1512,12 +1831,25 @@ class Requirements:
         self.statements = []
         self.index = {}
         for iod in model.iods:
-            self.iod = iod
+            self.iod, self.scopes = iod, [iod["label"]]
             self.parse_scope()
             self.parse_cells()
             self.parse_specializations()
             for part, chapters in NORMATIVE_CHAPTERS.items():
                 self.parse_chapters(part, chapters)
+        # Annex E binds a de-identified object of any of the IODs.
+        self.iod, self.scopes = None, [iod["label"] for iod in model.iods]
+        self.parse_chapters("PS3.15", (CONFIDENTIALITY_CHAPTER,))
+        self.iod, self.scopes = model.directory, [FILE_SET]
+        self.parse_scope()
+        self.parse_cells()
+        self.parse_chapters("PS3.10", ("chapter_8",))
+        self.iod, self.scopes = None, [DICOMWEB]
+        self.parse_chapters("PS3.18", DICOMWEB_CHAPTERS)
+        found = {record["text"] for record in self.statements}
+        missing = [text for text in NORMATIVE_SENTENCES if text not in found]
+        if missing:
+            raise GenerationError(f"normative sentences not found, reworded or moved: {missing}")
         self.name_statements()
 
     def add(self, record):
@@ -1527,15 +1859,18 @@ class Requirements:
             self.index[key] = record
             self.statements.append(record)
         iods = self.index[key]["iods"]
-        if self.iod["label"] not in iods:
-            iods.append(self.iod["label"])
+        for scope in self.scopes:
+            if scope not in iods:
+                iods.append(scope)
 
     def add_text(self, part, section, text, keyword=None, enforced=False):
-        constrained = self.iod["constraint_sentences"]
+        constrained = self.iod["constraint_sentences"] if self.iod else ()
         enforced = enforced or text in constrained
         for sentence in sentences(text):
-            if NORMATIVE.search(sentence):
-                self.add(statement(part, section, sentence, keyword, enforced or sentence in constrained))
+            strength = sentence_strength(sentence)
+            if strength:
+                enforced_here = enforced or sentence in constrained
+                self.add(statement(part, section, sentence, keyword, enforced_here, strength))
 
     def scope_sections(self):
         """The IOD section, the sections holding its tables, and the PS3.3
@@ -1551,7 +1886,7 @@ class Requirements:
                 for table in own_elements(document, section, "table")
             )
 
-        pending = [document.element(iod["id"])]
+        pending = [document.element(iod.get("scope_root", iod["id"]))]
         pending += [enclosing_section(document, document.element(table)) for table in iod["order"]]
         for table_id in iod["order"]:
             pending += [document.ids[link] for link in links(document.element(table_id))
@@ -1609,10 +1944,12 @@ class Requirements:
                 enforced = self.enforced_text(table_id, tag, row_cells)
                 for _, block in description_blocks(document, row_cells[3]):
                     for sentence in sentences(document.render(block)):
-                        if NORMATIVE.search(sentence):
+                        strength = sentence_strength(sentence)
+                        if strength:
                             self.add(statement(
                                 "PS3.3", label, sentence, keyword,
                                 any(sentence in text or text in sentence for text in enforced),
+                                strength,
                             ))
 
     def enforced_text(self, table_id, tag, row_cells):
@@ -1624,12 +1961,13 @@ class Requirements:
         rendered = " ".join(document.render(block) for _, block in description_blocks(document, description))
         texts += [match.group(0) for match in ITEMS_LIKE_VALUE.finditer(rendered)]
         if kind in ("1C", "2C"):
-            texts.append(condition_text(document, description, table_id))
+            texts.append(self.model.condition_text(table_id, tag, description, table_id))
         restriction = TYPE3_RESTRICTION.search(rendered)
         if kind == "3" and restriction:
             texts.append(restriction.group(0))
         texts += [entry[3] for entry in PROSE_ENUMERATIONS
-                  if entry[0] == table_id and tag and entry[1] == tag_display(tag)]
+                  if entry[0] == table_id and tag and entry[1] == tag_display(tag)
+                  and entry[3] not in PARTLY_BOUND_SENTENCES]
         return texts
 
     def parse_specializations(self):
@@ -1681,6 +2019,8 @@ def emitted_tables(model):
     Macros use, base tables in parse order, then the copies."""
     used = set()
     pending = [entry["table"] for iod in model.iods for entry in iod["modules"] + iod["functional_groups"]]
+    pending += [module["table"] for module in model.directory["modules"]]
+    pending += [record["keys"] for record in model.directory["records"] if record["keys"]]
     while pending:
         table_id = pending.pop()
         if table_id not in used:
@@ -1724,6 +2064,8 @@ class ValueSets:
         for bound in model_value_sets(model):
             for number in bound.get("ids", ()):
                 (self.parse_group if bound["kind"] == "CID" else self.parse_template)(number)
+        for number in SR_TEMPLATES:
+            self.parse_template(number, strict=False)
 
     def parse_group(self, number):
         if number in self.groups:
@@ -1773,7 +2115,11 @@ class ValueSets:
                     text[legacy] if legacy is not None and legacy < len(text) else "",
                 ))
 
-    def parse_template(self, number):
+    def parse_template(self, number, strict=True):
+        """A Template and those it includes. Outside `strict`, for the SR
+        Templates no IOD row binds, a Condition, Concept Name or Value Set
+        Constraint cell written other than in the forms the IOD checks
+        evaluate is kept as its text."""
         if number in self.templates:
             return
         document = self.document
@@ -1787,45 +2133,99 @@ class ValueSets:
             "rows": [],
         }
         self.templates[number] = record
-        table = document.element(f"table_TID_{number}")
+        table = template_table(document, section, number)
         columns = header_index(document, table)
         for row in table.find(document.q("tbody")).iter(document.q("tr")):
             row_cells = cells(document, row)
             text = [document.render(cell) for cell in row_cells]
             where = f"TID {number} Row {text[0]}"
             value_type = text[columns["VT"]]
-            concept_cell = row_cells[columns["Concept Name"]]
-            references = value_set_references(document, concept_cell)
-            if value_type == "INCLUDE":
-                included = value_set(references, "TID", where)
-                for template in included["ids"]:
-                    self.parse_template(template)
-                concept = {"kind": "TID", "strength": included["strength"], "ids": included["ids"]}
-            elif references:
-                concept = value_set(references, "CID", where)
-                for group in concept["ids"]:
-                    self.parse_group(group)
-            elif text[columns["Concept Name"]]:
-                concept = coded_entry(text[columns["Concept Name"]], where)
-            else:
-                concept = None
-            constraint_cell = row_cells[columns["Value Set Constraint"]]
+            concept = self.template_concept(row_cells[columns["Concept Name"]], value_type, strict, where)
+            constraint_text = text[columns["Value Set Constraint"]]
             constraint = None
-            constraint_references = value_set_references(document, constraint_cell)
-            if constraint_references:
+            constraint_references = value_set_references(document, row_cells[columns["Value Set Constraint"]])
+            if constraint_references and (strict or names_context_groups(constraint_text)):
                 constraint = value_set(constraint_references, "CID", where)
                 for group in constraint["ids"]:
                     self.parse_group(group)
+            condition_text = text[columns["Condition"]]
+            condition = (
+                template_condition(condition_text, where) if strict else parsed_condition(condition_text, where)
+            )
             record["rows"].append({
                 "row": text[0],
                 "level": text[columns["NL"]].count(">") if "NL" in columns else 0,
+                "relationship": text[columns["Rel with Parent"]] if "Rel with Parent" in columns else "",
                 "value_type": value_type,
                 "concept": concept,
                 "vm": parse_vm(text[columns["VM"]], where),
                 "requirement": text[columns["Req Type"]],
-                "condition": template_condition(text[columns["Condition"]], where),
+                "condition": condition,
+                "condition_text": condition_text,
                 "constraint": constraint,
+                "constraint_text": constraint_text,
             })
+
+    def template_concept(self, cell, value_type, strict, where):
+        """The Concept Name constraint of a row: the included Template of an
+        INCLUDE row, a Context Group, a code, or outside `strict` a Template
+        parameter ("$Measurement") or none."""
+        document = self.document
+        text = document.render(cell)
+        references = value_set_references(document, cell)
+        if value_type == "INCLUDE":
+            included = value_set(references, "TID", where)
+            for template in included["ids"]:
+                self.parse_template(template, strict)
+            return {"kind": "TID", "strength": included["strength"], "ids": included["ids"]}
+        if references:
+            concept = value_set(references, "CID", where)
+            for group in concept["ids"]:
+                self.parse_group(group)
+            return concept
+        if not text:
+            return None if strict else {"kind": "ANY"}
+        if not strict and TEMPLATE_PARAMETER.fullmatch(text):
+            return {"kind": "PARAMETER", "text": text}
+        return coded_entry(text, where)
+
+
+def split_value_types(text, value_types, where):
+    """"TEXT, CODE, CONTAINER (see below)": the Value Types of a Relationship
+    Content Constraints cell, each one the IOD permits; the note "(see
+    below)" refers to the section's sentences, which are statements."""
+    found = [entry.strip().removesuffix(SEE_BELOW) for entry in text.split(",")]
+    unknown = [entry for entry in found if entry not in value_types]
+    if unknown:
+        raise GenerationError(f"{where}: {unknown} are not Value Types of the IOD")
+    return found
+
+
+def template_table(document, section, number):
+    """The Template's table; one DocBook id differs from table_TID_<number>
+    (TID 1607), so the section's table labelled with the Template is taken."""
+    table = document.ids.get(f"table_TID_{number}")
+    if table is not None:
+        return table
+    found = [table for table in section.findall(document.q("table")) if table.get("label") == f"TID {number}"]
+    if len(found) != 1:
+        raise GenerationError(f"TID {number}: no table labelled with the Template")
+    return found[0]
+
+
+def names_context_groups(text):
+    """Whether a Value Set Constraint cell names Context Groups alone, beside
+    any default it states."""
+    return CONSTRAINT_SETS.fullmatch(CONSTRAINT_DEFAULT.sub("", text).strip()) is not None
+
+
+def parsed_condition(text, where):
+    """A Template condition in one of the forms `template_condition` reads,
+    or None for one kept as text."""
+    try:
+        return template_condition(text, where)
+    except GenerationError:
+        return None
 
 
 def template_condition(text, where):
@@ -1880,7 +2280,7 @@ def parse_vm(text, where):
 
 def parse_dictionary(part06):
     entries = {}
-    for table_id in ("table_6-1", "table_7-1"):
+    for table_id in ("table_6-1", "table_7-1", "table_8-1"):
         table = part06.element(table_id)
         for row in table.find(part06.q("tbody")).iter(part06.q("tr")):
             row_cells = cells(part06, row)
@@ -1918,6 +2318,20 @@ def parse_image_storage(part06):
     return sorted(found)
 
 
+def registry_uid(part06, name):
+    """The PS3.6 Table A-1 UID of the SOP Class named `name`."""
+    table = part06.element("table_A-1")
+    found = [
+        text[0]
+        for row in table.find(part06.q("tbody")).iter(part06.q("tr"))
+        for text in [[part06.render(cell) for cell in cells(part06, row)]]
+        if len(text) >= 4 and text[1] == name and text[3] == "SOP Class"
+    ]
+    if len(found) != 1:
+        raise GenerationError(f"table_A-1 names {len(found)} SOP Classes {name!r}")
+    return found[0]
+
+
 DICOM_ROOT_UID = re.compile(r"1\.2\.840\.10008(?:\.(?:0|[1-9][0-9]*))+\Z")
 REGISTRY_TABLES = ("table_A-1", "table_A-2", "table_A-3", "table_A-4")
 
@@ -1934,6 +2348,155 @@ def parse_registered_uids(part06):
                 raise GenerationError(f"{table_id}: row does not begin with a DICOM UID: {text[:1]!r}")
             found.add(text[0])
     return sorted(found)
+
+
+def option_variant(meaning):
+    """'RetainSafePrivate' for the Code Meaning 'Retain Safe Private Option'."""
+    words = re.sub(r"[^A-Za-z0-9 ]", "", meaning.removesuffix(" Option")).split()
+    return "".join(word[:1].upper() + word[1:] for word in words)
+
+
+def concept_key(row):
+    """Table E.3.4-1 rows are distinct by code and Value Type."""
+    scheme, value, _ = row["code"]
+    return (scheme, value, row["value_type"])
+
+
+def yes_no(text, where):
+    if text not in ("Y", "N"):
+        raise GenerationError(f"{where}: expected Y or N, found {text!r}")
+    return text == "Y"
+
+
+class Confidentiality:
+    """PS3.15 Annex E: the Table E.1-1a action codes, the Basic Profile and the
+    Options with their CID 7050 De-identification Method codes, and Tables
+    E.1-1 and E.3.4-1."""
+
+    def __init__(self, part15, value_sets):
+        self.document = part15
+        value_sets.parse_group(DEIDENTIFICATION_METHODS)
+        codes = {
+            meaning: (scheme, value)
+            for scheme, value, meaning, _ in value_sets.groups[DEIDENTIFICATION_METHODS]["codes"]
+        }
+        self.actions = self.parse_actions()
+        section, title, meaning = BASIC_PROFILE
+        self.basic = {"meaning": meaning, "code": self.method(codes, meaning), "section": self.section(section, title)}
+        self.options = [
+            {
+                "variant": option_variant(meaning),
+                "meaning": meaning,
+                "code": self.method(codes, meaning),
+                "section": self.section(section, title),
+                "column": column,
+            }
+            for section, title, meaning, column in CONFIDENTIALITY_OPTIONS
+        ]
+        named = {BASIC_PROFILE[2]} | {option["meaning"] for option in self.options}
+        if set(codes) != named:
+            raise GenerationError(f"CID {DEIDENTIFICATION_METHODS} codes changed: {sorted(set(codes) ^ named)}")
+        self.attributes = self.parse_rows(CONFIDENTIALITY_TABLE, CONFIDENTIALITY_COLUMNS, self.attribute)
+        self.concepts = self.parse_rows(STRUCTURED_CONTENT_TABLE, STRUCTURED_CONTENT_COLUMNS, self.concept)
+        tags = [row["tag"] for row in self.attributes if row["tag"][0] == "tag"]
+        if len(tags) != len(set(tags)):
+            raise GenerationError(f"{CONFIDENTIALITY_TABLE}: a tag has more than one row")
+        keys = [concept_key(row) for row in self.concepts]
+        if len(keys) != len(set(keys)):
+            raise GenerationError(f"{STRUCTURED_CONTENT_TABLE}: a code and Value Type have more than one row")
+
+    def section(self, section_id, title):
+        section = self.document.element(section_id)
+        found = self.document.render(section.find(self.document.q("title")))
+        if found != title:
+            raise GenerationError(f"{section_id} is titled {found!r}, expected {title!r}")
+        return section.get("label")
+
+    @staticmethod
+    def method(codes, meaning):
+        if meaning not in codes:
+            raise GenerationError(f"CID {DEIDENTIFICATION_METHODS} has no code {meaning!r}")
+        return codes[meaning]
+
+    def parse_actions(self):
+        document = self.document
+        table = document.element(ACTION_CODE_TABLE)
+        actions = {}
+        for row in table.find(document.q("tbody")).iter(document.q("tr")):
+            text = [document.render(cell) for cell in cells(document, row)]
+            if len(text) != 2 or text[0] not in ACTION_VARIANTS:
+                raise GenerationError(f"{ACTION_CODE_TABLE}: unrecognized action code row {text!r}")
+            actions[text[0]] = text[1]
+        if set(actions) != set(ACTION_VARIANTS):
+            raise GenerationError(f"{ACTION_CODE_TABLE}: action codes changed to {sorted(actions)}")
+        return actions
+
+    def parse_rows(self, table_id, columns, parse):
+        """Each row of an Annex E table, its Option columns mapped to the
+        Options."""
+        document = self.document
+        table = document.element(table_id)
+        header = [document.render(cell) for cell in cells(document, table.find(document.q("thead")).find(document.q("tr")))]
+        by_column = {option["column"]: option["variant"] for option in self.options if option["column"]}
+        if tuple(header[:len(columns)]) != columns or any(column not in by_column for column in header[len(columns):]):
+            raise GenerationError(f"{table_id}: unrecognized columns {header!r}")
+        rows = []
+        for row in table.find(document.q("tbody")).iter(document.q("tr")):
+            text = [document.render(cell) for cell in cells(document, row)]
+            where = f"PS3.15 {table_id} {text[:1]!r}"
+            if len(text) != len(header):
+                raise GenerationError(f"{where}: expected {len(header)} cells")
+            record = parse(text[:len(columns)], where)
+            record["basic"] = self.action(text[len(columns) - 1], where)
+            record["options"] = [
+                (by_column[column], self.action(value, where))
+                for column, value in zip(header[len(columns):], text[len(columns):])
+                if value
+            ]
+            rows.append(record)
+        return rows
+
+    def action(self, text, where):
+        if text not in self.actions:
+            raise GenerationError(f"{where}: unrecognized action {text!r}")
+        return ACTION_VARIANTS[text]
+
+    @staticmethod
+    def attribute(text, where):
+        name, tag, retired, in_iod, _ = text
+        if tag == PRIVATE_ATTRIBUTES:
+            pattern = ("private",)
+        else:
+            match = CONFIDENTIALITY_TAG.match(tag)
+            if not match:
+                raise GenerationError(f"{where}: unrecognized tag {tag!r}")
+            digits = match.group("group") + match.group("element")
+            value = int(digits.replace("x", "0"), 16)
+            mask = int("".join("0" if digit == "x" else "F" for digit in digits), 16)
+            pattern = ("tag", value) if mask == 0xFFFFFFFF else ("repeating", value, mask)
+        return {
+            "name": name,
+            "tag": pattern,
+            "retired": yes_no(retired, where),
+            "in_standard": yes_no(in_iod, where),
+        }
+
+    @staticmethod
+    def concept(text, where):
+        meaning, value, scheme, value_type, retired, in_template, _ = text
+        version = ""
+        match = SCHEME_VERSION.match(scheme)
+        if match:
+            scheme, version = match.group("scheme"), match.group("version")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", scheme) or not value or not value_type.isupper():
+            raise GenerationError(f"{where}: unrecognized code {text[:4]!r}")
+        return {
+            "code": (scheme, value, meaning),
+            "version": version,
+            "value_type": value_type,
+            "retired": yes_no(retired, where),
+            "in_standard": yes_no(in_template, where),
+        }
 
 
 def rust_string(text):
@@ -1963,6 +2526,11 @@ def tag_hex(tag):
     """The tag as a u32 literal; the xx nibbles of a repeating group are zero."""
     tag = tag.replace("x", "0")
     return f"0x{tag[:4]}_{tag[4:]}"
+
+
+def hex_value(value):
+    """A 32-bit value as a u32 literal grouped like a tag."""
+    return f"0x{value >> 16:04X}_{value & 0xFFFF:04X}"
 
 
 def optional_condition(name):
@@ -2005,7 +2573,14 @@ class Emitter:
             if row["kind"] == "include":
                 if children:
                     raise GenerationError(f"include of {row['target']} has nested rows")
-                out.append(f"{pad}i(&{rust_ident(row['target'])}),")
+                if row.get("condition"):
+                    out.append(f"{pad}ic(&{rust_ident(row['target'])}, C::{row['condition']}),")
+                else:
+                    out.append(f"{pad}i(&{rust_ident(row['target'])}),")
+                index = end
+                continue
+            if row["kind"] == "selection":
+                out.append(f"{pad}k(&RECORD_SELECTION_KEYS),")
                 index = end
                 continue
             head = (
@@ -2054,10 +2629,12 @@ class Emitter:
         model = self.model
         emit = self.emit
         self.header(digests)
+        emit("use super::file_set::DirectoryRecord;")
+        emit("use super::structured_report::{DocumentConstraints, RelationshipConstraint};")
         emit("use super::model::{")
         emit("    Attribute, AttributeType, Code, Enumeration, ExclusiveModules, ForbiddenModule,")
-        emit("    FunctionalGroupMacro, Iod, ItemCount, Module, Node, Placement, SopClass, Strength, Table,")
-        emit("    Usage, ValueSet,")
+        emit("    FunctionalGroupMacro, Iod, ItemCount, Module, Node, Placement, Selection, SopClass, Strength,")
+        emit("    Table, Usage, ValueSet,")
         emit("};")
         emit("use ConditionId as C;")
         emit("use ItemCount::{AtLeast, AtMost, Exactly, NumberOfFrames, Unconstrained as ANY, ValueOf};")
@@ -2107,9 +2684,11 @@ class Emitter:
         emit("/// (PS3.4 Table B.5-1).")
         emit("pub(super) static IODS: &[Iod] = &[")
         for iod in model.iods:
-            self.iod(iod)
+            self.iod(iod, "    Iod {", "    },")
         emit("];")
         emit()
+        self.documents(model)
+        self.directory(model.directory)
         emit("/// PS3.4 Table B.5-1 Standard Storage SOP Classes, sorted by UID.")
         emit("pub(super) static STORAGE_SOP_CLASSES: &[SopClass] = &[")
         for uid, name in model.storage_sop_classes:
@@ -2124,9 +2703,73 @@ class Emitter:
         self.table(model.file_meta)
         return "\n".join(self.lines) + "\n"
 
-    def iod(self, iod):
+    def documents(self, model):
         emit = self.emit
-        emit("    Iod {")
+        emit("/// PS3.3 A.35 Content Constraints of the Structured Reporting IODs.")
+        emit("pub(super) static DOCUMENT_CONSTRAINTS: &[DocumentConstraints] = &[")
+        for iod in model.iods:
+            document = iod["document"]
+            if document is None:
+                continue
+            values = lambda entries: ", ".join(rust_string(entry) for entry in entries)
+            emit("    DocumentConstraints {")
+            emit(f"        iod: {rust_string(iod['label'])},")
+            emit(f"        value_types: &[{values(document['value_types'])}],")
+            emit(f"        table: {rust_string(document['table'])},")
+            emit("        relationships: &[")
+            for row in document["relationships"]:
+                emit(
+                    f"            RelationshipConstraint {{ sources: &[{values(row['sources'])}], "
+                    f"relationship: {rust_string(row['relationship'])}, targets: &[{values(row['targets'])}] }},"
+                )
+            emit("        ],")
+            root = document["root"]
+            emit(f"        root_template: {f'Some({root})' if root else 'None'},")
+            emit("    },")
+        emit("];")
+        emit()
+
+    def directory(self, directory):
+        emit = self.emit
+        emit("/// PS3.3 F.3 Basic Directory IOD, the IOD of the DICOMDIR File (PS3.10 8.6).")
+        self.iod(directory, "pub(super) static BASIC_DIRECTORY: Iod = Iod {", "};", "")
+        emit()
+        emit("/// PS3.3 Table F.4-1: the Directory Record Types the Root Directory Entity may include.")
+        emit("pub(super) static ROOT_DIRECTORY_RECORDS: &[&str] = &[")
+        for record_type in directory["root_records"]:
+            emit(f"    {rust_string(record_type)},")
+        emit("];")
+        emit()
+        emit("/// PS3.3 Table F.4-1 Directory Record Types, in its order, each with the section")
+        emit("/// defining it and its Record Selection Keys.")
+        emit("pub(super) static DIRECTORY_RECORDS: &[DirectoryRecord] = &[")
+        for record in directory["records"]:
+            keys = f"Some(&{rust_ident(record['keys'])})" if record["keys"] else "None"
+            lower = ", ".join(rust_string(entry) for entry in record["lower"])
+            emit("    DirectoryRecord {")
+            emit(f"        record_type: {rust_string(record['type'])},")
+            emit(f"        section: {rust_string(record['section'])},")
+            emit(f"        keys: {keys},")
+            emit(f"        lower_level: &[{lower}],")
+            emit(f"        any_private_lower_level: {str(record['any_private']).lower()},")
+            emit("    },")
+        emit("];")
+        emit()
+        emit("/// PS3.3 Table F.3-3 \"Include Record Selection Keys\": the key table of each")
+        emit("/// Directory Record Type (F.5).")
+        emit("pub(super) static RECORD_SELECTION_KEYS: Selection = Selection {")
+        emit(f"    key: {tag_hex(DIRECTORY_RECORD_TYPE)},")
+        emit("    tables: &[")
+        for record in directory["records"]:
+            if record["keys"]:
+                emit(f"        ({rust_string(record['type'])}, &{rust_ident(record['keys'])}),")
+        emit("    ],")
+        emit("};")
+        emit()
+
+    def iod(self, iod, opening, closing, pad="    "):
+        emit = lambda line: self.emit(pad + line[4:] if line.startswith("    ") else line)
+        self.emit(opening)
         emit(f"        section: {rust_string(iod['label'])},")
         emit(f"        name: {rust_string(iod['name'])},")
         emit(f"        module_table: {rust_string(self.model.part03.element(iod['module_table']).get('label'))},")
@@ -2175,14 +2818,16 @@ class Emitter:
                 f" modules: &[{', '.join(rust_string(name) for name in names)}] }},"
             )
         emit("        ],")
-        emit("    },")
+        self.emit(closing)
 
     def requirements(self, requirements, digests):
         emit = self.emit
         self.header(digests)
         emit("use super::model::Statement;")
+        emit("use crate::validation::RequirementStrength;")
         emit("use Requirement as R;")
         emit()
+        emit("/// A normative statement (\"shall\").")
         emit("const fn s(")
         emit("    part: &'static str,")
         emit("    section: &'static str,")
@@ -2190,12 +2835,24 @@ class Emitter:
         emit("    text: &'static str,")
         emit("    iods: &'static [&'static str],")
         emit(") -> Statement {")
-        emit("    Statement { part, section, keyword, text, iods }")
+        emit("    Statement { part, section, keyword, text, iods, strength: RequirementStrength::Shall }")
         emit("}")
         emit()
-        labels = [iod["label"] for iod in self.model.iods]
+        emit("/// A recommendation (\"should\").")
+        emit("const fn r(")
+        emit("    part: &'static str,")
+        emit("    section: &'static str,")
+        emit("    keyword: Option<&'static str>,")
+        emit("    text: &'static str,")
+        emit("    iods: &'static [&'static str],")
+        emit(") -> Statement {")
+        emit("    Statement { part, section, keyword, text, iods, strength: RequirementStrength::Should }")
+        emit("}")
+        emit()
+        labels = self.scopes()
         masks = sorted({self.iod_mask(record["iods"]) for record in requirements.statements})
-        emit("// The IODs a statement applies to, named by a bit mask over IODS.")
+        emit("// The scopes a statement applies to, named by a bit mask over the IODS, then")
+        emit(f"// \"{FILE_SET}\" and \"{DICOMWEB}\".")
         for mask in masks:
             members = ", ".join(rust_string(label) for index, label in enumerate(labels) if mask & (1 << index))
             emit(f"const I{mask:02X}: &[&str] = &[{members}];")
@@ -2287,19 +2944,189 @@ class Emitter:
             )
             for row in template["rows"]:
                 low, high, step = row["vm"]
-                if step != 1 or row["level"]:
-                    raise GenerationError(f"TID {number} Row {row['row']}: nested or stepped rows")
+                if step != 1:
+                    raise GenerationError(f"TID {number} Row {row['row']}: stepped VM")
                 emit(
-                    f"        TemplateRow {{ row: {rust_string(row['row'])}, "
+                    f"        TemplateRow {{ row: {rust_string(row['row'])}, level: {row['level']}, "
+                    f"relationship: {rust_string(row['relationship'])}, "
                     f"value_type: {rust_string(row['value_type'])}, concept: {self.concept(row['concept'])}, "
                     f"min: {low}, max: {'None' if high is None else f'Some({high})'}, "
                     f"requirement: Q::{row['requirement'].title()}, "
                     f"condition: {self.template_condition(row['condition'])}, "
-                    f"constraint: {self.value_set_value(row['constraint'])} }},"
+                    f"condition_text: {rust_string(row['condition_text'])}, "
+                    f"constraint: {self.value_set_value(row['constraint'])}, "
+                    f"constraint_text: {rust_string(row['constraint_text'])} }},"
                 )
             emit("    ] },")
         emit("];")
         return "\n".join(self.lines) + "\n"
+
+    def confidentiality(self, confidentiality, digests):
+        emit = self.emit
+        self.header(digests)
+        emit("use super::deidentification::{ConfidentialityAttribute, StructuredContentConcept, TagPattern};")
+        emit("use super::model::Code;")
+        emit("use ConfidentialityOption as O;")
+        emit("use DeidentificationAction as A;")
+        emit()
+        emit("/// PS3.15 Table E.1-1a De-identification Action Codes.")
+        emit("// Each Variant is the action code Tables E.1-1 and E.3.4-1 name, its \"/\" and")
+        emit("// \"*\" left out (X/Z/D is XZD).")
+        emit("#[allow(clippy::upper_case_acronyms)]")
+        emit("#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]")
+        emit("pub(in crate::validation) enum DeidentificationAction {")
+        for code, meaning in confidentiality.actions.items():
+            emit(f"    /// {code}: {meaning}")
+            emit(f"    {ACTION_VARIANTS[code]},")
+        emit("}")
+        emit()
+        emit("impl DeidentificationAction {")
+        emit("    pub(in crate::validation) const ALL: &'static [DeidentificationAction] = &[")
+        for code in confidentiality.actions:
+            emit(f"        A::{ACTION_VARIANTS[code]},")
+        emit("    ];")
+        emit()
+        emit("    /// The action code as Table E.1-1a writes it, e.g. \"X/Z/U*\".")
+        emit("    pub(in crate::validation) const fn code(self) -> &'static str {")
+        emit("        match self {")
+        for code in confidentiality.actions:
+            emit(f"            A::{ACTION_VARIANTS[code]} => {rust_string(code)},")
+        emit("        }")
+        emit("    }")
+        emit()
+        emit("    /// What Table E.1-1a says the action does.")
+        emit("    pub(in crate::validation) const fn meaning(self) -> &'static str {")
+        emit("        match self {")
+        for code, meaning in confidentiality.actions.items():
+            emit(f"            A::{ACTION_VARIANTS[code]} => {rust_string(meaning)},")
+        emit("        }")
+        emit("    }")
+        emit("}")
+        emit()
+        emit("/// The PS3.15 E.3 Basic Application Level Confidentiality Options.")
+        emit("#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]")
+        emit("pub(in crate::validation) enum ConfidentialityOption {")
+        for option in confidentiality.options:
+            emit(f"    /// PS3.15 {option['section']}: {option['meaning']}")
+            emit(f"    {option['variant']},")
+        emit("}")
+        emit()
+        emit("impl ConfidentialityOption {")
+        emit("    pub(in crate::validation) const ALL: &'static [ConfidentialityOption] = &[")
+        for option in confidentiality.options:
+            emit(f"        O::{option['variant']},")
+        emit("    ];")
+        emit()
+        emit("    /// Its CID 7050 De-identification Method code.")
+        emit("    pub(in crate::validation) const fn code(self) -> Code {")
+        emit("        match self {")
+        for option in confidentiality.options:
+            emit(f"            O::{option['variant']} => {self.code_value(option['code'], option['meaning'])},")
+        emit("        }")
+        emit("    }")
+        emit()
+        emit("    /// The PS3.15 section that specifies it.")
+        emit("    pub(in crate::validation) const fn section(self) -> &'static str {")
+        emit("        match self {")
+        for option in confidentiality.options:
+            emit(f"            O::{option['variant']} => {rust_string(option['section'])},")
+        emit("        }")
+        emit("    }")
+        emit("}")
+        emit()
+        basic = confidentiality.basic
+        emit(f"/// The CID 7050 code of the PS3.15 {basic['section']} Basic Application Level Confidentiality Profile.")
+        emit(f"pub(in crate::validation) const BASIC_PROFILE: Code = {self.code_value(basic['code'], basic['meaning'])};")
+        emit(f"pub(in crate::validation) const BASIC_PROFILE_SECTION: &str = {rust_string(basic['section'])};")
+        emit()
+        emit("const fn r(")
+        emit("    name: &'static str,")
+        emit("    tag: TagPattern,")
+        emit("    retired: bool,")
+        emit("    in_standard_iod: bool,")
+        emit("    basic: A,")
+        emit("    options: &'static [(O, A)],")
+        emit(") -> ConfidentialityAttribute {")
+        emit("    ConfidentialityAttribute { name, tag, retired, in_standard_iod, basic, options }")
+        emit("}")
+        emit()
+        emit("#[allow(clippy::too_many_arguments)]")
+        emit("const fn s(")
+        emit("    scheme: &'static str,")
+        emit("    value: &'static str,")
+        emit("    meaning: &'static str,")
+        emit("    scheme_version: &'static str,")
+        emit("    value_type: &'static str,")
+        emit("    retired: bool,")
+        emit("    in_standard_template: bool,")
+        emit("    basic: A,")
+        emit("    options: &'static [(O, A)],")
+        emit(") -> StructuredContentConcept {")
+        emit("    StructuredContentConcept {")
+        emit("        code: Code { scheme, value, meaning, legacy: \"\" },")
+        emit("        scheme_version,")
+        emit("        value_type,")
+        emit("        retired,")
+        emit("        in_standard_template,")
+        emit("        basic,")
+        emit("        options,")
+        emit("    }")
+        emit("}")
+        emit()
+        exact = sorted((row for row in confidentiality.attributes if row["tag"][0] == "tag"), key=lambda row: row["tag"][1])
+        patterns = sorted(
+            (row for row in confidentiality.attributes if row["tag"][0] != "tag"),
+            key=lambda row: (row["tag"][0] == "private", row["tag"][1:]),
+        )
+        emit(f"/// PS3.15 Table E.1-1 rows that name one tag, sorted by tag.")
+        emit("pub(super) static CONFIDENTIALITY_ATTRIBUTES: &[ConfidentialityAttribute] = &[")
+        for row in exact:
+            emit(f"    {self.confidentiality_row(row)},")
+        emit("];")
+        emit()
+        emit("/// PS3.15 Table E.1-1 rows that name a repeating group or every Private Attribute.")
+        emit("pub(super) static CONFIDENTIALITY_PATTERNS: &[ConfidentialityAttribute] = &[")
+        for row in patterns:
+            emit(f"    {self.confidentiality_row(row)},")
+        emit("];")
+        emit()
+        emit("/// PS3.15 Table E.3.4-1, sorted by Coding Scheme Designator, Code Value and Value Type.")
+        emit("pub(super) static STRUCTURED_CONTENT_CONCEPTS: &[StructuredContentConcept] = &[")
+        for row in sorted(confidentiality.concepts, key=concept_key):
+            scheme, value, meaning = row["code"]
+            emit(
+                f"    s({rust_string(scheme)}, {rust_string(value)}, {rust_string(meaning)}, "
+                f"{rust_string(row['version'])}, {rust_string(row['value_type'])}, "
+                f"{str(row['retired']).lower()}, {str(row['in_standard']).lower()}, "
+                f"A::{row['basic']}, {self.option_actions(row['options'])}),"
+            )
+        emit("];")
+        return "\n".join(self.lines) + "\n"
+
+    @staticmethod
+    def code_value(code, meaning):
+        scheme, value = code
+        return (
+            f"Code {{ scheme: {rust_string(scheme)}, value: {rust_string(value)}, "
+            f"meaning: {rust_string(meaning)}, legacy: \"\" }}"
+        )
+
+    @staticmethod
+    def option_actions(options):
+        return "&[" + ", ".join(f"(O::{option}, A::{action})" for option, action in options) + "]"
+
+    def confidentiality_row(self, row):
+        kind, *rest = row["tag"]
+        if kind == "tag":
+            tag = f"TagPattern::Tag({hex_value(rest[0])})"
+        elif kind == "repeating":
+            tag = f"TagPattern::Repeating {{ tag: {hex_value(rest[0])}, mask: {hex_value(rest[1])} }}"
+        else:
+            tag = "TagPattern::Private"
+        return (
+            f"r({rust_string(row['name'])}, {tag}, {str(row['retired']).lower()}, "
+            f"{str(row['in_standard']).lower()}, A::{row['basic']}, {self.option_actions(row['options'])})"
+        )
 
     @staticmethod
     def included_groups(value_sets, number):
@@ -2332,6 +3159,10 @@ class Emitter:
             raise GenerationError("a Template row without a Concept Name constraint")
         if concept["kind"] in ("CID", "TID"):
             return f"Concept::Set({self.value_set_value(concept).removeprefix('Some(').removesuffix(')')})"
+        if concept["kind"] == "ANY":
+            return "Concept::Any"
+        if concept["kind"] == "PARAMETER":
+            return f"Concept::Parameter({rust_string(concept['text'])})"
         scheme, value, meaning = concept["code"]
         kind = "Enumerated" if concept["kind"] == "EV" else "Defined"
         return f"Concept::{kind}(c({rust_string(scheme)}, {rust_string(value)}, {rust_string(meaning)}, \"\"))"
@@ -2351,14 +3182,18 @@ class Emitter:
             f"scheme: {rust_string(scheme)}, value: {rust_string(value)} }})"
         )
 
+    def scopes(self):
+        return [iod["label"] for iod in self.model.iods] + [FILE_SET, DICOMWEB]
+
     def iod_mask(self, iods):
-        labels = [iod["label"] for iod in self.model.iods]
+        labels = self.scopes()
         return sum(1 << labels.index(label) for label in iods)
 
     def statement(self, record):
         keyword = f"Some({rust_string(record['keyword'])})" if record["keyword"] else "None"
+        constructor = "s" if record["strength"] == "shall" else "r"
         return (
-            f"s({rust_string(record['part'])}, {rust_string(record['section'])}, {keyword}, "
+            f"{constructor}({rust_string(record['part'])}, {rust_string(record['section'])}, {keyword}, "
             f"{rust_string(record['text'])}, I{self.iod_mask(record['iods']):02X})"
         )
 
@@ -2393,7 +3228,7 @@ class Emitter:
         self.emit("    DictionaryEntry { tag, mask: u32::MAX, vr, vm, retired: true }")
         self.emit("}")
         self.emit()
-        self.emit("/// PS3.6 Tables 6-1 and 7-1 without repeating groups, sorted by tag; r() is retired.")
+        self.emit("/// PS3.6 Tables 6-1, 7-1 and 8-1 without repeating groups, sorted by tag; r() is retired.")
         self.emit("pub(super) static DICTIONARY: &[DictionaryEntry] = &[")
         repeating = []
         for entry in entries:
@@ -2437,16 +3272,27 @@ def generate(source_dir, fetch):
     sources = verified_sources(source_dir, fetch)
     part04 = Document(sources["part04.xml"])
     part10 = Document(sources["part10.xml"])
+    part15 = Document(sources["part15.xml"])
     model = Model(Document(sources["part03.xml"]), part04, Document(sources["part06.xml"]), part10)
     requirements = Requirements(
-        model, {"PS3.4": part04, "PS3.5": Document(sources["part05.xml"]), "PS3.10": part10}
+        model,
+        {
+            "PS3.4": part04,
+            "PS3.5": Document(sources["part05.xml"]),
+            "PS3.10": part10,
+            "PS3.15": part15,
+            "PS3.18": Document(sources["part18.xml"]),
+        },
     )
     digests = {name: SOURCES[name] for name in sorted(SOURCES)}
+    value_sets = ValueSets(model, Document(sources["part16.xml"]))
+    confidentiality = Confidentiality(part15, value_sets)
     return {
         "tables.rs": Emitter(model).render(digests),
         "dictionary.rs": Emitter(model).dictionary(digests),
         "requirements.rs": Emitter(model).requirements(requirements, digests),
-        "value_sets.rs": Emitter(model).value_sets(ValueSets(model, Document(sources["part16.xml"])), digests),
+        "value_sets.rs": Emitter(model).value_sets(value_sets, digests),
+        "confidentiality.rs": Emitter(model).confidentiality(confidentiality, digests),
     }
 
 

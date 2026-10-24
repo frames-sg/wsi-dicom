@@ -7,6 +7,9 @@ use dicom_dictionary_std::tags;
 use dicom_object::InMemDicomObject;
 
 use super::codes::{self, Coded};
+use super::deidentification::{
+    structured_content_concept, ConfidentialityOption, DeidentificationAction,
+};
 use super::model::{
     Concept, RowRequirement, Strength, Template, TemplateCondition, TemplateRow, ValueSet,
 };
@@ -38,7 +41,10 @@ fn expand(
     depth: usize,
     out: &mut Vec<Expanded>,
 ) {
-    for row in template.rows {
+    // A nested row describes a Target Content Item of the row above it, in
+    // that Item's own Content Sequence, which this flat matching of one
+    // Content Item Sequence does not walk.
+    for row in template.rows.iter().filter(|row| row.level == 0) {
         match row.concept {
             Concept::Set(ValueSet::Template(_, id)) if row.value_type == "INCLUDE" => {
                 if let Some(included) = find(id).filter(|_| depth < MAX_INCLUDE_DEPTH) {
@@ -52,6 +58,18 @@ fn expand(
             }),
         }
     }
+}
+
+/// Whether the Content Item `object` has the Value Type and Concept Name
+/// `row` constrains.
+pub(super) fn row_admits(row: &TemplateRow, object: &InMemDicomObject) -> bool {
+    Item::of(object).matches(row)
+}
+
+/// The Concept Name constraint of `row` as messages name it, e.g. "(121041,
+/// DCM, \"Specimen Identifier\")" or "CID 7010".
+pub(super) fn row_concept_text(row: &TemplateRow) -> String {
+    concept_text(row.concept)
 }
 
 /// The Value Type and Concept Name of one Content Item.
@@ -83,6 +101,11 @@ impl<'a> Item<'a> {
         if self.value_type.as_deref() != Some(row.value_type) {
             return false;
         }
+        // A row without a Concept Name constraint, or whose Concept Name the
+        // including row passes as a parameter, admits any.
+        if matches!(row.concept, Concept::Any | Concept::Parameter(_)) {
+            return true;
+        }
         let Some(concept) = &self.concept else {
             return false;
         };
@@ -96,8 +119,52 @@ impl<'a> Item<'a> {
                 .any(|group| codes::contains(group, concept)),
             Concept::Set(ValueSet::Code(code, _)) => concept.is(code.scheme, code.value),
             Concept::Set(ValueSet::Template(..)) => false,
+            Concept::Any | Concept::Parameter(_) => true,
         }
     }
+}
+
+/// The PS3.15 Annex E Options the De-identification Method Code Sequence
+/// (0012,0064) of `object` declares, when Clean Structured Content is among
+/// them: its Content Items are then cleaned by Table E.3.4-1 (PS3.15 E.3.4).
+fn cleaned_options(object: &InMemDicomObject) -> Option<Vec<ConfidentialityOption>> {
+    let options: Vec<ConfidentialityOption> =
+        sequence_items(object, tags::DEIDENTIFICATION_METHOD_CODE_SEQUENCE)
+            .iter()
+            .filter_map(Coded::of)
+            .filter_map(|code| {
+                ConfidentialityOption::from_code(code.scheme.as_deref()?, &code.value)
+            })
+            .collect();
+    options
+        .contains(&ConfidentialityOption::CleanStructuredContent)
+        .then_some(options)
+}
+
+/// Whether Table E.3.4-1 removes the Content Item `row` describes from an
+/// object cleaned under `options`: X under the Basic Profile, and no
+/// declared Option naming another action for it.
+fn removed(row: &TemplateRow, options: &[ConfidentialityOption]) -> bool {
+    let (Concept::Enumerated(code) | Concept::Defined(code)) = row.concept else {
+        return false;
+    };
+    structured_content_concept(code.scheme, code.value, row.value_type).is_some_and(|concept| {
+        concept.basic == DeidentificationAction::X
+            && options
+                .iter()
+                .filter_map(|option| concept.action(*option))
+                .all(|action| action == DeidentificationAction::X)
+    })
+}
+
+/// A departure of a Content Item Sequence from its Template.
+enum Departure {
+    /// From the Template's rows, counts or order.
+    Template(String),
+    /// A required Content Item missing that Table E.3.4-1 removes under the
+    /// Clean Structured Content Option the object declares, with the ID of
+    /// the Template whose row requires it.
+    Cleaned(String, u32),
 }
 
 /// Whether a row is required, permitted or forbidden.
@@ -188,8 +255,14 @@ impl<'a> Matching<'a> {
         }
     }
 
-    /// Departures from the rows' requirements, counts, extensibility and order.
-    fn departures(&self, root: &Template) -> Vec<String> {
+    /// Departures from the rows' requirements, counts, extensibility and
+    /// order, in an object cleaned under `cleaned` Options when it declares
+    /// Clean Structured Content.
+    fn departures(
+        &self,
+        root: &Template,
+        cleaned: Option<&[ConfidentialityOption]>,
+    ) -> Vec<Departure> {
         let mut departures = Vec::new();
         for (index, expanded) in self.rows.iter().enumerate() {
             let gate = expanded
@@ -219,18 +292,27 @@ impl<'a> Matching<'a> {
             };
             match effective {
                 Need::Required if count < row.min.max(1) => {
-                    departures.push(format!("{} missing", what()));
+                    let missing = format!("{} missing", what());
+                    departures.push(match cleaned {
+                        Some(options) if count == 0 && removed(row, options) => {
+                            Departure::Cleaned(missing, expanded.template.id)
+                        }
+                        _ => Departure::Template(missing),
+                    });
                 }
                 Need::Forbidden if count > 0 => {
-                    departures.push(format!(
+                    departures.push(Departure::Template(format!(
                         "{} present although its condition is not met",
                         what()
-                    ));
+                    )));
                 }
                 _ => {}
             }
             if row.max.is_some_and(|max| count > max) {
-                departures.push(format!("{} appears {count} times", what()));
+                departures.push(Departure::Template(format!(
+                    "{} appears {count} times",
+                    what()
+                )));
             }
         }
         if !self
@@ -244,39 +326,54 @@ impl<'a> Matching<'a> {
                 .enumerate()
                 .filter(|(_, row)| row.is_none())
             {
-                departures.push(format!("Content Item [{}] matches no row", position + 1));
+                departures.push(Departure::Template(format!(
+                    "Content Item [{}] matches no row",
+                    position + 1
+                )));
             }
         }
         if root.ordered && !self.assigned.iter().flatten().is_sorted() {
-            departures.push("Content Items are not in Template row order".into());
+            departures.push(Departure::Template(
+                "Content Items are not in Template row order".into(),
+            ));
         }
         departures
     }
 }
 
-/// Checks a Content Item Sequence against Template `id`. Departures from a
-/// Defined Template are violations; from a Baseline Template, advisories, and
-/// a Baseline Template makes its rows' Value Sets suggestions too.
+/// Checks a Content Item Sequence of `object` against Template `id`.
+/// Departures from a Defined Template are violations; from a Baseline
+/// Template, advisories, and a Baseline Template makes its rows' Value Sets
+/// suggestions too. A required Content Item that PS3.15 Table E.3.4-1 removes
+/// from an object declaring the Clean Structured Content Option is an
+/// advisory citing both: the conflict is between the two Parts.
 pub(super) fn check_items(
     findings: &mut Findings,
     label: &str,
     strength: Strength,
     id: u32,
     objects: &[InMemDicomObject],
+    object: &InMemDicomObject,
 ) {
     let Some(root) = find(id) else {
         return;
     };
+    let edition = super::tables::EDITION;
+    let cleaned = cleaned_options(object);
     let matching = Matching::new(root, objects);
-    for departure in matching.departures(root) {
-        let message = format!(
-            "{label}: TID {id} \"{}\" {departure} (PS3.16 {})",
-            root.name,
-            super::tables::EDITION
-        );
-        match strength {
-            Strength::Defined => findings.value_sets.push(|| message),
-            Strength::Baseline => findings.advisories.add(message),
+    for departure in matching.departures(root, cleaned.as_deref()) {
+        let name = root.name;
+        match departure {
+            Departure::Template(departure) => {
+                let message = format!("{label}: TID {id} \"{name}\" {departure} (PS3.16 {edition})");
+                match strength {
+                    Strength::Defined => findings.value_sets.push(|| message),
+                    Strength::Baseline => findings.advisories.add(message),
+                }
+            }
+            Departure::Cleaned(departure, template) => findings.advisories.add(format!(
+                "{label}: TID {id} \"{name}\" {departure}, a Content Item PS3.15 {edition} Table E.3.4-1 removes under the Clean Structured Content Option the De-identification Method Code Sequence (0012,0064) declares (PS3.15 {edition} E.3.4; PS3.16 {edition} TID {template})"
+            )),
         }
     }
     for (position, (item, row)) in matching.items.iter().zip(&matching.assigned).enumerate() {
@@ -316,5 +413,54 @@ fn concept_text(concept: Concept) -> String {
         Concept::Set(ValueSet::Code(code, _)) => {
             format!("({}, {}, \"{}\")", code.value, code.scheme, code.meaning)
         }
+        Concept::Any => "of any Concept Name".to_string(),
+        Concept::Parameter(name) => name.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{removed, ConfidentialityOption as O};
+    use crate::validation::iod::model::{Code, Concept, RowRequirement, TemplateRow};
+
+    fn row(scheme: &'static str, value: &'static str, value_type: &'static str) -> TemplateRow {
+        TemplateRow {
+            row: "1",
+            level: 0,
+            relationship: "",
+            value_type,
+            concept: Concept::Enumerated(Code {
+                scheme,
+                value,
+                meaning: "",
+                legacy: "",
+            }),
+            min: 1,
+            max: Some(1),
+            requirement: RowRequirement::M,
+            condition: None,
+            condition_text: "",
+            constraint: None,
+            constraint_text: "",
+        }
+    }
+
+    #[test]
+    fn table_e_3_4_1_removes_what_no_declared_option_keeps() {
+        let clean = [O::CleanStructuredContent];
+        // Unique Device Identifier: X, kept under Retain Device Identity.
+        let device = row("LN", "74711-3", "TEXT");
+        assert!(removed(&device, &clean));
+        assert!(!removed(
+            &device,
+            &[O::CleanStructuredContent, O::RetainDeviceIdentity]
+        ));
+        // Device Observer UID is X/D: a dummy keeps a required Item.
+        assert!(!removed(&row("DCM", "121012", "UIDREF"), &clean));
+        // Table E.3.4-1 names Specimen Identifier as TEXT alone.
+        assert!(removed(&row("DCM", "121041", "TEXT"), &clean));
+        assert!(!removed(&row("DCM", "121041", "CODE"), &clean));
+        // Processing type is not in Table E.3.4-1.
+        assert!(!removed(&row("DCM", "111701", "CODE"), &clean));
     }
 }

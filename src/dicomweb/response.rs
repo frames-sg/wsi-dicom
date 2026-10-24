@@ -10,7 +10,7 @@ use dicom_object::InMemDicomObject;
 use super::client::Exchange;
 use super::media::MediaType;
 use super::multipart::{self, Part};
-use super::report::{DicomWebCheck, Verdict};
+use super::report::Verdict;
 use super::EDITION;
 use crate::validation::read_json_data_sets;
 
@@ -202,116 +202,4 @@ pub(crate) fn integer(object: &InMemDicomObject, tag: Tag) -> Option<u64> {
 /// "(gggg,eeee)".
 pub(crate) fn tag_text(tag: Tag) -> String {
     format!("({:04X},{:04X})", tag.group(), tag.element())
-}
-
-/// The payload header fields of every response and the Content-Location of
-/// each representation, gathered across transactions.
-#[derive(Debug, Default)]
-pub(crate) struct Audit {
-    payload: Verdict,
-    payloads: usize,
-    location: Verdict,
-    representations: usize,
-}
-
-impl Audit {
-    /// PS3.18 8.4.2, 8.4.3 and 8.6: a payload has a Content-Type and exactly
-    /// one of Content-Length and Transfer-Encoding.
-    pub(crate) fn payload(&mut self, exchange: &Exchange) {
-        if exchange.body.is_empty() {
-            return;
-        }
-        self.payloads += 1;
-        let line = exchange.request_line();
-        if exchange.header("content-type").is_none() {
-            self.payload.fail(format!(
-                "{line}: the payload has no Content-Type ({})",
-                sec("8.4.2 Table 8.4.2-1")
-            ));
-        }
-        match (exchange.header("content-length"), exchange.header("transfer-encoding")) {
-            (None, None) => self.payload.fail(format!(
-                "{line}: the payload has neither Content-Length nor Transfer-Encoding ({})",
-                sec("8.4.3 Table 8.4.3-1 and 8.6")
-            )),
-            (Some(_), Some(_)) => self.payload.fail(format!(
-                "{line}: Content-Length is present with Transfer-Encoding, which it shall not be ({})",
-                sec("8.4.3 Table 8.4.3-1")
-            )),
-            (Some(length), None)
-                if length.trim().parse::<usize>().ok() != Some(exchange.body.len()) =>
-            {
-                self.payload.fail(format!(
-                    "{line}: Content-Length {length} but the payload holds {} bytes ({})",
-                    exchange.body.len(),
-                    sec("8.4.3 Table 8.4.3-1")
-                ))
-            }
-            _ => {}
-        }
-    }
-
-    /// Table 8.4.2-1: a single part payload that represents the Target
-    /// Resource has a Content-Location.
-    pub(crate) fn representation(&mut self, exchange: &Exchange) {
-        self.representations += 1;
-        if exchange.header("content-location").is_none() {
-            self.location.fail(format!(
-                "{}: no Content-Location, though the payload is a representation of the Target Resource ({})",
-                exchange.request_line(),
-                sec("8.4.2 Table 8.4.2-1")
-            ));
-        }
-    }
-
-    /// Table 8.6.1-1: each part that represents a resource has a
-    /// Content-Location.
-    pub(crate) fn parts(&mut self, exchange: &Exchange, parts: &[Part<'_>]) {
-        self.representations += 1;
-        let missing: Vec<String> = parts
-            .iter()
-            .enumerate()
-            .filter(|(_, part)| part.header("content-location").is_none())
-            .map(|(index, _)| (index + 1).to_string())
-            .collect();
-        if !missing.is_empty() {
-            self.location.fail(format!(
-                "{}: part {} {} no Content-Location, which a part representing a resource has ({})",
-                exchange.request_line(),
-                missing.join(", "),
-                if missing.len() == 1 { "has" } else { "have" },
-                sec("8.6.1.2 Table 8.6.1-1")
-            ));
-        }
-    }
-
-    /// The two gathered checks.
-    pub(crate) fn checks(self) -> [DicomWebCheck; 2] {
-        let mut payload = self.payload;
-        if self.payloads == 0 {
-            payload.not_run("no response carried a payload");
-        }
-        let mut location = self.location;
-        if self.representations == 0 {
-            location.not_run("no Retrieve response carried a representation");
-        }
-        [
-            payload.finish(
-                "dicomweb-payload-headers",
-                sec("8.4.2 Table 8.4.2-1, 8.4.3 Table 8.4.3-1 and 8.6"),
-                &format!(
-                    "each of {} payloads has a Content-Type and one of Content-Length and Transfer-Encoding",
-                    self.payloads
-                ),
-            ),
-            location.finish(
-                "dicomweb-content-location",
-                sec("8.4.2 Table 8.4.2-1 and 8.6.1.2 Table 8.6.1-1"),
-                &format!(
-                    "each of {} Retrieve representations has a Content-Location",
-                    self.representations
-                ),
-            ),
-        ]
-    }
 }

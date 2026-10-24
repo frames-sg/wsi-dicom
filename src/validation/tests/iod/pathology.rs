@@ -6,6 +6,8 @@
 
 use super::*;
 
+mod rules;
+
 const EXPLICIT_VR_LITTLE_ENDIAN: &str = "1.2.840.10008.1.2.1";
 /// Directory `write_pathology_fixtures` writes the objects to.
 const FIXTURE_DIR_VARIABLE: &str = "WSI_DICOM_IOD_FIXTURES";
@@ -86,14 +88,21 @@ fn at(tag: Tag, values: &[Tag]) -> InMemElement {
 type Fixture = (&'static str, fn() -> InMemDicomObject);
 
 /// The fixtures by file name.
-const FIXTURES: [Fixture; 7] = [
+const FIXTURES: [Fixture; 3] = [
+    ("annotations", annotations),
+    ("segmentation", segmentation),
+    ("parametric-map", parametric_map),
+];
+
+/// Objects of the microscopy IODs that are not pathology-slide IODs: VL
+/// Microscopic Image (A.32.2), VL Slide-Coordinates Microscopic Image
+/// (A.32.3), Confocal Microscopy Image (A.90.1) and Confocal Microscopy Tiled
+/// Pyramidal Image (A.90.2).
+const OTHER_MICROSCOPY: [Fixture; 4] = [
     ("vl-microscopic", vl_microscopic),
     ("vl-slide-coordinates", vl_slide_coordinates),
     ("confocal", confocal),
-    ("annotations", annotations),
-    ("segmentation", segmentation),
     ("confocal-tiled", confocal_tiled),
-    ("parametric-map", parametric_map),
 ];
 
 /// Writes `object` as `name`.dcm, its File Meta Information from its SOP
@@ -145,8 +154,13 @@ fn write_pathology_fixtures() {
         .map(PathBuf::from)
         .unwrap_or_else(|| panic!("set {FIXTURE_DIR_VARIABLE} to the output directory"));
     std::fs::create_dir_all(&dir).unwrap();
+    write_fixtures(&dir);
+}
+
+/// Writes every fixture into `dir`, so that each IOD's checks run there.
+pub(super) fn write_fixtures(dir: &Path) {
     for (name, fixture) in FIXTURES {
-        write(&dir, name, fixture(), |_| {});
+        write(dir, name, fixture(), |_| {});
     }
 }
 
@@ -245,53 +259,6 @@ fn breaking_an_attribute_of_each_family_fails_its_check_in_every_iod() {
 fn value_set_breakage(name: &str) -> Breakage {
     let check = "intrinsic-wsi-dicom-iod-value-sets";
     match name {
-        "vl-microscopic" | "vl-slide-coordinates" => Breakage {
-            check,
-            expected: "Content Items are not in Template row order",
-            edit: |object| {
-                // DTID 8004 is ordered: Location of Specimen (row 2) before
-                // Position Frame of Reference (row 1).
-                let mut specimen = item(vec![
-                    text(tags::SPECIMEN_IDENTIFIER, VR::LO, "SPECIMEN-1"),
-                    sq(tags::ISSUER_OF_THE_SPECIMEN_IDENTIFIER_SEQUENCE, vec![]),
-                    text(tags::SPECIMEN_UID, VR::UI, "1.2.826.0.1.3680043.10.999.7.2"),
-                    sq(tags::SPECIMEN_PREPARATION_SEQUENCE, vec![]),
-                ]);
-                specimen.put(sq(
-                    tags::SPECIMEN_LOCALIZATION_CONTENT_ITEM_SEQUENCE,
-                    vec![
-                        text_item("111718", "Location of Specimen", "top left"),
-                        text_item("111708", "Position Frame of Reference", "slide"),
-                    ],
-                ));
-                object.put(text(tags::CONTAINER_IDENTIFIER, VR::LO, "SLIDE-1"));
-                object.put(sq(
-                    tags::ISSUER_OF_THE_CONTAINER_IDENTIFIER_SEQUENCE,
-                    vec![],
-                ));
-                object.put(sq(tags::CONTAINER_TYPE_CODE_SEQUENCE, vec![]));
-                object.put(sq(tags::SPECIMEN_DESCRIPTION_SEQUENCE, vec![specimen]));
-            },
-        },
-        "confocal" | "confocal-tiled" => Breakage {
-            check,
-            expected: "is not in Defined CID 82",
-            edit: |object| {
-                first_item(object, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE, |shared| {
-                    shared.put(sq(
-                        tags::REAL_WORLD_VALUE_MAPPING_SEQUENCE,
-                        vec![item(vec![
-                            text(tags::LUT_EXPLANATION, VR::LO, "reflectance"),
-                            text(tags::LUT_LABEL, VR::SH, "R"),
-                            sq(
-                                tags::MEASUREMENT_UNITS_CODE_SEQUENCE,
-                                vec![code("99LOCAL", "u1", "local unit")],
-                            ),
-                        ])],
-                    ));
-                });
-            },
-        },
         "segmentation" => Breakage {
             check,
             expected: "which PS3.3 A.51.5.1 requires",
@@ -323,17 +290,6 @@ fn value_set_breakage(name: &str) -> Breakage {
             },
         },
     }
-}
-
-fn text_item(value: &str, meaning: &str, text_value: &str) -> InMemDicomObject {
-    item(vec![
-        text(tags::VALUE_TYPE, VR::CS, "TEXT"),
-        sq(
-            tags::CONCEPT_NAME_CODE_SEQUENCE,
-            vec![code("DCM", value, meaning)],
-        ),
-        text(tags::TEXT_VALUE, VR::UT, text_value),
-    ])
 }
 
 #[test]
@@ -370,53 +326,9 @@ const PRESENCE: &str = "intrinsic-wsi-dicom-iod-attribute-presence";
 const ENUMERATED: &str = "intrinsic-wsi-dicom-iod-enumerated-values";
 
 #[test]
-fn the_optical_path_and_icc_profile_modules_exclude_each_other() {
-    let tmp = tempfile::tempdir().unwrap();
-    for name in ["vl-microscopic", "vl-slide-coordinates"] {
-        let path = broken(tmp.path(), name, "optical-path-and-icc", |object| {
-            object.put(sq(
-                tags::OPTICAL_PATH_SEQUENCE,
-                vec![item(vec![text(tags::OPTICAL_PATH_IDENTIFIER, VR::SH, "1")])],
-            ));
-            object.put(ob(tags::ICC_PROFILE, &[0, 0, 0, 0]));
-        });
-        assert_iod_failure(
-            &path,
-            MODULES,
-            "Optical Path Module (PS3.3 C.8.12.5, Usage U): present although its usage condition is not met",
-        );
-    }
-}
-
-#[test]
 fn shared_functional_group_placement_follows_each_iod_table() {
     let tmp = tempfile::tempdir().unwrap();
-    for name in ["confocal", "confocal-tiled"] {
-        let path = broken(tmp.path(), name, "per-frame-measures", |object| {
-            let mut measures = None;
-            first_item(object, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE, |shared| {
-                measures = shared.take(tags::PIXEL_MEASURES_SEQUENCE);
-            });
-            first_item(
-                object,
-                tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE,
-                |frame| {
-                    frame.put(measures.expect("Pixel Measures in the fixture"));
-                },
-            );
-        });
-        assert_iod_failure(
-            &path,
-            MODULES,
-            "Pixel Measures Functional Group (PS3.3 C.7.6.16.2.1, Usage M): shall be used as a Shared Functional Group",
-        );
-    }
-    for name in [
-        "confocal",
-        "confocal-tiled",
-        "segmentation",
-        "parametric-map",
-    ] {
+    for name in ["segmentation", "parametric-map"] {
         let path = broken(tmp.path(), name, "shared-frame-content", |object| {
             first_item(object, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE, |shared| {
                 shared.put(sq(tags::FRAME_CONTENT_SEQUENCE, vec![item(vec![])]));
@@ -428,118 +340,44 @@ fn shared_functional_group_placement_follows_each_iod_table() {
             "shall not be used as a Shared Functional Group",
         );
     }
-}
-
-#[test]
-fn a_tiled_confocal_pyramid_needs_a_volume_or_thumbnail_image() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = broken(tmp.path(), "confocal-tiled", "overview-pyramid", |object| {
-        object.put(text(
-            tags::IMAGE_TYPE,
-            VR::CS,
-            "ORIGINAL\\PRIMARY\\OVERVIEW\\NONE",
-        ));
-        object.put(text(
-            tags::PYRAMID_UID,
-            VR::UI,
-            "1.2.826.0.1.3680043.10.999.7.53",
-        ));
-    });
+    // Table A.75-2 (A.75.5): "U - May not be used as a Per-Frame Functional
+    // Group" and "U - May not be used as a Shared Functional Group".
+    let converted = |tag| sq(tag, vec![item(vec![])]);
+    let path = broken(
+        tmp.path(),
+        "parametric-map",
+        "per-frame-unassigned-shared",
+        |object| {
+            first_item(
+                object,
+                tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE,
+                |frame| {
+                    frame.put(converted(
+                        tags::UNASSIGNED_SHARED_CONVERTED_ATTRIBUTES_SEQUENCE,
+                    ));
+                },
+            );
+        },
+    );
+    assert_iod_failure(&path, MODULES, "Unassigned Shared Converted Attributes");
     assert_iod_failure(
         &path,
         MODULES,
-        "Multi-Resolution Pyramid Module (PS3.3 C.7.11.1, Usage U): present although its usage condition is not met",
+        "shall be used as a Shared Functional Group but is in 1 Per-Frame Item(s)",
     );
-}
-
-#[test]
-fn image_type_values_follow_each_iod() {
-    let tmp = tempfile::tempdir().unwrap();
-    for name in ["confocal", "confocal-tiled"] {
-        let path = broken(tmp.path(), name, "secondary", |object| {
-            object.put(text(
-                tags::IMAGE_TYPE,
-                VR::CS,
-                "ORIGINAL\\SECONDARY\\VOLUME\\NONE",
-            ));
-        });
-        assert_iod_failure(
-            &path,
-            ENUMERATED,
-            "Image Type (0008,0008) Value 2 \"SECONDARY\" is not an Enumerated Value [PRIMARY]",
-        );
-    }
-    for name in ["vl-microscopic", "vl-slide-coordinates"] {
-        let path = broken(tmp.path(), name, "bogus-image-type", |object| {
-            object.put(text(tags::IMAGE_TYPE, VR::CS, "BOGUS\\PRIMARY"));
-        });
-        assert_iod_failure(
-            &path,
-            ENUMERATED,
-            "Image Type (0008,0008) Value 1 \"BOGUS\" is not an Enumerated Value [ORIGINAL, DERIVED]",
-        );
-    }
-}
-
-#[test]
-fn each_microscopy_iod_binds_its_modality() {
-    let tmp = tempfile::tempdir().unwrap();
-    for (name, modality, expected) in [
-        ("vl-microscopic", "SM", "[GM]"),
-        ("vl-slide-coordinates", "GM", "[SM]"),
-        ("confocal", "SM", "[CFM]"),
-        ("confocal-tiled", "SM", "[CFM]"),
-    ] {
-        let path = broken(tmp.path(), name, "modality", |object| {
-            object.put(text(tags::MODALITY, VR::CS, modality));
-        });
-        assert_iod_failure(
-            &path,
-            ENUMERATED,
-            &format!("Modality (0008,0060) \"{modality}\" is not an Enumerated Value {expected}"),
-        );
-    }
-}
-
-#[test]
-fn color_images_need_planar_configuration() {
-    let tmp = tempfile::tempdir().unwrap();
-    for name in [
-        "vl-microscopic",
-        "vl-slide-coordinates",
-        "confocal",
-        "confocal-tiled",
-    ] {
-        let path = broken(tmp.path(), name, "rgb", |object| {
-            object.put(us(tags::SAMPLES_PER_PIXEL, &[3]));
-            object.put(text(tags::PHOTOMETRIC_INTERPRETATION, VR::CS, "RGB"));
-            object.put(ob(tags::PIXEL_DATA, &[0; 12]));
-        });
-        assert_iod_failure(
-            &path,
-            PRESENCE,
-            "Planar Configuration (0028,0006): Type 1C missing",
-        );
-    }
-}
-
-#[test]
-fn a_stereo_microscopic_image_references_its_pair() {
-    let tmp = tempfile::tempdir().unwrap();
-    for name in ["vl-microscopic", "vl-slide-coordinates"] {
-        let path = broken(tmp.path(), name, "stereo", |object| {
-            object.put(text(
-                tags::IMAGE_TYPE,
-                VR::CS,
-                "ORIGINAL\\PRIMARY\\STEREO L",
-            ));
-        });
-        assert_iod_failure(
-            &path,
-            PRESENCE,
-            "Referenced Image Sequence (0008,1140): Type 1C missing",
-        );
-    }
+    let path = broken(
+        tmp.path(),
+        "parametric-map",
+        "shared-unassigned-per-frame",
+        |object| {
+            first_item(object, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE, |shared| {
+                shared.put(converted(
+                    tags::UNASSIGNED_PER_FRAME_CONVERTED_ATTRIBUTES_SEQUENCE,
+                ));
+            });
+        },
+    );
+    assert_iod_failure(&path, MODULES, "Unassigned Per-Frame Converted Attributes");
 }
 
 /// An Overlay Plane in group `group` without Overlay Data (60xx,3000).
@@ -553,32 +391,8 @@ fn overlay(object: &mut InMemDicomObject, group: u16) {
 }
 
 #[test]
-fn each_overlay_group_holds_the_overlay_plane_module() {
-    let tmp = tempfile::tempdir().unwrap();
-    for name in ["vl-microscopic", "vl-slide-coordinates"] {
-        let path = broken(tmp.path(), name, "overlay", |object| {
-            overlay(object, 0x6002)
-        });
-        assert_iod_failure(&path, PRESENCE, "Overlay Data (6002,3000): Type 1 missing");
-    }
-}
-
-#[test]
 fn iod_content_constraints_forbid_modules() {
     let tmp = tempfile::tempdir().unwrap();
-    let path = broken(
-        tmp.path(),
-        "vl-microscopic",
-        "slide-coordinates",
-        |object| {
-            object.put(sq(tags::IMAGE_CENTER_POINT_COORDINATES_SEQUENCE, vec![]));
-        },
-    );
-    assert_iod_failure(
-        &path,
-        MODULES,
-        "Slide Coordinates Module (PS3.3 C.8.12.2): present ((0040,071A)) although PS3.3 A.32.2.1 says it shall not be present in the VL Microscopic Image IOD",
-    );
     for (name, iod, section) in [
         ("segmentation", "Segmentation", "A.51.4"),
         ("parametric-map", "Parametric Map", "A.75.4"),
@@ -670,19 +484,6 @@ fn segmentation_constraints_bind_padding_types_and_sop_classes() {
 }
 
 #[test]
-fn slide_coordinates_locate_the_image_center() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = broken(tmp.path(), "vl-slide-coordinates", "no-center", |object| {
-        object.remove_element(tags::IMAGE_CENTER_POINT_COORDINATES_SEQUENCE);
-    });
-    assert_iod_failure(
-        &path,
-        PRESENCE,
-        "Image Center Point Coordinates Sequence (0040,071A): Type 2 missing",
-    );
-}
-
-#[test]
 fn an_object_of_another_sop_class_says_no_iod_rules_apply() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("secondary-capture.dcm");
@@ -704,19 +505,45 @@ fn an_object_of_another_sop_class_says_no_iod_rules_apply() {
         );
     }
 }
+
+#[test]
+fn the_other_microscopy_iods_get_no_iod_rules() {
+    let tmp = tempfile::tempdir().unwrap();
+    for (name, fixture) in OTHER_MICROSCOPY {
+        let path = write(tmp.path(), name, fixture(), |_| {});
+        let report = iod_report(&path, ValidationProfile::General);
+        let check = named(&report, MODULES);
+        assert_eq!(
+            check.status,
+            ValidationStatus::Skipped,
+            "{name}: {}",
+            check.message
+        );
+        assert!(
+            check
+                .message
+                .contains("is not a SOP Class of the pathology-slide IODs")
+                && check.message.ends_with("no IOD rules apply"),
+            "{name}: {}",
+            check.message
+        );
+        for other in &IOD_CHECKS[1..] {
+            assert!(
+                report.checks.iter().all(|check| check.name != *other),
+                "{other} ran on a {name} object"
+            );
+        }
+    }
+}
 #[test]
 fn a_parsed_object_is_checked_without_its_file_meta_or_pixel_values() {
     use crate::validation::iod::{run_iod_checks_on, Unavailable};
 
     let tmp = tempfile::tempdir().unwrap();
     // Parsed as a reader would hold it, with multi-valued strings split.
-    let mut file = dicom_object::open_file(write(
-        tmp.path(),
-        "parsed",
-        fixture("vl-microscopic"),
-        |_| {},
-    ))
-    .unwrap();
+    let mut file =
+        dicom_object::open_file(write(tmp.path(), "parsed", fixture("segmentation"), |_| {}))
+            .unwrap();
     // An odd-length stand-in, as for Pixel Data given only by a BulkDataURI.
     file.put(ob(tags::PIXEL_DATA, &[0; 7]));
     // Nothing exists at the label; only the File Meta check would read it.
@@ -1736,3 +1563,6 @@ fn parametric_map() -> InMemDicomObject {
         of(Tag(0x7FE0, 0x0008), &[0.0, 0.25, 0.5, 1.0]), // FloatPixelData
     ])
 }
+
+// The checks of each IOD family, on these fixtures.
+mod families;

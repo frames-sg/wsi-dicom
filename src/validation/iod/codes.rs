@@ -115,11 +115,60 @@ pub(super) fn check_code(
     }
 }
 
-/// Checks the coded entry of each Code Sequence Item against `groups`.
-///
-/// A code outside a Defined non-extensible group is a violation; one outside a
-/// Defined extensible group that does not declare the extension (Context Group
-/// Extension Flag "Y", PS3.3 8.7), or outside a Baseline group, is an advisory.
+/// How a coded entry departs from the Context Groups it is held to.
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::validation) enum CodeFinding {
+    /// Outside a Defined non-extensible group.
+    Violation(String),
+    /// Outside a Defined extensible group without a declared extension, or
+    /// outside a Baseline group.
+    Advisory(String),
+}
+
+/// The departure of the coded entry of the Code Sequence Item `item` from
+/// `groups`, described as "<code> is not in Defined CID n \"name\" (PS3.16
+/// <edition>)"; `None` for a member, an Item without a coded entry (the Code
+/// Sequence Macro presence checks report it), or a declared extension of an
+/// extensible group (Context Group Extension Flag "Y", PS3.3 8.7).
+pub(in crate::validation) fn code_finding(
+    strength: Strength,
+    groups: &[u32],
+    item: &InMemDicomObject,
+) -> Option<CodeFinding> {
+    let groups: Vec<&ContextGroup> = groups.iter().filter_map(|id| group(*id)).collect();
+    let coded = Coded::of(item)?;
+    if groups.iter().any(|group| contains(group, &coded)) {
+        return None;
+    }
+    let names = groups
+        .iter()
+        .map(|group| format!("CID {} \"{}\"", group.id, group.name))
+        .collect::<Vec<_>>()
+        .join(" or ");
+    let message = format!(
+        "{} is not in {} {names} (PS3.16 {})",
+        coded.describe(),
+        match strength {
+            Strength::Baseline => "Baseline",
+            Strength::Defined => "Defined",
+        },
+        super::tables::EDITION
+    );
+    let extensible = groups.iter().any(|group| group.extensible);
+    let declared =
+        string_value(item, tags::CONTEXT_GROUP_EXTENSION_FLAG, 1).as_deref() == Some("Y");
+    match strength {
+        Strength::Defined if !extensible => Some(CodeFinding::Violation(message)),
+        Strength::Defined if declared => None,
+        Strength::Defined => Some(CodeFinding::Advisory(format!(
+            "{message}; an extension of an extensible group is declared with Context Group Extension Flag (0008,010B) \"Y\""
+        ))),
+        Strength::Baseline => Some(CodeFinding::Advisory(message)),
+    }
+}
+
+/// Checks the coded entry of each Code Sequence Item against `groups`
+/// (`code_finding`).
 pub(super) fn check_items(
     findings: &mut Findings,
     label: &str,
@@ -128,42 +177,21 @@ pub(super) fn check_items(
     groups: &[u32],
     items: &[InMemDicomObject],
 ) {
-    let groups: Vec<&ContextGroup> = groups.iter().filter_map(|id| group(*id)).collect();
     for (index, item) in items.iter().enumerate() {
-        let Some(coded) = Coded::of(item) else {
-            continue; // the Code Sequence Macro presence checks report it
-        };
-        if groups.iter().any(|group| contains(group, &coded)) {
-            continue;
-        }
-        let names = groups
-            .iter()
-            .map(|group| format!("CID {} \"{}\"", group.id, group.name))
-            .collect::<Vec<_>>()
-            .join(" or ");
-        let message = || {
-            format!(
-                "{label} {}[{}]: {} is not in {} {names} (PS3.16 {})",
-                tag_text(tag),
-                index + 1,
-                coded.describe(),
-                match strength {
-                    Strength::Baseline => "Baseline",
-                    Strength::Defined => "Defined",
-                },
-                super::tables::EDITION
-            )
-        };
-        let extensible = groups.iter().any(|group| group.extensible);
-        let declared =
-            string_value(item, tags::CONTEXT_GROUP_EXTENSION_FLAG, 1).as_deref() == Some("Y");
-        match strength {
-            Strength::Defined if !extensible => findings.value_sets.push(message),
-            Strength::Defined if declared => {}
-            Strength::Defined => findings
-                .advisories
-                .add(format!("{}; an extension of an extensible group is declared with Context Group Extension Flag (0008,010B) \"Y\"", message())),
-            Strength::Baseline => findings.advisories.add(message()),
+        let at = || format!("{label} {}[{}]", tag_text(tag), index + 1);
+        match code_finding(strength, groups, item) {
+            Some(CodeFinding::Violation(message)) => {
+                findings.value_sets.push(|| format!("{}: {message}", at()));
+            }
+            Some(CodeFinding::Advisory(message)) => {
+                findings.advisories.add(format!("{}: {message}", at()));
+            }
+            None => {}
         }
     }
+}
+
+/// The name of Context Group `id` among those the IODs reach.
+pub(in crate::validation) fn context_group_name(id: u32) -> Option<&'static str> {
+    group(id).map(|group| group.name)
 }

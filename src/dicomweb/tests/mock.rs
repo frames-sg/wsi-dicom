@@ -32,6 +32,11 @@ impl MockRequest {
         self.target.split('?').next().unwrap_or_default()
     }
 
+    /// The percent-decoded value of query parameter `name`.
+    pub(crate) fn decoded(&self, name: &str) -> Option<String> {
+        self.query(name).map(percent_decode)
+    }
+
     /// The value of query parameter `name`.
     pub(crate) fn query(&self, name: &str) -> Option<&str> {
         self.target
@@ -56,6 +61,17 @@ pub(crate) struct MockResponse {
     pub(crate) unframed: bool,
     /// Wait this long before answering.
     pub(crate) delay: Option<Duration>,
+    /// Close the connection without writing anything.
+    pub(crate) silent: bool,
+    /// The status line to write instead of `HTTP/1.1 {status} Mock`.
+    pub(crate) status_line: Option<String>,
+    /// Send the body with Transfer-Encoding: chunked.
+    pub(crate) chunked: bool,
+    /// Write Content-Length even when the status has no payload (204, 304).
+    pub(crate) length_without_payload: bool,
+    /// Keep an error response without the Status Report the origin server
+    /// adds to it.
+    pub(crate) bare: bool,
 }
 
 impl MockResponse {
@@ -160,17 +176,78 @@ fn serve(stream: TcpStream, handler: &Handler, requests: &Mutex<Vec<MockRequest>
     if let Some(delay) = response.delay {
         std::thread::sleep(delay);
     }
-    let mut head = format!("HTTP/1.1 {} Mock\r\n", response.status);
+    if response.silent {
+        return;
+    }
+    let mut head = response
+        .status_line
+        .clone()
+        .unwrap_or_else(|| format!("HTTP/1.1 {} Mock", response.status));
+    head.push_str("\r\n");
     for (name, value) in &response.headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
-    if !response.unframed {
+    let no_payload = matches!(response.status, 204 | 304);
+    if !response.unframed && (!no_payload || response.length_without_payload) {
         head.push_str(&format!("Content-Length: {}\r\n", response.body.len()));
+    }
+    if response.chunked {
+        head.push_str("Transfer-Encoding: chunked\r\n");
     }
     head.push_str("Connection: close\r\n\r\n");
     let _ = writer.write_all(head.as_bytes());
-    let _ = writer.write_all(&response.body);
+    if response.chunked {
+        let _ = writer.write_all(format!("{:X}\r\n", response.body.len()).as_bytes());
+        let _ = writer.write_all(&response.body);
+        let _ = writer.write_all(b"\r\n0\r\n\r\n");
+    } else {
+        let _ = writer.write_all(&response.body);
+    }
     let _ = writer.flush();
+}
+
+/// RFC 3986 percent-decoding; an invalid escape is kept as written.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let escaped = (bytes[index] == b'%')
+            .then(|| text.get(index + 1..index + 3))
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match escaped {
+            Some(byte) => {
+                decoded.push(byte);
+                index += 3;
+            }
+            None => {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+/// A chunked request body (RFC 7230 4.1), or `None` if it is malformed.
+fn read_chunked(reader: &mut BufReader<TcpStream>) -> Option<Vec<u8>> {
+    let mut body = Vec::new();
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).ok()?;
+        let size = usize::from_str_radix(line.trim().split(';').next()?, 16).ok()?;
+        if size == 0 {
+            let mut trailer = String::new();
+            reader.read_line(&mut trailer).ok()?;
+            return Some(body);
+        }
+        let start = body.len();
+        body.resize(start + size, 0);
+        reader.read_exact(&mut body[start..]).ok()?;
+        let mut crlf = [0; 2];
+        reader.read_exact(&mut crlf).ok()?;
+    }
 }
 
 fn read_request(reader: &mut BufReader<TcpStream>) -> Option<MockRequest> {
@@ -190,13 +267,21 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> Option<MockRequest> {
         let (name, value) = header.split_once(':')?;
         headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
     }
-    let length = headers
+    let chunked = headers
         .iter()
-        .find(|(name, _)| name == "content-length")
-        .and_then(|(_, value)| value.parse::<usize>().ok())
-        .unwrap_or(0);
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body).ok()?;
+        .any(|(name, value)| name == "transfer-encoding" && value.contains("chunked"));
+    let body = if chunked {
+        read_chunked(reader)?
+    } else {
+        let length = headers
+            .iter()
+            .find(|(name, _)| name == "content-length")
+            .and_then(|(_, value)| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).ok()?;
+        body
+    };
     Some(MockRequest {
         method,
         target,

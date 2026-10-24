@@ -56,14 +56,14 @@ pub(super) struct Enumeration {
 /// Whether a Value Set is suggested (Baseline) or required (Defined); PS3.16 6.1
 /// and the PS3.3 Definitions of BCID, DCID, BTID and DTID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Strength {
+pub(in crate::validation) enum Strength {
     Baseline,
     Defined,
 }
 
 /// The Value Set of a Code Sequence or Content Item Sequence.
 #[derive(Clone, Copy, Debug)]
-pub(super) enum ValueSet {
+pub(in crate::validation) enum ValueSet {
     /// Codes of any of these PS3.16 Context Groups.
     ContextGroups(Strength, &'static [u32]),
     /// Content Items of this PS3.16 Template.
@@ -91,6 +91,20 @@ pub(super) enum Node {
     /// "Include Table ..." row: the Macro's rows at this nesting level. A
     /// row binding Value Sets in the Macro includes a copy that carries them.
     Include(&'static Table),
+    /// "Include Table ... if and only if ..." (Tables C.17-5 and C.17-6): the
+    /// Macro's rows in a Data Set for which the condition is Required.
+    IncludeIf(&'static Table, ConditionId),
+    /// "Include Record Selection Keys" (Table F.3-3): the rows of the table
+    /// that the Data Set's Value of the selection key names.
+    Select(&'static Selection),
+}
+
+/// The table a Data Set includes by the Value of one of its Attributes.
+#[derive(Debug)]
+pub(super) struct Selection {
+    pub(super) key: u32,
+    /// Each Value and the table it selects.
+    pub(super) tables: &'static [(&'static str, &'static Table)],
 }
 
 /// One PS3.3 Module or Macro table.
@@ -239,15 +253,16 @@ pub(super) struct Statement {
     pub(super) text: &'static str,
     /// The sections of the IODs whose scope holds the sentence.
     pub(super) iods: &'static [&'static str],
+    pub(super) strength: crate::validation::RequirementStrength,
 }
 
 /// A PS3.16 coded concept; `legacy` is its SNOMED-RT identifier, if any.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Code {
-    pub(super) scheme: &'static str,
-    pub(super) value: &'static str,
-    pub(super) meaning: &'static str,
-    pub(super) legacy: &'static str,
+pub(in crate::validation) struct Code {
+    pub(in crate::validation) scheme: &'static str,
+    pub(in crate::validation) value: &'static str,
+    pub(in crate::validation) meaning: &'static str,
+    pub(in crate::validation) legacy: &'static str,
 }
 
 #[derive(Debug)]
@@ -263,18 +278,22 @@ pub(super) struct ContextGroup {
 
 /// The Concept Name a Template row constrains.
 #[derive(Clone, Copy, Debug)]
-pub(super) enum Concept {
+pub(in crate::validation) enum Concept {
     /// EV: exactly this code.
     Enumerated(Code),
     /// DT: this code, or one of the same meaning.
     Defined(Code),
     /// A Context Group of names, or for an INCLUDE row the included Template.
     Set(ValueSet),
+    /// No Concept Name constraint (e.g. an IMAGE row of TID 2010).
+    Any,
+    /// The Template parameter that the including row binds, e.g. "$Measurement".
+    Parameter(&'static str),
 }
 
 /// PS3.16 6.1.7 Requirement Type of a Template row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum RowRequirement {
+pub(in crate::validation) enum RowRequirement {
     M,
     Mc,
     U,
@@ -283,10 +302,12 @@ pub(super) enum RowRequirement {
 
 /// PS3.16 6.1.8 Condition of a Template row; `iff` forbids the row otherwise.
 #[derive(Clone, Copy, Debug)]
-pub(super) enum TemplateCondition {
+pub(in crate::validation) enum TemplateCondition {
     /// "IF[F] Row N is absent".
     Absent { iff: bool, row: &'static str },
-    /// "IF[F] Row N is present".
+    /// "IF[F] Row N is present". Modelled whether or not a Template the IODs
+    /// reach has such a condition in this edition.
+    #[allow(dead_code)]
     Present { iff: bool, row: &'static str },
     /// "IF[F] Row N value is (code)".
     HasCode {
@@ -298,23 +319,42 @@ pub(super) enum TemplateCondition {
 }
 
 #[derive(Debug)]
-pub(super) struct TemplateRow {
-    pub(super) row: &'static str,
-    pub(super) value_type: &'static str,
-    pub(super) concept: Concept,
-    pub(super) min: u32,
-    pub(super) max: Option<u32>,
-    pub(super) requirement: RowRequirement,
-    pub(super) condition: Option<TemplateCondition>,
-    pub(super) constraint: Option<ValueSet>,
+pub(in crate::validation) struct TemplateRow {
+    pub(in crate::validation) row: &'static str,
+    /// Nesting Level (NL): 0 for a row at the Template's top, n for one under
+    /// n ">", a Target Content Item of the nearest row above it one level up.
+    pub(in crate::validation) level: u8,
+    /// Relationship Type with its parent Content Item ("Rel with Parent"),
+    /// e.g. "CONTAINS"; empty where the Template gives none.
+    // Read by the SR content rule through `structured_report`.
+    #[allow(dead_code)]
+    pub(in crate::validation) relationship: &'static str,
+    pub(in crate::validation) value_type: &'static str,
+    pub(in crate::validation) concept: Concept,
+    pub(in crate::validation) min: u32,
+    pub(in crate::validation) max: Option<u32>,
+    pub(in crate::validation) requirement: RowRequirement,
+    /// `condition_text` where it has one of the forms the IOD checks evaluate.
+    pub(in crate::validation) condition: Option<TemplateCondition>,
+    /// The Condition cell as PS3.16 words it; empty if none.
+    // Read by the SR content rule through `structured_report`.
+    #[allow(dead_code)]
+    pub(in crate::validation) condition_text: &'static str,
+    /// `constraint_text` where it names only Context Groups.
+    pub(in crate::validation) constraint: Option<ValueSet>,
+    /// The Value Set Constraint cell as PS3.16 words it, parameters
+    /// included; empty if none.
+    // Read by the SR content rule through `structured_report`.
+    #[allow(dead_code)]
+    pub(in crate::validation) constraint_text: &'static str,
 }
 
 #[derive(Debug)]
-pub(super) struct Template {
-    pub(super) id: u32,
-    pub(super) name: &'static str,
-    pub(super) extensible: bool,
+pub(in crate::validation) struct Template {
+    pub(in crate::validation) id: u32,
+    pub(in crate::validation) name: &'static str,
+    pub(in crate::validation) extensible: bool,
     /// Content Items appear in row order.
-    pub(super) ordered: bool,
-    pub(super) rows: &'static [TemplateRow],
+    pub(in crate::validation) ordered: bool,
+    pub(in crate::validation) rows: &'static [TemplateRow],
 }

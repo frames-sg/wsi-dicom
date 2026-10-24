@@ -2,17 +2,22 @@
 //! Functional Group Macros tables), and the Modules its IOD Content
 //! Constraints forbid or permit only one of.
 
-use std::collections::BTreeSet;
+use std::cell::OnceCell;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
 use dicom_dictionary_std::tags;
+use dicom_object::mem::InMemElement;
 use dicom_object::InMemDicomObject;
 
 use super::conditions::evaluate;
-use super::engine::{by_tag, flatten, ByTag, Definition, Presence, Walk};
+use super::engine::{by_tag, flatten_level, ByTag, Definition, Dynamic, Level, Presence, Walk};
 use super::model::{AttributeType, FunctionalGroupMacro, Iod, Module, Placement, Usage};
 use super::report::{condition_suffix, tag_text, Findings};
-use super::scope::{has, is_private, items, raw_tag, tag_of, Frame, Requirement, Scope};
-use super::tables::ConditionId;
+use super::scope::{
+    has, is_private, items, raw_tag, string_value, tag_of, Frame, Requirement, Scope,
+};
+use super::tables::{self, ConditionId};
 use super::values;
 
 /// The groups of the repeating Overlay Plane Attributes (60xx,eeee), PS3.5 7.6.
@@ -24,21 +29,70 @@ const MAX_TAGS_SHOWN: usize = 4;
 /// Evaluates the Modules of the IOD and the Attributes of those that apply.
 pub(super) fn check_modules(findings: &mut Findings, scope: &Scope<'_>, iod: &Iod) {
     let overlays = overlay_groups(scope.root);
-    let mut definitions = ByTag::new();
-    for module in iod.modules {
+    let modules: Vec<ModuleRows<'_>> = iod.modules.iter().map(ModuleRows::new).collect();
+    let mut level = Level::default();
+    for module in &modules {
         if module_applies(findings, scope, iod, module, &overlays) {
-            add_rows(&mut definitions, module, &overlays);
+            add_rows(&mut level.rows, module, &overlays);
+            level.dynamic.extend(module.dynamic().iter().copied());
         }
     }
     check_forbidden_modules(findings, scope.root, iod, &overlays);
-    check_exclusive_modules(findings, scope.root, iod, &overlays);
-    Walk { findings }.data_set(scope, "", &definitions, Presence::Evaluate, 0);
+    check_exclusive_modules(findings, scope.root, iod, &modules, &overlays);
+    Walk { findings }.data_set(scope, "", &level, Presence::Evaluate, 0);
+}
+
+/// A Module of the IOD with its top-level rows and the inclusions that
+/// depend on the Data Set (Table C.17-5), flattened once when first needed.
+struct ModuleRows<'m> {
+    module: &'m Module,
+    flat: OnceCell<(Vec<Definition>, Vec<Dynamic>)>,
+}
+
+impl<'m> ModuleRows<'m> {
+    fn new(module: &'m Module) -> Self {
+        Self {
+            module,
+            flat: OnceCell::new(),
+        }
+    }
+
+    fn flat(&self) -> &(Vec<Definition>, Vec<Dynamic>) {
+        self.flat.get_or_init(|| {
+            let (mut rows, mut dynamic) = (Vec::new(), Vec::new());
+            let table = self.module.table;
+            flatten_level(table.nodes, table, &mut rows, &mut dynamic);
+            (rows, dynamic)
+        })
+    }
+
+    fn rows(&self) -> &[Definition] {
+        &self.flat().0
+    }
+
+    fn dynamic(&self) -> &[Dynamic] {
+        &self.flat().1
+    }
+
+    /// Whether the Module's Attributes are the repeating 60xx group.
+    fn repeats(&self) -> bool {
+        self.module
+            .signature
+            .first()
+            .copied()
+            .or_else(|| {
+                self.rows()
+                    .first()
+                    .map(|definition| definition.attribute.tag)
+            })
+            .is_some_and(is_overlay_tag)
+    }
 }
 
 /// The Module's top-level rows by tag; an Overlay Plane Module applies once
 /// in each overlay group the object encodes.
-fn add_rows(definitions: &mut ByTag, module: &Module, overlays: &[u16]) {
-    let offsets: Vec<u32> = if repeats(module) {
+fn add_rows(definitions: &mut ByTag, module: &ModuleRows<'_>, overlays: &[u16]) {
+    let offsets: Vec<u32> = if module.repeats() {
         overlays
             .iter()
             .map(|group| u32::from(group - FIRST_OVERLAY_GROUP) << 16)
@@ -46,29 +100,14 @@ fn add_rows(definitions: &mut ByTag, module: &Module, overlays: &[u16]) {
     } else {
         vec![0]
     };
-    let rows = top_level_rows(module);
     for offset in offsets {
-        for definition in &rows {
+        for definition in module.rows() {
             definitions
                 .entry(definition.attribute.tag + offset)
                 .or_default()
                 .push(*definition);
         }
     }
-}
-
-/// Whether the Module's Attributes are the repeating 60xx group.
-fn repeats(module: &Module) -> bool {
-    module
-        .signature
-        .first()
-        .copied()
-        .or_else(|| {
-            top_level_rows(module)
-                .first()
-                .map(|definition| definition.attribute.tag)
-        })
-        .is_some_and(is_overlay_tag)
 }
 
 fn is_overlay_tag(tag: u32) -> bool {
@@ -122,10 +161,11 @@ fn module_applies(
     findings: &mut Findings,
     scope: &Scope<'_>,
     iod: &Iod,
-    module: &Module,
+    rows: &ModuleRows<'_>,
     overlays: &[u16],
 ) -> bool {
-    let present = module_present(scope.root, module, overlays);
+    let module = rows.module;
+    let present = module_present(scope.root, rows, overlays);
     let requirement = usage_requirement(module.usage, module.condition, scope);
     let label = format!(
         "{} Module (PS3.3 {}, Usage {})",
@@ -138,17 +178,17 @@ fn module_applies(
             // A required Module whose rows are all Type 3 or conditional may
             // legitimately encode nothing; missing Type 1/2 rows are reported
             // by the attribute presence check.
-            let rows = top_level_rows(module);
-            let mandatory = rows.iter().any(|definition| {
+            let mandatory = rows.rows().iter().any(|definition| {
                 matches!(
                     definition.attribute.kind,
                     AttributeType::One | AttributeType::Two
                 )
             });
             let encoded = rows
+                .rows()
                 .iter()
                 .any(|definition| has(scope.root, tag_of(definition.attribute.tag)));
-            if mandatory && !encoded && !repeats(module) {
+            if mandatory && !encoded && !rows.repeats() {
                 findings.modules.push(|| {
                     format!(
                         "{label}: required by Table {} but none of its Attributes is present",
@@ -160,7 +200,7 @@ fn module_applies(
         }
         // Other Modules of the IOD define every Attribute of a Module without
         // a signature, so its Attributes do not show that it is present.
-        Requirement::Forbidden if present && module.signature.is_empty() && !repeats(module) => {
+        Requirement::Forbidden if present && module.signature.is_empty() && !rows.repeats() => {
             if let Some(condition) = module.condition {
                 findings.modules.undetermined(condition);
             }
@@ -194,22 +234,18 @@ fn module_applies(
 /// present (PS3.3 C.1.2.3 lets Modules share Attributes); one without such an
 /// Attribute is present when any of its top-level rows is, and an Overlay
 /// Plane Module when any overlay group is.
-fn module_present(root: &InMemDicomObject, module: &Module, overlays: &[u16]) -> bool {
-    if repeats(module) {
+fn module_present(root: &InMemDicomObject, module: &ModuleRows<'_>, overlays: &[u16]) -> bool {
+    if module.repeats() {
         return !overlays.is_empty();
     }
-    if !module.signature.is_empty() {
-        return module.signature.iter().any(|tag| has(root, tag_of(*tag)));
+    let signature = module.module.signature;
+    if !signature.is_empty() {
+        return signature.iter().any(|tag| has(root, tag_of(*tag)));
     }
-    top_level_rows(module)
+    module
+        .rows()
         .iter()
         .any(|definition| has(root, tag_of(definition.attribute.tag)))
-}
-
-fn top_level_rows(module: &Module) -> Vec<Definition> {
-    let mut definitions = Vec::new();
-    flatten(module.table.nodes, module.table, &mut definitions);
-    definitions
 }
 
 /// Modules the IOD Content Constraints say shall not be present.
@@ -249,6 +285,7 @@ fn check_exclusive_modules(
     findings: &mut Findings,
     root: &InMemDicomObject,
     iod: &Iod,
+    modules: &[ModuleRows<'_>],
     overlays: &[u16],
 ) {
     for exclusive in iod.exclusive_modules {
@@ -257,9 +294,9 @@ fn check_exclusive_modules(
             .iter()
             .copied()
             .filter(|name| {
-                iod.modules
+                modules
                     .iter()
-                    .find(|module| module.name == *name)
+                    .find(|module| module.module.name == *name)
                     .is_some_and(|module| module_present(root, module, overlays))
             })
             .collect();
@@ -299,10 +336,13 @@ pub(super) fn check_functional_groups(findings: &mut Findings, scope: &Scope<'_>
         .iter()
         .flat_map(|group| group.sequences.iter().copied())
         .collect();
+    let standard = standard_group_attributes();
     for (path, item, _) in &groups {
         for element in item.iter() {
             let tag = element.header().tag;
-            if !is_private(tag) && !permitted.contains(&raw_tag(tag)) {
+            if is_private(tag) {
+                check_private_group(findings, path, item, element, standard);
+            } else if !permitted.contains(&raw_tag(tag)) {
                 findings.modules.push(|| {
                     format!(
                         "{path}{}: not a Functional Group Macro permitted by Table {table}",
@@ -316,6 +356,85 @@ pub(super) fn check_functional_groups(findings: &mut Findings, scope: &Scope<'_>
         check_group_usage(findings, scope, group, shared, per_frame, per_frame_present);
         check_group_items(findings, scope, group, &groups);
     }
+}
+
+/// An Attribute a Standard Functional Group Macro defines: its name, and the
+/// name of the Macro.
+type StandardAttribute = (&'static str, &'static str);
+
+/// The Attributes of the Standard Functional Group Macros the IODs define:
+/// each Macro's Functional Group Sequence and the Attributes of its Item.
+/// Deeper rows are left out: they belong to Macros such as the Code Sequence
+/// Macro that a Private Functional Group may use too.
+fn standard_group_attributes() -> &'static BTreeMap<u32, StandardAttribute> {
+    static ATTRIBUTES: OnceLock<BTreeMap<u32, StandardAttribute>> = OnceLock::new();
+    ATTRIBUTES.get_or_init(|| {
+        let mut found = BTreeMap::new();
+        for group in tables::IODS.iter().flat_map(|iod| iod.functional_groups) {
+            let (mut sequences, mut ignored) = (Vec::new(), Vec::new());
+            flatten_level(group.table.nodes, group.table, &mut sequences, &mut ignored);
+            for sequence in sequences {
+                let (mut rows, mut ignored) = (Vec::new(), Vec::new());
+                flatten_level(
+                    sequence.attribute.children,
+                    sequence.table,
+                    &mut rows,
+                    &mut ignored,
+                );
+                for definition in std::iter::once(sequence).chain(rows) {
+                    found
+                        .entry(definition.attribute.tag)
+                        .or_insert((definition.attribute.name, group.name));
+                }
+            }
+        }
+        found
+    })
+}
+
+/// PS3.3 C.7.6.16.1.1: "A Private Functional Group may not replicate the
+/// Attributes of a Standard Functional Group." A private Sequence of a
+/// Functional Group Item is a Private Functional Group; an Attribute of its
+/// Items that a Standard Functional Group Macro defines replicates it.
+fn check_private_group(
+    findings: &mut Findings,
+    path: &str,
+    group_item: &InMemDicomObject,
+    element: &InMemElement,
+    standard: &BTreeMap<u32, StandardAttribute>,
+) {
+    let Some(private_items) = element.items() else {
+        return;
+    };
+    let tag = element.header().tag;
+    for (index, private_item) in private_items.iter().enumerate() {
+        for nested in private_item.iter() {
+            let nested_tag = raw_tag(nested.header().tag);
+            let Some((attribute, group)) = standard.get(&nested_tag) else {
+                continue;
+            };
+            findings.modules.push(|| {
+                format!(
+                    "{path}{} (Private Creator {})[{}] > {attribute} {}: a Private Functional Group replicates an Attribute of the {group} Functional Group Macro, which it may not (PS3.3 {} C.7.6.16.1.1)",
+                    tag_text(raw_tag(tag)),
+                    private_creator(group_item, tag),
+                    index + 1,
+                    tag_text(nested_tag),
+                    tables::EDITION
+                )
+            });
+        }
+    }
+}
+
+/// The quoted Private Creator (gggg,00xx) of the Private Data Element
+/// (gggg,xxee) in `item`, or that none is present (PS3.5 7.8.1).
+fn private_creator(item: &InMemDicomObject, tag: dicom_core::Tag) -> String {
+    let creator = dicom_core::Tag(tag.group(), tag.element() >> 8);
+    string_value(item, creator, 1).map_or_else(
+        || format!("{} absent", tag_text(raw_tag(creator))),
+        |name| format!("\"{name}\""),
+    )
 }
 
 /// The Shared Item, then each Per-Frame Item, with its path and the
@@ -428,8 +547,12 @@ fn check_group_items(
     groups: &[(String, &InMemDicomObject, Frame<'_>)],
 ) {
     let mut flattened = Vec::new();
-    flatten(group.table.nodes, group.table, &mut flattened);
-    let definitions = by_tag(&flattened);
+    let mut dynamic = Vec::new();
+    flatten_level(group.table.nodes, group.table, &mut flattened, &mut dynamic);
+    let definitions = Level {
+        rows: by_tag(&flattened),
+        dynamic,
+    };
     for (path, item, frame) in groups
         .iter()
         .filter(|(_, item, _)| contains_group(item, group))

@@ -11,7 +11,7 @@ use dicom_core::{DataElement, PrimitiveValue, Tag, VR};
 use dicom_dictionary_std::{tags, uids};
 use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
-use super::engine::{by_tag, flatten, Presence, Walk};
+use super::engine::{by_tag, flatten, Level, Presence, Walk};
 use super::report::{tag_text, Family, Findings};
 use super::scope::{raw_tag, string_value, Scope};
 use super::tables::FILE_META;
@@ -37,12 +37,21 @@ struct RawGroup {
     next_group: Option<u16>,
 }
 
-/// Checks the File Meta Information of `path` against Table 7.1-1.
-pub(super) fn check_file_meta(path: &Path, object: &DefaultDicomObject, findings: &mut Findings) {
+/// Checks the File Meta Information of `path` against Table 7.1-1. The SOP
+/// Class and Instance it names are those of the Data Set's SOP Common Module,
+/// unless `directory`: a DICOMDIR's Basic Directory IOD has none, and PS3.10
+/// 8.6 gives its Media Storage SOP Instance UID the File-set UID.
+pub(super) fn check_file_meta(
+    path: &Path,
+    object: &DefaultDicomObject,
+    directory: bool,
+    findings: &mut Findings,
+) {
     let family = &mut findings.file_meta;
     let Some(meta) = check_encoded_group(path, family) else {
         return;
     };
+    let identifies = if directory { 0 } else { 2 };
     for (meta_tag, meta_name, data_set_tag, name) in [
         (
             tags::MEDIA_STORAGE_SOP_CLASS_UID,
@@ -56,7 +65,10 @@ pub(super) fn check_file_meta(path: &Path, object: &DefaultDicomObject, findings
             tags::SOP_INSTANCE_UID,
             "SOP Instance UID (0008,0018)",
         ),
-    ] {
+    ]
+    .into_iter()
+    .take(identifies)
+    {
         let declared = string_value(&meta, meta_tag, 1);
         let actual = string_value(object, data_set_tag, 1);
         if declared.is_some() && declared != actual {
@@ -163,10 +175,20 @@ fn check_encoded_group(path: &Path, family: &mut Family) -> Option<InMemDicomObj
     Walk {
         findings: &mut table_findings,
     }
-    .data_set(&scope, "", &definitions, Presence::Evaluate, 0);
+    .data_set(
+        &scope,
+        "",
+        &Level {
+            rows: definitions,
+            dynamic: Vec::new(),
+        },
+        Presence::Evaluate,
+        0,
+    );
     ValueChecks {
         vr_vm: &mut table_findings.vr_vm,
         format: &mut table_findings.value_format,
+        advisories: &mut table_findings.advisories,
         encoding: Encoding {
             explicit_vr: true,
             extended_characters: false,

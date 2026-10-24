@@ -1,6 +1,7 @@
 //! Relations between the objects of a validated set that hold in every profile
 //! (PS3.3 C.7.1.4.1.1, C.7.4.1, C.7.6.1.1.5, C.7.6.16.1, C.7.6.16.2.2.4,
-//! C.7.6.16.2.5.1, C.7.6.17.2, C.7.6.22.1.2 and C.12.3; PS3.5 9).
+//! C.7.6.16.2.5.1, C.7.6.17.2, C.7.6.22.1.2, C.8.20.2.2, C.8.32.2.1 and
+//! C.12.3; PS3.5 9), gathered from the objects of every pathology-slide IOD.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -10,6 +11,7 @@ use dicom_object::{DefaultDicomObject, InMemDicomObject};
 use sha2::{Digest, Sha256};
 
 use super::super::ValidationCheck;
+use super::corpus::advised_check;
 use super::rule_check;
 use super::wsi_image::{functional_group_items, integer, is_code, sequence, string, tag_values};
 use crate::validation::iod::{dicom_edition, EDITION};
@@ -53,6 +55,8 @@ const CONCATENATION_VARIANT: [dicom_core::Tag; 11] = [
 #[derive(Debug)]
 pub(super) struct SeriesFacts {
     path: PathBuf,
+    /// The PS3.3 section of the object's IOD.
+    iod: &'static str,
     study: Option<String>,
     series: Option<String>,
     sop_instance: Option<String>,
@@ -61,6 +65,9 @@ pub(super) struct SeriesFacts {
     patient: Vec<(usize, String)>,
     /// Lossy Image Compression (0028,2110).
     lossy: Option<String>,
+    /// The SOP Instance UIDs of its source images: those of the Source Image
+    /// Sequence, at the top level or in a Derivation Image Functional Group.
+    sources: BTreeSet<String>,
     frame_of_reference: Option<String>,
     /// Container Identifier of the imaged slide.
     container: Option<String>,
@@ -104,7 +111,7 @@ struct Concatenation {
 }
 
 impl SeriesFacts {
-    pub(super) fn of(object: &DefaultDicomObject, path: &Path) -> Self {
+    pub(super) fn of(object: &DefaultDicomObject, path: &Path, iod: &'static str) -> Self {
         let root: &InMemDicomObject = object;
         let mut uids = Vec::new();
         for (role, tag) in [
@@ -169,8 +176,20 @@ impl SeriesFacts {
                 )
             })
             .collect();
+        let derivations = functional_group_items(root)
+            .into_iter()
+            .flat_map(|(_, item)| sequence(item, tags::DERIVATION_IMAGE_SEQUENCE));
+        let sources = sequence(root, tags::SOURCE_IMAGE_SEQUENCE)
+            .iter()
+            .chain(
+                derivations
+                    .flat_map(|derivation| sequence(derivation, tags::SOURCE_IMAGE_SEQUENCE)),
+            )
+            .filter_map(|source| string(source, tags::REFERENCED_SOP_INSTANCE_UID))
+            .collect();
         Self {
             path: path.to_path_buf(),
+            iod,
             study: string(root, tags::STUDY_INSTANCE_UID),
             series: string(root, tags::SERIES_INSTANCE_UID),
             sop_instance: string(root, tags::SOP_INSTANCE_UID),
@@ -181,6 +200,7 @@ impl SeriesFacts {
                 .filter_map(|(index, (tag, _))| Some((index, string(root, *tag)?)))
                 .collect(),
             lossy: string(root, tags::LOSSY_IMAGE_COMPRESSION),
+            sources,
             frame_of_reference: string(root, tags::FRAME_OF_REFERENCE_UID),
             container: string(root, tags::CONTAINER_IDENTIFIER),
             instance_number: integer(root, tags::INSTANCE_NUMBER),
@@ -275,11 +295,37 @@ fn digest(object: &InMemDicomObject, except: &[dicom_core::Tag]) -> String {
     format!("{:x}", hash.finalize())
 }
 
-pub(super) fn run_series_set_check(facts: &[SeriesFacts]) -> Option<ValidationCheck> {
+/// The series set check, and its advisories by the file each concerns.
+pub(super) fn run_series_set_check(
+    facts: &[SeriesFacts],
+) -> Option<(ValidationCheck, Vec<(PathBuf, String)>)> {
+    const CITATION: &str = concat!(
+        "DICOM PS3.3 ",
+        dicom_edition!(),
+        " C.7.1.4, C.7.4.1, C.7.6.1.1.5, C.7.6.16, C.7.6.22, C.8.20.2.2, C.8.32.2.1 and C.12.3, and PS3.5 ",
+        dicom_edition!(),
+        " 9"
+    );
     if facts.is_empty() {
         return None;
     }
     let mut violations = Vec::new();
+    let mut advisories = Vec::new();
+    // Copies of one SOP Instance are one object to the relations between
+    // objects; the identity set check compares the copies, and
+    // lossy_versions their Lossy Image Compression.
+    let copies = facts;
+    let mut seen = BTreeSet::new();
+    let distinct: Vec<&SeriesFacts> = copies
+        .iter()
+        .filter(|object| {
+            object
+                .sop_instance
+                .as_ref()
+                .is_none_or(|uid| seen.insert(uid.as_str()))
+        })
+        .collect();
+    let facts = distinct.as_slice();
     frames_of_reference(facts, &mut violations);
     uid_roles(facts, &mut violations);
     instance_numbers(facts, &mut violations);
@@ -290,24 +336,24 @@ pub(super) fn run_series_set_check(facts: &[SeriesFacts]) -> Option<ValidationCh
     frame_extractions(facts, &mut violations);
     arrangements(facts, &mut violations);
     group_attributes(facts, &mut violations);
-    lossy_versions(facts, &mut violations);
-    Some(rule_check(
-        Path::new(""),
-        SERIES_SET_RULE,
-        concat!(
-            "DICOM PS3.3 ",
-            dicom_edition!(),
-            " C.7.1.4, C.7.4.1, C.7.6.1.1.5, C.7.6.16, C.7.6.22 and C.12.3, and PS3.5 ",
-            dicom_edition!(),
-            " 9"
-        ),
-        super::violation_result(violations),
-    ))
+    lossy_versions(copies, &mut violations);
+    lossy_sources(facts, &mut violations, &mut advisories);
+    let check = if violations.is_empty() {
+        advised_check(SERIES_SET_RULE, CITATION, &advisories)
+    } else {
+        rule_check(
+            Path::new(""),
+            SERIES_SET_RULE,
+            CITATION,
+            super::violation_result(violations),
+        )
+    };
+    Some((check, advisories))
 }
 
 /// C.7.4.1.1.1: each Series has a single Frame of Reference UID, and the
 /// images sharing a slide-related one (C.8.12.2.1) are of the same slide.
-fn frames_of_reference(facts: &[SeriesFacts], violations: &mut Vec<String>) {
+fn frames_of_reference(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
     let mut slides = BTreeMap::<&str, (&str, &Path)>::new();
     for object in facts {
         let (Some(frame), Some(container)) = (&object.frame_of_reference, &object.container) else {
@@ -346,7 +392,7 @@ fn frames_of_reference(facts: &[SeriesFacts], violations: &mut Vec<String>) {
 
 /// PS3.5 9: a UID identifies one thing, so one UID never plays two roles, and
 /// a Series belongs to one Study.
-fn uid_roles(facts: &[SeriesFacts], violations: &mut Vec<String>) {
+fn uid_roles(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
     let mut roles = BTreeMap::<&str, (&str, &Path)>::new();
     let mut reported = BTreeSet::new();
     for object in facts {
@@ -383,7 +429,7 @@ fn uid_roles(facts: &[SeriesFacts], violations: &mut Vec<String>) {
 
 /// C.7.6.16.1: Instance Number is shared by a Concatenation and otherwise
 /// distinct within a Series.
-fn instance_numbers(facts: &[SeriesFacts], violations: &mut Vec<String>) {
+fn instance_numbers(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
     let mut owners = BTreeMap::<(&str, i64), (Option<&str>, &Path)>::new();
     for object in facts {
         let (Some(series), Some(number)) = (&object.series, object.instance_number) else {
@@ -410,7 +456,7 @@ fn instance_numbers(facts: &[SeriesFacts], violations: &mut Vec<String>) {
 /// C.7.6.16.2.2.4 and C.7.6.16.1: the SOP Instances of a Concatenation agree
 /// on everything but the per-instance Attributes, and their numbers increase
 /// in frame order. A supplied subset need not contain the first Instance.
-fn concatenations(facts: &[SeriesFacts], violations: &mut Vec<String>) {
+fn concatenations(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
     let mut groups = BTreeMap::<&str, Vec<(&SeriesFacts, &Concatenation)>>::new();
     for object in facts {
         if let Some(concatenation) = &object.concatenation {
@@ -566,7 +612,7 @@ fn concatenations(facts: &[SeriesFacts], violations: &mut Vec<String>) {
 
 /// C.7.6.17.2: Instances sharing a Dimension Organization UID index the same
 /// Attributes with it.
-fn dimension_organizations(facts: &[SeriesFacts], violations: &mut Vec<String>) {
+fn dimension_organizations(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
     let mut seen = BTreeMap::<&str, (BTreeSet<&str>, &Path)>::new();
     for object in facts {
         let mut mine = BTreeMap::<&str, BTreeSet<&str>>::new();
@@ -591,7 +637,7 @@ fn dimension_organizations(facts: &[SeriesFacts], violations: &mut Vec<String>) 
 
 /// C.7.6.16.2.5.1: a localizer referenced for planning shares this image's
 /// Frame of Reference.
-fn localizers(facts: &[SeriesFacts], violations: &mut Vec<String>) {
+fn localizers(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
     let frames: BTreeMap<&str, Option<&str>> = facts
         .iter()
         .filter_map(|object| {
@@ -617,7 +663,7 @@ fn localizers(facts: &[SeriesFacts], violations: &mut Vec<String>) {
 
 /// C.7.6.22.1.2: within a Study, a Specimen Identifier and its issuer name one
 /// specimen, so one Specimen UID.
-fn specimen_identifiers(facts: &[SeriesFacts], violations: &mut Vec<String>) {
+fn specimen_identifiers(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
     let mut specimens = BTreeMap::<(&str, &(String, String)), (&str, &Path)>::new();
     for object in facts {
         let Some(study) = &object.study else {
@@ -642,10 +688,10 @@ fn specimen_identifiers(facts: &[SeriesFacts], violations: &mut Vec<String>) {
 
 /// Table C.12-9: an Instance extracted from one with a Frame Extraction
 /// Sequence holds all of the parent's Items and a new one.
-fn frame_extractions(facts: &[SeriesFacts], violations: &mut Vec<String>) {
+fn frame_extractions(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
     let instances: BTreeMap<&str, &SeriesFacts> = facts
         .iter()
-        .filter_map(|object| Some((object.sop_instance.as_deref()?, object)))
+        .filter_map(|object| Some((object.sop_instance.as_deref()?, *object)))
         .collect();
     for object in facts {
         let sources: BTreeSet<&str> = object
@@ -656,7 +702,7 @@ fn frame_extractions(facts: &[SeriesFacts], violations: &mut Vec<String>) {
         for parent in sources
             .into_iter()
             .filter_map(|source| instances.get(source))
-            .filter(|parent| !parent.extractions.is_empty() && !std::ptr::eq(**parent, object))
+            .filter(|parent| !parent.extractions.is_empty() && !std::ptr::eq(**parent, *object))
         {
             let carried = parent
                 .extractions
@@ -678,7 +724,7 @@ fn frame_extractions(facts: &[SeriesFacts], violations: &mut Vec<String>) {
 
 /// C.7.1.4.1.1.1: the same non-human organisms imaged together in a different
 /// arrangement are a different group, with a different Patient ID.
-fn arrangements(facts: &[SeriesFacts], violations: &mut Vec<String>) {
+fn arrangements(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
     let mut seen =
         BTreeMap::<(&str, &BTreeSet<String>), (&BTreeSet<(String, Vec<i64>)>, &Path)>::new();
     for object in facts {
@@ -704,11 +750,11 @@ fn arrangements(facts: &[SeriesFacts], violations: &mut Vec<String>) {
 /// C.7.1.4.1.1: Patient Module Attributes present for a group of non-human
 /// organisms imaged together are those the entire group shares, so none
 /// differs from the same Attribute of a member imaged alone in the set.
-fn group_attributes(facts: &[SeriesFacts], violations: &mut Vec<String>) {
+fn group_attributes(facts: &[&SeriesFacts], violations: &mut Vec<String>) {
     let individuals: BTreeMap<&str, &SeriesFacts> = facts
         .iter()
         .filter(|object| object.arrangement.is_none())
-        .filter_map(|object| Some((object.patient_id.as_deref()?, object)))
+        .filter_map(|object| Some((object.patient_id.as_deref()?, *object)))
         .collect();
     for object in facts {
         let Some(arrangement) = &object.arrangement else {
@@ -755,6 +801,60 @@ fn lossy_versions(facts: &[SeriesFacts], violations: &mut Vec<String>) {
             None => {
                 seen.insert(uid, (lossy, &object.path));
             }
+        }
+    }
+}
+
+/// The Lossy Image Compression of an image derived from a lossy compressed
+/// source in the set. A Segmentation or Parametric Map shall then be "01"
+/// (C.8.20.2.2 and C.8.32.2.1). For another image the text is ambiguous: the
+/// Attribute records lossy compression of the Image "at a point in its
+/// lifetime" (C.7.6.1.1.5), which may or may not reach back through its
+/// derivation, so a derived image of "00", or without the Attribute, is an
+/// advisory.
+fn lossy_sources(
+    facts: &[&SeriesFacts],
+    violations: &mut Vec<String>,
+    advisories: &mut Vec<(PathBuf, String)>,
+) {
+    let lossy: BTreeMap<&str, &Path> = facts
+        .iter()
+        .filter(|object| object.lossy.as_deref() == Some("01"))
+        .filter_map(|object| Some((object.sop_instance.as_deref()?, object.path.as_path())))
+        .collect();
+    for object in facts
+        .iter()
+        .filter(|object| object.lossy.as_deref() != Some("01"))
+    {
+        let Some((source, source_path)) = object
+            .sources
+            .iter()
+            .find_map(|uid| lossy.get(uid.as_str()).map(|path| (uid, *path)))
+        else {
+            continue;
+        };
+        let own = object
+            .lossy
+            .as_deref()
+            .map_or_else(|| "absent".to_string(), |value| format!("\"{value}\""));
+        let derived = match object.iod {
+            "A.51" => Some(("Segmentation", "C.8.20.2.2")),
+            "A.75" => Some(("Parametric Map", "C.8.32.2.1")),
+            _ => None,
+        };
+        match derived {
+            Some((what, section)) => violations.push(format!(
+                "{}: Lossy Image Compression (0028,2110) is {own}, but its source image {source} ({}) is \"01\"; the Value shall be \"01\" for a {what} Instance whose source images are (PS3.3 {EDITION} {section})",
+                object.path.display(),
+                source_path.display()
+            )),
+            None => advisories.push((
+                object.path.clone(),
+                format!(
+                    "Lossy Image Compression (0028,2110) is {own}, but its source image {source} ({}) is \"01\"; the Attribute records lossy compression of the Image \"at a point in its lifetime\" (PS3.3 {EDITION} C.7.6.1.1.5), which is ambiguous for a derived image, so this is not a failure",
+                    source_path.display()
+                ),
+            )),
         }
     }
 }

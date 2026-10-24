@@ -78,6 +78,9 @@ pub struct DicomWebCheck {
     pub requests: Vec<String>,
     /// What was found and what is required.
     pub message: String,
+    /// Recommendations ("should") the origin server does not follow, each
+    /// citing its section; never a failure.
+    pub advisories: Vec<String>,
 }
 
 /// One request and what came back.
@@ -105,6 +108,7 @@ pub struct DicomWebExchange {
 pub(crate) struct Verdict {
     violations: Vec<String>,
     notes: Vec<String>,
+    advisories: Vec<String>,
     requests: Vec<String>,
     unsupported: Option<String>,
     not_run: Option<String>,
@@ -121,6 +125,15 @@ impl Verdict {
         self.notes.push(message.into());
     }
 
+    /// A recommendation is not followed; not a failure. Repeats are kept
+    /// once.
+    pub(crate) fn advise(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        if !self.advisories.contains(&message) {
+            self.advisories.push(message);
+        }
+    }
+
     /// Records a request the check sent.
     pub(crate) fn request(&mut self, line: impl Into<String>) {
         self.requests.push(line.into());
@@ -134,6 +147,19 @@ impl Verdict {
     /// The check could not be exercised.
     pub(crate) fn not_run(&mut self, message: impl Into<String>) {
         self.not_run = Some(message.into());
+    }
+
+    /// Takes over the violations, notes and requests of `other`, and its
+    /// unsupported or not run reason where this has none.
+    pub(crate) fn absorb(&mut self, other: Verdict) {
+        self.violations.extend(other.violations);
+        self.notes.extend(other.notes);
+        for advisory in other.advisories {
+            self.advise(advisory);
+        }
+        self.requests.extend(other.requests);
+        self.unsupported = self.unsupported.take().or(other.unsupported);
+        self.not_run = self.not_run.take().or(other.not_run);
     }
 
     /// Whether a violation was recorded.
@@ -183,6 +209,7 @@ impl Verdict {
             status,
             requests: self.requests,
             message,
+            advisories: self.advisories,
         }
     }
 }

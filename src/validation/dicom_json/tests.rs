@@ -158,6 +158,24 @@ fn each_annex_f_violation_fails_the_json_model_check() {
             "10.4.1.1.2",
         ),
         (r#""00181050":{"vr":"FL","Value":[1e39]}"#, "binary32"),
+        // F.1 and F.2.3: the encoding rules of each VR (PS3.5 6.2).
+        (
+            r#""00080020":{"vr":"DA","Value":["2026-01-01"]}"#,
+            "not of the form YYYYMMDD",
+        ),
+        (
+            r#""00080060":{"vr":"CS","Value":["sm"]}"#,
+            "outside the permitted repertoire",
+        ),
+        (r#""00080018":{"vr":"UI","Value":["1.2.x"]}"#, "not a UID"),
+        (
+            r#""00081030":{"vr":"LO","Value":["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]}"#,
+            "maximum; a Value follows the Definition",
+        ),
+        (
+            r#""00200013":{"vr":"IS","Value":["1.5"]}"#,
+            "Length of Value of its VR",
+        ),
     ] {
         let checks = checks_of(
             &document(members),
@@ -203,6 +221,26 @@ fn documents_that_are_not_dicom_json_fail_whole() {
             model.message
         );
     }
+    // F.2: the DICOM JSON Model's character repertoire is UTF-8.
+    // "Müller" in ISO 8859-1: 0xFC is no UTF-8 sequence.
+    let mut latin1 =
+        format!("[{{{SOP},\"00100010\":{{\"vr\":\"PN\",\"Value\":[{{\"Alphabetic\":\"M")
+            .into_bytes();
+    latin1.push(0xFC);
+    latin1.extend_from_slice(b"ller\"}]}}]");
+    let run = JsonRun {
+        label: PathBuf::from("doc.json"),
+        source: Source::File,
+        options: &DicomJsonOptions::default(),
+        fetched: &BTreeMap::new(),
+        transfer_syntaxes: &BTreeMap::new(),
+        fetch_requested: false,
+        fetch_notes: &[],
+    };
+    let checks = validate_json_bytes(&latin1, &run).checks;
+    let model = check(&checks, JSON_MODEL);
+    assert_eq!(model.status, ValidationStatus::Failed, "{}", model.message);
+    assert!(model.message.contains("not UTF-8"), "{}", model.message);
     // A saved document may hold one Data Set without the Array.
     let lone = format!("{{{SOP}}}");
     let checks = checks_of(
@@ -437,4 +475,145 @@ fn search_results_read_with_their_model_violations() {
     assert_eq!(objects.len(), 1);
     assert!(violations.unwrap().contains("F.3.1"));
     assert!(super::read_json_data_sets(b"7", &BTreeMap::new()).is_err());
+}
+
+/// A minimal Data Set of SOP Class `class`, SOP Instance
+/// 1.2.826.0.1.3680043.10.999.81 and Patient ID `patient`.
+fn instance(class: &str, patient: &str) -> String {
+    format!(
+        r#"{{"00080016":{{"vr":"UI","Value":["{class}"]}},"00080018":{{"vr":"UI","Value":["1.2.826.0.1.3680043.10.999.81"]}},"00100020":{{"vr":"LO","Value":["{patient}"]}}}}"#
+    )
+}
+
+fn set_checks_of(document: &str) -> Vec<ValidationCheck> {
+    checks_of(
+        document,
+        Source::Metadata,
+        &DicomJsonOptions::default(),
+        &BTreeMap::new(),
+    )
+}
+
+fn identity_set(checks: &[ValidationCheck]) -> &ValidationCheck {
+    checks
+        .iter()
+        .find(|check| check.name == "intrinsic-wsi-dicom-identity-set" && check.path.is_none())
+        .unwrap_or_else(|| panic!("no identity set check in {checks:#?}"))
+}
+
+#[test]
+fn the_shared_set_checks_compare_the_data_sets_of_a_document() {
+    // Parametric Map Storage, an IOD the set checks compare.
+    let class = "1.2.840.10008.5.1.4.1.1.30";
+    let identical = format!("[{},{}]", instance(class, "P1"), instance(class, "P1"));
+    let check = identity_set(&set_checks_of(&identical)).clone();
+    assert_eq!(check.status, ValidationStatus::Passed, "{}", check.message);
+    assert!(
+        check.message.contains("identical copies"),
+        "{}",
+        check.message
+    );
+
+    let coerced = format!("[{},{}]", instance(class, "P1"), instance(class, "P2"));
+    let check = identity_set(&set_checks_of(&coerced)).clone();
+    assert_eq!(check.status, ValidationStatus::Passed, "{}", check.message);
+    assert!(
+        check.message.contains("advisory") && check.message.contains("PatientID (0010,0020)"),
+        "{}",
+        check.message
+    );
+
+    let other_class = format!(
+        "[{},{}]",
+        instance(class, "P1"),
+        instance("1.2.840.10008.5.1.4.1.1.66.4", "P1")
+    );
+    let check = identity_set(&set_checks_of(&other_class)).clone();
+    assert_eq!(check.status, ValidationStatus::Failed, "{}", check.message);
+    assert!(
+        check.message.contains("they are of SOP Classes"),
+        "{}",
+        check.message
+    );
+}
+
+#[test]
+fn only_data_sets_sharing_a_sop_instance_uid_are_digested() {
+    use super::Origin;
+    let uid = |value: &str| format!(r#"{{"00080018":{{"vr":"UI","Value":["{value}"]}}}}"#);
+    let document = format!(
+        "[{},{},{},{},{}]",
+        uid("1.2.3"),
+        uid("1.2.4"),
+        uid("1.2.3"),
+        // Two SOP Instance UID members: not plainly given.
+        r#"{"00080018":{"vr":"UI","Value":["1.2.5"]},"00080018":{"vr":"UI","Value":["1.2.6"]}}"#,
+        r#"{"00080016":{"vr":"UI","Value":["1.2.840.10008.5.1.4.1.1.30"]}}"#,
+    );
+    let parsed = super::json::parse(&document, super::json_depth()).unwrap();
+    let data_sets = super::data_sets(&parsed);
+    let repeated = super::repeated_instance_uids(&data_sets);
+    assert_eq!(repeated.into_iter().collect::<Vec<_>>(), ["1.2.3"]);
+    let repeated = super::repeated_instance_uids(&data_sets);
+    let origins: Vec<Origin> = data_sets
+        .iter()
+        .map(|(_, members)| super::copy_origin(members, &repeated))
+        .collect();
+    assert_eq!(
+        origins,
+        [
+            Origin::Label,
+            Origin::UniqueLabel,
+            Origin::Label,
+            Origin::Label,
+            Origin::Label
+        ]
+    );
+}
+
+#[test]
+fn no_check_reads_the_document_label_as_a_file() {
+    let root = tempfile::tempdir().unwrap();
+    // A label naming a file on disk that is not DICOM: a check that read it
+    // would fail on its bytes.
+    let label = root.path().join("label.json");
+    std::fs::write(&label, b"not a DICOM file").unwrap();
+    let options = DicomJsonOptions::default();
+    let empty = BTreeMap::new();
+    let run = JsonRun {
+        label: label.clone(),
+        source: Source::Metadata,
+        options: &options,
+        fetched: &empty,
+        transfer_syntaxes: &BTreeMap::new(),
+        fetch_requested: false,
+        fetch_notes: &[],
+    };
+    let document = format!("[{}]", instance("1.2.840.10008.5.1.4.1.1.30", "P1"));
+    let checks = validate_json_bytes(document.as_bytes(), &run).checks;
+    for (name, needs) in [
+        ("intrinsic-wsi-dicom-file-meta", "Metadata does not include"),
+        ("intrinsic-wsi-dicom-identity-set", "File Meta Information"),
+        ("intrinsic-wsi-dicom-codestream", "encoded Frames"),
+    ] {
+        let found = checks
+            .iter()
+            .find(|check| check.name == name && check.path.is_some())
+            .unwrap_or_else(|| panic!("no {name} check in {checks:#?}"));
+        assert_eq!(
+            found.status,
+            ValidationStatus::Skipped,
+            "{name}: {}",
+            found.message
+        );
+        assert!(found.message.contains(needs), "{name}: {}", found.message);
+    }
+    for check in &checks {
+        assert!(
+            !check.message.contains("not a DICOM file") && !check.message.contains("cannot open"),
+            "{} read the label: {}",
+            check.name,
+            check.message
+        );
+    }
 }

@@ -1,8 +1,8 @@
 //! Standard-derived requirement checks for the pathology-slide IODs: VL Whole
-//! Slide Microscopy Image, VL Microscopic Image, VL Slide-Coordinates
-//! Microscopic Image, Confocal Microscopy Image, Confocal Microscopy Tiled
-//! Pyramidal Image, Microscopy Bulk Simple Annotations, Segmentation and
-//! Parametric Map.
+//! Slide Microscopy Image, Microscopy Bulk Simple Annotations, Segmentation,
+//! Parametric Map, the Key Object Selection Document and the Basic Text,
+//! Enhanced, Comprehensive and Comprehensive 3D SR documents; and for the
+//! Basic Directory IOD of a File-set's DICOMDIR.
 //!
 //! `tables.rs` and `dictionary.rs` are generated from the pinned DICOM DocBook
 //! sources by `scripts/generate-iod-tables.py`; `conditions.rs` holds one
@@ -11,19 +11,33 @@
 
 mod codes;
 mod conditions;
+// PS3.15 Annex E as data; the de-identification rule reads it. Its whole
+// surface is generated, whether or not the rule reads each item yet.
+#[allow(dead_code)]
+#[rustfmt::skip]
+mod confidentiality;
 mod coverage;
+// The full lookup surface of Tables E.1-1 and E.3.4-1 and CID 7050, of which
+// the de-identification rule reads part.
+#[allow(dead_code, unused_imports)]
+pub(in crate::validation) mod deidentification;
 #[rustfmt::skip]
 mod dictionary;
 mod dispositions;
 mod engine;
 mod file_meta;
+#[allow(dead_code, unused_imports)]
+pub(in crate::validation) mod file_set;
 mod item_character_set;
 mod model;
 mod modules;
+mod recommendations;
 mod report;
 #[rustfmt::skip]
 mod requirements;
 mod scope;
+#[allow(dead_code, unused_imports)]
+pub(in crate::validation) mod structured_report;
 #[rustfmt::skip]
 mod tables;
 mod templates;
@@ -104,6 +118,31 @@ const PIXEL_DATA_TAGS: [dicom_core::Tag; 3] = [
     tags::FLOAT_PIXEL_DATA,
     tags::DOUBLE_FLOAT_PIXEL_DATA,
 ];
+
+/// PS3.5 8.2: "It is not permitted to have more than one of Pixel Data
+/// Provider URL (0028,7FE0), Pixel Data (7FE0,0010), Float Pixel Data
+/// (7FE0,0008) or Double Float Pixel Data (7FE0,0009) in the top level Data
+/// Set."
+fn single_pixel_data(findings: &mut Findings, root: &InMemDicomObject) {
+    let present: Vec<dicom_core::Tag> = [tags::PIXEL_DATA_PROVIDER_URL]
+        .into_iter()
+        .chain(PIXEL_DATA_TAGS)
+        .filter(|tag| root.get(*tag).is_some())
+        .collect();
+    if present.len() > 1 {
+        findings.presence.push(|| {
+            format!(
+                "{} are present; the top level Data Set holds at most one of Pixel Data Provider URL, Pixel Data, Float Pixel Data and Double Float Pixel Data (PS3.5 {} 8.2)",
+                present
+                    .iter()
+                    .map(|tag| report::tag_text(scope::raw_tag(*tag)))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                tables::EDITION
+            )
+        });
+    }
+}
 
 /// Runs every IOD requirement family for the pathology-slide IOD that the
 /// Data Set's SOP Class UID names, or else the File Meta Information's, with
@@ -265,10 +304,13 @@ fn trim_uid(uid: &str) -> &str {
     uid.trim_end_matches(['\0', ' '])
 }
 
-/// The pathology-slide IOD whose SOP Classes include `uid`.
+/// The pathology-slide IOD whose SOP Classes include `uid`, or the Basic
+/// Directory IOD for the Media Storage Directory Storage SOP Class of a
+/// DICOMDIR (PS3.10 8.6).
 fn iod_of(uid: &str) -> Option<&'static Iod> {
     tables::IODS
         .iter()
+        .chain(std::iter::once(&tables::BASIC_DIRECTORY))
         .find(|iod| iod.sop_classes.iter().any(|class| class.uid == uid))
 }
 
@@ -327,7 +369,8 @@ fn evaluate(
 ) -> Findings {
     let mut findings = Findings::default();
     if unavailable.file_meta.is_none() {
-        file_meta::check_file_meta(path, object, &mut findings);
+        let directory = std::ptr::eq(iod, &tables::BASIC_DIRECTORY);
+        file_meta::check_file_meta(path, object, directory, &mut findings);
     }
     let root: &InMemDicomObject = object;
     let transfer_syntax = object.meta().transfer_syntax();
@@ -345,9 +388,11 @@ fn evaluate(
     } else {
         root
     };
+    single_pixel_data(&mut findings, root);
     ValueChecks {
         vr_vm: &mut findings.vr_vm,
         format: &mut findings.value_format,
+        advisories: &mut findings.advisories,
         encoding: Encoding {
             explicit_vr: transfer_syntax != uids::IMPLICIT_VR_LITTLE_ENDIAN,
             extended_characters: extended_character_set(root),
@@ -366,6 +411,7 @@ pub(in crate::validation) fn catalog() -> Vec<RequirementEntry> {
         section: statement.section,
         keyword: statement.keyword,
         text: statement.text,
+        strength: statement.strength,
         disposition,
         iods: statement.iods.to_vec(),
         iod_dispositions,

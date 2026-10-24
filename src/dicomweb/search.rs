@@ -6,16 +6,18 @@ use dicom_object::InMemDicomObject;
 
 use super::client::{Exchange, Request};
 use super::report::Verdict;
-use super::response::{expect_json, expect_status, integer, sec, tag_text, text};
+use super::response::{expect_json, expect_multipart, expect_status, integer, sec, tag_text, text};
+use super::url::Url;
 use super::{DicomWebTransaction, Session, Target};
 use crate::validation::is_image_storage_sop_class;
 
-const JSON: &str = "application/dicom+json";
+pub(super) const JSON: &str = "application/dicom+json";
+const XML_ACCEPT: &str = "multipart/related; type=\"application/dicom+xml\"";
 /// A UID no origin server holds, for a search with no match.
-const ABSENT_UID: &str = "2.25.299792458299792458299792458299792458";
+pub(super) const ABSENT_UID: &str = "2.25.299792458299792458299792458299792458";
 
 /// Table 10.6.3-3, Type U and R.
-const STUDY_RETURN_KEYS: [(Tag, &str); 13] = [
+pub(super) const STUDY_RETURN_KEYS: [(Tag, &str); 13] = [
     (tags::STUDY_DATE, "Study Date"),
     (tags::STUDY_TIME, "Study Time"),
     (tags::ACCESSION_NUMBER, "Accession Number"),
@@ -37,7 +39,7 @@ const STUDY_RETURN_KEYS: [(Tag, &str); 13] = [
     ),
 ];
 /// Table 10.6.3-4, Type U and R; Retrieve URL is checked apart.
-const SERIES_RETURN_KEYS: [(Tag, &str); 4] = [
+pub(super) const SERIES_RETURN_KEYS: [(Tag, &str); 4] = [
     (tags::MODALITY, "Modality"),
     (tags::SERIES_INSTANCE_UID, "Series Instance UID"),
     (tags::SERIES_NUMBER, "Series Number"),
@@ -47,7 +49,7 @@ const SERIES_RETURN_KEYS: [(Tag, &str); 4] = [
     ),
 ];
 /// Table 10.6.3-5, Type U and R; Retrieve URL is checked apart.
-const INSTANCE_RETURN_KEYS: [(Tag, &str); 3] = [
+pub(super) const INSTANCE_RETURN_KEYS: [(Tag, &str); 3] = [
     (tags::SOP_CLASS_UID, "SOP Class UID"),
     (tags::SOP_INSTANCE_UID, "SOP Instance UID"),
     (tags::INSTANCE_NUMBER, "Instance Number"),
@@ -91,7 +93,7 @@ pub(super) fn run(session: &mut Session<'_>, target: &mut Target) {
         &all_series,
         &all_instances,
     );
-    matching(session, &study, &all_series);
+    matching(session, target, &study, &all_series);
     parameters(session, &study);
     accept_required(session, &study);
 }
@@ -153,6 +155,13 @@ fn studies(session: &mut Session<'_>, target: &mut Target) {
                 }
             }
         }
+        session.served("studies");
+        target.study_result = target.study.as_deref().and_then(|study| {
+            results
+                .iter()
+                .find(|result| text(result, tags::STUDY_INSTANCE_UID).as_deref() == Some(study))
+                .cloned()
+        });
         for (index, result) in results.iter().enumerate() {
             return_keys(
                 &mut verdict,
@@ -178,15 +187,23 @@ fn studies(session: &mut Session<'_>, target: &mut Target) {
     ));
 }
 
-/// The Study's Series, hierarchical (Table 10.6.1-1).
+/// The Study's Series, hierarchical (Table 10.6.1-1), with Instance Number
+/// asked for as an includefield: an Instance Level Attribute, which a Series
+/// search "shall not" return (10.6.3.3.2).
 fn series(session: &mut Session<'_>, target: &mut Target, study: &str) -> Vec<InMemDicomObject> {
     let section = sec("10.6.1 Table 10.6.1-1, 10.6.3.3.2 Table 10.6.3-4");
     let mut verdict = Verdict::default();
-    let url = session.url(&format!("/studies/{study}/series"), None);
+    let url = session.url(
+        &format!("/studies/{study}/series"),
+        Some("includefield=00200013"),
+    );
     let results = session
         .send(&mut verdict, &Request::get(url, JSON))
-        .and_then(|exchange| search_results(&mut verdict, &exchange))
-        .unwrap_or_default();
+        .and_then(|exchange| search_results(&mut verdict, &exchange));
+    if results.is_some() {
+        session.served("series");
+    }
+    let results = results.unwrap_or_default();
     for (index, result) in results.iter().enumerate() {
         return_keys(
             &mut verdict,
@@ -196,6 +213,13 @@ fn series(session: &mut Session<'_>, target: &mut Target, study: &str) -> Vec<In
             "Table 10.6.3-4",
         );
         target.note_retrieve_url("Series", result);
+        if result.get(tags::INSTANCE_NUMBER).is_some() {
+            verdict.fail(format!(
+                "result {}: Instance Number (0020,0013), an Instance Level includefield, is returned by a Series search, which shall not return it ({})",
+                index + 1,
+                sec("10.6.3.3.2")
+            ));
+        }
     }
     let uids: Vec<String> = results
         .iter()
@@ -216,6 +240,12 @@ fn series(session: &mut Session<'_>, target: &mut Target, study: &str) -> Vec<In
                 .and_then(|result| text(result, tags::SERIES_INSTANCE_UID));
         }
     }
+    target.series_result = target.series.as_deref().and_then(|series| {
+        results
+            .iter()
+            .find(|result| text(result, tags::SERIES_INSTANCE_UID).as_deref() == Some(series))
+            .cloned()
+    });
     session.push(verdict.finish(
         "dicomweb-search-series",
         section,
@@ -240,8 +270,11 @@ fn instances(
     );
     let results = session
         .send(&mut verdict, &Request::get(url, JSON))
-        .and_then(|exchange| search_results(&mut verdict, &exchange))
-        .unwrap_or_default();
+        .and_then(|exchange| search_results(&mut verdict, &exchange));
+    if results.is_some() {
+        session.served("instances");
+    }
+    let results = results.unwrap_or_default();
     for (index, result) in results.iter().enumerate() {
         return_keys(
             &mut verdict,
@@ -275,6 +308,12 @@ fn instances(
         }
     }
     choose_instance(target, &results, &mut verdict);
+    target.instance_result = target.instance.as_deref().and_then(|instance| {
+        results
+            .iter()
+            .find(|result| text(result, tags::SOP_INSTANCE_UID).as_deref() == Some(instance))
+            .cloned()
+    });
     session.push(verdict.finish(
         "dicomweb-search-instances",
         section,
@@ -323,7 +362,10 @@ fn choose_instance(target: &mut Target, results: &[InMemDicomObject], verdict: &
 }
 
 /// 8.3.4.4: `limit` and `offset` page the same ordered list of matches, and
-/// a page that leaves matches unreturned says so in a Warning.
+/// a page that leaves matches unreturned says so in a Warning that names the
+/// service (8.3.4.4.1, Table 10.6.3-1); the unpaged search, sent again,
+/// returns the same ordered list (8.3.4.4.1: "The search requests shall be
+/// idempotent").
 fn paging(
     session: &mut Session<'_>,
     study: &str,
@@ -331,7 +373,7 @@ fn paging(
     all_series: &[InMemDicomObject],
     instances: &[InMemDicomObject],
 ) {
-    let section = sec("8.3.4.4 and 8.3.4.4.1");
+    let section = sec("8.3.4.4, 8.3.4.4.1 and 10.6.3.1 Table 10.6.3-1");
     let mut verdict = Verdict::default();
     let (path, query, key, listed) = match series {
         Some(series) if instances.len() >= 2 => (
@@ -342,7 +384,7 @@ fn paging(
         ),
         _ if all_series.len() >= 2 => (
             format!("/studies/{study}/series"),
-            "",
+            "includefield=00200013",
             tags::SERIES_INSTANCE_UID,
             all_series,
         ),
@@ -353,12 +395,24 @@ fn paging(
         }
     };
     let expected: Vec<Option<String>> = listed.iter().map(|found| text(found, key)).collect();
+    let again = session.url(&path, Some(query));
+    if let Some(exchange) = session.send(&mut verdict, &Request::get(again, JSON)) {
+        if let Some(results) = search_results(&mut verdict, &exchange) {
+            let returned: Vec<Option<String>> =
+                results.iter().map(|result| text(result, key)).collect();
+            if returned != expected {
+                verdict.fail(format!(
+                    "{} sent twice returned {:?} and then {:?}; two identical searches return the same ordered list of matches ({})",
+                    exchange.request_line(),
+                    expected,
+                    returned,
+                    sec("8.3.4.4.1")
+                ));
+            }
+        }
+    }
     for (offset, page_query) in [(0usize, "limit=1"), (1, "limit=1&offset=1")] {
-        let query = if query.is_empty() {
-            page_query.to_string()
-        } else {
-            format!("{query}&{page_query}")
-        };
+        let query = format!("{query}&{page_query}");
         let url = session.url(&path, Some(&query));
         let Some(exchange) = session.send(&mut verdict, &Request::get(url, JSON)) else {
             break;
@@ -378,74 +432,221 @@ fn paging(
             ));
         }
         let remaining = expected.len().saturating_sub(offset + 1);
-        let warned = exchange
+        let warning = exchange
             .headers
             .iter()
-            .any(|(name, value)| name == "warning" && value.trim_start().starts_with("299"));
-        if remaining > 0 && !warned {
-            verdict.fail(format!(
+            .find(|(name, value)| name == "warning" && value.trim_start().starts_with("299"))
+            .map(|(_, value)| value.as_str());
+        match warning {
+            None if remaining > 0 => verdict.fail(format!(
                 "{line} leaves {remaining} matches unreturned but has no \"Warning: 299 <service>: There are {remaining} additional results that can be requested\" ({})",
                 sec("8.3.4.4.1")
-            ));
+            )),
+            Some(value) => warning_agent(&mut verdict, &line, value),
+            None => {}
         }
     }
     session.push(verdict.finish(
         "dicomweb-search-paging",
         section,
-        "limit and offset page the ordered matches, with the 299 Warning while matches remain",
+        "two identical searches list the same ordered matches, and limit and offset page them, with the 299 Warning naming the service while matches remain",
     ));
 }
 
+/// The warn-agent of a Search Warning: "<service> is the base URI for the
+/// origin server" (8.3.4.4.1), and "the Warning Header Field shall contain a
+/// URL" (Table 10.6.3-1).
+pub(super) fn warning_agent(verdict: &mut Verdict, line: &str, value: &str) {
+    let agent = value
+        .trim_start()
+        .strip_prefix("299")
+        .map(str::trim_start)
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(|agent| agent.trim_end_matches(':'))
+        .unwrap_or_default();
+    if Url::parse(agent).is_err() {
+        verdict.fail(format!(
+            "{line}: Warning {value:?} names {agent:?} where the URL of the service is required ({})",
+            sec("8.3.4.4.1 and 10.6.3.1 Table 10.6.3-1")
+        ));
+    }
+}
+
 /// 8.3.4.1 and Table 10.6.1-5: Modality is a required matching key; a
-/// search matching nothing answers 200 with an empty Array (8.3.4.4.1).
-fn matching(session: &mut Session<'_>, study: &str, all_series: &[InMemDicomObject]) {
-    let section = sec("8.3.4.1, 10.6.1.2.3 Table 10.6.1-5 and 8.3.4.4.1");
+/// search matching nothing answers 200 with an empty Array, or an empty
+/// NativeDicomModel for XML (8.3.4.4.1); a Study that does not exist has no
+/// Series (the Hierarchical Search Method, PS3.4 C.4.1.3.1.1); Study Date
+/// and Study Time ranges match as one date-time (8.3.4.1.1).
+fn matching(
+    session: &mut Session<'_>,
+    target: &Target,
+    study: &str,
+    all_series: &[InMemDicomObject],
+) {
+    let section = sec("8.3.4.1, 8.3.4.1.1, 10.6.1.2.3 Table 10.6.1-5, 10.6.2 and 8.3.4.4.1");
     let mut verdict = Verdict::default();
     let url = session.url(&format!("/studies/{study}/series"), Some("Modality=SM"));
     if let Some(exchange) = session.send(&mut verdict, &Request::get(url, JSON)) {
         if let Some(results) = search_results(&mut verdict, &exchange) {
-            let mut returned: Vec<String> = Vec::new();
-            for result in &results {
-                let modality = text(result, tags::MODALITY);
-                if modality.as_deref() != Some("SM") {
-                    verdict.fail(format!(
-                        "{}: a result has Modality {modality:?}, which does not match SM ({})",
-                        exchange.request_line(),
-                        sec("8.3.4.1.1")
-                    ));
-                }
-                returned.extend(text(result, tags::SERIES_INSTANCE_UID));
-            }
-            let mut expected: Vec<String> = all_series
-                .iter()
-                .filter(|found| text(found, tags::MODALITY).as_deref() == Some("SM"))
-                .filter_map(|found| text(found, tags::SERIES_INSTANCE_UID))
-                .collect();
-            returned.sort();
-            expected.sort();
-            if !all_series.is_empty() && returned != expected {
-                verdict.fail(format!(
-                    "{}: matched {} Series, but the unconstrained search lists {} with Modality SM ({})",
-                    exchange.request_line(),
-                    returned.len(),
-                    expected.len(),
-                    sec("8.3.4.1.1")
-                ));
-            }
+            modality_matches(&mut verdict, &exchange, &results, all_series);
         }
     }
-    let url = session.url(
-        &format!("/studies/{study}/series"),
-        Some(&format!("SeriesInstanceUID={ABSENT_UID}")),
-    );
+    let absent = format!("SeriesInstanceUID={ABSENT_UID}");
+    let url = session.url(&format!("/studies/{study}/series"), Some(&absent));
+    if let Some(exchange) = session.send(&mut verdict, &Request::get(url.clone(), JSON)) {
+        empty_result(&mut verdict, &exchange);
+    }
+    if let Some(exchange) = session.send(&mut verdict, &Request::get(url, XML_ACCEPT)) {
+        empty_xml_result(&mut verdict, &exchange);
+    }
+    let url = session.url(&format!("/studies/{ABSENT_UID}/series"), None);
     if let Some(exchange) = session.send(&mut verdict, &Request::get(url, JSON)) {
         empty_result(&mut verdict, &exchange);
+    }
+    match target.study_result.as_ref().and_then(combined_date_time) {
+        Some(query) => {
+            let query = format!("StudyInstanceUID={study}&{query}");
+            let url = session.url("/studies", Some(&query));
+            if let Some(exchange) = session.send(&mut verdict, &Request::get(url, JSON)) {
+                if let Some(results) = search_results(&mut verdict, &exchange) {
+                    if results.len() != 1 {
+                        verdict.fail(format!(
+                            "{} returned {} Studies; the Study's date and time lie in the combined date-time range, though its time is outside the time range alone, so combined date-time matching returns it ({})",
+                            exchange.request_line(),
+                            results.len(),
+                            sec("8.3.4.1.1 and PS3.4 C.2.2.2.5")
+                        ));
+                    }
+                }
+            }
+        }
+        None => verdict
+            .note("the Study has no Study Date and Study Time to match as a combined date-time"),
     }
     session.push(verdict.finish(
         "dicomweb-search-matching",
         section,
-        "Modality matching returns exactly the SM Series, and a search without match answers 200 with []",
+        "Modality and combined date-time matching return exactly the matches, and a search without match answers 200 with [] or an empty NativeDicomModel",
     ));
+}
+
+fn modality_matches(
+    verdict: &mut Verdict,
+    exchange: &Exchange,
+    results: &[InMemDicomObject],
+    all_series: &[InMemDicomObject],
+) {
+    let mut returned: Vec<String> = Vec::new();
+    for result in results {
+        let modality = text(result, tags::MODALITY);
+        if modality.as_deref() != Some("SM") {
+            verdict.fail(format!(
+                "{}: a result has Modality {modality:?}, which does not match SM ({})",
+                exchange.request_line(),
+                sec("8.3.4.1.1")
+            ));
+        }
+        returned.extend(text(result, tags::SERIES_INSTANCE_UID));
+    }
+    let mut expected: Vec<String> = all_series
+        .iter()
+        .filter(|found| text(found, tags::MODALITY).as_deref() == Some("SM"))
+        .filter_map(|found| text(found, tags::SERIES_INSTANCE_UID))
+        .collect();
+    returned.sort();
+    expected.sort();
+    if !all_series.is_empty() && returned != expected {
+        verdict.fail(format!(
+            "{}: matched {} Series, but the unconstrained search lists {} with Modality SM ({})",
+            exchange.request_line(),
+            returned.len(),
+            expected.len(),
+            sec("8.3.4.1.1")
+        ));
+    }
+}
+
+/// A Study Date range and a Study Time range that hold the Study only when
+/// matched as one date-time range (PS3.4 C.2.2.2.5: "the concatenated
+/// string values of each Range Matching component matched as if they were a
+/// single Attribute of VR DT"): from the Study's date two minutes before its
+/// time until a time one minute before it, on a later date; or, near
+/// midnight, the mirror image.
+fn combined_date_time(study: &InMemDicomObject) -> Option<String> {
+    let date = text(study, tags::STUDY_DATE)?;
+    if date.len() != 8 || !date.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let seconds = time_seconds(&text(study, tags::STUDY_TIME)?)?;
+    let clock = |seconds: u32| {
+        format!(
+            "{:02}{:02}{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    };
+    if seconds >= 120 {
+        Some(format!(
+            "StudyDate={date}-29991231&StudyTime={}-{}",
+            clock(seconds - 120),
+            clock(seconds - 60)
+        ))
+    } else {
+        Some(format!(
+            "StudyDate=19000101-{date}&StudyTime={}-{}",
+            clock(seconds + 60),
+            clock(seconds + 120)
+        ))
+    }
+}
+
+/// Seconds since midnight of a TM Value (HH, HHMM, HHMMSS, HHMMSS.F).
+fn time_seconds(value: &str) -> Option<u32> {
+    let whole = value.split('.').next()?;
+    if whole.len() < 2 || whole.len() > 6 || whole.len() % 2 != 0 {
+        return None;
+    }
+    let field = |at: usize| -> Option<u32> {
+        match whole.get(at..at + 2) {
+            Some(digits) => digits.parse().ok(),
+            None => Some(0),
+        }
+    };
+    let (hours, minutes, seconds) = (field(0)?, field(2)?, field(4)?);
+    (hours < 24 && minutes < 60 && seconds < 60).then(|| hours * 3600 + minutes * 60 + seconds)
+}
+
+/// 8.3.4.4.1: "When the Acceptable Media Type is application/dicom+xml, the
+/// empty payload shall be encoded as an empty NativeDicomModel root element."
+fn empty_xml_result(verdict: &mut Verdict, exchange: &Exchange) {
+    if !expect_status(
+        verdict,
+        exchange,
+        &[200],
+        "8.3.4.4.1 and 10.6.4 Table 10.6.4-1",
+    ) {
+        return;
+    }
+    let Some((_, parts)) = expect_multipart(
+        verdict,
+        exchange,
+        Some("application/dicom+xml"),
+        "10.6.4 Table 10.6.4-1",
+    ) else {
+        return;
+    };
+    let line = exchange.request_line();
+    let empty = |body: &[u8]| {
+        let text = String::from_utf8_lossy(body);
+        text.contains("NativeDicomModel") && !text.contains("DicomAttribute")
+    };
+    if parts.is_empty() || !parts.iter().all(|part| empty(part.body)) {
+        verdict.fail(format!(
+            "{line}: no Series matches, and the payload is not an empty NativeDicomModel root element ({})",
+            sec("8.3.4.4.1")
+        ));
+    }
 }
 
 /// 8.3.4.4.1: "a 200 (OK) response shall be returned with an empty payload
@@ -526,6 +727,18 @@ fn accept_required(session: &mut Session<'_>, study: &str) {
     };
     if let Some(exchange) = session.send(&mut verdict, &request) {
         expect_status(&mut verdict, &exchange, &[406], "8.7.5");
+        let essence = exchange
+            .media_type()
+            .and_then(Result::ok)
+            .map(|media| media.essence);
+        if !exchange.body.is_empty() && essence.as_deref() != Some("text/html") {
+            verdict.advise(format!(
+                "{}: the Status Report of a request without an Acceptable Media Type is {}; it should be text/html, the default Media Type of the Text Resource Category ({})",
+                exchange.request_line(),
+                essence.as_deref().unwrap_or("without Content-Type"),
+                sec("8.6.3")
+            ));
+        }
     }
     session.push(verdict.finish(
         "dicomweb-accept-required",
@@ -536,7 +749,10 @@ fn accept_required(session: &mut Session<'_>, study: &str) {
 
 /// The results of a Search response: 200, application/dicom+json (10.6.4)
 /// and the DICOM JSON Model.
-fn search_results(verdict: &mut Verdict, exchange: &Exchange) -> Option<Vec<InMemDicomObject>> {
+pub(super) fn search_results(
+    verdict: &mut Verdict,
+    exchange: &Exchange,
+) -> Option<Vec<InMemDicomObject>> {
     if !expect_status(verdict, exchange, &[200], "10.6.3.1") {
         return None;
     }
@@ -545,7 +761,7 @@ fn search_results(verdict: &mut Verdict, exchange: &Exchange) -> Option<Vec<InMe
 
 /// The Type U and R Attributes of a result (PS3.4 C.2.2.1: returned, empty
 /// if unknown).
-fn return_keys(
+pub(super) fn return_keys(
     verdict: &mut Verdict,
     index: usize,
     result: &InMemDicomObject,

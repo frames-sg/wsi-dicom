@@ -10,14 +10,19 @@ use dicom_object::mem::InMemElement;
 use dicom_object::InMemDicomObject;
 
 use super::conditions::evaluate;
-use super::model::{Attribute, AttributeType, ItemCount, Node, Table, ValueSet};
+use super::model::{Attribute, AttributeType, ItemCount, Node, Selection, Table, ValueSet};
 use super::report::{condition_suffix, tag_text, Findings};
-use super::scope::{element_has_value, integer_value, raw_tag, tag_of, Requirement, Scope};
+use super::scope::{
+    element_has_value, integer_value, raw_tag, string_value, tag_of, Requirement, Scope,
+};
+use super::tables::ConditionId;
 use super::MAX_NESTING;
 use super::{codes, templates};
 
 /// Bound on "Include Table" indirection at one nesting level.
 const MAX_INCLUDE_DEPTH: usize = 16;
+/// Bound on the inclusions resolved for one Data Set.
+const MAX_DYNAMIC_INCLUSIONS: usize = 64;
 
 /// One table row that applies to a Data Set, with the table that defines it and
 /// its Value Set.
@@ -37,15 +42,36 @@ impl Definition {
     }
 }
 
-/// Expands Macro inclusions into the rows that apply at this nesting level.
+/// A Macro inclusion that depends on the Data Set it applies to.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Dynamic {
+    /// Included when the condition is Required for the Data Set.
+    Conditional(&'static Table, ConditionId),
+    /// The table the Data Set's Value of the selection key names.
+    Select(&'static Selection),
+}
+
+/// Expands Macro inclusions into the rows that apply at this nesting level,
+/// leaving out the inclusions that depend on the Data Set.
 pub(super) fn flatten(nodes: &'static [Node], table: &'static Table, out: &mut Vec<Definition>) {
-    flatten_bounded(nodes, table, out, 0);
+    flatten_level(nodes, table, out, &mut Vec::new());
+}
+
+/// `flatten`, collecting the inclusions that depend on the Data Set.
+pub(super) fn flatten_level(
+    nodes: &'static [Node],
+    table: &'static Table,
+    out: &mut Vec<Definition>,
+    dynamic: &mut Vec<Dynamic>,
+) {
+    flatten_bounded(nodes, table, out, dynamic, 0);
 }
 
 fn flatten_bounded(
     nodes: &'static [Node],
     table: &'static Table,
     out: &mut Vec<Definition>,
+    dynamic: &mut Vec<Dynamic>,
     depth: usize,
 ) {
     for node in nodes {
@@ -56,15 +82,35 @@ fn flatten_bounded(
                 value_set: attribute.value_set,
             }),
             Node::Include(included) if depth < MAX_INCLUDE_DEPTH => {
-                flatten_bounded(included.nodes, included, out, depth + 1);
+                flatten_bounded(included.nodes, included, out, dynamic, depth + 1);
             }
             Node::Include(_) => {}
+            Node::IncludeIf(included, condition) => {
+                dynamic.push(Dynamic::Conditional(included, *condition));
+            }
+            Node::Select(selection) => dynamic.push(Dynamic::Select(selection)),
         }
+    }
+}
+
+/// The tables an inclusion that depends on the Data Set may bring in, for
+/// analyses over every Data Set the tables admit.
+pub(super) fn dynamic_tables(dynamic: Dynamic) -> Vec<&'static Table> {
+    match dynamic {
+        Dynamic::Conditional(table, _) => vec![table],
+        Dynamic::Select(selection) => selection.tables.iter().map(|(_, table)| *table).collect(),
     }
 }
 
 /// The rows that apply to a Data Set, grouped by tag.
 pub(super) type ByTag = BTreeMap<u32, Vec<Definition>>;
+
+/// The rows of one nesting level, and the inclusions each Data Set resolves.
+#[derive(Default)]
+pub(super) struct Level {
+    pub(super) rows: ByTag,
+    pub(super) dynamic: Vec<Dynamic>,
+}
 
 /// The (attribute, table) addresses of the rows that define a Sequence.
 type SequenceRows = Vec<(usize, usize)>;
@@ -73,11 +119,11 @@ thread_local! {
     /// Item rows by the Sequence rows that hold them. Rows are static, and a
     /// Per-Frame Functional Groups Sequence repeats the same Sequences in every
     /// Item, so the grouping is built once per thread.
-    static CHILDREN: RefCell<HashMap<SequenceRows, Rc<ByTag>>> = RefCell::default();
+    static CHILDREN: RefCell<HashMap<SequenceRows, Rc<Level>>> = RefCell::default();
 }
 
 /// The rows of the Items of the Sequences that `group` defines.
-fn child_definitions(group: &[Definition]) -> Rc<ByTag> {
+fn child_definitions(group: &[Definition]) -> Rc<Level> {
     let key: SequenceRows = group
         .iter()
         .map(|definition| {
@@ -90,14 +136,19 @@ fn child_definitions(group: &[Definition]) -> Rc<ByTag> {
     CHILDREN.with(|cache| {
         Rc::clone(cache.borrow_mut().entry(key).or_insert_with(|| {
             let mut children = Vec::new();
+            let mut dynamic = Vec::new();
             for definition in group {
-                flatten(
+                flatten_level(
                     definition.attribute.children,
                     definition.table,
                     &mut children,
+                    &mut dynamic,
                 );
             }
-            Rc::new(by_tag(&children))
+            Rc::new(Level {
+                rows: by_tag(&children),
+                dynamic,
+            })
         }))
     })
 }
@@ -134,10 +185,17 @@ impl Walk<'_> {
         &mut self,
         scope: &Scope<'_>,
         path: &str,
-        definitions: &ByTag,
+        level: &Level,
         presence: Presence,
         depth: usize,
     ) {
+        let resolved;
+        let definitions = if level.dynamic.is_empty() {
+            &level.rows
+        } else {
+            resolved = self.resolve(scope, level);
+            &resolved
+        };
         for (tag, group) in definitions {
             let element = scope.item.get(tag_of(*tag));
             if presence == Presence::Evaluate || element.is_some() {
@@ -148,10 +206,56 @@ impl Walk<'_> {
             };
             self.enumerations(scope, path, *tag, group, element);
             if let Some(items) = element.items() {
-                self.value_sets(path, group, items);
+                self.value_sets(scope, path, group, items);
                 self.sequence(scope, path, group, items, depth);
             }
         }
+    }
+
+    /// The level's rows with those of the inclusions that apply to the Data
+    /// Set in `scope`: Macros whose condition is Required, and the table the
+    /// selection key's Value names. An undeterminable condition includes
+    /// nothing and is reported.
+    fn resolve(&mut self, scope: &Scope<'_>, level: &Level) -> ByTag {
+        let mut rows = Vec::new();
+        let mut pending = level.dynamic.clone();
+        let mut resolved = 0;
+        while let Some(next) = pending.pop() {
+            resolved += 1;
+            if resolved > MAX_DYNAMIC_INCLUSIONS {
+                break;
+            }
+            let table = match next {
+                Dynamic::Conditional(table, condition) => match evaluate(condition, scope) {
+                    Requirement::Required => table,
+                    Requirement::Undeterminable => {
+                        self.findings.presence.undetermined(condition);
+                        continue;
+                    }
+                    Requirement::Optional | Requirement::Forbidden => continue,
+                },
+                Dynamic::Select(selection) => {
+                    let value = string_value(scope.item, tag_of(selection.key), 1);
+                    match selection
+                        .tables
+                        .iter()
+                        .find(|(selector, _)| value.as_deref() == Some(*selector))
+                    {
+                        Some((_, table)) => table,
+                        None => continue,
+                    }
+                }
+            };
+            flatten_level(table.nodes, table, &mut rows, &mut pending);
+        }
+        let mut definitions = level.rows.clone();
+        for definition in rows {
+            definitions
+                .entry(definition.attribute.tag)
+                .or_default()
+                .push(definition);
+        }
+        definitions
     }
 
     fn presence(
@@ -313,7 +417,7 @@ impl Walk<'_> {
             return; // the value-format check reports the nesting bound
         }
         let children = child_definitions(group);
-        if children.is_empty() {
+        if children.rows.is_empty() && children.dynamic.is_empty() {
             return;
         }
         for (index, item) in items.iter().enumerate() {
@@ -325,7 +429,13 @@ impl Walk<'_> {
 
     /// Context Group and Template constraints on the Items of a Code or Content
     /// Item Sequence.
-    fn value_sets(&mut self, path: &str, group: &[Definition], items: &[InMemDicomObject]) {
+    fn value_sets(
+        &mut self,
+        scope: &Scope<'_>,
+        path: &str,
+        group: &[Definition],
+        items: &[InMemDicomObject],
+    ) {
         for definition in group {
             let attribute = definition.attribute;
             let label = format!("{path}{}", attribute.name);
@@ -341,7 +451,14 @@ impl Walk<'_> {
                     );
                 }
                 Some(ValueSet::Template(strength, template)) => {
-                    templates::check_items(self.findings, &label, strength, template, items);
+                    templates::check_items(
+                        self.findings,
+                        &label,
+                        strength,
+                        template,
+                        items,
+                        scope.root,
+                    );
                 }
                 Some(ValueSet::Code(code, section)) => {
                     codes::check_code(self.findings, &label, attribute.tag, code, section, items);

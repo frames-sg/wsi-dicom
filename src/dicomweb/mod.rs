@@ -7,36 +7,44 @@
 //! failure. What is retrieved is validated as a file would be: the Metadata
 //! as DICOM JSON and as Data Sets, the Frames' codestreams, an Instance.
 
+mod audit;
 mod capabilities;
 mod client;
 mod frames;
 mod instance;
 mod media;
 mod multipart;
+mod negotiation;
+mod probes;
+mod queries;
 mod rendered;
+mod rendered_parameters;
 mod report;
 mod response;
 mod retrieve;
 mod search;
+mod store;
+mod syntaxes;
 mod transport;
 mod url;
 
 #[cfg(test)]
 pub(crate) mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use dicom_dictionary_std::tags;
 use dicom_object::InMemDicomObject;
 use serde::{Deserialize, Serialize};
 
+use audit::{Audit, Resource};
 pub(crate) use client::Client;
 pub use client::DicomWebHttpOptions;
 use client::{Exchange, Request};
 use report::Verdict;
 pub use report::{DicomWebCheck, DicomWebExchange, DicomWebReport, DicomWebStatus};
-use response::{sec, Audit};
+use response::sec;
 pub(crate) use url::Url;
 
 use crate::{
@@ -88,13 +96,19 @@ pub struct DicomWebOptions {
     pub frames: Vec<u32>,
     /// Timeouts, limits, credentials and trust anchors.
     pub http: DicomWebHttpOptions,
-    /// Requests sent at most; checks that would exceed it are not run.
+    /// Requests sent at most; checks that would exceed it are not run. A
+    /// full run against a conforming server sends about 100.
     pub max_requests: usize,
     /// Transactions left out.
     pub skip: Vec<DicomWebTransaction>,
     /// A PS3.10 file to store with STOW-RS and read back. Store changes the
     /// server's state, so it runs only when this is set.
     pub store_file: Option<PathBuf>,
+    /// Send the two requests that ask for a 401 and a 405 (PS3.18 Table
+    /// 8.5-1): one with a bearer token no server issued, and a TRACE. Off by
+    /// default: a bad credential can raise alerts or lock an account, and
+    /// security scanners flag TRACE.
+    pub probe_error_responses: bool,
     /// How the retrieved objects are validated.
     pub validation: ValidationOptions,
 }
@@ -108,9 +122,10 @@ impl Default for DicomWebOptions {
             instance: None,
             frames: Vec::new(),
             http: DicomWebHttpOptions::default(),
-            max_requests: 64,
+            max_requests: 192,
             skip: Vec::new(),
             store_file: None,
+            probe_error_responses: false,
             validation: ValidationOptions::default(),
         }
     }
@@ -154,6 +169,10 @@ fn check_with_validator(
         files: Vec::new(),
         retrieved: false,
         validate_file,
+        capabilities: None,
+        served: BTreeSet::new(),
+        syntaxes: None,
+        instance_metadata: None,
     };
     let mut target = Target {
         study: options.study.clone(),
@@ -164,25 +183,45 @@ fn check_with_validator(
     capabilities::run(&mut session);
     search::run(&mut session, &mut target);
     let metadata = retrieve::series_metadata(&mut session, &mut target);
+    let held = metadata
+        .as_ref()
+        .zip(target.instance.as_deref())
+        .and_then(|(metadata, uid)| metadata.object(uid));
+    queries::run(&mut session, &target, held);
     let fetched = retrieve::bulkdata(&mut session, metadata.as_ref());
     let object = metadata
         .as_ref()
         .zip(target.instance.as_deref())
         .and_then(|(metadata, uid)| metadata.object_with(uid, &fetched));
-    if let Some(syntax) = frames::run(&mut session, &target, object.as_ref()) {
+    let pixel_uri = metadata
+        .as_ref()
+        .zip(target.instance.as_deref())
+        .and_then(|(metadata, uid)| metadata.pixel_data_uri(uid));
+    if let Some(syntax) = frames::run(&mut session, &target, object.as_ref(), pixel_uri.as_ref()) {
         if let Some(uid) = &target.instance {
             target.syntaxes.insert(uid.clone(), syntax);
         }
     }
     retrieve::validate_metadata(&mut session, metadata.as_ref(), &fetched, &target);
     retrieve::instance_metadata(&mut session, &target, metadata.as_ref());
+    negotiation::run(&mut session, &target);
+    syntaxes::run(&mut session, &target, object.as_ref());
     rendered::run(&mut session, &target, object.as_ref());
+    rendered_parameters::run(&mut session, &target, object.as_ref());
     rendered::thumbnails(&mut session, &target);
-    instance::retrieve(&mut session, &target);
-    instance::store(&mut session);
+    let held = instance::Held {
+        metadata: metadata.as_ref(),
+        fetched: &fetched,
+    };
+    instance::retrieve(&mut session, &target, &held);
+    probes::range(&mut session, &target);
+    probes::errors(&mut session, &target);
+    store::run(&mut session);
     search::retrieve_url_check(&mut session, &target);
-    let audit = std::mem::take(&mut session.audit);
-    session.checks.extend(audit.checks());
+    let audit = std::mem::take(&mut session.audit).finish();
+    syntaxes::finish(&mut session, audit.forbidden);
+    capabilities::finish(&mut session);
+    session.checks.extend(audit.checks);
     let Session {
         checks,
         objects,
@@ -202,6 +241,7 @@ fn check_with_validator(
             files,
             checks: objects,
             optional,
+            conventions: crate::validation::ConventionReport::default(),
         },
         exchanges: client.exchanges(),
     })
@@ -223,6 +263,11 @@ struct Target {
     searched: bool,
     /// Levels with a Search result that lacks Retrieve URL (0008,1190).
     missing_retrieve_url: Vec<String>,
+    /// The Search results of the Study, Series and Instance targeted, for
+    /// the matching checks that query by their values.
+    study_result: Option<InMemDicomObject>,
+    series_result: Option<InMemDicomObject>,
+    instance_result: Option<InMemDicomObject>,
 }
 
 impl Target {
@@ -266,6 +311,15 @@ struct Session<'s> {
     /// Whether a Retrieve of the Study's resources answered 200.
     retrieved: bool,
     validate_file: &'s FileValidator<'s>,
+    /// The Retrieve Capabilities check, finished once the run knows which
+    /// resources the origin server serves.
+    capabilities: Option<capabilities::Pending>,
+    /// The resource path segments (Annex H Table H-1) that answered 200.
+    served: BTreeSet<&'static str>,
+    /// The Transfer Syntax probes, finished with the run's forbidden uses.
+    syntaxes: Option<Verdict>,
+    /// The Instance Metadata as first retrieved, for the Range check.
+    instance_metadata: Option<Vec<u8>>,
 }
 
 impl Session<'_> {
@@ -292,14 +346,12 @@ impl Session<'_> {
     /// header fields. A request that brings no response leaves the check not
     /// run, with why.
     fn send(&mut self, verdict: &mut Verdict, request: &Request<'_>) -> Option<Exchange> {
-        verdict.request(format!(
-            "{} {}",
-            request.method.name(),
-            request.url.target()
-        ));
+        let line = format!("{} {}", request.method.name(), request.url.target());
+        verdict.request(line.clone());
         match self.client.send(request) {
             Ok(exchange) => {
-                self.audit.payload(&exchange);
+                let resource = resource_of(&exchange, &self.base);
+                self.audit.response(&exchange, resource);
                 if !exchange.redirects.is_empty() {
                     verdict.note(format!(
                         "{} redirected: {}",
@@ -309,14 +361,35 @@ impl Session<'_> {
                 }
                 Some(exchange)
             }
-            Err(reason) => {
-                verdict.not_run(format!(
-                    "{} {}: {reason}",
-                    request.method.name(),
-                    request.url.target()
-                ));
+            Err(failure) => {
+                self.audit.failure(&line, &failure);
+                verdict.not_run(format!("{line}: {failure}"));
                 None
             }
         }
+    }
+
+    /// Records that the resources of `segment` (Table H-1) answered 200.
+    fn served(&mut self, segment: &'static str) {
+        self.served.insert(segment);
+    }
+}
+
+/// The kind of resource a request targeted.
+fn resource_of(exchange: &Exchange, base: &Url) -> Resource {
+    if exchange.method != client::Method::Get {
+        return Resource::Other;
+    }
+    match exchange.url.segments_below(base).as_deref() {
+        Some(
+            ["studies"]
+            | ["series"]
+            | ["instances"]
+            | ["studies", _, "series"]
+            | ["studies", _, "instances"]
+            | ["studies", _, "series", _, "instances"],
+        ) => Resource::Search,
+        Some(["studies", _, "series", _, "instances", _]) => Resource::Instance,
+        _ => Resource::Retrieve,
     }
 }

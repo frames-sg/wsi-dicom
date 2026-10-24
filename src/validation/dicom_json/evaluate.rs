@@ -11,18 +11,15 @@ use super::model::{BulkReference, Stand};
 use super::{cite, reader, JsonRun, JSON_MODEL_RULE};
 use crate::validation::digital_signatures::run_digital_signatures_check;
 use crate::validation::iod::{
-    is_image_storage_sop_class, Family, OptionalNotes, EDITION, MAX_NESTING,
+    is_image_storage_sop_class, Family, OptionalNotes, Unavailable, EDITION, MAX_NESTING,
 };
-use crate::validation::wsi_conformance::run_intrinsic_wsi_conformance_checks;
+use crate::validation::wsi_conformance::run_intrinsic_wsi_conformance_checks_on;
 use crate::validation::{
     intrinsic_check, OptionalConformance, ValidationCheck, ValidationOptions, ValidationStatus,
 };
 
 const PIXEL_STRUCTURE_RULE: &str = "intrinsic-pixel-structure";
 const ENCODING_RULE: &str = "intrinsic-wsi-dicom-encoding";
-const CODESTREAM_RULE: &str = "intrinsic-wsi-dicom-codestream";
-const FILE_META_RULE: &str = "intrinsic-wsi-dicom-file-meta";
-const IDENTITY_SET_RULE: &str = "intrinsic-wsi-dicom-identity-set";
 const DIGITAL_SIGNATURES_RULE: &str = "intrinsic-wsi-dicom-digital-signatures";
 const LOSSY_HISTORY_RULE: &str = "intrinsic-wsi-dicom-lossy-history";
 
@@ -113,12 +110,21 @@ pub(super) fn instance(
         None => candidate_syntaxes(&object),
     };
     let options = &run.options.validation;
+    // Metadata includes no File Meta Information, and a document holds no
+    // encoded Frames: Pixel Data is a BulkDataURI, if anything.
+    let unavailable = Unavailable {
+        file_meta: Some(format!(
+            "needs the PS3.10 File Meta Information, which Metadata does not include ({})",
+            cite("10.4.1.1.2")
+        )),
+        pixel_data: true,
+    };
     let mut runs = Vec::with_capacity(candidates.len());
     let mut notes = None;
     let mut reference = None;
     for syntax in &candidates {
         let file = with_meta(&object, syntax);
-        let (found, optional) = object_checks(path, &file, options);
+        let (found, optional) = object_checks(path, &file, &unavailable, options);
         if reference.is_none() {
             notes = optional;
             reference = Some(file);
@@ -129,8 +135,12 @@ pub(super) fn instance(
     if !unresolved.is_empty() {
         let mut sparse = reader(run.source, Stand::Sparse, run.fetched, None);
         let sparse_object = sparse.data_set(members, pointer, 0);
-        let (sparse_checks, _) =
-            object_checks(path, &with_meta(&sparse_object, &candidates[0]), options);
+        let (sparse_checks, _) = object_checks(
+            path,
+            &with_meta(&sparse_object, &candidates[0]),
+            &unavailable,
+            options,
+        );
         mark_bulk_dependence(&mut combined, &sparse_checks, &unresolved);
     }
     override_unencoded(&mut combined, path, &object, &bulk, run.fetched);
@@ -208,15 +218,18 @@ fn with_meta(object: &InMemDicomObject, syntax: &str) -> DefaultDicomObject {
 }
 
 /// The checks of one object that do not read its encoded bytes, with its
-/// optional conformance notes.
+/// optional conformance notes; those that need what `unavailable` names are
+/// skipped, and none reads `path`, the document's label.
 fn object_checks(
     path: &Path,
     object: &DefaultDicomObject,
+    unavailable: &Unavailable,
     options: &ValidationOptions,
 ) -> (Vec<ValidationCheck>, Option<OptionalNotes>) {
-    let (mut checks, notes) = run_intrinsic_wsi_conformance_checks(
+    let (mut checks, notes) = run_intrinsic_wsi_conformance_checks_on(
         path,
         object,
+        unavailable,
         options.profile,
         options.conformance,
         options.max_pixel_frame_bytes,
@@ -349,7 +362,7 @@ fn mark_codestream_dependence(checks: &mut [ValidationCheck]) {
     }
 }
 
-/// Replaces the checks of encoded bytes a document does not hold.
+/// Adds the checks of encoded bytes a document does not hold, as skipped.
 fn override_unencoded(
     checks: &mut Vec<ValidationCheck>,
     path: &Path,
@@ -377,20 +390,8 @@ fn override_unencoded(
             format!("needs the Pixel Data Value, and the document {pixel}; `wsi-dicom dicomweb` checks the Frames an origin server returns ({frames})"),
         ),
         skipped(
-            CODESTREAM_RULE,
-            format!("needs the encoded Frames, and the document {pixel}; `wsi-dicom dicomweb` checks the Frames an origin server returns ({frames})"),
-        ),
-        skipped(
             ENCODING_RULE,
             format!("needs the PS3.5 encoded Data Set; a DICOM JSON document holds Values, not their encoding ({})", cite("F.1")),
-        ),
-        skipped(
-            FILE_META_RULE,
-            format!("needs the PS3.10 File Meta Information, which Metadata does not include ({})", cite("10.4.1.1.2")),
-        ),
-        skipped(
-            IDENTITY_SET_RULE,
-            format!("compares the File Meta Information with the Data Set, and Metadata includes no File Meta Information ({})", cite("10.4.1.1.2")),
         ),
     ];
     for replacement in replacements {

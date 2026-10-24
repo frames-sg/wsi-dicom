@@ -102,6 +102,15 @@ fn encoding(transfer_syntax: &str) -> Option<Encoding> {
 /// encapsulates Pixel Data; otherwise what it is instead. A deflated syntax
 /// compresses the Data Set, not the Data Elements a MAC is calculated over.
 pub(super) fn explicit_little_endian(transfer_syntax: &str) -> Result<bool, &'static str> {
+    explicit_little_endian_encoding(transfer_syntax)
+}
+
+/// Whether PS3.5 Annex A defines how `transfer_syntax` encodes a Data Set.
+pub(super) fn defines_data_set_encoding(transfer_syntax: &str) -> bool {
+    encoding(transfer_syntax).is_some()
+}
+
+fn explicit_little_endian_encoding(transfer_syntax: &str) -> Result<bool, &'static str> {
     let Some(encoding) = encoding(transfer_syntax) else {
         return Err("not a Transfer Syntax whose Data Set encoding PS3.5 Annex A defines");
     };

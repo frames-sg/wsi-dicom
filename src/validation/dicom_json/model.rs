@@ -17,7 +17,7 @@ use dicom_dictionary_std::tags;
 use dicom_object::InMemDicomObject;
 
 use super::json::Json;
-use crate::validation::iod::{Family, EDITION, MAX_NESTING};
+use crate::validation::iod::{check_value_format, Family, EDITION, MAX_NESTING};
 
 /// Where the document comes from, which decides whether PS3.18 10.4.1.1.2
 /// (no File Meta Information in Metadata) applies.
@@ -439,7 +439,13 @@ impl Reader<'_> {
             let at = format!("{here}/{index}");
             match element {
                 Json::Null => names.push(String::new()),
-                Json::Object(members) => names.push(self.person_name(members, &at)),
+                Json::Object(members) => {
+                    let name = self.person_name(members, &at);
+                    if !name.is_empty() {
+                        self.encoding(VR::PN, &name, &at);
+                    }
+                    names.push(name);
+                }
                 other => {
                     self.violation(&at, || format!(
                         "a PN Value is {}; Table F.2.3-1 requires an object of Person Name component groups ({})",
@@ -541,6 +547,9 @@ impl Reader<'_> {
                     if text.is_empty() && elements.len() > 1 {
                         self.empty_string(&at);
                     }
+                    if !text.is_empty() {
+                        self.encoding(vr, text, &at);
+                    }
                     values.push(text.clone());
                 }
                 Json::Number(text) => {
@@ -551,6 +560,25 @@ impl Reader<'_> {
             }
         }
         PrimitiveValue::Strs(values)
+    }
+
+    /// F.1: "a data source that is creating a new instance of a DICOM JSON
+    /// Model shall follow the DICOM encoding rules in creating Values", and
+    /// F.2.3: the encodings "shall conform to the Definition, Character
+    /// Repertoire (if applicable) and Length of Value" of the VR (PS3.5
+    /// 6.2), padding to even length aside.
+    fn encoding(&mut self, vr: VR, value: &str, at: &str) {
+        let unpadded = match vr {
+            VR::UI => value.strip_suffix('\0'),
+            _ => value.strip_suffix(' '),
+        }
+        .unwrap_or(value);
+        if let Err(reason) = check_value_format(vr, unpadded) {
+            self.violation(at, || format!(
+                "{vr} Value {value:?}: {reason}; a Value follows the Definition, Character Repertoire and Length of Value of its VR (PS3.5 {EDITION} 6.2, {})",
+                cite("F.1 and F.2.3")
+            ));
+        }
     }
 
     fn empty_string(&mut self, at: &str) {
@@ -614,6 +642,9 @@ impl Reader<'_> {
                 Json::String(text) => {
                     if text.is_empty() && elements.len() > 1 {
                         self.empty_string(&at);
+                    }
+                    if !text.is_empty() {
+                        self.encoding(vr, text, &at);
                     }
                     values.push(text.clone());
                 }

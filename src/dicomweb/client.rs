@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::media::MediaType;
 use super::multipart;
 use super::report::DicomWebExchange;
-use super::transport::{Outgoing, RawResponse, Transport};
+use super::transport::{Failure, Outgoing, RawResponse, Transport};
 use super::url::Url;
 use super::EDITION;
 use crate::Error;
@@ -64,6 +64,8 @@ pub(crate) enum Method {
     Get,
     Options,
     Post,
+    /// Only to ask for a 405 (Method Not Allowed); it changes nothing.
+    Trace,
 }
 
 impl Method {
@@ -72,6 +74,7 @@ impl Method {
             Self::Get => "GET",
             Self::Options => "OPTIONS",
             Self::Post => "POST",
+            Self::Trace => "TRACE",
         }
     }
 }
@@ -99,6 +102,11 @@ pub(crate) struct Request<'r> {
     pub(crate) accept: Option<&'r str>,
     pub(crate) content_type: Option<&'r str>,
     pub(crate) body: Option<&'r [u8]>,
+    /// Send the body with Transfer-Encoding: chunked.
+    pub(crate) chunked: bool,
+    /// Further header fields. An Authorization field here replaces the
+    /// bearer token.
+    pub(crate) headers: &'r [(&'r str, &'r str)],
     pub(crate) redirects: Redirects,
 }
 
@@ -110,8 +118,16 @@ impl<'r> Request<'r> {
             accept: Some(accept),
             content_type: None,
             body: None,
+            chunked: false,
+            headers: &[],
             redirects: Redirects::Listed,
         }
+    }
+
+    /// `get` with further header fields.
+    pub(crate) fn with_headers(mut self, headers: &'r [(&'r str, &'r str)]) -> Self {
+        self.headers = headers;
+        self
     }
 }
 
@@ -214,7 +230,7 @@ impl Client {
     }
 
     /// Sends `request`, following the redirects it allows to its own origin.
-    pub(crate) fn send(&self, request: &Request<'_>) -> Result<Exchange, String> {
+    pub(crate) fn send(&self, request: &Request<'_>) -> Result<Exchange, Failure> {
         let mut url = request.url.clone();
         let mut method = request.method;
         let mut followed = Vec::new();
@@ -255,7 +271,7 @@ impl Client {
                 exchange.unfollowed = Some(reason);
                 return Ok(exchange);
             }
-            let next = next.map_err(|err| err.to_string())?;
+            let next = next.map_err(Failure::other)?;
             followed.push(format!("{} {next}", exchange.status));
             if exchange.status == 303 {
                 method = Method::Get;
@@ -269,13 +285,13 @@ impl Client {
         request: &Request<'_>,
         method: Method,
         url: &Url,
-    ) -> Result<Exchange, String> {
+    ) -> Result<Exchange, Failure> {
         let sent = self.sent.get();
         if sent >= self.max_requests {
-            return Err(format!(
+            return Err(Failure::other(format!(
                 "the budget of {} requests is spent",
                 self.max_requests
-            ));
+            )));
         }
         self.sent.set(sent + 1);
         let started = Instant::now();
@@ -294,14 +310,14 @@ impl Client {
                 elapsed_millis,
                 error: None,
             },
-            Err(reason) => DicomWebExchange {
+            Err(failure) => DicomWebExchange {
                 method: method.name().to_string(),
                 url: url.to_string(),
                 status: None,
                 content_type: None,
                 body_bytes: 0,
                 elapsed_millis,
-                error: Some(reason.clone()),
+                error: Some(failure.reason.clone()),
             },
         };
         self.log.borrow_mut().push(record);
@@ -331,16 +347,22 @@ impl Client {
         request: &Request<'_>,
         method: Method,
         url: &Url,
-    ) -> Result<RawResponse, String> {
+    ) -> Result<RawResponse, Failure> {
         let target = url.to_string();
-        let authorization = self.authorization(url);
+        let replaced = request
+            .headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
+        let authorization = self.authorization(url).filter(|_| !replaced);
         let outgoing = Outgoing {
             method,
             url: &target,
             accept: request.accept,
             content_type: request.content_type,
             authorization: authorization.as_deref(),
+            headers: request.headers,
             body: request.body.unwrap_or_default(),
+            chunked: request.chunked,
         };
         self.transport.call(&outgoing, self.max_response_bytes)
     }
@@ -358,7 +380,9 @@ impl Client {
             })?;
             Url::parse(base)?.resolve(uri)?
         };
-        let exchange = self.send(&Request::get(url, BULKDATA_ACCEPT))?;
+        let exchange = self
+            .send(&Request::get(url, BULKDATA_ACCEPT))
+            .map_err(|failure| failure.reason)?;
         if exchange.status != 200 {
             return Err(format!(
                 "{} answered {}",

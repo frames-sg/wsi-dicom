@@ -15,6 +15,20 @@ pub(crate) struct Url {
     query: Option<String>,
 }
 
+/// `value` percent-encoded for a query component: unreserved characters as
+/// they are, every other byte of its UTF-8 encoding as %XX (RFC 3986 2.1).
+pub(crate) fn encode_query_value(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
 impl Url {
     /// Parses an absolute URL. Credentials in the URL are refused: they would
     /// be logged with every request, so a token is passed by environment
@@ -101,6 +115,22 @@ impl Url {
 
     /// This URL with `suffix` (starting with `/`) appended to its path and
     /// the query replaced by `query`.
+    /// The path segments of this URL below `base`, if it is under `base`.
+    pub(crate) fn segments_below<'u>(&'u self, base: &Url) -> Option<Vec<&'u str>> {
+        if !self.same_origin(base) {
+            return None;
+        }
+        let rest = self.path.strip_prefix(base.path.trim_end_matches('/'))?;
+        if !(rest.is_empty() || rest.starts_with('/')) {
+            return None;
+        }
+        Some(
+            rest.split('/')
+                .filter(|segment| !segment.is_empty())
+                .collect(),
+        )
+    }
+
     pub(crate) fn join(&self, suffix: &str, query: Option<&str>) -> Url {
         Url {
             scheme: self.scheme.clone(),
@@ -248,5 +278,28 @@ mod tests {
             base.join("/studies", Some("limit=1")).target(),
             "/dicomweb/studies?limit=1"
         );
+    }
+
+    #[test]
+    fn query_values_are_percent_encoded_except_unreserved_characters() {
+        assert_eq!(
+            super::encode_query_value("Doe^Jane \"\"\\é"),
+            "Doe%5EJane%20%22%22%5C%C3%A9"
+        );
+        assert_eq!(super::encode_query_value("1.2-a_b~"), "1.2-a_b~");
+    }
+
+    #[test]
+    fn segments_below_the_base_exclude_other_origins_and_paths() {
+        let base = Url::parse("https://example.org/dicomweb").unwrap();
+        let url = Url::parse("https://example.org/dicomweb/studies/1.2/series?x=1").unwrap();
+        assert_eq!(
+            url.segments_below(&base),
+            Some(vec!["studies", "1.2", "series"])
+        );
+        let sibling = Url::parse("https://example.org/dicomwebx/studies").unwrap();
+        assert_eq!(sibling.segments_below(&base), None);
+        let other = Url::parse("https://other.example/dicomweb/studies").unwrap();
+        assert_eq!(other.segments_below(&base), None);
     }
 }

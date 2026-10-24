@@ -7,10 +7,10 @@
 use std::borrow::Cow;
 
 use cms::cert::CertificateChoices;
-use cms::content_info::ContentInfo;
-use cms::signed_data::{SignedAttributes, SignedData, SignerIdentifier, SignerInfo};
+use cms::content_info::{CmsVersion, ContentInfo};
+use cms::signed_data::{EncapsulatedContentInfo, SignedAttributes, SignerIdentifier, SignerInfo};
 use der::asn1::{Any, Int, ObjectIdentifier, OctetString};
-use der::{Decode, Encode, Reader, Sequence, SliceReader};
+use der::{Decode, Encode, Header, Reader, Sequence, SliceReader, Tag, TagNumber};
 use dicom_dictionary_std::tags;
 use dicom_object::InMemDicomObject;
 use x509_cert::ext::pkix::SubjectKeyIdentifier;
@@ -84,10 +84,10 @@ pub(super) fn check(item: &InMemDicomObject, signature: &[u8]) -> Result<Timesta
         format!("Certified Timestamp (0400,0310) is not an RFC 3161 TimeStampToken: {reason} (PS3.15 {EDITION} C.1)")
     })?;
     imprint(&tst_info, signature)?;
-    let [signer] = signed.signer_infos.0.as_slice() else {
+    let [signer] = signed.signer_infos.as_slice() else {
         return Err(format!(
             "Certified Timestamp (0400,0310) has {} SignerInfos; a TimeStampToken has one, its TSA's (RFC 3161 2.4.2)",
-            signed.signer_infos.0.len()
+            signed.signer_infos.len()
         ));
     };
     let Some(certificate) = tsa_certificate(&signed, &signer.sid) else {
@@ -101,6 +101,67 @@ pub(super) fn check(item: &InMemDicomObject, signature: &[u8]) -> Result<Timesta
     Ok(Timestamp::Verified)
 }
 
+/// The fields of a SignedData (RFC 5652 5.1) a TimeStampToken is checked
+/// by. Its SET OF fields are read as their elements, duplicates included:
+/// neither X.690 nor RFC 5652 forbids two equal elements, and a TSA may
+/// list its certificate twice.
+struct SignedData {
+    encap_content_info: EncapsulatedContentInfo,
+    certificates: Vec<CertificateChoices>,
+    signer_infos: Vec<SignerInfo>,
+}
+
+impl SignedData {
+    /// SignedData ::= SEQUENCE { version, digestAlgorithms SET OF,
+    /// encapContentInfo, certificates [0] IMPLICIT SET OF OPTIONAL, crls [1]
+    /// IMPLICIT SET OF OPTIONAL, signerInfos SET OF }.
+    fn from_der(bytes: &[u8]) -> der::Result<Self> {
+        let mut reader = SliceReader::new(bytes)?;
+        let signed = reader.sequence(|fields| {
+            CmsVersion::decode(fields)?;
+            elements::<AlgorithmIdentifierOwned>(fields, Tag::Set)?;
+            let encap_content_info = EncapsulatedContentInfo::decode(fields)?;
+            let certificates = optional_elements(fields, TagNumber::N0)?;
+            optional_elements::<Any>(fields, TagNumber::N1)?;
+            let signer_infos = elements(fields, Tag::Set)?;
+            Ok(Self {
+                encap_content_info,
+                certificates,
+                signer_infos,
+            })
+        })?;
+        reader.finish(signed)
+    }
+}
+
+/// The elements of a SET OF whose tag is `tag`, in encoded order.
+fn elements<'a, T: Decode<'a>>(reader: &mut impl Reader<'a>, tag: Tag) -> der::Result<Vec<T>> {
+    let header = Header::decode(reader)?;
+    header.tag.assert_eq(tag)?;
+    reader.read_nested(header.length, |set| {
+        let mut found = Vec::new();
+        while !set.is_finished() {
+            found.push(T::decode(set)?);
+        }
+        Ok(found)
+    })
+}
+
+/// The elements of an optional IMPLICIT [`number`] SET OF, if present.
+fn optional_elements<'a, T: Decode<'a>>(
+    reader: &mut impl Reader<'a>,
+    number: TagNumber,
+) -> der::Result<Vec<T>> {
+    let tag = Tag::ContextSpecific {
+        constructed: true,
+        number,
+    };
+    if reader.is_finished() || reader.peek_tag()? != tag {
+        return Ok(Vec::new());
+    }
+    elements(reader, tag)
+}
+
 /// The SignedData of a TimeStampToken and the DER TSTInfo it encapsulates
 /// (RFC 3161 2.4.2).
 fn token(value: &[u8]) -> Result<(SignedData, Vec<u8>), String> {
@@ -111,9 +172,10 @@ fn token(value: &[u8]) -> Result<(SignedData, Vec<u8>), String> {
             content.content_type
         ));
     }
-    let signed: SignedData = content
+    let signed = content
         .content
-        .decode_as()
+        .to_der()
+        .and_then(|bytes| SignedData::from_der(&bytes))
         .map_err(|error| format!("its SignedData is malformed: {error}"))?;
     let encapsulated = &signed.encap_content_info;
     if encapsulated.econtent_type != TST_INFO {
@@ -168,17 +230,12 @@ fn message_imprint(tst_info: &[u8]) -> der::Result<MessageImprint> {
 
 /// The certificate of the TSA that `sid` identifies, when the token embeds it.
 fn tsa_certificate<'s>(signed: &'s SignedData, sid: &SignerIdentifier) -> Option<&'s Certificate> {
-    signed
-        .certificates
-        .as_ref()?
-        .0
-        .iter()
-        .find_map(|choice| match choice {
-            CertificateChoices::Certificate(certificate) if identifies(sid, certificate) => {
-                Some(certificate)
-            }
-            _ => None,
-        })
+    signed.certificates.iter().find_map(|choice| match choice {
+        CertificateChoices::Certificate(certificate) if identifies(sid, certificate) => {
+            Some(certificate)
+        }
+        _ => None,
+    })
 }
 
 fn identifies(sid: &SignerIdentifier, certificate: &Certificate) -> bool {

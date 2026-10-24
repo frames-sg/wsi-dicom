@@ -5,13 +5,18 @@ use dicom_dictionary_std::tags;
 use dicom_object::InMemDicomObject;
 
 use super::client::{Exchange, Redirects, Request};
+use super::multipart;
 use super::report::Verdict;
 use super::response::{expect_media_type, expect_status, integer, sec};
 use super::{DicomWebTransaction, Session, Target};
 
 const RENDERED_NAME: &str = "dicomweb-retrieve-rendered";
 const RENDERED_SECTIONS: &str =
-    "10.4.1.1.3 Table 10.4.1-3, 10.3 Table 10.3-2, 8.7.4 Table 8.7.4-1, 8.3.5.1.3 and 10.4.3.3.3";
+    "10.4.1.1.3 Table 10.4.1-3, 10.3 Table 10.3-2, 8.7.4 Table 8.7.4-1, 8.3.5.1.3, 8.6.1.1 and 10.4.3.3.3";
+/// The JP2 Signature box (ISO/IEC 15444-1 I.5.1).
+const JP2_SIGNATURE: [u8; 12] = [
+    0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A,
+];
 const THUMBNAIL_NAME: &str = "dicomweb-retrieve-thumbnail";
 const THUMBNAIL_SECTIONS: &str = "10.4.1.1.4 Table 10.4.1-4, 10.4.3.3.4 and 10.4.4 Table 10.4.4-1";
 /// The viewport of the scaled rendering.
@@ -58,13 +63,68 @@ pub(super) fn run(session: &mut Session<'_>, target: &Target, object: Option<&In
             continue;
         }
         session.audit.representation(&exchange);
+        session.served("rendered");
         rendered_image(&mut verdict, &exchange, media, expected);
     }
+    jph(session, &mut verdict, &path);
     session.push(verdict.finish(
         RENDERED_NAME,
         sec(RENDERED_SECTIONS),
         "Frame 1 renders as baseline JPEG and as PNG at its size, and scales into a viewport",
     ));
+}
+
+/// 8.7.4: "When an image/jph Media Type is returned, the image shall be
+/// encoded with the JP2 box being present"; image/jph is Optional (Table
+/// 8.7.4-1).
+fn jph(session: &mut Session<'_>, verdict: &mut Verdict, path: &str) {
+    let url = session.url(path, None);
+    let Some(exchange) = session.send(verdict, &Request::get(url, "image/jph")) else {
+        return;
+    };
+    let line = exchange.request_line();
+    let essence = exchange
+        .media_type()
+        .and_then(Result::ok)
+        .map(|media| media.essence);
+    if exchange.status != 200 || essence.as_deref() != Some("image/jph") {
+        verdict.note(format!(
+            "{line} answered {} {}: image/jph is not offered, which is Optional (Table 8.7.4-1)",
+            exchange.status,
+            essence.unwrap_or_default()
+        ));
+        return;
+    }
+    if !exchange.body.starts_with(&JP2_SIGNATURE) {
+        verdict.fail(format!(
+            "{line}: the image/jph image does not begin with the JP2 Signature box; a rendered image/jph is encoded with the JP2 box present ({})",
+            sec("8.7.4")
+        ));
+    }
+}
+
+/// 8.6.1.1: "A message with a single part payload shall have a Content-Type
+/// Header Field with a single part media-type". A rendered image is one
+/// representation; a multipart Content-Type over a payload that is not
+/// multipart breaks that.
+fn single_part(verdict: &mut Verdict, exchange: &Exchange) {
+    let Some(Ok(media)) = exchange.media_type() else {
+        return;
+    };
+    if !media.essence.starts_with("multipart/") {
+        return;
+    }
+    let framed = media
+        .parameter("boundary")
+        .is_some_and(|boundary| !multipart::parse(&exchange.body, boundary).parts.is_empty());
+    if !framed {
+        verdict.fail(format!(
+            "{}: the payload is one image, not multipart, yet its Content-Type is {}; a single part payload has a single part media type ({})",
+            exchange.request_line(),
+            media.essence,
+            sec("8.6.1.1")
+        ));
+    }
 }
 
 fn unavailable(
@@ -101,6 +161,7 @@ fn rendered_image(
     media: &str,
     expected: Option<(u32, u32)>,
 ) {
+    single_part(verdict, exchange);
     let Some(found) = expect_media_type(verdict, exchange, media, "8.7.4 Table 8.7.4-1") else {
         return;
     };
@@ -242,6 +303,9 @@ pub(super) fn thumbnails(session: &mut Session<'_>, target: &Target) {
             break;
         };
         let offered = exchange.status == 200;
+        if offered && index == 0 {
+            session.served("thumbnail");
+        }
         if index == 0 && !offered && matches!(exchange.status, 400 | 404 | 405 | 406 | 501) {
             verdict.unsupported(format!(
                 "{} answered {}: the origin server offers no Thumbnail resources, which are optional (Table 10.3-2)",

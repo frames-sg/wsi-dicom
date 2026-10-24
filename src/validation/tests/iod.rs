@@ -158,6 +158,19 @@ fn conditional_attribute_is_forbidden_when_its_condition_fails() {
 }
 
 #[test]
+fn a_color_wsi_needs_planar_configuration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = edited_wsi(tmp.path(), "planar-configuration-missing", |object| {
+        object.take(tags::PLANAR_CONFIGURATION).unwrap();
+    });
+    assert_iod_failure(
+        &path,
+        "intrinsic-wsi-dicom-iod-attribute-presence",
+        "Planar Configuration (0028,0006): Type 1C missing",
+    );
+}
+
+#[test]
 fn enumerated_values_are_enforced_but_defined_terms_are_not() {
     let tmp = tempfile::tempdir().unwrap();
     let enumerated = edited_wsi(tmp.path(), "focus-method", |object| {
@@ -725,13 +738,14 @@ fn references_to_other_instances_must_be_listed_in_the_common_instance_reference
     );
 }
 
-/// Statement and IOD pairs decidable from the encoded objects that no check
-/// enforces yet: the semantic checks the IODs beside VL WSI await. It only
-/// falls, and it must return to 0 before the bench is rebuilt.
-const UNCHECKED_LIMIT: usize = 1784;
+/// Statement and scope pairs decidable from the encoded objects that no check
+/// enforces yet. It only falls, and it must return to 0 before the bench is
+/// rebuilt; every family is at 0.
+const UNCHECKED_LIMIT: usize = 0;
 
 #[test]
 fn requirement_catalog_names_only_emitted_rules_and_unchecked_statements_only_fall() {
+    use crate::validation::wsi_conformance::DICOMWEB_RULES;
     use crate::validation::{requirement_catalog, RequirementDisposition};
 
     let tmp = tempfile::tempdir().unwrap();
@@ -751,6 +765,11 @@ fn requirement_catalog_names_only_emitted_rules_and_unchecked_statements_only_fa
         level_filter: None,
     })
     .unwrap();
+    // An object of each other IOD, for the checks that hold only theirs.
+    pathology::write_fixtures(&output);
+    structured_report::write_documents(&output);
+    // A File-set, for the File-set check.
+    crate::validation::file_set::tests::write_empty_file_set(&output.join("FILESET"));
     let emitted: BTreeSet<String> = [ValidationProfile::General, ValidationProfile::Core]
         .into_iter()
         .flat_map(|profile| iod_report(&output, profile).checks)
@@ -780,6 +799,14 @@ fn requirement_catalog_names_only_emitted_rules_and_unchecked_statements_only_fa
                 .copied()
                 .unwrap_or(entry.disposition);
             match disposition {
+                // The DICOMweb checks run against an origin server, and a
+                // DICOMweb test proves that such a run emits each of them.
+                RequirementDisposition::Checked(rule) if *iod == "dicomweb" => {
+                    assert!(
+                        DICOMWEB_RULES.contains(&rule),
+                        "{rule} is not a DICOMweb check: {entry:?}"
+                    );
+                }
                 RequirementDisposition::Checked(rule) => {
                     assert!(emitted.contains(rule), "{rule} is not emitted: {entry:?}");
                 }
@@ -1089,4 +1116,226 @@ fn baseline_templates_only_advise() {
     );
 }
 
+/// A VL WSI whose Specimen Preparation step holds its Processing type alone,
+/// without the Specimen Identifier TID 8001 Row 1 requires, and whose
+/// De-identification Method Code Sequence lists `methods`.
+fn unidentified_preparation(root: &Path, name: &str, methods: Vec<InMemDicomObject>) -> PathBuf {
+    let processing = content_item(
+        "CODE",
+        code("DCM", "111701", "Processing type"),
+        vec![sq(
+            tags::CONCEPT_CODE_SEQUENCE,
+            vec![code("SCT", "9265001", "Specimen processing")],
+        )],
+    );
+    edited_wsi(root, name, |object| {
+        object.put(text(tags::PATIENT_IDENTITY_REMOVED, VR::CS, "YES"));
+        object.put(sq(tags::DEIDENTIFICATION_METHOD_CODE_SEQUENCE, methods));
+        first_item(object, tags::SPECIMEN_DESCRIPTION_SEQUENCE, |specimen| {
+            specimen.put(sq(
+                tags::SPECIMEN_PREPARATION_SEQUENCE,
+                vec![item(vec![sq(
+                    tags::SPECIMEN_PREPARATION_STEP_CONTENT_ITEM_SEQUENCE,
+                    vec![processing],
+                )])],
+            ));
+        });
+    })
+}
+
+#[test]
+fn a_specimen_identifier_clean_structured_content_removes_is_advised_citing_both_parts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let edition = crate::validation::iod::EDITION;
+    let missing = "TID 8001 \"Specimen Preparation\" Row 1 TEXT (121041, DCM, \"Specimen Identifier\") missing";
+    let basic = || code("DCM", "113100", "Basic Application Confidentiality Profile");
+    let cleaned = unidentified_preparation(
+        tmp.path(),
+        "cleaned",
+        vec![
+            basic(),
+            code("DCM", "113104", "Clean Structured Content Option"),
+        ],
+    );
+    assert_iod_passes(&cleaned, VALUE_SETS);
+    assert_advises(
+        &cleaned,
+        &format!(
+            "{missing}, a Content Item PS3.15 {edition} Table E.3.4-1 removes under the Clean Structured Content Option the De-identification Method Code Sequence (0012,0064) declares (PS3.15 {edition} E.3.4; PS3.16 {edition} TID 8001)"
+        ),
+    );
+    // Without the Option, TID 8001 is a Baseline Template: the missing row is
+    // its suggestion alone.
+    let basic_only = unidentified_preparation(tmp.path(), "basic", vec![basic()]);
+    assert_iod_passes(&basic_only, VALUE_SETS);
+    assert_advises(&basic_only, &format!("{missing} (PS3.16 {edition})"));
+    assert_does_not_advise(&basic_only, "Table E.3.4-1");
+}
+
+/// The ICC Profile (0028,2000) of the first Optical Path Item.
+fn optical_path_profile(object: &mut InMemDicomObject, edit: impl FnOnce(&mut Vec<u8>)) {
+    first_item(object, tags::OPTICAL_PATH_SEQUENCE, |path| {
+        let mut bytes = path
+            .get(tags::ICC_PROFILE)
+            .unwrap()
+            .to_bytes()
+            .unwrap()
+            .to_vec();
+        edit(&mut bytes);
+        path.put(DataElement::new(
+            tags::ICC_PROFILE,
+            VR::OB,
+            PrimitiveValue::from(bytes),
+        ));
+    });
+}
+
+#[test]
+fn icc_profile_recommendations_are_advised_and_never_fail() {
+    let tmp = tempfile::tempdir().unwrap();
+    let edition = crate::validation::iod::EDITION;
+    let exported = edited_wsi(tmp.path(), "exported", |_| {});
+    assert_does_not_advise(&exported, "C.11.15.1.1");
+    // C.11.15.1.1: "The Rendering Intent should be Perceptual."
+    let path = edited_wsi(tmp.path(), "colorimetric", |object| {
+        optical_path_profile(object, |bytes| bytes[67] = 1);
+    });
+    assert_iod_passes(&path, "intrinsic-wsi-dicom-iod-value-format");
+    assert_advises(
+        &path,
+        &format!(
+            "OpticalPathSequence (0048,0105)[1] > ICCProfile (0028,2000): the ICC Profile's Rendering Intent is Media-Relative Colorimetric (1); PS3.3 {edition} C.11.15.1.1 recommends Perceptual (0)"
+        ),
+    );
+    // "All LUTs should be represented as 16 bit values, using tag type
+    // lut16Type": the first tag becomes an AToB0 LUT of type lut8Type.
+    let path = edited_wsi(tmp.path(), "lut8", |object| {
+        optical_path_profile(object, |bytes| {
+            let offset = u32::from_be_bytes(bytes[136..140].try_into().unwrap()) as usize;
+            bytes[132..136].copy_from_slice(b"A2B0");
+            bytes[offset..offset + 4].copy_from_slice(b"mft1");
+        });
+    });
+    assert_iod_passes(&path, "intrinsic-wsi-dicom-iod-value-format");
+    assert_advises(&path, "A2B0 tag is of type \"mft1\"");
+}
+
+#[test]
+fn a_zero_stride_of_private_value_multiplicity_fails_the_value_format() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = edited_wsi(tmp.path(), "zero-stride", |object| {
+        object.put(DataElement::new(
+            tags::PRIVATE_DATA_ELEMENT_VALUE_MULTIPLICITY,
+            VR::UL,
+            PrimitiveValue::U32([2u32, 6, 0].into_iter().collect()),
+        ));
+    });
+    assert_iod_failure(
+        &path,
+        "intrinsic-wsi-dicom-iod-value-format",
+        "PrivateDataElementValueMultiplicity (0008,0309): the stride (third Value) is 0, which is not permitted (PS3.3",
+    );
+    let path = edited_wsi(tmp.path(), "stride-two", |object| {
+        object.put(DataElement::new(
+            tags::PRIVATE_DATA_ELEMENT_VALUE_MULTIPLICITY,
+            VR::UL,
+            PrimitiveValue::U32([2u32, 6, 2].into_iter().collect()),
+        ));
+    });
+    assert_iod_passes(&path, "intrinsic-wsi-dicom-iod-value-format");
+}
+
+/// A VL WSI whose Shared Functional Group Item holds the Private Functional
+/// Group (0009,1001) of creator "ACME PRIVATE", one Item of `elements`.
+fn with_private_group(root: &Path, name: &str, elements: Vec<InMemElement>) -> PathBuf {
+    edited_wsi(root, name, |object| {
+        first_item(object, tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE, |shared| {
+            shared.put(text(Tag(0x0009, 0x0010), VR::LO, "ACME PRIVATE"));
+            shared.put(sq(Tag(0x0009, 0x1001), vec![item(elements)]));
+        });
+    })
+}
+
+#[test]
+fn a_private_functional_group_may_not_replicate_a_standard_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let edition = crate::validation::iod::EDITION;
+    let path = with_private_group(
+        tmp.path(),
+        "private-pixel-spacing",
+        vec![
+            text(Tag(0x0009, 0x0010), VR::LO, "ACME PRIVATE"),
+            text(tags::PIXEL_SPACING, VR::DS, "0.00025\\0.00025"),
+        ],
+    );
+    assert_iod_failure(
+        &path,
+        "intrinsic-wsi-dicom-iod-modules",
+        &format!(
+            "Shared Functional Groups Sequence[1] > (0009,1001) (Private Creator \"ACME PRIVATE\")[1] > Pixel Spacing (0028,0030): a Private Functional Group replicates an Attribute of the Pixel Measures Functional Group Macro, which it may not (PS3.3 {edition} C.7.6.16.1.1)"
+        ),
+    );
+    // Private Attributes alone replicate nothing.
+    let path = with_private_group(
+        tmp.path(),
+        "private-only",
+        vec![
+            text(Tag(0x0009, 0x0010), VR::LO, "ACME PRIVATE"),
+            text(Tag(0x0009, 0x1002), VR::LO, "focus map 3"),
+        ],
+    );
+    assert_iod_passes(&path, "intrinsic-wsi-dicom-iod-modules");
+}
+
+#[test]
+fn the_top_level_data_set_holds_one_pixel_data_attribute() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = edited_wsi(tmp.path(), "float-and-integer", |object| {
+        object.put(DataElement::new(
+            tags::FLOAT_PIXEL_DATA,
+            VR::OF,
+            PrimitiveValue::F32([0.0f32; 4].into_iter().collect()),
+        ));
+    });
+    assert_iod_failure(
+        &path,
+        "intrinsic-wsi-dicom-iod-attribute-presence",
+        "(7FE0,0010), (7FE0,0008) are present; the top level Data Set holds at most one of Pixel Data Provider URL, Pixel Data, Float Pixel Data and Double Float Pixel Data (PS3.5",
+    );
+}
+
+#[test]
+fn the_catalog_reports_each_statement_s_strength() {
+    use crate::validation::{requirement_catalog, RequirementStrength};
+    let catalog = requirement_catalog();
+    let strength = |id: &str| {
+        catalog
+            .iter()
+            .find(|entry| entry.id == Some(id))
+            .unwrap_or_else(|| panic!("no statement {id}"))
+            .strength
+    };
+    assert_eq!(
+        strength("Ps3_C_11_15_1_1_108351"),
+        RequirementStrength::Should
+    );
+    assert_eq!(strength("Ps5_6_2_b82926"), RequirementStrength::Shall);
+    assert_eq!(strength("Ps3_10_14_cb9917"), RequirementStrength::Shall);
+    let recommendations: Vec<_> = catalog
+        .iter()
+        .filter(|entry| entry.strength == RequirementStrength::Should)
+        .collect();
+    assert_eq!(recommendations.len(), 60);
+    // No recommendation is a normative sentence.
+    assert!(recommendations
+        .iter()
+        .all(|entry| !entry.text.contains("shall")));
+    let json = serde_json::to_value(recommendations[0]).unwrap();
+    assert_eq!(json["strength"], "should");
+    let json = serde_json::to_value(&catalog[0]).unwrap();
+    assert_eq!(json["strength"], "shall");
+}
+
+mod file_set;
 mod pathology;
+mod structured_report;

@@ -83,10 +83,33 @@ pub(super) fn check(frame: &Frame<'_>, report: &mut FrameReport<'_>) {
                 )
             });
         }
+        if let Some(offset) = forbidden_header(segment) {
+            let in_frame = start + offset;
+            report.violation("PS3.5 G.3.1", || {
+                format!("RLE Segment {number} has a run header of -128 (80H) at byte {offset} of the segment (byte {in_frame} of the Frame); the value of -128 may not be used to prefix a byte value")
+            });
+        }
         if let Some((rows, columns)) = pixels {
             walk_segment(segment, number, rows, columns, report);
         }
     }
+}
+
+/// The offset of the first run header of -128 in `segment` (G.3.1), found by
+/// stepping from header to header: a literal run header n is followed by
+/// n + 1 bytes, any other header by the one byte it replicates. The walk
+/// stops at the end of the segment, so it needs no Rows or Columns.
+fn forbidden_header(segment: &[u8]) -> Option<usize> {
+    let mut position = 0usize;
+    while let Some(&header) = segment.get(position) {
+        let step = match header as i8 {
+            -128 => return Some(position),
+            literal @ 0..=127 => usize::from(literal as u8) + 2,
+            _ => 2,
+        };
+        position = position.checked_add(step)?;
+    }
+    None
 }
 
 /// Packet rules found while walking one segment, each reported once.
@@ -119,7 +142,7 @@ fn walk_segment(
         };
         position += 1;
         let run = match header as i8 {
-            // -128 outputs nothing (G.3.2).
+            // -128 outputs nothing (G.3.2); forbidden_header reports it.
             -128 => continue,
             literal @ 0..=127 => {
                 let count = usize::from(literal as u8) + 1;

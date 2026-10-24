@@ -22,7 +22,7 @@ exclude = [
 ]
 
 [dependencies]
-# DICOM JSON InlineBinary (PS3.18 F.2.7); already in the graph through ureq.
+# DICOM JSON InlineBinary (PS3.18 F.2.7); already in the graph through wsi-rs.
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 cms = { version = "0.2.3", default-features = false }
@@ -60,9 +60,10 @@ wsi-dicom-annotations = { version = "=0.2.0", default-features = false }
 tempfile = "3"
 thiserror = "2"
 # DICOMweb conformance checks (feature `dicomweb`): a blocking HTTP/1.1 client
-# with rustls. 3.2 is the last minor on base64 0.22, which the graph already
-# holds.
-ureq = { version = "~3.2.1", default-features = false, features = ["rustls"], optional = true }
+# with rustls. 3.5 brings ureq-proto 0.6.5, which reports a status code below
+# 100 as a protocol error; ureq-proto 0.5 panicked on it, and a release build
+# (panic = "abort") aborted on such a response.
+ureq = { version = "~3.5.0", default-features = false, features = ["rustls"], optional = true }
 x509-cert = { version = "0.2.5", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]

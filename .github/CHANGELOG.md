@@ -27,63 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   released versions retain their MIT/Apache-2.0 licenses. Release archives
   include the AGPL text, commercial licensing contact, and retained permissive
   notices.
-
-### Added
-
-- `wsi-dicom validate-json` (`validate_dicom_json_path`) holds a DICOM JSON
-  document, such as a saved Retrieve Metadata response, to PS3.18 Annex F and
-  each Data Set to the checks of a file; checks that need Pixel Data, the
-  encoded bytes or the File Meta Information say so, a check whose verdict
-  depends on a Transfer Syntax the Metadata does not name is reported as
-  undecidable, and `--fetch-bulkdata` retrieves BulkDataURI Values.
-  `wsi-dicom dicomweb` (`check_dicomweb_server`) checks an origin server
-  against PS3.18 for Retrieve Capabilities, Search, Metadata, Frames, Bulk
-  Data, Rendered, Thumbnail and Instance retrieval, and Store only with
-  `--allow-store <FILE>`, citing each section, reporting absent optional
-  capabilities as unsupported, and validating the Metadata, Frames and
-  Instance it retrieves. Requests have timeouts, size limits and a budget,
-  follow same-origin redirects only, and take a bearer token from the
-  environment variable `--bearer-token-env` names (HTTPS through rustls).
-  The network stack is the optional `dicomweb` feature; release archives
-  enable it.
-- Validation checks each VL WSI instance against the VL Whole Slide Microscopy
-  Image IOD: Modules and Functional Groups, Attribute presence and conditions,
-  Enumerated Values, VR and VM, Value formats, Sequence Item counts, and File
-  Meta Information. `scripts/generate-iod-tables.py` generates the tables from
-  the pinned DICOM DocBook, and CI checks that they are current.
-- Seven more requirement families: `iod-value-sets` (Defined Context Groups and
-  Templates of PS3.16 fail; Baseline and extensible departures are advisories),
-  `wsi-image`, `attribute-relations`, `series-set` (consistency across the
-  evaluated Instances), `pixel-attributes`, `codestream` (each encapsulated
-  Frame is one complete JPEG, JPEG-LS, JPEG 2000, HTJ2K, JPEG XL or RLE
-  codestream agreeing with the Image Pixel Attributes), and `encoding` (the
-  Data Set as encoded in the file's bytes).
-- `digital-signatures` recomputes each Digital Signature's MAC and verifies
-  its RSA signature and Certified Timestamp (PS3.3 C.12.1.1.3, PS3.15 Annex C).
-- The IOD checks cover every pathology-slide IOD, selected by SOP Class UID
-  from PS3.4 Table B.5-1: VL Whole Slide Microscopy, VL Microscopic, VL
-  Slide-Coordinates Microscopic, Confocal Microscopy, Confocal Microscopy Tiled
-  Pyramidal, Microscopy Bulk Simple Annotations, Segmentation and Parametric
-  Map. Other SOP Classes are reported as having no IOD rules.
-- `wsi-dicom requirements [--json]` lists every normative statement of the
-  pinned edition for those IODs, with a stable `id`, the IODs it applies to
-  and how validation holds an object of each to it; `RequirementEntry` gains
-  `id`, `iods` and `iod_dispositions`.
-- `convert` and `validate` take `--optional` (the default) and `--required`.
-  `--optional` writes the associated images, TILED_SPARSE for absent tiles and
-  the optional attributes the source fills truthfully; `validate --optional`
-  lists the optional Modules each file has and lacks, with value set
-  advisories.
-- JPEG Lossless SV1 output (`--transfer-syntax jpeg-lossless-sv1`,
-  `1.2.840.10008.1.2.4.70`) for 8- and 16-bit RGB and MONOCHROME2 frames,
-  encoded on the CPU. `RequireDevice` is rejected.
-- `jpeg_optimize_huffman` (`--jpeg-optimize-huffman`) writes re-encoded JPEG
-  Baseline frames with per-frame optimal Huffman tables: same pixels, smaller
-  frames. Passthrough and retiled frames keep their source bytes. Deterministic
-  UIDs are unchanged unless the option is enabled.
-
-### Changed
-
 - Source tiles follow the raw tile contract of
   [wsi-rs#27](https://github.com/frames-sg/wsi-rs/issues/27). A raw tile is
   copied, or transcoded in the compressed domain, only when its encoded image
@@ -106,6 +49,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A raw read that wsi-rs refuses for memory takes the decode route, like one
   refused for want of stored bytes. PNG and BMP sources count as lossless.
 
+### Added
+
+- Opt-in convention profiles: `validate --conventions wg26,ihe-dpia,ihe-dpia-draft,ihe-dpia-draft-jpeg,interop`
+  (`ValidationOptions::conventions`). `wg26` holds objects and sets to the
+  DICOM WG-26 2026 connectathon requirements and the nine checks of
+  `dciodvfy -profile WG26SP2025`; `ihe-dpia` to IHE PaLM DPIA Rev. 1.4
+  Appendix B; `ihe-dpia-draft` and `ihe-dpia-draft-jpeg` to CP-LAB-279 and
+  CP-LAB-281, marked draft; `interop` lists advisories for what named
+  viewers, archives and converters reject. Results are `convention-<profile>-<topic>`
+  checks and advisories in the report's `conventions`, each citing its
+  source, and never make validation fail. Conflicts between sources and DICOM
+  are advisories. `requirements --json` lists them under `conventions`
+  (`convention_catalog()`).
+- `wsi-dicom validate-json` (`validate_dicom_json_path`) holds a DICOM JSON
+  document, such as a saved Retrieve Metadata response, to PS3.18 Annex F and
+  each Data Set to the checks of a file; checks that need Pixel Data, the
+  encoded bytes or the File Meta Information say so, a check whose verdict
+  depends on a Transfer Syntax the Metadata does not name is reported as
+  undecidable, and `--fetch-bulkdata` retrieves BulkDataURI Values.
+  `wsi-dicom dicomweb` (`check_dicomweb_server`) checks an origin server
+  against PS3.18 for Retrieve Capabilities, Search, Metadata, Frames, Bulk
+  Data, Rendered, Thumbnail and Instance retrieval, and Store only with
+  `--allow-store <FILE>`, citing each section, reporting absent optional
+  capabilities as unsupported, and validating the Metadata, Frames and
+  Instance it retrieves. Requests have timeouts, size limits and a budget,
+  follow same-origin redirects only, and take a bearer token from the
+  environment variable `--bearer-token-env` names (HTTPS through rustls).
+  The network stack is the optional `dicomweb` feature; release archives
+  enable it. The 401 and 405 probes (an invalid credential and a TRACE
+  request) run only with `--probe-error-responses`, and Store read-back fails
+  only on what the server changed.
+- Validation checks each VL WSI instance against the VL Whole Slide Microscopy
+  Image IOD: Modules and Functional Groups, Attribute presence and conditions,
+  Enumerated Values, VR and VM, Value formats, Sequence Item counts, and File
+  Meta Information. `scripts/generate-iod-tables.py` generates the tables from
+  the pinned DICOM DocBook, and CI checks that they are current.
+- Seven more requirement families: `iod-value-sets` (Defined Context Groups and
+  Templates of PS3.16 fail; Baseline and extensible departures are advisories),
+  `wsi-image`, `attribute-relations`, `series-set` (consistency across the
+  evaluated Instances), `pixel-attributes`, `codestream` (each encapsulated
+  Frame is one complete JPEG, JPEG-LS, JPEG 2000, HTJ2K, JPEG XL or RLE
+  codestream agreeing with the Image Pixel Attributes), and `encoding` (the
+  Data Set as encoded in the file's bytes).
+- `digital-signatures` recomputes each Digital Signature's MAC and verifies
+  its RSA signature and Certified Timestamp (PS3.3 C.12.1.1.3, PS3.15 Annex C).
+- The IOD checks cover the pathology objects, selected by SOP Class UID from
+  PS3.4 Table B.5-1: VL Whole Slide Microscopy, Segmentation (including Label
+  Map Segmentation), Parametric Map, Microscopy Bulk Simple Annotations, the
+  Key Object Selection Document, and Basic Text, Enhanced, Comprehensive and
+  Comprehensive 3D SR. A DICOMDIR is held to the Basic Directory IOD. Other
+  SOP Classes are reported as having no IOD rules.
+- Rules for each object: `segmentation`, `parametric-map` and
+  `bulk-annotations` (Segment numbering and encodings, float pixel data and
+  Real World Value Mapping, annotation geometry and winding),
+  `structured-report` and `key-object-selection` (the content tree against
+  each IOD's Relationship Content Constraints, Content Item values, evidence
+  sequences, TID 2010 and declared Templates such as TID 1500), and
+  `synchronization` (C.7.4.2). The WSI rules now validate every VL WSI
+  configuration: LABEL, OVERVIEW and THUMBNAIL, TILED_SPARSE and 3D, several
+  focal planes and optical paths, Extended Depth of Field and Concatenations.
+  Set checks compare each object with the Instances it references in the
+  validated directory.
+- `deidentification` holds an object that claims de-identification (Patient
+  Identity Removed YES) to PS3.15 2026d Annex E: the declared method codes and
+  option consequences, Table E.1-1 actions at every depth, private and group
+  0004 removal, Encrypted Attributes, consistency across a pyramid, Series and
+  Study, and the DICOMDIR records over de-identified files.
+- `file-set` validates a DICOMDIR File-set (PS3.10 chapter 8, PS3.3 Annex F):
+  File IDs, record offsets and hierarchy, record keys against the referenced
+  files, and unreferenced files. Discovery recognizes DICOM files by their
+  `DICM` prefix as well as by a `.dcm` name.
+- `wsi-dicom requirements [--json]` lists every normative statement of the
+  pinned edition for those objects, the File-set and DICOMweb (PS3.3, PS3.5,
+  PS3.10, PS3.15 Annex E and PS3.18), with a stable `id`, its `strength`
+  (`shall`, or `should` for recommendations, which are only advisories), the
+  IODs it applies to and how validation holds each to it; `RequirementEntry`
+  gains `id`, `iods`, `iod_dispositions` and `strength`. No statement is left
+  without a check or a stated reason.
+- `convert` and `validate` take `--optional` (the default) and `--required`.
+  `--optional` writes the associated images, TILED_SPARSE for absent tiles and
+  the optional attributes the source fills truthfully; `validate --optional`
+  lists the optional Modules each file has and lacks, with value set
+  advisories.
+- JPEG Lossless SV1 output (`--transfer-syntax jpeg-lossless-sv1`,
+  `1.2.840.10008.1.2.4.70`) for 8- and 16-bit RGB and MONOCHROME2 frames,
+  encoded on the CPU. `RequireDevice` is rejected.
+- `jpeg_optimize_huffman` (`--jpeg-optimize-huffman`) writes re-encoded JPEG
+  Baseline frames with per-frame optimal Huffman tables: same pixels, smaller
+  frames. Passthrough and retiled frames keep their source bytes. Deterministic
+  UIDs are unchanged unless the option is enabled.
+
 ### Removed
 
 - Removed the optional `wsi-dicom-gui` application and its CI build job. The
@@ -121,12 +155,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs in the [WSI-DICOM Bench](https://github.com/frames-sg/wsi-dicom-bench)
   workbench.
 
+### Fixed
+
+- Dimension Index Values of integer Attributes are compared exactly; only
+  physical coordinates may vary within an index, bounded by the other indices
+  or by the Imaged Volume Depth or pixel size.
+- Several files with one SOP Instance UID pass when they are copies or
+  re-encodings of one Instance, are an advisory when only metadata differs,
+  and fail when the SOP Class or pixel data differ.
+- Frame positions in the Slide Coordinate System are checked against the
+  Total Pixel Matrix position, Pixel Spacing and Image Orientation (Slide).
+- Unknown File Meta tags are ignored, as PS3.10 7.1 requires; SMPTE ST 2110
+  Transfer Syntaxes are rejected in files; an RLE run header of -128 fails
+  (PS3.5 G.3.1); a Certified Timestamp listing its TSA certificate twice
+  verifies.
+
 ### Security
 
 - J2K requirements move to 0.13.1, built from J2K `main` with `wsi-rs` `main`
   (97ca1b4). This takes zstd 0.14.3, which fixes RUSTSEC-2026-0391,
   RUSTSEC-2026-0398, RUSTSEC-2026-0403 and RUSTSEC-2026-0410, and libz-sys
   1.1.31, which fixes RUSTSEC-2026-0418.
+- `wsi-dicom dicomweb` uses ureq 3.5.0 (ureq-proto 0.6.5). ureq-proto 0.5
+  panicked on a status line with a code below 100, so a hostile server could
+  abort the process.
 
 ## [0.8.0] - 2026-10-06
 

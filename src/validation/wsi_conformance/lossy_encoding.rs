@@ -54,6 +54,31 @@ pub(super) fn lossiness(object: &DefaultDicomObject) -> Lossiness {
             method: Some(JPEG_LS),
             evidence: "JPEG-LS scans with a NEAR parameter greater than 0",
         },
+        // MPEG2, MPEG-4 AVC/H.264 and HEVC/H.265 compression is inherently
+        // lossy (PS3.5 8.2.5 to 8.2.11).
+        uids::MPEG2MPML | uids::MPEG2MPMLF | uids::MPEG2MPHL | uids::MPEG2MPHLF => {
+            Lossiness::Lossy {
+                method: Some("ISO_13818_2"),
+                evidence: "encoded in an MPEG2 Transfer Syntax, which is inherently lossy",
+            }
+        }
+        uids::MPEG4HP41
+        | uids::MPEG4HP41F
+        | uids::MPEG4HP41BD
+        | uids::MPEG4HP41BDF
+        | uids::MPEG4HP422D
+        | uids::MPEG4HP422DF
+        | uids::MPEG4HP423D
+        | uids::MPEG4HP423DF
+        | uids::MPEG4HP42STEREO
+        | uids::MPEG4HP42STEREOF => Lossiness::Lossy {
+            method: Some("ISO_14496_10"),
+            evidence: "encoded in an MPEG-4 AVC/H.264 Transfer Syntax, which is inherently lossy",
+        },
+        uids::HEVCMP51 | uids::HEVCM10P51 => Lossiness::Lossy {
+            method: Some("ISO_23008_2"),
+            evidence: "encoded in an HEVC/H.265 Transfer Syntax, which is inherently lossy",
+        },
         _ => Lossiness::Unknown,
     }
 }

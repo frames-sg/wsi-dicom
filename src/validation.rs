@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -8,21 +8,33 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
+mod bulk_annotations;
 mod codestream;
 mod command_checks;
+mod conventions;
+mod deidentification;
 mod dicom_json;
 mod digital_signatures;
 mod discovery;
 mod doctor;
 mod encoding;
+mod file_set;
+mod image_semantics;
 mod iod;
+mod parametric_map;
 mod pixel_structure;
 mod process;
+mod segmentation;
+mod structured_report;
 mod transfer_syntaxes;
 mod wsi_conformance;
 
 pub(crate) use codestream::check_retrieved_frames;
 use command_checks::*;
+pub use conventions::{
+    convention_catalog, ConventionAdvisory, ConventionCheck, ConventionEntry, ConventionKind,
+    ConventionProfile, ConventionReport,
+};
 pub(crate) use dicom_json::{
     bulk_references, json_text_error, read_json_data_sets, validate_json_bytes, JsonRun,
     Source as JsonSource,
@@ -40,10 +52,10 @@ pub(crate) use pixel_structure::fragment_payload_without_padding;
 use pixel_structure::run_intrinsic_pixel_structure_check;
 use process::SystemCommandRunner;
 pub(crate) use process::{CommandOutcome, ValidationCommandRunner};
+#[cfg(all(test, feature = "dicomweb"))]
+pub(crate) use wsi_conformance::DICOMWEB_RULES;
 use wsi_conformance::{
-    run_clinical_identity_set_check, run_identity_set_check, run_intrinsic_wsi_conformance_checks,
-    run_pyramid_geometry_set_check, run_series_set_check, run_slide_coordinate_set_check,
-    run_source_relationship_set_check, run_specimen_uid_set_check, WsiConformanceCorpus,
+    run_intrinsic_wsi_conformance_checks, Origin, SetResults, WsiConformanceCorpus,
 };
 
 /// The DICOM edition validation holds objects to, e.g. `2026d`.
@@ -89,6 +101,11 @@ pub struct ValidationOptions {
     /// `Optional` (the default) also lists the optional VL WSI modules and
     /// attributes each object lacks; they are not failures.
     pub conformance: crate::ConformanceLevel,
+    /// Convention profiles to check as well (none by default). Their results
+    /// go to `ValidationReport::conventions`, never to `checks`, so they do
+    /// not make validation fail. `validate_dicom_path` runs them;
+    /// `validate_dicom_json_path` and `check_dicomweb_server` do not yet.
+    pub conventions: BTreeSet<ConventionProfile>,
 }
 
 impl Default for ValidationOptions {
@@ -104,6 +121,7 @@ impl Default for ValidationOptions {
             max_child_output_bytes: 4 * 1024 * 1024,
             max_pixel_frame_bytes: 512 * 1024 * 1024,
             conformance: crate::ConformanceLevel::Optional,
+            conventions: BTreeSet::new(),
         }
     }
 }
@@ -227,6 +245,10 @@ pub struct ValidationReport {
     /// Each VL WSI object's optional conformance, when validation runs at
     /// `ConformanceLevel::Optional`.
     pub optional: Vec<OptionalConformance>,
+    /// The results of the convention profiles `ValidationOptions::conventions`
+    /// selects, kept apart from `checks`: none of them is a DICOM failure.
+    #[serde(skip_serializing_if = "ConventionReport::is_empty")]
+    pub conventions: ConventionReport,
 }
 
 /// What one VL Whole Slide Microscopy object implements of the IOD's optional
@@ -249,18 +271,20 @@ pub struct OptionalConformance {
     pub advisories: Vec<String>,
 }
 
-/// One normative statement of the pinned DICOM edition in the scope of the
-/// pathology-slide IODs (the PS3.3 IOD, Module, Macro and Attribute
-/// descriptions each reaches; the PS3.4 specializations of their SOP Classes;
-/// PS3.5 encoding; PS3.10 file format), and how validation holds their
-/// objects to it.
+/// One normative statement or recommendation of the pinned DICOM edition in
+/// one or more scopes, and how validation holds the objects of each to it. A
+/// scope is a pathology-slide IOD (the PS3.3 IOD, Module, Macro and Attribute
+/// descriptions it reaches; the PS3.4 specializations of its SOP Classes;
+/// PS3.5 encoding; PS3.10 file format; PS3.15 Annex E de-identification), the
+/// File-set of a DICOMDIR (PS3.3 Annex F and PS3.10 Chapter 8), or a DICOMweb
+/// origin server and the DICOM JSON Model ("dicomweb", PS3.18).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct RequirementEntry {
     /// The statement's stable identifier, which an evaluation case can name;
     /// statements the generated tables enforce have none.
     pub id: Option<&'static str>,
-    /// "PS3.3", "PS3.4", "PS3.5" or "PS3.10".
+    /// "PS3.3", "PS3.4", "PS3.5", "PS3.10", "PS3.15" or "PS3.18".
     pub part: &'static str,
     /// The section or table label that states it.
     pub section: &'static str,
@@ -268,15 +292,32 @@ pub struct RequirementEntry {
     pub keyword: Option<&'static str>,
     /// The sentence, as the standard words it.
     pub text: &'static str,
+    /// Whether it binds ("shall") or recommends ("should").
+    pub strength: RequirementStrength,
     /// How validation treats it: in VL Whole Slide Microscopy objects when
-    /// that IOD is among `iods`, otherwise in the objects of each IOD in
-    /// `iods` that `iod_dispositions` does not name.
+    /// that IOD is among `iods`, otherwise in each scope of `iods` that
+    /// `iod_dispositions` does not name.
     pub disposition: RequirementDisposition,
-    /// The PS3.3 sections of the IODs whose scope holds it, e.g. "A.32.8".
+    /// The scopes that hold it: the PS3.3 section of each IOD, e.g.
+    /// "A.32.8", and "file-set" for a File-set and its DICOMDIR.
     pub iods: Vec<&'static str>,
-    /// How validation treats it in each IOD of `iods` where that differs from
-    /// `disposition`.
+    /// How validation treats it in each scope of `iods` where that differs
+    /// from `disposition`.
     pub iod_dispositions: BTreeMap<&'static str, RequirementDisposition>,
+}
+
+/// The force of a statement. A recommendation never fails validation: a
+/// check that holds one reports a departure as an advisory, in the optional
+/// conformance notes (`--optional`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RequirementStrength {
+    /// "shall", "must", or a prohibition ("is not permitted", "is
+    /// prohibited", "is forbidden", "may not be used", "is required to be").
+    Shall,
+    /// "should" or "is recommended".
+    Should,
 }
 
 /// How validation holds an object to one normative statement.
@@ -302,8 +343,8 @@ pub enum RequirementDisposition {
 }
 
 /// Every normative statement of the pinned DICOM edition in the scope of the
-/// pathology-slide IODs, with the IODs it applies to and how validation
-/// treats it in each.
+/// pathology-slide IODs and of a File-set, with the scopes it applies to and
+/// how validation treats it in each.
 pub fn requirement_catalog() -> Vec<RequirementEntry> {
     iod::catalog()
 }
@@ -479,10 +520,15 @@ pub(crate) fn validate_dicom_path_with_runner(
     runner: &impl ValidationCommandRunner,
 ) -> Result<ValidationReport, Error> {
     let input = path.as_ref().to_path_buf();
-    let files = discover_dicom_files(&input, options)?;
+    let discovered = discover_dicom_files(&input, options)?;
+    let files = discovered.files;
     let mut checks = Vec::new();
     let mut optional = Vec::new();
-    let mut corpus = WsiConformanceCorpus::default();
+    let mut corpus = SetCorpus::default();
+    let mut convention_run = conventions::ConventionRun::new(&options.conventions);
+    let origin = Origin::File {
+        max_input_bytes: options.max_input_bytes,
+    };
 
     for file in &files {
         let input_file = std::fs::File::open(file).map_err(|err| Error::Validation {
@@ -521,6 +567,7 @@ pub(crate) fn validate_dicom_path_with_runner(
                     None,
                     options.max_input_bytes,
                 ));
+                convention_run.unreadable(file);
                 continue;
             }
         };
@@ -553,31 +600,21 @@ pub(crate) fn validate_dicom_path_with_runner(
                 advisories: notes.advisories,
             });
         }
-        corpus.observe(file, &object);
+        corpus.observe(file, &object, origin);
+        convention_run.observe(file, &object);
     }
-    if let Some(check) = run_specimen_uid_set_check(&corpus) {
-        checks.push(check);
-    }
-    if let Some(check) = run_identity_set_check(&corpus) {
-        checks.push(check);
-    }
-    if let Some(check) = run_series_set_check(&corpus) {
-        checks.push(check);
-    }
-    if options.profile == ValidationProfile::Core {
-        if let Some(check) = run_clinical_identity_set_check(&corpus) {
-            checks.push(check);
-        }
-    }
-    if let Some(check) = run_pyramid_geometry_set_check(&corpus) {
-        checks.push(check);
-    }
-    if let Some(check) = run_slide_coordinate_set_check(&corpus) {
-        checks.push(check);
-    }
-    if let Some(check) = run_source_relationship_set_check(&corpus) {
-        checks.push(check);
-    }
+    // Each directory discovery found holding a DICOMDIR is a File-set root.
+    checks.extend(file_set::run_file_set_check(
+        &discovered.file_set_roots,
+        &files,
+        options,
+    ));
+    corpus
+        .deidentification
+        .observe_file_sets(&discovered.file_set_roots, options);
+    let set = set_checks(&corpus, options.profile);
+    checks.extend(set.checks);
+    add_set_advisories(&mut optional, set.advisories);
 
     for file in &files {
         checks.push(run_named_command_check(
@@ -653,7 +690,60 @@ pub(crate) fn validate_dicom_path_with_runner(
         files,
         checks,
         optional,
+        conventions: convention_run.finish(),
     })
+}
+
+/// What the set checks compare, gathered from each object a validator reads.
+#[derive(Debug, Default)]
+pub(crate) struct SetCorpus {
+    wsi: WsiConformanceCorpus,
+    family: image_semantics::FamilyCorpus,
+    deidentification: deidentification::DeidentificationCorpus,
+    structured_report: structured_report::StructuredReportCorpus,
+}
+
+impl SetCorpus {
+    /// Records `object`, read from `path` as `origin` says, for every set
+    /// check.
+    fn observe(&mut self, path: &Path, object: &dicom_object::DefaultDicomObject, origin: Origin) {
+        self.wsi.observe(path, object, origin);
+        self.family.observe(path, object);
+        self.deidentification.observe(path, object);
+        self.structured_report.observe(path, object);
+    }
+}
+
+/// Every set check of the objects `corpus` observed, in report order: the one
+/// list `validate_dicom_path` and the DICOM JSON validator both run.
+fn set_checks(corpus: &SetCorpus, profile: ValidationProfile) -> SetResults {
+    let mut results = wsi_conformance::set_checks(&corpus.wsi, profile);
+    results
+        .checks
+        .extend(image_semantics::run_family_set_checks(&corpus.family));
+    results
+        .checks
+        .extend(structured_report::run_structured_report_set_checks(
+            &corpus.structured_report,
+        ));
+    if let Some((check, advisories)) =
+        deidentification::run_deidentification_set_check(&corpus.deidentification)
+    {
+        results.checks.push(check);
+        results.advisories.extend(advisories);
+    }
+    results
+}
+
+/// Adds each set advisory to the optional conformance of the object it
+/// concerns. Without optional conformance (`ConformanceLevel::Required`)
+/// the set check's message still names it.
+fn add_set_advisories(optional: &mut [OptionalConformance], advisories: Vec<(PathBuf, String)>) {
+    for (path, advisory) in advisories {
+        if let Some(entry) = optional.iter_mut().find(|entry| entry.path == path) {
+            entry.advisories.push(advisory);
+        }
+    }
 }
 
 fn failed_check(name: &str, path: Option<&PathBuf>, message: String) -> ValidationCheck {

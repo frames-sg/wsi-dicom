@@ -21,21 +21,17 @@ mod model;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use dicom_object::InMemDicomObject;
 use serde::{Deserialize, Serialize};
 
 use super::iod::{Family, EDITION, MAX_NESTING};
-use super::wsi_conformance::{
-    run_clinical_identity_set_check, run_identity_set_check, run_pyramid_geometry_set_check,
-    run_series_set_check, run_slide_coordinate_set_check, run_source_relationship_set_check,
-    run_specimen_uid_set_check, WsiConformanceCorpus,
-};
+use super::wsi_conformance::Origin;
 use super::{
-    intrinsic_check, OptionalConformance, ValidationCheck, ValidationOptions, ValidationProfile,
-    ValidationReport, ValidationStatus,
+    add_set_advisories, intrinsic_check, set_checks, OptionalConformance, SetCorpus,
+    ValidationCheck, ValidationOptions, ValidationReport, ValidationStatus,
 };
 use crate::dicomweb::{Client, Url};
 use crate::Error;
@@ -113,6 +109,7 @@ pub fn validate_dicom_json_path(
         files: vec![path.to_path_buf()],
         checks: outcome.checks,
         optional: outcome.optional,
+        conventions: super::ConventionReport::default(),
     })
 }
 
@@ -318,6 +315,56 @@ fn data_sets<'j, 'a>(parsed: &'j Json<'a>) -> Vec<(String, &'j [(String, Json<'a
     }
 }
 
+/// The value of the one member named `key`, when exactly one is.
+fn sole<'j, 'a>(members: &'j [(String, Json<'a>)], key: &str) -> Option<&'j Json<'a>> {
+    let mut found = members.iter().filter(|(name, _)| name == key);
+    match (found.next(), found.next()) {
+        (Some((_, value)), None) => Some(value),
+        _ => None,
+    }
+}
+
+/// The SOP Instance UID (0008,0018) the members of a Data Set give, when
+/// they plainly give one.
+fn instance_uid<'j>(members: &'j [(String, Json<'_>)]) -> Option<&'j str> {
+    let Json::Object(attribute) = sole(members, "00080018")? else {
+        return None;
+    };
+    let Json::Array(values) = sole(attribute, "Value")? else {
+        return None;
+    };
+    match values.as_slice() {
+        [Json::String(uid)] => Some(uid.trim_end_matches(['\0', ' '])),
+        _ => None,
+    }
+}
+
+/// The SOP Instance UIDs that more than one Data Set of the document gives.
+fn repeated_instance_uids<'j>(
+    data_sets: &[(String, &'j [(String, Json<'_>)])],
+) -> BTreeSet<&'j str> {
+    let mut seen = BTreeSet::new();
+    let mut repeated = BTreeSet::new();
+    for uid in data_sets
+        .iter()
+        .filter_map(|(_, members)| instance_uid(members))
+    {
+        if !seen.insert(uid) {
+            repeated.insert(uid);
+        }
+    }
+    repeated
+}
+
+/// Only Data Sets that share a SOP Instance UID are compared as copies, so
+/// only they, and any whose UID is not plainly given, are digested.
+fn copy_origin(members: &[(String, Json<'_>)], repeated: &BTreeSet<&str>) -> Origin {
+    match instance_uid(members) {
+        Some(uid) if !repeated.contains(uid) => Origin::UniqueLabel,
+        _ => Origin::Label,
+    }
+}
+
 fn cite(section: &str) -> String {
     format!("PS3.18 {EDITION} {section}")
 }
@@ -357,19 +404,23 @@ pub(crate) fn validate_json_bytes(bytes: &[u8], run: &JsonRun<'_>) -> JsonOutcom
         checks.push(check);
     }
     let mut optional = Vec::new();
-    let mut corpus = WsiConformanceCorpus::default();
+    let mut corpus = SetCorpus::default();
     let mut bulk_seen = Vec::new();
-    for (pointer, members) in data_sets(&parsed) {
+    let data_sets = data_sets(&parsed);
+    let repeated = repeated_instance_uids(&data_sets);
+    for (pointer, members) in data_sets {
         let path = PathBuf::from(format!("{label}#{pointer}"));
         let evaluated = evaluate::instance(&path, &pointer, members, run);
         checks.extend(evaluated.checks);
         optional.extend(evaluated.notes);
         if let Some(object) = &evaluated.reference {
-            corpus.observe(&path, object);
+            corpus.observe(&path, object, copy_origin(members, &repeated));
         }
         bulk_seen.extend(evaluated.bulk);
     }
-    checks.extend(set_checks(&corpus, run.options.validation.profile));
+    let set = set_checks(&corpus, run.options.validation.profile);
+    checks.extend(set.checks);
+    add_set_advisories(&mut optional, set.advisories);
     checks.extend(bulk_check(&run.label, &bulk_seen, run));
     JsonOutcome { checks, optional }
 }
@@ -405,21 +456,6 @@ fn document_check(parsed: &Json<'_>, run: &JsonRun<'_>) -> Option<ValidationChec
             &format!("DICOM {}", cite("Annex F")),
         )
     })
-}
-
-/// The set checks `validate_dicom_path` runs over the objects it read.
-fn set_checks(corpus: &WsiConformanceCorpus, profile: ValidationProfile) -> Vec<ValidationCheck> {
-    let mut checks = Vec::new();
-    checks.extend(run_specimen_uid_set_check(corpus));
-    checks.extend(run_identity_set_check(corpus));
-    checks.extend(run_series_set_check(corpus));
-    if profile == ValidationProfile::Core {
-        checks.extend(run_clinical_identity_set_check(corpus));
-    }
-    checks.extend(run_pyramid_geometry_set_check(corpus));
-    checks.extend(run_slide_coordinate_set_check(corpus));
-    checks.extend(run_source_relationship_set_check(corpus));
-    checks
 }
 
 /// Which BulkDataURI Values the checks saw, and which only as stand-ins.

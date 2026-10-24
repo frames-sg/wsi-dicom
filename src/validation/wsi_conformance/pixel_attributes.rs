@@ -2,29 +2,40 @@
 //! restrictions, Palette Color Lookup Tables, Pixel Padding and Pixel Aspect
 //! Ratio Values.
 
+use std::fmt::Display;
+
 use dicom_core::value::Value;
 use dicom_core::{PrimitiveValue, Tag};
 use dicom_dictionary_std::tags;
 use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
 use super::super::pixel_structure::{is_padded_length, NativeFrame};
+use super::nested::Nested;
 use crate::validation::iod::{dicom_edition, EDITION};
 use crate::validation::iod::{integer_value, items};
 
 /// Every violation found, joined; the object's pixel description content is
-/// independent, so one violation does not hide the others.
-pub(super) fn validate_pixel_attributes_rule(object: &DefaultDicomObject) -> Result<(), String> {
+/// independent, so one violation does not hide the others. `iod` decides
+/// the entry size of top-level Palette Color Lookup Tables; `nested` holds
+/// every Icon Image, at the top level or in an Item such as a DICOMDIR's
+/// Directory Record (PS3.3 F.5).
+pub(super) fn validate_pixel_attributes_rule(
+    object: &DefaultDicomObject,
+    iod: &str,
+    nested: &Nested<'_>,
+) -> Result<(), String> {
     let mut violations = Vec::new();
     pixel_aspect_ratio(object, &mut violations);
     pixel_padding(object, &mut violations);
-    for (index, icon) in items(object, tags::ICON_IMAGE_SEQUENCE).iter().enumerate() {
-        icon_image(
-            icon,
-            &format!("Icon Image Sequence (0088,0200) Item {}", index + 1),
-            &mut violations,
-        );
+    for found in &nested.icons {
+        if found.in_record() {
+            record_icon_image(found.item, &found.icon_label(), &mut violations);
+        } else {
+            icon_image(found.item, &found.icon_label(), &mut violations);
+        }
     }
     let single_sample = integer(object, tags::SAMPLES_PER_PIXEL) == Some(1);
+    top_level_palette(object, iod, single_sample, &mut violations);
     for (index, path) in items(object, tags::OPTICAL_PATH_SEQUENCE)
         .iter()
         .enumerate()
@@ -44,6 +55,67 @@ pub(super) fn validate_pixel_attributes_rule(object: &DefaultDicomObject) -> Res
         }
     }
     super::violation_result(violations)
+}
+
+/// The Icon Image of a Directory Record. PS3.3 F.7 restricts it in place of
+/// C.7.6.1.1.6, which defers to it ("unless otherwise specified"), and the
+/// File-set check holds F.7; the Image Pixel Macro still binds its sample
+/// format (Table C.7-11c), Pixel Aspect Ratio (C.7.6.3.1.7), Palette Color
+/// Lookup Tables and Pixel Data.
+fn record_icon_image(icon: &InMemDicomObject, label: &dyn Display, violations: &mut Vec<String>) {
+    let allocated = integer(icon, tags::BITS_ALLOCATED);
+    let stored = integer(icon, tags::BITS_STORED);
+    if let Some(bits) = allocated.filter(|bits| *bits != 1 && bits % 8 != 0) {
+        violations.push(format!(
+            "{label}: Bits Allocated is {bits}; it shall be either 1 or a multiple of 8 (PS3.3 {EDITION} Table C.7-11c)"
+        ));
+    }
+    if let (Some(high_bit), Some(stored)) = (integer(icon, tags::HIGH_BIT), stored) {
+        if high_bit.checked_add(1) != Some(stored) {
+            violations.push(format!(
+                "{label}: High Bit is {high_bit}; it shall be one less than Bits Stored {stored} (PS3.3 {EDITION} Table C.7-11c)"
+            ));
+        }
+    }
+    let mut aspect = Vec::new();
+    pixel_aspect_ratio(icon, &mut aspect);
+    violations.extend(
+        aspect
+            .into_iter()
+            .map(|violation| format!("{label}: {violation}")),
+    );
+    if text(icon, tags::PHOTOMETRIC_INTERPRETATION).as_deref() == Some("PALETTE COLOR") {
+        palette_lookup_tables(icon, label, None, violations);
+    }
+    icon_pixel_data(icon, label, violations);
+}
+
+/// The Palette Color Lookup Tables of the top-level Data Set: of the Image
+/// Pixel Module for PALETTE COLOR, or of the Palette Color Lookup Table
+/// Module (C.7.9). In a Parametric Map, whose only Photometric
+/// Interpretation is MONOCHROME2, they are the latter's, whose entries are
+/// 16 bits in an Image IOD (C.7.6.3.1.5); a Segmentation's C.7.9 entries may
+/// be 8 or 16 bits, and so may the Image Pixel Module's.
+fn top_level_palette(
+    object: &DefaultDicomObject,
+    iod: &str,
+    single_sample: bool,
+    violations: &mut Vec<String>,
+) {
+    if COLORS
+        .iter()
+        .all(|(_, descriptor, _, _)| object.get(*descriptor).is_none())
+    {
+        return;
+    }
+    let label = "Palette Color Lookup Table Descriptors (0028,1101-1103)";
+    if !single_sample {
+        violations.push(format!(
+            "{label} are present, but Samples per Pixel is not 1; Palette Color Lookup Tables are used only with a single sample per pixel (PS3.3 {EDITION} C.7.6.3.1.6 and C.7.9.2)"
+        ));
+    }
+    let entry_bits = (iod == "A.75").then_some(16);
+    palette_lookup_tables(object, &label, entry_bits, violations);
 }
 
 /// PS3.3 C.7.6.3.1.7: "Both integer values shall be greater than 0."
@@ -117,7 +189,7 @@ fn stored_range(item: &InMemDicomObject) -> Option<(i64, i64)> {
 
 /// PS3.3 C.7.6.1.1.6 restrictions on the Image Pixel Macro of an Icon
 /// Image, with the C.7-11c sample format and PS3.5 8.1.1 Native length.
-fn icon_image(icon: &InMemDicomObject, label: &str, violations: &mut Vec<String>) {
+fn icon_image(icon: &InMemDicomObject, label: &dyn Display, violations: &mut Vec<String>) {
     const CITATION: &str = concat!("PS3.3 ", dicom_edition!(), " C.7.6.1.1.6");
     let samples = integer(icon, tags::SAMPLES_PER_PIXEL);
     if samples.is_some_and(|samples| samples != 1) {
@@ -188,7 +260,7 @@ fn icon_image(icon: &InMemDicomObject, label: &str, violations: &mut Vec<String>
 }
 
 /// The Icon Image's own Pixel Data: one Frame, Native or Encapsulated.
-fn icon_pixel_data(icon: &InMemDicomObject, label: &str, violations: &mut Vec<String>) {
+fn icon_pixel_data(icon: &InMemDicomObject, label: &dyn Display, violations: &mut Vec<String>) {
     let Some(element) = icon.get(tags::PIXEL_DATA) else {
         return;
     };
@@ -258,7 +330,7 @@ const COLORS: [(&str, Tag, Tag, Tag); 3] = [
 /// enclosing Module requires, if it narrows "8 or 16".
 fn palette_lookup_tables(
     item: &InMemDicomObject,
-    label: &str,
+    label: &dyn Display,
     entry_bits: Option<u16>,
     violations: &mut Vec<String>,
 ) {

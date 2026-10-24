@@ -6,7 +6,9 @@
 // Source part05.xml SHA-256 05183ea889f097cba51a938bf961a62f308bc6044a12f24d71282f08469de835
 // Source part06.xml SHA-256 fa9f0f8d67eba692dcf95cfeae0a8f4e071beeb7844215a860bc4b9d5dfaad25
 // Source part10.xml SHA-256 4e08e2ef3ad0b57d79cf6903c0076c56b670ef2172afa2f6c42da0792ff645d5
+// Source part15.xml SHA-256 1eb2a9724822476b3f1f3de23d15ae655a4c7f6e9d32bf16f2d9ef76d7d8437c
 // Source part16.xml SHA-256 293912fbc2acefe5d53dffa449070db488134da29aaa452e31d610d403888899
+// Source part18.xml SHA-256 f68ef10579a9caad8ce41d5905f6418daf5ef8a353d66ad9e97c23e82a941d8f
 
 use dicom_core::VR;
 
@@ -55,6 +57,7 @@ const VM_1_N: ValueMultiplicity = ValueMultiplicity { min: 1, max: None, step: 1
 const VM_1: ValueMultiplicity = ValueMultiplicity { min: 1, max: Some(1), step: 1 };
 const VM_1_2: ValueMultiplicity = ValueMultiplicity { min: 1, max: Some(2), step: 1 };
 const VM_1_3: ValueMultiplicity = ValueMultiplicity { min: 1, max: Some(3), step: 1 };
+const VM_1_8: ValueMultiplicity = ValueMultiplicity { min: 1, max: Some(8), step: 1 };
 const VM_1_32: ValueMultiplicity = ValueMultiplicity { min: 1, max: Some(32), step: 1 };
 const VM_1_99: ValueMultiplicity = ValueMultiplicity { min: 1, max: Some(99), step: 1 };
 const VM_2_N: ValueMultiplicity = ValueMultiplicity { min: 2, max: None, step: 1 };
@@ -80,7 +83,7 @@ const fn r(tag: u32, vr: &'static [VR], vm: ValueMultiplicity) -> DictionaryEntr
     DictionaryEntry { tag, mask: u32::MAX, vr, vm, retired: true }
 }
 
-/// PS3.6 Tables 6-1 and 7-1 without repeating groups, sorted by tag; r() is retired.
+/// PS3.6 Tables 6-1, 7-1 and 8-1 without repeating groups, sorted by tag; r() is retired.
 pub(super) static DICTIONARY: &[DictionaryEntry] = &[
     d(0x00020000, UL, VM_1),
     d(0x00020001, OB, VM_1),
@@ -104,6 +107,25 @@ pub(super) static DICTIONARY: &[DictionaryEntry] = &[
     d(0x00020038, FD, VM_1),
     d(0x00020100, UI, VM_1),
     d(0x00020102, OB, VM_1),
+    d(0x00041130, CS, VM_1),
+    d(0x00041141, CS, VM_1_8),
+    d(0x00041142, CS, VM_1),
+    d(0x00041200, UL, VM_1),
+    d(0x00041202, UL, VM_1),
+    d(0x00041212, US, VM_1),
+    d(0x00041220, SQ, VM_1),
+    d(0x00041400, UL, VM_1),
+    d(0x00041410, US, VM_1),
+    d(0x00041420, UL, VM_1),
+    d(0x00041430, CS, VM_1),
+    d(0x00041432, UI, VM_1),
+    d(0x00041500, CS, VM_1_8),
+    r(0x00041504, UL, VM_1),
+    d(0x00041510, UI, VM_1),
+    d(0x00041511, UI, VM_1),
+    d(0x00041512, UI, VM_1),
+    d(0x0004151A, UI, VM_1_N),
+    r(0x00041600, UL, VM_1),
     r(0x00080001, UL, VM_1),
     d(0x00080005, CS, VM_1_N),
     d(0x00080006, SQ, VM_1),

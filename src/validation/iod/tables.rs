@@ -6,12 +6,16 @@
 // Source part05.xml SHA-256 05183ea889f097cba51a938bf961a62f308bc6044a12f24d71282f08469de835
 // Source part06.xml SHA-256 fa9f0f8d67eba692dcf95cfeae0a8f4e071beeb7844215a860bc4b9d5dfaad25
 // Source part10.xml SHA-256 4e08e2ef3ad0b57d79cf6903c0076c56b670ef2172afa2f6c42da0792ff645d5
+// Source part15.xml SHA-256 1eb2a9724822476b3f1f3de23d15ae655a4c7f6e9d32bf16f2d9ef76d7d8437c
 // Source part16.xml SHA-256 293912fbc2acefe5d53dffa449070db488134da29aaa452e31d610d403888899
+// Source part18.xml SHA-256 f68ef10579a9caad8ce41d5905f6418daf5ef8a353d66ad9e97c23e82a941d8f
 
+use super::file_set::DirectoryRecord;
+use super::structured_report::{DocumentConstraints, RelationshipConstraint};
 use super::model::{
     Attribute, AttributeType, Code, Enumeration, ExclusiveModules, ForbiddenModule,
-    FunctionalGroupMacro, Iod, ItemCount, Module, Node, Placement, SopClass, Strength, Table,
-    Usage, ValueSet,
+    FunctionalGroupMacro, Iod, ItemCount, Module, Node, Placement, Selection, SopClass, Strength,
+    Table, Usage, ValueSet,
 };
 use ConditionId as C;
 use ItemCount::{AtLeast, AtMost, Exactly, NumberOfFrames, Unconstrained as ANY, ValueOf};
@@ -29,7 +33,9 @@ pub(super) const SOURCE_SHA256: &[(&str, &str)] = &[
     ("part05.xml", "05183ea889f097cba51a938bf961a62f308bc6044a12f24d71282f08469de835"),
     ("part06.xml", "fa9f0f8d67eba692dcf95cfeae0a8f4e071beeb7844215a860bc4b9d5dfaad25"),
     ("part10.xml", "4e08e2ef3ad0b57d79cf6903c0076c56b670ef2172afa2f6c42da0792ff645d5"),
+    ("part15.xml", "1eb2a9724822476b3f1f3de23d15ae655a4c7f6e9d32bf16f2d9ef76d7d8437c"),
     ("part16.xml", "293912fbc2acefe5d53dffa449070db488134da29aaa452e31d610d403888899"),
+    ("part18.xml", "f68ef10579a9caad8ce41d5905f6418daf5ef8a353d66ad9e97c23e82a941d8f"),
 ];
 
 /// One Variant per distinct condition text in the IOD, its Modules and Macros.
@@ -64,9 +70,9 @@ pub(super) enum ConditionId {
     SeriesInstanceUID_117bc3,
     /// table_10-3b HL7 Instance Identifier (0040,E001)
     HL7InstanceIdentifier_194507,
-    /// table_10-2 Referenced Frame Number (0008,1160) (+2 more)
+    /// table_10-2 Referenced Frame Number (0008,1160) (+3 more)
     ReferencedFrameNumber_1e1f84,
-    /// table_10-3b Referenced Segment Number (0062,000B)
+    /// table_10-3b Referenced Segment Number (0062,000B) (+1 more)
     ReferencedSegmentNumber_19fe72,
     /// table_10-3b DICOM Retrieval Sequence (0040,E021)
     DICOMRetrievalSequence_da69fd,
@@ -122,33 +128,33 @@ pub(super) enum ConditionId {
     RequestedProcedureID_08c518,
     /// table_10-9 Scheduled Procedure Step ID (0040,0009)
     ScheduledProcedureStepID_d945b5,
-    /// table_10-2 DateTime (0040,A120)
+    /// table_10-2 DateTime (0040,A120) (+1 more)
     DateTime_e5e09c,
-    /// table_10-2 Date (0040,A121)
+    /// table_10-2 Date (0040,A121) (+1 more)
     Date_f120f4,
-    /// table_10-2 Time (0040,A122)
+    /// table_10-2 Time (0040,A122) (+1 more)
     Time_ad089b,
-    /// table_10-2 Person Name (0040,A123)
+    /// table_10-2 Person Name (0040,A123) (+1 more)
     PersonName_a1fae7,
-    /// table_10-2 UID (0040,A124)
+    /// table_10-2 UID (0040,A124) (+1 more)
     UID_ca8b4b,
-    /// table_10-2 Text Value (0040,A160)
+    /// table_10-2 Text Value (0040,A160) (+1 more)
     TextValue_6d4c4e,
     /// table_10-2 Concept Code Sequence (0040,A168)
     ConceptCodeSequence_52aed2,
     /// table_10-2 Measurement Units Code Sequence (0040,08EA) (+1 more)
     NumericValue_8073ae,
-    /// table_10-2 Floating Point Value (0040,A161)
+    /// table_10-2 Floating Point Value (0040,A161) (+1 more)
     FloatingPointValue_a84f01,
-    /// table_10-2 Rational Numerator Value (0040,A162)
+    /// table_10-2 Rational Numerator Value (0040,A162) (+1 more)
     RationalNumeratorValue_5600ef,
-    /// table_10-2 Rational Denominator Value (0040,A163)
+    /// table_10-2 Rational Denominator Value (0040,A163) (+1 more)
     RationalDenominatorValue_553a6d,
     /// table_10-2 Referenced SOP Sequence (0008,1199)
     ReferencedSOPSequence_fabd0b,
     /// table_10-2 Referenced Segment Number (0062,000B) (+1 more)
     ReferencedSegmentNumber_f2b12f,
-    /// table_10-2 Referenced Waveform Channels (0040,A0B0)
+    /// table_10-2 Referenced Waveform Channels (0040,A0B0) (+1 more)
     ReferencedWaveformChannels_6a695a,
     /// table_C.7-5a Anatomical Orientation Type (0010,2210)
     AnatomicalOrientationType_a42424,
@@ -226,7 +232,7 @@ pub(super) enum ConditionId {
     SamplesPerPixel_d24356,
     /// table_C.8.12.4-1 Samples per Pixel (0028,0002)
     SamplesPerPixel_0c16cf,
-    /// table_C.8-77 Planar Configuration (0028,0006) (+2 more)
+    /// table_C.8.12.4-1 Planar Configuration (0028,0006)
     PlanarConfiguration_290ffd,
     /// table_C.8.12.4-1 Number of Frames (0028,0008)
     NumberOfFrames_8113e0,
@@ -332,44 +338,6 @@ pub(super) enum ConditionId {
     FgRealWorldValueMapping_81c20c,
     /// Optical Path Identification (+1 more)
     FgPlanePositionSlide_dc3941,
-    /// table_C.7-18 Device Diameter Units (0050,0017)
-    DeviceDiameterUnits_3c1081,
-    /// Specimen
-    ModuleSpecimen_7bdca8,
-    /// table_C.8-77 Content Time (0008,0033)
-    ContentTime_ed65a7,
-    /// table_C.8-77 Referenced Image Sequence (0008,1140)
-    ReferencedImageSequence_fcc4f5,
-    /// table_C.11-2b Window Width (0028,1051) (+1 more)
-    WindowWidth_65ee92,
-    /// table_C.8-77 Anatomic Region Sequence (0008,2218)
-    AnatomicRegionSequence_9fc37b,
-    /// Optical Path
-    ModuleOpticalPath_e06f79,
-    /// ICC Profile
-    ModuleIccProfile_bf6938,
-    /// table_C.7-7 Synchronization Channel (0018,106C)
-    SynchronizationChannel_e1ebdb,
-    /// Synchronization
-    ModuleSynchronization_67625e,
-    /// Specimen
-    ModuleSpecimen_5908f3,
-    /// table_C.8.20-4 Tracking ID (0062,0020) (+1 more)
-    TrackingID_aba688,
-    /// table_C.8.20-4 Tracking UID (0062,0021) (+1 more)
-    TrackingUID_f608d8,
-    /// Cutaneous Confocal Microscopy Image Acquisition Parameters
-    ModuleCutaneousConfocalMicroscopyImageAcquisitionParameters_b64962,
-    /// Referenced Image
-    FgReferencedImage_0f385a,
-    /// Plane Position (Slide)
-    FgPlanePositionSlide_7fb0bc,
-    /// Synchronization
-    ModuleSynchronization_833be7,
-    /// Multi-Resolution Pyramid
-    ModuleMultiResolutionPyramid_dfce04,
-    /// Microscope Slide Layer Tile Organization
-    ModuleMicroscopeSlideLayerTileOrganization_031caa,
     /// Frame of Reference
     ModuleFrameOfReference_9c03a6,
     /// table_C.37.1-2 Pixel Origin Interpretation (0048,0301)
@@ -412,6 +380,10 @@ pub(super) enum ConditionId {
     LossyImageCompressionMethod_090992,
     /// table_C.8.20-2 Maximum Fractional Value (0062,000E) (+1 more)
     SegmentationFractionalType_63bbc3,
+    /// table_C.8.20-4 Tracking ID (0062,0020)
+    TrackingID_aba688,
+    /// table_C.8.20-4 Tracking UID (0062,0021)
+    TrackingUID_f608d8,
     /// table_C.8.20-4 Referenced ROI Number (3006,0084)
     ReferencedROINumber_14d038,
     /// table_C.8.20-2 Segment Algorithm Name (0062,0009)
@@ -436,6 +408,8 @@ pub(super) enum ConditionId {
     FgFrameContent_506a28,
     /// Segmentation
     FgSegmentation_99fd82,
+    /// table_C.7-7 Synchronization Channel (0018,106C)
+    SynchronizationChannel_e1ebdb,
     /// Image Pixel
     ModuleImagePixel_f11529,
     /// table_PS3.3_C.7.6.24-1 Float Pixel Padding Range Limit (0028,0124)
@@ -480,6 +454,8 @@ pub(super) enum ConditionId {
     RespiratoryTriggerType_58178c,
     /// table_C.7.6.18-3 Bulk Motion Signal Source (0018,9173)
     BulkMotionSignalSource_bb311d,
+    /// table_C.7-18 Device Diameter Units (0050,0017)
+    DeviceDiameterUnits_3c1081,
     /// Common Instance Reference
     ModuleCommonInstanceReference_a6c5de,
     /// Plane Orientation (Patient) (+1 more)
@@ -496,6 +472,8 @@ pub(super) enum ConditionId {
     VOILUTSequence_ddfce9,
     /// table_C.11-2b Window Center (0028,1050)
     WindowCenter_f9b098,
+    /// table_C.11-2b Window Width (0028,1051)
+    WindowWidth_65ee92,
     /// table_C.7.16-13 Contrast/Bolus Agent Phase (0018,9344)
     ContrastBolusAgentPhase_52f965,
     /// table_C.7.6.16-18 Respiratory Interval Time (0020,9254)
@@ -514,6 +492,172 @@ pub(super) enum ConditionId {
     UnassignedSharedConvertedAttributesSequence_1df2d1,
     /// table_C.7.6.16.2.25.2-1 Unassigned Per-Frame Converted Attributes Sequence (0020,9171)
     UnassignedPerFrameConvertedAttributesSequence_30ffda,
+    /// table_C.17.6-2 Referenced Request Sequence (0040,A370)
+    ReferencedRequestSequence_d87c48,
+    /// table_C.17.6-2 Identical Documents Sequence (0040,A525)
+    IdenticalDocumentsSequence_9954fb,
+    /// table_C.17-5 Concept Name Code Sequence (0040,A043)
+    ConceptNameCodeSequence_abde30,
+    /// table_C.17-5 Include Table C.18.1-1 if and only if Value Type (0040,A040) is NUM.
+    IncludeC1811_b4d406,
+    /// table_C.18.1-1 Numeric Value Qualifier Code Sequence (0040,A301)
+    NumericValueQualifierCodeSequence_2d34c8,
+    /// table_C.17-5 Include Table C.18.2-1 if and only if Value Type (0040,A040) is CODE.
+    IncludeC1821_a2ce9a,
+    /// table_C.17-5 Include Table C.18.3-1 if and only if Value Type (0040,A040) is COMPOSITE.
+    IncludeC1831_61f144,
+    /// table_C.17-5 Include Table C.18.4-1 if and only if Value Type (0040,A040) is IMAGE.
+    IncludeC1841_08c4c7,
+    /// table_C.17-5 Include Table C.18.5-1 if and only if Value Type (0040,A040) is WAVEFORM.
+    IncludeC1851_08552e,
+    /// table_C.17-5 Include Table C.18.6-1 if and only if Value Type (0040,A040) is SCOORD.
+    IncludeC1861_80daf7,
+    /// table_C.18.6-1 Pixel Origin Interpretation (0048,0301)
+    PixelOriginInterpretation_2ad28a,
+    /// table_C.17-5 Include Table C.18.9-1 if and only if Value Type (0040,A040) is SCOORD3D.
+    IncludeC1891_3cfefc,
+    /// table_C.17-5 Include Table C.18.7-1 if and only if Value Type (0040,A040) is TCOORD.
+    IncludeC1871_2dd22d,
+    /// table_C.18.7-1 Referenced Sample Positions (0040,A132)
+    ReferencedSamplePositions_0a7da3,
+    /// table_C.18.7-1 Referenced Time Offsets (0040,A138)
+    ReferencedTimeOffsets_263fb1,
+    /// table_C.18.7-1 Referenced DateTime (0040,A13A)
+    ReferencedDateTime_b68814,
+    /// table_C.17-5 Include Table C.18.8-1 if and only if Value Type (0040,A040) is CONTAINER.
+    IncludeC1881_0f7a08,
+    /// table_C.18.8-1 Content Template Sequence (0040,A504)
+    ContentTemplateSequence_613106,
+    /// table_C.17-5 Include Table C.18.10-1 if and only if Value Type (0040,A040) is TABLE.
+    IncludeC18101_0ab121,
+    /// table_C.18.10-1 Table Row Number (0040,A804)
+    TableRowNumber_c720fb,
+    /// table_C.18.10-1 Measurement Units Code Sequence (0040,08EA)
+    MeasurementUnitsCodeSequence_95167c,
+    /// table_C.18.10-1 Table Column Number (0040,A805)
+    TableColumnNumber_a0b28f,
+    /// table_C.18.10-1 Measurement Units Code Sequence (0040,08EA)
+    MeasurementUnitsCodeSequence_641853,
+    /// table_C.18.10-1 Table Row Number (0040,A804)
+    TableRowNumber_0a17c3,
+    /// table_C.18.10-1 Table Column Number (0040,A805)
+    TableColumnNumber_325185,
+    /// table_C.18.10-1 Referenced Content Item Identifier (0040,DB73)
+    ReferencedContentItemIdentifier_64a61e,
+    /// table_C.18.10-1 Selector Attribute VR (0072,0050)
+    SelectorAttributeVR_b521fa,
+    /// table_C.18.10-1 Selector DS Value (0072,0072)
+    SelectorDSValue_e13c3c,
+    /// table_C.18.10-1 Selector DT Value (0072,0063)
+    SelectorDTValue_01484a,
+    /// table_C.18.10-1 Selector FD Value (0072,0074)
+    SelectorFDValue_3dcd6f,
+    /// table_C.18.10-1 Selector FL Value (0072,0076)
+    SelectorFLValue_99138e,
+    /// table_C.18.10-1 Selector IS Value (0072,0064)
+    SelectorISValue_eb854f,
+    /// table_C.18.10-1 Selector SL Value (0072,007C)
+    SelectorSLValue_ee2837,
+    /// table_C.18.10-1 Selector SS Value (0072,007E)
+    SelectorSSValue_43d1ea,
+    /// table_C.18.10-1 Selector SV Value (0072,0082)
+    SelectorSVValue_88fa3d,
+    /// table_C.18.10-1 Selector UC Value (0072,006F)
+    SelectorUCValue_7e35c8,
+    /// table_C.18.10-1 Selector UL Value (0072,0078)
+    SelectorULValue_6707ef,
+    /// table_C.18.10-1 Selector US Value (0072,007A)
+    SelectorUSValue_e61eaf,
+    /// table_C.18.10-1 Selector UV Value (0072,0083)
+    SelectorUVValue_0bfd57,
+    /// table_C.18.10-1 Concept Code Sequence (0040,A168)
+    ConceptCodeSequence_9c9892,
+    /// table_C.18.10-1 Measurement Units Code Sequence (0040,08EA)
+    MeasurementUnitsCodeSequence_685e98,
+    /// table_C.18.10-1 Numeric Value Qualifier Code Sequence (0040,A301)
+    NumericValueQualifierCodeSequence_21892a,
+    /// table_C.17-6 Observation DateTime (0040,A032)
+    ObservationDateTime_51faf7,
+    /// table_C.17-6 Content Sequence (0040,A730)
+    ContentSequence_2857ac,
+    /// table_C.17-6 >Include Table C.17-5 if the Target Content Item is included by-value in the Source Content Item. The Macro shall not be present if the relationship is by-reference. (+1 more)
+    IncludeC176_aad59d,
+    /// table_C.17-6 Referenced Content Item Identifier (0040,DB73)
+    ReferencedContentItemIdentifier_74d9aa,
+    /// table_C.17-2 Verifying Observer Sequence (0040,A073) (+1 more)
+    VerifyingObserverSequence_bea66d,
+    /// table_C.17-3b Person Identification Code Sequence (0040,1101) (+1 more)
+    PersonName_5a02d8,
+    /// table_C.17-3b Device UID (0018,1002) (+3 more)
+    StationName_c7d092,
+    /// table_C.17-2 Predecessor Documents Sequence (0040,A360)
+    PredecessorDocumentsSequence_e99aef,
+    /// table_C.17-2 Identical Documents Sequence (0040,A525)
+    IdenticalDocumentsSequence_ad93a0,
+    /// table_C.17-2 Referenced Request Sequence (0040,A370)
+    ReferencedRequestSequence_c43dd8,
+    /// table_C.17-2 Current Requested Procedure Evidence Sequence (0040,A375)
+    CurrentRequestedProcedureEvidenceSequence_0cdfc8,
+    /// table_C.17-2 Pertinent Other Evidence Sequence (0040,A385)
+    PertinentOtherEvidenceSequence_68205a,
+    /// table_C.17-2 Referenced Instance Sequence (0008,114A)
+    ReferencedInstanceSequence_fa9b97,
+    /// table_F.3-2 Specific Character Set of File-set Descriptor File (0004,1142)
+    SpecificCharacterSetOfFileSetDescriptorFile_793b31,
+    /// table_F.3-3 Private Record UID (0004,1432)
+    PrivateRecordUID_399277,
+    /// table_F.3-3 Referenced File ID (0004,1500)
+    ReferencedFileID_3760d0,
+    /// table_F.3-3 Referenced SOP Class UID in File (0004,1510) (+2 more)
+    ReferencedSOPClassUIDInFile_b5b28b,
+    /// table_F.3-3 Referenced Related General SOP Class UID in File (0004,151A)
+    ReferencedRelatedGeneralSOPClassUIDInFile_f4b354,
+    /// table_F.5-1 Specific Character Set (0008,0005) (+30 more)
+    SpecificCharacterSet_ebd0ce,
+    /// table_F.5-23 Referenced Series Sequence (0008,1115)
+    ReferencedSeriesSequence_5fba33,
+    /// table_F.5-23 Blending Sequence (0070,0402)
+    BlendingSequence_942c1d,
+    /// table_F.5-25 Content Sequence (0040,A730) (+1 more)
+    ContentSequence_fd3381,
+    /// table_F.5-27 Referenced Image Evidence Sequence (0008,9092)
+    ReferencedImageEvidenceSequence_52b821,
+    /// table_F.5-31 Modality (0008,0060)
+    Modality_12e144,
+    /// table_F.5-31 Anatomic Region Sequence (0008,2218)
+    AnatomicRegionSequence_e8c3b8,
+    /// table_F.5-31 Laterality (0020,0060)
+    Laterality_463eac,
+    /// table_F.5-32 HL7 Instance Identifier (0040,E001)
+    HL7InstanceIdentifier_bf2ac9,
+    /// table_F.5-37 Implant Size (0068,6210)
+    ImplantSize_62ba2f,
+    /// table_F.5-46 User Content Label (3010,0033)
+    UserContentLabel_c9e668,
+    /// table_F.5-46 User Content Long Label (3010,0034)
+    UserContentLongLabel_22bf5d,
+    /// table_C.38.2-1 Extended Matching Mechanisms (0008,040F)
+    ExtendedMatchingMechanisms_af2f2b,
+    /// table_C.38.2-1 Specific Character Set (0008,0005)
+    SpecificCharacterSet_00ceec,
+    /// table_C.38.2-1 Timezone Offset from UTC (0008,0201)
+    TimezoneOffsetFromUTC_68b8ba,
+    /// table_C.38.2-1 Query/Retrieve Level (0008,0052)
+    QueryRetrieveLevel_29856c,
+    /// table_C.38.2-1 Range Matching Sequence (0008,0410)
+    RangeMatchingSequence_ce4c8a,
+    /// table_C.38.2-1 List of UID Matching Sequence (0008,0411)
+    ListOfUIDMatchingSequence_e8cd11,
+    /// table_C.38.2-1 Empty Value Matching Sequence (0008,0412)
+    EmptyValueMatchingSequence_714fca,
+    /// table_C.38.2-1 General Matching Sequence (0008,0413)
+    GeneralMatchingSequence_e9665b,
+    /// table_F.5-49 Referenced Series Sequence (0008,1115)
+    ReferencedSeriesSequence_8c3b36,
+    /// table_F.5-49 Referenced Instance Sequence (0008,114A)
+    ReferencedInstanceSequence_e2c71a,
+    /// table_F.5-49 Referenced Waveform Sequence (0008,113A)
+    ReferencedWaveformSequence_f42349,
     /// PS3.10 table_7.1-1 Private Information
     PrivateInformation_5c0ac1,
     /// A.51 Pixel Padding Value (0028,0120) shall not be present if Segmentation Type (0062,0001) is not LABELMAP.
@@ -677,25 +821,6 @@ impl ConditionId {
         C::FgDerivationImage_6f39a8,
         C::FgRealWorldValueMapping_81c20c,
         C::FgPlanePositionSlide_dc3941,
-        C::DeviceDiameterUnits_3c1081,
-        C::ModuleSpecimen_7bdca8,
-        C::ContentTime_ed65a7,
-        C::ReferencedImageSequence_fcc4f5,
-        C::WindowWidth_65ee92,
-        C::AnatomicRegionSequence_9fc37b,
-        C::ModuleOpticalPath_e06f79,
-        C::ModuleIccProfile_bf6938,
-        C::SynchronizationChannel_e1ebdb,
-        C::ModuleSynchronization_67625e,
-        C::ModuleSpecimen_5908f3,
-        C::TrackingID_aba688,
-        C::TrackingUID_f608d8,
-        C::ModuleCutaneousConfocalMicroscopyImageAcquisitionParameters_b64962,
-        C::FgReferencedImage_0f385a,
-        C::FgPlanePositionSlide_7fb0bc,
-        C::ModuleSynchronization_833be7,
-        C::ModuleMultiResolutionPyramid_dfce04,
-        C::ModuleMicroscopeSlideLayerTileOrganization_031caa,
         C::ModuleFrameOfReference_9c03a6,
         C::PixelOriginInterpretation_577198,
         C::ReferencedImageSequence_89465a,
@@ -717,6 +842,8 @@ impl ConditionId {
         C::LossyImageCompressionRatio_611047,
         C::LossyImageCompressionMethod_090992,
         C::SegmentationFractionalType_63bbc3,
+        C::TrackingID_aba688,
+        C::TrackingUID_f608d8,
         C::ReferencedROINumber_14d038,
         C::SegmentAlgorithmName_01435f,
         C::RecommendedDisplayCIELabValue_79ebd0,
@@ -729,6 +856,7 @@ impl ConditionId {
         C::FgDerivationImage_a322fc,
         C::FgFrameContent_506a28,
         C::FgSegmentation_99fd82,
+        C::SynchronizationChannel_e1ebdb,
         C::ModuleImagePixel_f11529,
         C::FloatPixelPaddingRangeLimit_fa212b,
         C::ModuleFloatingPointImagePixel_202cb1,
@@ -751,6 +879,7 @@ impl ConditionId {
         C::RespiratoryTriggerDelayThreshold_f11c4b,
         C::RespiratoryTriggerType_58178c,
         C::BulkMotionSignalSource_bb311d,
+        C::DeviceDiameterUnits_3c1081,
         C::ModuleCommonInstanceReference_a6c5de,
         C::FgPlanePositionPatient_183b05,
         C::FgPlanePositionSlide_c1ecaa,
@@ -759,6 +888,7 @@ impl ConditionId {
         C::RRIntervalTimeNominal_0c4d07,
         C::VOILUTSequence_ddfce9,
         C::WindowCenter_f9b098,
+        C::WindowWidth_65ee92,
         C::ContrastBolusAgentPhase_52f965,
         C::RespiratoryIntervalTime_909e53,
         C::ActualRespiratoryTriggerDelayTime_3944c9,
@@ -768,6 +898,89 @@ impl ConditionId {
         C::FgStoredValueColorRange_fd7048,
         C::UnassignedSharedConvertedAttributesSequence_1df2d1,
         C::UnassignedPerFrameConvertedAttributesSequence_30ffda,
+        C::ReferencedRequestSequence_d87c48,
+        C::IdenticalDocumentsSequence_9954fb,
+        C::ConceptNameCodeSequence_abde30,
+        C::IncludeC1811_b4d406,
+        C::NumericValueQualifierCodeSequence_2d34c8,
+        C::IncludeC1821_a2ce9a,
+        C::IncludeC1831_61f144,
+        C::IncludeC1841_08c4c7,
+        C::IncludeC1851_08552e,
+        C::IncludeC1861_80daf7,
+        C::PixelOriginInterpretation_2ad28a,
+        C::IncludeC1891_3cfefc,
+        C::IncludeC1871_2dd22d,
+        C::ReferencedSamplePositions_0a7da3,
+        C::ReferencedTimeOffsets_263fb1,
+        C::ReferencedDateTime_b68814,
+        C::IncludeC1881_0f7a08,
+        C::ContentTemplateSequence_613106,
+        C::IncludeC18101_0ab121,
+        C::TableRowNumber_c720fb,
+        C::MeasurementUnitsCodeSequence_95167c,
+        C::TableColumnNumber_a0b28f,
+        C::MeasurementUnitsCodeSequence_641853,
+        C::TableRowNumber_0a17c3,
+        C::TableColumnNumber_325185,
+        C::ReferencedContentItemIdentifier_64a61e,
+        C::SelectorAttributeVR_b521fa,
+        C::SelectorDSValue_e13c3c,
+        C::SelectorDTValue_01484a,
+        C::SelectorFDValue_3dcd6f,
+        C::SelectorFLValue_99138e,
+        C::SelectorISValue_eb854f,
+        C::SelectorSLValue_ee2837,
+        C::SelectorSSValue_43d1ea,
+        C::SelectorSVValue_88fa3d,
+        C::SelectorUCValue_7e35c8,
+        C::SelectorULValue_6707ef,
+        C::SelectorUSValue_e61eaf,
+        C::SelectorUVValue_0bfd57,
+        C::ConceptCodeSequence_9c9892,
+        C::MeasurementUnitsCodeSequence_685e98,
+        C::NumericValueQualifierCodeSequence_21892a,
+        C::ObservationDateTime_51faf7,
+        C::ContentSequence_2857ac,
+        C::IncludeC176_aad59d,
+        C::ReferencedContentItemIdentifier_74d9aa,
+        C::VerifyingObserverSequence_bea66d,
+        C::PersonName_5a02d8,
+        C::StationName_c7d092,
+        C::PredecessorDocumentsSequence_e99aef,
+        C::IdenticalDocumentsSequence_ad93a0,
+        C::ReferencedRequestSequence_c43dd8,
+        C::CurrentRequestedProcedureEvidenceSequence_0cdfc8,
+        C::PertinentOtherEvidenceSequence_68205a,
+        C::ReferencedInstanceSequence_fa9b97,
+        C::SpecificCharacterSetOfFileSetDescriptorFile_793b31,
+        C::PrivateRecordUID_399277,
+        C::ReferencedFileID_3760d0,
+        C::ReferencedSOPClassUIDInFile_b5b28b,
+        C::ReferencedRelatedGeneralSOPClassUIDInFile_f4b354,
+        C::SpecificCharacterSet_ebd0ce,
+        C::ReferencedSeriesSequence_5fba33,
+        C::BlendingSequence_942c1d,
+        C::ContentSequence_fd3381,
+        C::ReferencedImageEvidenceSequence_52b821,
+        C::Modality_12e144,
+        C::AnatomicRegionSequence_e8c3b8,
+        C::Laterality_463eac,
+        C::HL7InstanceIdentifier_bf2ac9,
+        C::ImplantSize_62ba2f,
+        C::UserContentLabel_c9e668,
+        C::UserContentLongLabel_22bf5d,
+        C::ExtendedMatchingMechanisms_af2f2b,
+        C::SpecificCharacterSet_00ceec,
+        C::TimezoneOffsetFromUTC_68b8ba,
+        C::QueryRetrieveLevel_29856c,
+        C::RangeMatchingSequence_ce4c8a,
+        C::ListOfUIDMatchingSequence_e8cd11,
+        C::EmptyValueMatchingSequence_714fca,
+        C::GeneralMatchingSequence_e9665b,
+        C::ReferencedSeriesSequence_8c3b36,
+        C::ReferencedInstanceSequence_e2c71a,
+        C::ReferencedWaveformSequence_f42349,
         C::PrivateInformation_5c0ac1,
         C::PixelPaddingValue_d4f36e,
         C::PixelPaddingRangeLimit_ae4d69,
@@ -926,25 +1139,6 @@ impl ConditionId {
             C::FgDerivationImage_6f39a8 => "Required if the image or Frame has been derived from another SOP Instance.",
             C::FgRealWorldValueMapping_81c20c => "May be used only if Photometric Interpretation (0028,0004) is MONOCHROME2.",
             C::FgPlanePositionSlide_dc3941 => "Required if Dimension Organization Type (0020,9311) is not TILED_FULL; may be present otherwise.",
-            C::DeviceDiameterUnits_3c1081 => "Required if Device Diameter (0050,0016) is present.",
-            C::ModuleSpecimen_7bdca8 => "Required if Imaging Subject is a specimen",
-            C::ContentTime_ed65a7 => "Required if the Image is part of a Series in which the images are temporally related.",
-            C::ReferencedImageSequence_fcc4f5 => "Required if Image Type (0008,0008) Value 3 is present and has a Value of \"STEREO L\" or \"STEREO R\". May also be present otherwise. See Section C.8.12.1.1.7.",
-            C::WindowWidth_65ee92 => "Required if Window Center (0028,1050) is present.",
-            C::AnatomicRegionSequence_9fc37b => "Required if Number of Frames (0028,0008) is present and Specimen Description Sequence (0040,0560) is absent. May be present otherwise.",
-            C::ModuleOpticalPath_e06f79 => "Shall not be present if the ICC Profile Module is present.",
-            C::ModuleIccProfile_bf6938 => "Shall not be present if the Optical Path Module is present.",
-            C::SynchronizationChannel_e1ebdb => "Required if synchronization channel or trigger is encoded in a waveform in this SOP Instance.",
-            C::ModuleSynchronization_67625e => "Required if time synchronization was applied",
-            C::ModuleSpecimen_5908f3 => "Required if the Imaging Subject is a Specimen",
-            C::TrackingID_aba688 => "Required if Tracking UID (0062,0021) is present.",
-            C::TrackingUID_f608d8 => "Required if Tracking ID (0062,0020) is present.",
-            C::ModuleCutaneousConfocalMicroscopyImageAcquisitionParameters_b64962 => "Required for cutaneous confocal microscopy",
-            C::FgReferencedImage_0f385a => "Required if the image or Frame has been planned on another image or Frame. May be present otherwise.",
-            C::FgPlanePositionSlide_7fb0bc => "Required if the Frame of Reference is defined in the Slide Coordinate System.",
-            C::ModuleSynchronization_833be7 => "Required if time synchronization was applied.",
-            C::ModuleMultiResolutionPyramid_dfce04 => "Shall be present only if Image Type Value 3 is VOLUME or THUMBNAIL",
-            C::ModuleMicroscopeSlideLayerTileOrganization_031caa => "Required for slide microscopy imaging. May be present otherwise",
             C::ModuleFrameOfReference_9c03a6 => "Required if Annotation Coordinate Type (006A,0001) is 3D",
             C::PixelOriginInterpretation_577198 => "Required if Annotation Coordinate Type (006A,0001) is 2D.",
             C::ReferencedImageSequence_89465a => "Required if Annotation Coordinate Type (006A,0001) is 2D. May be present otherwise.",
@@ -966,6 +1160,8 @@ impl ConditionId {
             C::LossyImageCompressionRatio_611047 => "Required if present in the source images or this IOD Instance has been compressed.",
             C::LossyImageCompressionMethod_090992 => "Required if present in the source images or this IOD Instance has been compressed. See Section C.8.20.2.2.",
             C::SegmentationFractionalType_63bbc3 => "Required if Segmentation Type (0062,0001) is FRACTIONAL.",
+            C::TrackingID_aba688 => "Required if Tracking UID (0062,0021) is present.",
+            C::TrackingUID_f608d8 => "Required if Tracking ID (0062,0020) is present.",
             C::ReferencedROINumber_14d038 => "Required if Referenced SOP Class UID (0008,1150) is \"1.2.840.10008.5.1.4.1.1.481.3\" (RT Structure Set Storage).",
             C::SegmentAlgorithmName_01435f => "Required if Segment Algorithm Type (0062,0008) is not MANUAL.",
             C::RecommendedDisplayCIELabValue_79ebd0 => "Shall not be present if Segmentation Type (0062,0001) is LABELMAP and Photometric Interpretation (0028,0004) is PALETTE COLOR.",
@@ -978,6 +1174,7 @@ impl ConditionId {
             C::FgDerivationImage_a322fc => "Required if Pixel Measures (Section C.7.6.16.2.1) or either Plane Position (Patient) (Section C.7.6.16.2.3) or Plane Orientation (Patient) (Section C.7.6.16.2.4) (if the Frame of Reference is defined in the patient-relative Reference Coordinate System), or Plane Position (Slide) (Section C.8.12.6.1) (if the Frame of Reference is defined in the Slide Coordinate System) Functional Groups are not present. May be present otherwise. See Section A.51.5.1",
             C::FgFrameContent_506a28 => "Required if not empty.",
             C::FgSegmentation_99fd82 => "Required if Dimension Organization Type (0020,9311) is not TILED_FULL and Segmentation Type (0062,0001) is not LABELMAP.",
+            C::SynchronizationChannel_e1ebdb => "Required if synchronization channel or trigger is encoded in a waveform in this SOP Instance.",
             C::ModuleImagePixel_f11529 => "Required if integer pixels",
             C::FloatPixelPaddingRangeLimit_fa212b => "Required if Float Pixel Padding Value (0028,0122) is present.",
             C::ModuleFloatingPointImagePixel_202cb1 => "Required if 32 bit floating point pixels",
@@ -1000,6 +1197,7 @@ impl ConditionId {
             C::RespiratoryTriggerDelayThreshold_f11c4b => "Required if Respiratory Motion Compensation Technique (0018,9170) equals other than NONE, REALTIME or BREATH_HOLD and if Image Type (0008,0008) Value 1 is ORIGINAL or MIXED. May be present otherwise.",
             C::RespiratoryTriggerType_58178c => "Required if the Value is not TIME, may be present otherwise.",
             C::BulkMotionSignalSource_bb311d => "Required if Image Type (0008,0008) Value 1 is ORIGINAL or MIXED and Bulk Motion Compensation Technique (0018,9172) equals other than NONE.",
+            C::DeviceDiameterUnits_3c1081 => "Required if Device Diameter (0050,0016) is present.",
             C::ModuleCommonInstanceReference_a6c5de => "Required if Referenced Image Functional Group (Section C.7.6.16.2.5) or Derivation Image Functional Group (Section C.7.6.16.2.6) is present.",
             C::FgPlanePositionPatient_183b05 => "Required if the Frame of Reference is defined in the patient-relative Reference Coordinate System.",
             C::FgPlanePositionSlide_c1ecaa => "Required if the Frame of Reference is defined in the Slide Coordinate System and Dimension Organization Type (0020,9311) is not TILED_FULL. May be present otherwise if the Frame of Reference is defined in the Slide Coordinate System.",
@@ -1008,6 +1206,7 @@ impl ConditionId {
             C::RRIntervalTimeNominal_0c4d07 => "Required if Cardiac Synchronization Technique (0018,9037) equals other than NONE or REALTIME. May be present otherwise.",
             C::VOILUTSequence_ddfce9 => "Required if Window Center (0028,1050) is not present. May be present otherwise.",
             C::WindowCenter_f9b098 => "Required if VOI LUT Sequence (0028,3010) is not present. May be present otherwise.",
+            C::WindowWidth_65ee92 => "Required if Window Center (0028,1050) is present.",
             C::ContrastBolusAgentPhase_52f965 => "Required if Contrast/Bolus Administration Route Sequence (0018,0014) for the Contrast/Bolus Agent Number (0018,9337) defined in the Contrast/Bolus Agent Sequence (0018,0012) is (47625008, SCT, \"Intravenous route\") or (47625008, SCT, \"Intravenous route\"); may be present otherwise.",
             C::RespiratoryIntervalTime_909e53 => "Required if Respiratory Motion Compensation Technique (0018,9170) equals other than NONE or REALTIME and Respiratory Trigger Type (0020,9250) is absent or has a Value of TIME or BOTH.",
             C::ActualRespiratoryTriggerDelayTime_3944c9 => "Required if Respiratory Trigger Type (0020,9250) is TIME or BOTH.",
@@ -1017,6 +1216,89 @@ impl ConditionId {
             C::FgStoredValueColorRange_fd7048 => "Required if Pixel Presentation (0008,9205) in the Parametric Map Image Module equals COLOR_RANGE.",
             C::UnassignedSharedConvertedAttributesSequence_1df2d1 => "Required if any unassigned shared Attributes are present.",
             C::UnassignedPerFrameConvertedAttributesSequence_30ffda => "Required if any unassigned per-frame Attributes are present for this Frame.",
+            C::ReferencedRequestSequence_d87c48 => "Required if this Document pertains to at least one Requested Procedure.",
+            C::IdenticalDocumentsSequence_9954fb => "Required if this Key Object Selection document references Instances in more than one Study.",
+            C::ConceptNameCodeSequence_abde30 => "Required if Value Type (0040,A040) is TEXT, NUM, CODE, DATETIME, DATE, TIME, UIDREF, TABLE or PNAME. Required if Value Type (0040,A040) is CONTAINER and a heading is present, or this is the Root Content Item. Required if Value Type (0040,A040) is COMPOSITE, IMAGE, WAVEFORM, SCOORD, SCOORD3D or TCOORD, and the Purpose of Reference is conveyed in the Concept Name.",
+            C::IncludeC1811_b4d406 => "if and only if Value Type (0040,A040) is NUM.",
+            C::NumericValueQualifierCodeSequence_2d34c8 => "Required if Measured Value Sequence (0040,A300) is empty.",
+            C::IncludeC1821_a2ce9a => "if and only if Value Type (0040,A040) is CODE.",
+            C::IncludeC1831_61f144 => "if and only if Value Type (0040,A040) is COMPOSITE.",
+            C::IncludeC1841_08c4c7 => "if and only if Value Type (0040,A040) is IMAGE.",
+            C::IncludeC1851_08552e => "if and only if Value Type (0040,A040) is WAVEFORM.",
+            C::IncludeC1861_80daf7 => "if and only if Value Type (0040,A040) is SCOORD.",
+            C::PixelOriginInterpretation_2ad28a => "Required if the instance referenced by Referenced Image Sequence (0008,1140) is tiled (i.e., contains Total Pixel Matrix Columns (0048,0006) and Total Pixel Matrix Rows (0048,0007)). May be present otherwise.",
+            C::IncludeC1891_3cfefc => "if and only if Value Type (0040,A040) is SCOORD3D.",
+            C::IncludeC1871_2dd22d => "if and only if Value Type (0040,A040) is TCOORD.",
+            C::ReferencedSamplePositions_0a7da3 => "Required if the Referenced SOP Instance is a Waveform and Referenced Time Offsets (0040,A138) and Referenced DateTime (0040,A13A) are not present.",
+            C::ReferencedTimeOffsets_263fb1 => "Required if Referenced Sample Positions (0040,A132) and Referenced DateTime (0040,A13A) are not present.",
+            C::ReferencedDateTime_b68814 => "Required if Referenced Sample Positions (0040,A132) and Referenced Time Offsets (0040,A138) are not present.",
+            C::IncludeC1881_0f7a08 => "if and only if Value Type (0040,A040) is CONTAINER.",
+            C::ContentTemplateSequence_613106 => "Required if a template defined and known to the implementation at the time of encoding was used to define the content of this Item, and the template consists of a single CONTAINER with nested content, and it is the outermost invocation of a set of nested templates that start with the same CONTAINER (see Section C.18.8.1.2).",
+            C::IncludeC18101_0ab121 => "if and only if Value Type (0040,A040) is TABLE.",
+            C::TableRowNumber_c720fb => "Required if the concept does not apply to all rows.",
+            C::MeasurementUnitsCodeSequence_95167c => "Required if all the columns in this row are numeric values (Selector Attribute VR is DS, FD, FL, IS, SL, SS, UL, or US), have units (are not dimensionless), and have the same units.",
+            C::TableColumnNumber_a0b28f => "Required if the concept does not apply to all columns.",
+            C::MeasurementUnitsCodeSequence_641853 => "Required if all the rows in this column are numeric values (Selector Attribute VR is DS, FD, FL, IS, SL, SS, UL, or US), have units (are not dimensionless), and have the same units.",
+            C::TableRowNumber_0a17c3 => "Required if Table Column Number is absent, or all the rows for the column specified in Table Column Number are not encoded in a single Attribute (containing multiple values) in this Item (i.e., with a single VR).",
+            C::TableColumnNumber_325185 => "Required if Table Row Number is absent, or all the columns for the row specified in Table Row Number are not encoded in a single Attribute (containing multiple values) in this Item (i.e., with a single VR).",
+            C::ReferencedContentItemIdentifier_64a61e => "Required if Selector Attribute VR (0072,0050) is not present.",
+            C::SelectorAttributeVR_b521fa => "Required if Referenced Content Item Identifier (0040,DB73) is not present.",
+            C::SelectorDSValue_e13c3c => "Required if Selector Attribute VR (0072,0050) is present and the value is DS, and Numeric Value Qualifier Code Sequence (0040,A301) is not present.",
+            C::SelectorDTValue_01484a => "Required if Selector Attribute VR (0072,0050) is present and the value is DT.",
+            C::SelectorFDValue_3dcd6f => "Required if Selector Attribute VR (0072,0050) is present and the value is FD, and Numeric Value Qualifier Code Sequence (0040,A301) is not present.",
+            C::SelectorFLValue_99138e => "Required if Selector Attribute VR (0072,0050) is present and the value is FL, and Numeric Value Qualifier Code Sequence (0040,A301) is not present.",
+            C::SelectorISValue_eb854f => "Required if Selector Attribute VR (0072,0050) is present and the value is IS, and Numeric Value Qualifier Code Sequence (0040,A301) is not present.",
+            C::SelectorSLValue_ee2837 => "Required if Selector Attribute VR (0072,0050) is present and the value is SL, and Numeric Value Qualifier Code Sequence (0040,A301) is not present.",
+            C::SelectorSSValue_43d1ea => "Required if Selector Attribute VR (0072,0050) is present and the value is SS, and Numeric Value Qualifier Code Sequence (0040,A301) is not present.",
+            C::SelectorSVValue_88fa3d => "Required if Selector Attribute VR (0072,0050) is present and the value is SV, and Numeric Value Qualifier Code Sequence (0040,A301) is not present.",
+            C::SelectorUCValue_7e35c8 => "Required if Selector Attribute VR (0072,0050) is present and the value is UC.",
+            C::SelectorULValue_6707ef => "Required if Selector Attribute VR (0072,0050) is present and the value is UL, and Numeric Value Qualifier Code Sequence (0040,A301) is not present.",
+            C::SelectorUSValue_e61eaf => "Required if Selector Attribute VR (0072,0050) is present and the value is US, and Numeric Value Qualifier Code Sequence (0040,A301) is not present.",
+            C::SelectorUVValue_0bfd57 => "Required if Selector Attribute VR (0072,0050) is present and the value is UV, and Numeric Value Qualifier Code Sequence (0040,A301) is not present.",
+            C::ConceptCodeSequence_9c9892 => "Required if Selector Attribute VR (0072,0050) is present and the value is SQ.",
+            C::MeasurementUnitsCodeSequence_685e98 => "Required if this cell is a numeric value (Selector Attribute VR is DS, FD, FL, IS, SL, SS, SV, UL, US or UV) has a unit (is not dimensionless), and the unit is not specified within the Table Row Definition Sequence for this row or Table Column Definition Sequence for this column.",
+            C::NumericValueQualifierCodeSequence_21892a => "Required if this cell is a numeric value (Selector Attribute VR is DS, FD, FL, IS, SL, SS, SV, UL, US or UV), and the numeric value cannot be provided.",
+            C::ObservationDateTime_51faf7 => "Required if the date and time are different from Content Date (0008,0023) and Content Time (0008,0033) or Observation DateTime (0040,A032) defined in higher Items. May be present otherwise.",
+            C::ContentSequence_2857ac => "Required if the enclosing Content Item has relationships.",
+            C::IncludeC176_aad59d => "if the Target Content Item is included by-value in the Source Content Item. The Macro shall not be present if the relationship is by-reference.",
+            C::ReferencedContentItemIdentifier_74d9aa => "Required if the Target Content Item is denoted by-reference, i.e., the Section C.17.3.4 and Section C.17.3.3 are not included.",
+            C::VerifyingObserverSequence_bea66d => "Required if Verification Flag (0040,A493) is VERIFIED.",
+            C::PersonName_5a02d8 => "Required if Observer Type value is PSN.",
+            C::StationName_c7d092 => "Required if Observer Type value is DEV.",
+            C::PredecessorDocumentsSequence_e99aef => "Required if this document includes content from other documents.",
+            C::IdenticalDocumentsSequence_ad93a0 => "Required if this document is stored with different SOP Instance UIDs in one or more other Studies.",
+            C::ReferencedRequestSequence_c43dd8 => "Required if this Document fulfills at least one Requested Procedure. May be present otherwise.",
+            C::CurrentRequestedProcedureEvidenceSequence_0cdfc8 => "Required if the creator is aware of Composite Objects acquired in order to satisfy the Requested Procedure(s) for which the SR Document is or if Instances are referenced in the Content Tree. May be present otherwise.",
+            C::PertinentOtherEvidenceSequence_68205a => "Required if pertinent evidence from other Requested Procedures needs to be recorded.",
+            C::ReferencedInstanceSequence_fa9b97 => "Required if the identity of a CDA Document equivalent to the current SOP Instance is known at the time of creation of this SOP Instance (see Section C.17.2.6). May be present otherwise.",
+            C::SpecificCharacterSetOfFileSetDescriptorFile_793b31 => "Required to specify the expanded or replacement character set.",
+            C::PrivateRecordUID_399277 => "Required if the Directory Record Type (0004,1430) is of Value PRIVATE. This UID is used to define a non-standard type of Directory Record by reference to its position in a private extension to the Basic Directory IOD Information Model (see Section F.5). This UID shall be registered according to the procedures defined in PS3.5 PS3.5. Its meaning may or may not be specified in a Conformance Statement.",
+            C::ReferencedFileID_3760d0 => "When the Directory Record does not reference any SOP Instance this Attribute shall not be present.",
+            C::ReferencedSOPClassUIDInFile_b5b28b => "Required if the Directory Record references a SOP Instance.",
+            C::ReferencedRelatedGeneralSOPClassUIDInFile_f4b354 => "Required if the Directory Record references a SOP Instance that encodes the Related General SOP Class UID (0008,001A).",
+            C::SpecificCharacterSet_ebd0ce => "Required if an extended or replacement character set is used in one of the Keys.",
+            C::ReferencedSeriesSequence_5fba33 => "Required if the IOD of the Presentation State SOP Instance referenced by this Directory Record includes the Section C.11.11.",
+            C::BlendingSequence_942c1d => "Required if the SOP Instance referenced by this Directory Record includes Blending Sequence (0070,0402).",
+            C::ContentSequence_fd3381 => "Required if the root Content Item is the Source Content Item of HAS CONCEPT MOD relationships.",
+            C::ReferencedImageEvidenceSequence_52b821 => "Required if present in the Spectroscopy Instance.",
+            C::Modality_12e144 => "Required if Anatomic Region Sequence (0008,2218) is not present. May be present otherwise.",
+            C::AnatomicRegionSequence_e8c3b8 => "Required if Modality (0008,0060) is not present. May be present otherwise.",
+            C::Laterality_463eac => "Required if Anatomic Region Sequence (0008,2218) is present.",
+            C::HL7InstanceIdentifier_bf2ac9 => "Required if encapsulated document is an HL7 Structured Document.",
+            C::ImplantSize_62ba2f => "Required if present in the referenced Instance.",
+            C::UserContentLabel_c9e668 => "Required if User Content Label (3010,0033) is present.",
+            C::UserContentLongLabel_22bf5d => "Required if User Content Long Label (3010,0034) is present.",
+            C::ExtendedMatchingMechanisms_af2f2b => "Required if extended matching mechanisms were applied.",
+            C::SpecificCharacterSet_00ceec => "Required if Attributes within the Sequence Item use an expanded or replacement character set.",
+            C::TimezoneOffsetFromUTC_68b8ba => "Required if Extended Matching Mechanisms (0008,040F) includes Value TIMEZONE_ADJUST.",
+            C::QueryRetrieveLevel_29856c => "Required if Extended Matching Mechanisms (0008,040F) includes Value RELATIONAL.",
+            C::RangeMatchingSequence_ce4c8a => "Required if Range Matching is applied to any Key Attribute.",
+            C::ListOfUIDMatchingSequence_e8cd11 => "Required if List of UID Matching is applied to any Key Attribute.",
+            C::EmptyValueMatchingSequence_714fca => "Required if Extended Matching Mechanisms (0008,040F) includes Value EMPTY_VALUE and Empty Value Matching is applied to any Key Attribute.",
+            C::GeneralMatchingSequence_e9665b => "Required if Single Value, Multiple Value, or Wild Card matching is applied to any Key Attribute.",
+            C::ReferencedSeriesSequence_8c3b36 => "Required if the IOD of the Waveform Presentation State SOP Instance referenced by this Directory Record includes the Waveform Presentation State Relationship Module.",
+            C::ReferencedInstanceSequence_e2c71a => "Required if Structured Waveform Annotation Sequence (0040,B030) is present.",
+            C::ReferencedWaveformSequence_f42349 => "Required if Referenced Instance Sequence (0008,114A) is not present.",
             C::PrivateInformation_5c0ac1 => "Required if Private Information Creator UID (0002,0100) is present.",
             C::PixelPaddingValue_d4f36e => "Pixel Padding Value (0028,0120) shall not be present if Segmentation Type (0062,0001) is not LABELMAP.",
             C::PixelPaddingRangeLimit_ae4d69 => "Pixel Padding Range Limit (0028,0121) shall not be present.",
@@ -1057,6 +1339,14 @@ const fn a(
     children: &'static [Node],
 ) -> Node {
     Node::Attribute(Attribute { tag, name, kind, condition, enumerations, items, value_set, children })
+}
+
+const fn ic(table: &'static Table, condition: ConditionId) -> Node {
+    Node::IncludeIf(table, condition)
+}
+
+const fn k(selection: &'static Selection) -> Node {
+    Node::Select(selection)
 }
 
 const fn e(
@@ -1377,1022 +1667,6 @@ pub(super) static IODS: &[Iod] = &[
                 placement: Placement::SharedOnly,
                 condition: None,
                 sequences: &[0x0040_0710],
-            },
-        ],
-        forbidden_modules: &[
-        ],
-        exclusive_modules: &[
-        ],
-    },
-    Iod {
-        section: "A.32.2",
-        name: "VL Microscopic Image",
-        module_table: "A.32.1-2",
-        functional_group_table: None,
-        sop_classes: &[
-            SopClass { uid: "1.2.840.10008.5.1.4.1.1.77.1.2", name: "VL Microscopic Image Storage" },
-        ],
-        modules: &[
-            Module {
-                name: "Patient",
-                section: "C.7.1.1",
-                table: &T_C_7_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_1120, 0x0010_0010, 0x0010_0020, 0x0010_0021, 0x0010_0022, 0x0010_0024, 0x0010_0026, 0x0010_0027, 0x0010_0030, 0x0010_0032, 0x0010_0033, 0x0010_0034, 0x0010_0035, 0x0010_0040, 0x0010_0200, 0x0010_0212, 0x0010_0213, 0x0010_0216, 0x0010_0218, 0x0010_0219, 0x0010_0221, 0x0010_1001, 0x0010_1002, 0x0010_1100, 0x0010_2161, 0x0010_2162, 0x0010_2201, 0x0010_2202, 0x0010_2292, 0x0010_2293, 0x0010_2294, 0x0010_2297, 0x0010_2298, 0x0010_2299, 0x0010_4000, 0x0012_0062, 0x0012_0063, 0x0012_0064],
-            },
-            Module {
-                name: "Clinical Trial Subject",
-                section: "C.7.1.3",
-                table: &T_C_7_2B,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0012_0010, 0x0012_0020, 0x0012_0021, 0x0012_0022, 0x0012_0023, 0x0012_0030, 0x0012_0031, 0x0012_0032, 0x0012_0040, 0x0012_0041, 0x0012_0042, 0x0012_0043, 0x0012_0081, 0x0012_0082],
-            },
-            Module {
-                name: "General Study",
-                section: "C.7.2.1",
-                table: &T_C_7_3,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0020, 0x0008_0030, 0x0008_0050, 0x0008_0051, 0x0008_0090, 0x0008_0096, 0x0008_009C, 0x0008_009D, 0x0008_1030, 0x0008_1032, 0x0008_1048, 0x0008_1049, 0x0008_1060, 0x0008_1062, 0x0008_1110, 0x0020_000D, 0x0020_0010, 0x0032_1033, 0x0032_1034, 0x0040_1012],
-            },
-            Module {
-                name: "Patient Study",
-                section: "C.7.2.2",
-                table: &T_C_7_4A,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0008_1080, 0x0008_1084, 0x0008_1301, 0x0008_1302, 0x0008_1303, 0x0008_1304, 0x0010_0011, 0x0010_0014, 0x0010_0041, 0x0010_0043, 0x0010_1010, 0x0010_1020, 0x0010_1021, 0x0010_1022, 0x0010_1023, 0x0010_1024, 0x0010_1030, 0x0010_2000, 0x0010_2110, 0x0010_2180, 0x0010_21A0, 0x0010_21B0, 0x0010_21C0, 0x0010_21D0, 0x0010_2203, 0x0032_1066, 0x0032_1067, 0x0038_0010, 0x0038_0014, 0x0038_0060, 0x0038_0062, 0x0038_0064, 0x0038_0500],
-            },
-            Module {
-                name: "Clinical Trial Study",
-                section: "C.7.2.3",
-                table: &T_C_7_4B,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0012_0050, 0x0012_0051, 0x0012_0052, 0x0012_0053, 0x0012_0054, 0x0012_0055, 0x0012_0083],
-            },
-            Module {
-                name: "General Series",
-                section: "C.7.3.1",
-                table: &T_C_7_5A__A_32_2,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0021, 0x0008_0031, 0x0008_0060, 0x0008_103E, 0x0008_103F, 0x0008_1050, 0x0008_1052, 0x0008_1070, 0x0008_1072, 0x0008_1111, 0x0008_1250, 0x0010_2210, 0x0018_0015, 0x0018_1030, 0x0018_5100, 0x0020_000E, 0x0020_0011, 0x0020_0060, 0x0028_0108, 0x0028_0109, 0x0040_0244, 0x0040_0245, 0x0040_0250, 0x0040_0251, 0x0040_0253, 0x0040_0254, 0x0040_0260, 0x0040_0275, 0x0040_0280, 0x300A_0700],
-            },
-            Module {
-                name: "Clinical Trial Series",
-                section: "C.7.3.2",
-                table: &T_C_7_5B,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0012_0060, 0x0012_0071, 0x0012_0072, 0x0012_0073],
-            },
-            Module {
-                name: "General Equipment",
-                section: "C.7.5.1",
-                table: &T_C_7_8,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0070, 0x0008_0080, 0x0008_0081, 0x0008_1010, 0x0008_1040, 0x0008_1041, 0x0008_1090, 0x0018_1000, 0x0018_1002, 0x0018_1008, 0x0018_100A, 0x0018_100B, 0x0018_1020, 0x0018_1050, 0x0018_1200, 0x0018_1201, 0x0018_1204, 0x0018_1205, 0x0028_0120],
-            },
-            Module {
-                name: "General Acquisition",
-                section: "C.7.10.1",
-                table: &T_C_7_10_1_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0017, 0x0008_0022, 0x0008_002A, 0x0008_0032, 0x0008_3010, 0x0018_9073, 0x0020_0012, 0x0020_1002],
-            },
-            Module {
-                name: "General Image",
-                section: "C.7.6.1",
-                table: &T_C_7_9,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0023, 0x0020_0020, 0x0020_4000, 0x0028_0300, 0x0028_0301, 0x0028_0302, 0x0028_2112, 0x0028_2114, 0x0040_9096, 0x0088_0200, 0x2050_0020],
-            },
-            Module {
-                name: "General Reference",
-                section: "C.12.4",
-                table: &T_C_12_10,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0008_114A, 0x0008_2111, 0x0008_2112, 0x0008_9215, 0x0042_0013],
-            },
-            Module {
-                name: "Image Pixel",
-                section: "C.7.6.3",
-                table: &T_C_7_11A,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0028_0010, 0x0028_0011, 0x0028_0034, 0x0028_0106, 0x0028_0107, 0x0028_0121, 0x0028_1101, 0x0028_1102, 0x0028_1103, 0x0028_1201, 0x0028_1202, 0x0028_1203, 0x0028_7FE0, 0x7FE0_0001, 0x7FE0_0002, 0x7FE0_0010],
-            },
-            Module {
-                name: "Acquisition Context",
-                section: "C.7.6.14",
-                table: &T_C_7_6_14_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0040_0555, 0x0040_0556],
-            },
-            Module {
-                name: "Device",
-                section: "C.7.6.12",
-                table: &T_C_7_18,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0050_0010],
-            },
-            Module {
-                name: "Specimen",
-                section: "C.7.6.22",
-                table: &T_C_7_6_22_1,
-                usage: Usage::Conditional,
-                condition: Some(C::ModuleSpecimen_7bdca8),
-                signature: &[0x0040_0512, 0x0040_0513, 0x0040_0515, 0x0040_0518, 0x0040_051A, 0x0040_0520, 0x0040_0560],
-            },
-            Module {
-                name: "VL Image",
-                section: "C.8.12.1",
-                table: &T_C_8_77,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0018_1164, 0x0022_001A, 0x0028_0030, 0x0028_1050, 0x0028_1051, 0x0054_0220],
-            },
-            Module {
-                name: "Optical Path",
-                section: "C.8.12.5",
-                table: &T_C_8_12_5_1,
-                usage: Usage::UserOption,
-                condition: Some(C::ModuleOpticalPath_e06f79),
-                signature: &[0x0048_0105, 0x0048_0302],
-            },
-            Module {
-                name: "Overlay Plane",
-                section: "C.9.2",
-                table: &T_C_9_2,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x6000_0010, 0x6000_0011, 0x6000_0022, 0x6000_0040, 0x6000_0045, 0x6000_0050, 0x6000_0100, 0x6000_0102, 0x6000_1301, 0x6000_1302, 0x6000_1303, 0x6000_1500, 0x6000_3000],
-            },
-            Module {
-                name: "ICC Profile",
-                section: "C.11.15",
-                table: &T_C_11_15_1,
-                usage: Usage::UserOption,
-                condition: Some(C::ModuleIccProfile_bf6938),
-                signature: &[],
-            },
-            Module {
-                name: "SOP Common",
-                section: "C.12.1",
-                table: &T_C_12_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0005, 0x0008_0012, 0x0008_0013, 0x0008_0014, 0x0008_0015, 0x0008_0016, 0x0008_0018, 0x0008_001A, 0x0008_001B, 0x0008_001C, 0x0008_001D, 0x0008_0053, 0x0008_0110, 0x0008_0123, 0x0008_0124, 0x0008_0201, 0x0008_0300, 0x0018_9004, 0x0018_990C, 0x0018_990D, 0x0018_A001, 0x0020_9172, 0x0028_0303, 0x0040_A390, 0x0100_0410, 0x0100_0420, 0x0100_0424, 0x0100_0426, 0x0400_0500, 0x0400_0561, 0x0400_0600, 0x2200_0005, 0x4FFE_0001, 0xFFFA_FFFA],
-            },
-            Module {
-                name: "Common Instance Reference",
-                section: "C.12.2",
-                table: &T_C_12_8,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0008_1115, 0x0008_1200],
-            },
-        ],
-        functional_groups: &[
-        ],
-        forbidden_modules: &[
-            ForbiddenModule { name: "Slide Coordinates", section: "C.8.12.2", constraint: "A.32.2.1", signature: &[0x0040_071A] },
-        ],
-        exclusive_modules: &[
-        ],
-    },
-    Iod {
-        section: "A.32.3",
-        name: "VL Slide-Coordinates Microscopic Image",
-        module_table: "A.32.1-3",
-        functional_group_table: None,
-        sop_classes: &[
-            SopClass { uid: "1.2.840.10008.5.1.4.1.1.77.1.3", name: "VL Slide-Coordinates Microscopic Image Storage" },
-        ],
-        modules: &[
-            Module {
-                name: "Patient",
-                section: "C.7.1.1",
-                table: &T_C_7_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_1120, 0x0010_0010, 0x0010_0020, 0x0010_0021, 0x0010_0022, 0x0010_0024, 0x0010_0026, 0x0010_0027, 0x0010_0030, 0x0010_0032, 0x0010_0033, 0x0010_0034, 0x0010_0035, 0x0010_0040, 0x0010_0200, 0x0010_0212, 0x0010_0213, 0x0010_0216, 0x0010_0218, 0x0010_0219, 0x0010_0221, 0x0010_1001, 0x0010_1002, 0x0010_1100, 0x0010_2161, 0x0010_2162, 0x0010_2201, 0x0010_2202, 0x0010_2292, 0x0010_2293, 0x0010_2294, 0x0010_2297, 0x0010_2298, 0x0010_2299, 0x0010_4000, 0x0012_0062, 0x0012_0063, 0x0012_0064],
-            },
-            Module {
-                name: "Clinical Trial Subject",
-                section: "C.7.1.3",
-                table: &T_C_7_2B,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0012_0010, 0x0012_0020, 0x0012_0021, 0x0012_0022, 0x0012_0023, 0x0012_0030, 0x0012_0031, 0x0012_0032, 0x0012_0040, 0x0012_0041, 0x0012_0042, 0x0012_0043, 0x0012_0081, 0x0012_0082],
-            },
-            Module {
-                name: "General Study",
-                section: "C.7.2.1",
-                table: &T_C_7_3,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0020, 0x0008_0030, 0x0008_0050, 0x0008_0051, 0x0008_0090, 0x0008_0096, 0x0008_009C, 0x0008_009D, 0x0008_1030, 0x0008_1032, 0x0008_1048, 0x0008_1049, 0x0008_1060, 0x0008_1062, 0x0008_1110, 0x0020_000D, 0x0020_0010, 0x0032_1033, 0x0032_1034, 0x0040_1012],
-            },
-            Module {
-                name: "Patient Study",
-                section: "C.7.2.2",
-                table: &T_C_7_4A,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0008_1080, 0x0008_1084, 0x0008_1301, 0x0008_1302, 0x0008_1303, 0x0008_1304, 0x0010_0011, 0x0010_0014, 0x0010_0041, 0x0010_0043, 0x0010_1010, 0x0010_1020, 0x0010_1021, 0x0010_1022, 0x0010_1023, 0x0010_1024, 0x0010_1030, 0x0010_2000, 0x0010_2110, 0x0010_2180, 0x0010_21A0, 0x0010_21B0, 0x0010_21C0, 0x0010_21D0, 0x0010_2203, 0x0032_1066, 0x0032_1067, 0x0038_0010, 0x0038_0014, 0x0038_0060, 0x0038_0062, 0x0038_0064, 0x0038_0500],
-            },
-            Module {
-                name: "Clinical Trial Study",
-                section: "C.7.2.3",
-                table: &T_C_7_4B,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0012_0050, 0x0012_0051, 0x0012_0052, 0x0012_0053, 0x0012_0054, 0x0012_0055, 0x0012_0083],
-            },
-            Module {
-                name: "General Series",
-                section: "C.7.3.1",
-                table: &T_C_7_5A__A_32_3,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0021, 0x0008_0031, 0x0008_0060, 0x0008_103E, 0x0008_103F, 0x0008_1050, 0x0008_1052, 0x0008_1070, 0x0008_1072, 0x0008_1111, 0x0008_1250, 0x0010_2210, 0x0018_0015, 0x0018_1030, 0x0018_5100, 0x0020_000E, 0x0020_0011, 0x0020_0060, 0x0028_0108, 0x0028_0109, 0x0040_0244, 0x0040_0245, 0x0040_0250, 0x0040_0251, 0x0040_0253, 0x0040_0254, 0x0040_0260, 0x0040_0275, 0x0040_0280, 0x300A_0700],
-            },
-            Module {
-                name: "Clinical Trial Series",
-                section: "C.7.3.2",
-                table: &T_C_7_5B,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0012_0060, 0x0012_0071, 0x0012_0072, 0x0012_0073],
-            },
-            Module {
-                name: "Frame of Reference",
-                section: "C.7.4.1",
-                table: &T_C_7_6,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0020_0052, 0x0020_1040],
-            },
-            Module {
-                name: "General Equipment",
-                section: "C.7.5.1",
-                table: &T_C_7_8,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0070, 0x0008_0080, 0x0008_0081, 0x0008_1010, 0x0008_1040, 0x0008_1041, 0x0008_1090, 0x0018_1000, 0x0018_1002, 0x0018_1008, 0x0018_100A, 0x0018_100B, 0x0018_1020, 0x0018_1050, 0x0018_1200, 0x0018_1201, 0x0018_1204, 0x0018_1205, 0x0028_0120],
-            },
-            Module {
-                name: "General Acquisition",
-                section: "C.7.10.1",
-                table: &T_C_7_10_1_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0017, 0x0008_0022, 0x0008_002A, 0x0008_0032, 0x0008_3010, 0x0018_9073, 0x0020_0012, 0x0020_1002],
-            },
-            Module {
-                name: "General Image",
-                section: "C.7.6.1",
-                table: &T_C_7_9,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0023, 0x0020_0020, 0x0020_4000, 0x0028_0300, 0x0028_0301, 0x0028_0302, 0x0028_2112, 0x0028_2114, 0x0040_9096, 0x0088_0200, 0x2050_0020],
-            },
-            Module {
-                name: "General Reference",
-                section: "C.12.4",
-                table: &T_C_12_10,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0008_114A, 0x0008_2111, 0x0008_2112, 0x0008_9215, 0x0042_0013],
-            },
-            Module {
-                name: "Image Pixel",
-                section: "C.7.6.3",
-                table: &T_C_7_11A,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0028_0010, 0x0028_0011, 0x0028_0034, 0x0028_0106, 0x0028_0107, 0x0028_0121, 0x0028_1101, 0x0028_1102, 0x0028_1103, 0x0028_1201, 0x0028_1202, 0x0028_1203, 0x0028_7FE0, 0x7FE0_0001, 0x7FE0_0002, 0x7FE0_0010],
-            },
-            Module {
-                name: "Acquisition Context",
-                section: "C.7.6.14",
-                table: &T_C_7_6_14_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0040_0555, 0x0040_0556],
-            },
-            Module {
-                name: "Device",
-                section: "C.7.6.12",
-                table: &T_C_7_18,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0050_0010],
-            },
-            Module {
-                name: "Specimen",
-                section: "C.7.6.22",
-                table: &T_C_7_6_22_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0040_0512, 0x0040_0513, 0x0040_0515, 0x0040_0518, 0x0040_051A, 0x0040_0520, 0x0040_0560],
-            },
-            Module {
-                name: "VL Image",
-                section: "C.8.12.1",
-                table: &T_C_8_77,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0018_1164, 0x0022_001A, 0x0028_0030, 0x0028_1050, 0x0028_1051, 0x0054_0220],
-            },
-            Module {
-                name: "Slide Coordinates",
-                section: "C.8.12.2",
-                table: &T_C_8_78,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0040_071A],
-            },
-            Module {
-                name: "Optical Path",
-                section: "C.8.12.5",
-                table: &T_C_8_12_5_1,
-                usage: Usage::UserOption,
-                condition: Some(C::ModuleOpticalPath_e06f79),
-                signature: &[0x0048_0105, 0x0048_0302],
-            },
-            Module {
-                name: "Overlay Plane",
-                section: "C.9.2",
-                table: &T_C_9_2,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x6000_0010, 0x6000_0011, 0x6000_0022, 0x6000_0040, 0x6000_0045, 0x6000_0050, 0x6000_0100, 0x6000_0102, 0x6000_1301, 0x6000_1302, 0x6000_1303, 0x6000_1500, 0x6000_3000],
-            },
-            Module {
-                name: "ICC Profile",
-                section: "C.11.15",
-                table: &T_C_11_15_1,
-                usage: Usage::UserOption,
-                condition: Some(C::ModuleIccProfile_bf6938),
-                signature: &[],
-            },
-            Module {
-                name: "SOP Common",
-                section: "C.12.1",
-                table: &T_C_12_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0005, 0x0008_0012, 0x0008_0013, 0x0008_0014, 0x0008_0015, 0x0008_0016, 0x0008_0018, 0x0008_001A, 0x0008_001B, 0x0008_001C, 0x0008_001D, 0x0008_0053, 0x0008_0110, 0x0008_0123, 0x0008_0124, 0x0008_0201, 0x0008_0300, 0x0018_9004, 0x0018_990C, 0x0018_990D, 0x0018_A001, 0x0020_9172, 0x0028_0303, 0x0040_A390, 0x0100_0410, 0x0100_0420, 0x0100_0424, 0x0100_0426, 0x0400_0500, 0x0400_0561, 0x0400_0600, 0x2200_0005, 0x4FFE_0001, 0xFFFA_FFFA],
-            },
-            Module {
-                name: "Common Instance Reference",
-                section: "C.12.2",
-                table: &T_C_12_8,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0008_1115, 0x0008_1200],
-            },
-        ],
-        functional_groups: &[
-        ],
-        forbidden_modules: &[
-        ],
-        exclusive_modules: &[
-        ],
-    },
-    Iod {
-        section: "A.90.1",
-        name: "Confocal Microscopy Image",
-        module_table: "A.90.1.3-1",
-        functional_group_table: Some("A.90.1.5-1"),
-        sop_classes: &[
-            SopClass { uid: "1.2.840.10008.5.1.4.1.1.77.1.8", name: "Confocal Microscopy Image Storage" },
-        ],
-        modules: &[
-            Module {
-                name: "Patient",
-                section: "C.7.1.1",
-                table: &T_C_7_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_1120, 0x0010_0010, 0x0010_0020, 0x0010_0021, 0x0010_0022, 0x0010_0024, 0x0010_0026, 0x0010_0027, 0x0010_0030, 0x0010_0032, 0x0010_0033, 0x0010_0034, 0x0010_0035, 0x0010_0040, 0x0010_0200, 0x0010_0212, 0x0010_0213, 0x0010_0216, 0x0010_0218, 0x0010_0219, 0x0010_0221, 0x0010_1001, 0x0010_1002, 0x0010_1100, 0x0010_2161, 0x0010_2162, 0x0010_2201, 0x0010_2202, 0x0010_2292, 0x0010_2293, 0x0010_2294, 0x0010_2297, 0x0010_2298, 0x0010_2299, 0x0010_4000, 0x0012_0062, 0x0012_0063, 0x0012_0064],
-            },
-            Module {
-                name: "Clinical Trial Subject",
-                section: "C.7.1.3",
-                table: &T_C_7_2B,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0012_0010, 0x0012_0020, 0x0012_0021, 0x0012_0022, 0x0012_0023, 0x0012_0030, 0x0012_0031, 0x0012_0032, 0x0012_0040, 0x0012_0041, 0x0012_0042, 0x0012_0043, 0x0012_0081, 0x0012_0082],
-            },
-            Module {
-                name: "General Study",
-                section: "C.7.2.1",
-                table: &T_C_7_3,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0020, 0x0008_0030, 0x0008_0050, 0x0008_0051, 0x0008_0090, 0x0008_0096, 0x0008_009C, 0x0008_009D, 0x0008_1030, 0x0008_1032, 0x0008_1048, 0x0008_1049, 0x0008_1060, 0x0008_1062, 0x0008_1110, 0x0020_000D, 0x0020_0010, 0x0032_1033, 0x0032_1034, 0x0040_1012],
-            },
-            Module {
-                name: "Patient Study",
-                section: "C.7.2.2",
-                table: &T_C_7_4A,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0008_1080, 0x0008_1084, 0x0008_1301, 0x0008_1302, 0x0008_1303, 0x0008_1304, 0x0010_0011, 0x0010_0014, 0x0010_0041, 0x0010_0043, 0x0010_1010, 0x0010_1020, 0x0010_1021, 0x0010_1022, 0x0010_1023, 0x0010_1024, 0x0010_1030, 0x0010_2000, 0x0010_2110, 0x0010_2180, 0x0010_21A0, 0x0010_21B0, 0x0010_21C0, 0x0010_21D0, 0x0010_2203, 0x0032_1066, 0x0032_1067, 0x0038_0010, 0x0038_0014, 0x0038_0060, 0x0038_0062, 0x0038_0064, 0x0038_0500],
-            },
-            Module {
-                name: "Clinical Trial Study",
-                section: "C.7.2.3",
-                table: &T_C_7_4B,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0012_0050, 0x0012_0051, 0x0012_0052, 0x0012_0053, 0x0012_0054, 0x0012_0055, 0x0012_0083],
-            },
-            Module {
-                name: "General Series",
-                section: "C.7.3.1",
-                table: &T_C_7_5A__A_90_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0021, 0x0008_0031, 0x0008_0060, 0x0008_103E, 0x0008_103F, 0x0008_1050, 0x0008_1052, 0x0008_1070, 0x0008_1072, 0x0008_1111, 0x0008_1250, 0x0010_2210, 0x0018_0015, 0x0018_1030, 0x0018_5100, 0x0020_000E, 0x0020_0011, 0x0020_0060, 0x0028_0108, 0x0028_0109, 0x0040_0244, 0x0040_0245, 0x0040_0250, 0x0040_0251, 0x0040_0253, 0x0040_0254, 0x0040_0260, 0x0040_0275, 0x0040_0280, 0x300A_0700],
-            },
-            Module {
-                name: "Clinical Trial Series",
-                section: "C.7.3.2",
-                table: &T_C_7_5B,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0012_0060, 0x0012_0071, 0x0012_0072, 0x0012_0073],
-            },
-            Module {
-                name: "Frame of Reference",
-                section: "C.7.4.1",
-                table: &T_C_7_6,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0020_0052, 0x0020_1040],
-            },
-            Module {
-                name: "Synchronization",
-                section: "C.7.4.2",
-                table: &T_C_7_7,
-                usage: Usage::Conditional,
-                condition: Some(C::ModuleSynchronization_67625e),
-                signature: &[0x0018_1061, 0x0018_106A, 0x0018_106C, 0x0018_1800, 0x0018_1801, 0x0018_1802, 0x0018_1803, 0x0020_0200],
-            },
-            Module {
-                name: "General Equipment",
-                section: "C.7.5.1",
-                table: &T_C_7_8,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0080, 0x0008_0081, 0x0008_1010, 0x0008_1040, 0x0008_1041, 0x0018_1002, 0x0018_1008, 0x0018_100A, 0x0018_100B, 0x0018_1050, 0x0018_1200, 0x0018_1201, 0x0018_1204, 0x0018_1205, 0x0028_0120],
-            },
-            Module {
-                name: "Enhanced General Equipment",
-                section: "C.7.5.2",
-                table: &T_C_7_8B,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[],
-            },
-            Module {
-                name: "General Acquisition",
-                section: "C.7.10.1",
-                table: &T_C_7_10_1_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0017, 0x0008_0022, 0x0008_002A, 0x0008_0032, 0x0008_3010, 0x0018_9073, 0x0020_0012, 0x0020_1002],
-            },
-            Module {
-                name: "General Image",
-                section: "C.7.6.1",
-                table: &T_C_7_9,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_2218, 0x0008_2228, 0x0020_0020, 0x0020_0062, 0x0020_4000, 0x0028_0300, 0x0028_0301, 0x0028_0302, 0x0028_2112, 0x0028_2114, 0x0040_9096, 0x0088_0200, 0x2050_0020],
-            },
-            Module {
-                name: "General Reference",
-                section: "C.12.4",
-                table: &T_C_12_10,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0008_1140, 0x0008_114A, 0x0008_2111, 0x0008_2112, 0x0008_9215, 0x0042_0013],
-            },
-            Module {
-                name: "Image Pixel",
-                section: "C.7.6.3",
-                table: &T_C_7_11A,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0028_0010, 0x0028_0011, 0x0028_0034, 0x0028_0106, 0x0028_0107, 0x0028_0121, 0x0028_1101, 0x0028_1102, 0x0028_1103, 0x0028_1201, 0x0028_1202, 0x0028_1203, 0x0028_2000, 0x0028_2002, 0x0028_7FE0, 0x7FE0_0001, 0x7FE0_0002, 0x7FE0_0010],
-            },
-            Module {
-                name: "Multi-frame Functional Groups",
-                section: "C.7.6.16",
-                table: &T_C_7_6_16_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0020_0242, 0x0020_9161, 0x0020_9162, 0x0020_9163, 0x0020_9228, 0x0022_0028, 0x0028_0008, 0x0028_6010, 0x5200_9229, 0x5200_9230, 0x7FE0_0003],
-            },
-            Module {
-                name: "Multi-frame Dimension",
-                section: "C.7.6.17",
-                table: &T_C_7_6_17_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0020_9221, 0x0020_9222, 0x0020_9311],
-            },
-            Module {
-                name: "Specimen",
-                section: "C.7.6.22",
-                table: &T_C_7_6_22_1,
-                usage: Usage::Conditional,
-                condition: Some(C::ModuleSpecimen_5908f3),
-                signature: &[0x0040_0512, 0x0040_0513, 0x0040_0515, 0x0040_0518, 0x0040_051A, 0x0040_0520, 0x0040_0560],
-            },
-            Module {
-                name: "Acquisition Context",
-                section: "C.7.6.14",
-                table: &T_C_7_6_14_1__A_90_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0040_0555, 0x0040_0556],
-            },
-            Module {
-                name: "Confocal Microscopy Image",
-                section: "C.8.35.1",
-                table: &T_C_8_35_1_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0048_0114, 0x0048_0115],
-            },
-            Module {
-                name: "Cutaneous Confocal Microscopy Image Acquisition Parameters",
-                section: "C.8.35.3",
-                table: &T_C_8_35_3_1,
-                usage: Usage::Conditional,
-                condition: Some(C::ModuleCutaneousConfocalMicroscopyImageAcquisitionParameters_b64962),
-                signature: &[0x0016_1005, 0x0018_1147, 0x0018_1149, 0x0048_0117, 0x0062_0020, 0x0062_0021],
-            },
-            Module {
-                name: "Optical Path",
-                section: "C.8.12.5",
-                table: &T_C_8_12_5_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0048_0105, 0x0048_0302],
-            },
-            Module {
-                name: "SOP Common",
-                section: "C.12.1",
-                table: &T_C_12_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0005, 0x0008_0012, 0x0008_0013, 0x0008_0014, 0x0008_0015, 0x0008_0016, 0x0008_0018, 0x0008_001A, 0x0008_001B, 0x0008_001C, 0x0008_001D, 0x0008_0053, 0x0008_0110, 0x0008_0123, 0x0008_0124, 0x0008_0201, 0x0008_0300, 0x0018_9004, 0x0018_990C, 0x0018_990D, 0x0018_A001, 0x0020_9172, 0x0028_0303, 0x0040_A390, 0x0100_0410, 0x0100_0420, 0x0100_0424, 0x0100_0426, 0x0400_0500, 0x0400_0561, 0x0400_0600, 0x2200_0005, 0x4FFE_0001, 0xFFFA_FFFA],
-            },
-            Module {
-                name: "Common Instance Reference",
-                section: "C.12.2",
-                table: &T_C_12_8,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0008_1115, 0x0008_1200],
-            },
-            Module {
-                name: "Frame Extraction",
-                section: "C.12.3",
-                table: &T_C_12_9,
-                usage: Usage::Conditional,
-                condition: Some(C::ModuleFrameExtraction_221a2c),
-                signature: &[0x0008_1164],
-            },
-        ],
-        functional_groups: &[
-            FunctionalGroupMacro {
-                name: "Pixel Measures",
-                section: "C.7.6.16.2.1",
-                table: &T_C_7_6_16_2,
-                usage: Usage::Mandatory,
-                placement: Placement::SharedOnly,
-                condition: None,
-                sequences: &[0x0028_9110],
-            },
-            FunctionalGroupMacro {
-                name: "Derivation Image",
-                section: "C.7.6.16.2.6",
-                table: &T_C_7_6_16_7,
-                usage: Usage::Conditional,
-                placement: Placement::Any,
-                condition: Some(C::FgDerivationImage_6f39a8),
-                sequences: &[0x0008_9124],
-            },
-            FunctionalGroupMacro {
-                name: "Optical Path Identification",
-                section: "C.8.12.6.2",
-                table: &T_C_8_12_6_2_1,
-                usage: Usage::Conditional,
-                placement: Placement::Any,
-                condition: Some(C::FgPlanePositionSlide_dc3941),
-                sequences: &[0x0048_0207],
-            },
-            FunctionalGroupMacro {
-                name: "Referenced Image",
-                section: "C.7.6.16.2.5",
-                table: &T_C_7_6_16_6,
-                usage: Usage::Conditional,
-                placement: Placement::Any,
-                condition: Some(C::FgReferencedImage_0f385a),
-                sequences: &[0x0008_1140],
-            },
-            FunctionalGroupMacro {
-                name: "Frame Content",
-                section: "C.7.6.16.2.2",
-                table: &T_C_7_6_16_3,
-                usage: Usage::UserOption,
-                placement: Placement::NotShared,
-                condition: None,
-                sequences: &[0x0020_9111],
-            },
-            FunctionalGroupMacro {
-                name: "Real World Value Mapping",
-                section: "C.7.6.16.2.11",
-                table: &T_C_7_6_16_12,
-                usage: Usage::UserOption,
-                placement: Placement::Any,
-                condition: Some(C::FgRealWorldValueMapping_81c20c),
-                sequences: &[0x0040_9096],
-            },
-            FunctionalGroupMacro {
-                name: "Plane Position (Slide)",
-                section: "C.8.12.6.1",
-                table: &T_C_8_12_6_1_1,
-                usage: Usage::Conditional,
-                placement: Placement::Any,
-                condition: Some(C::FgPlanePositionSlide_7fb0bc),
-                sequences: &[0x0048_021A],
-            },
-            FunctionalGroupMacro {
-                name: "Confocal Microscopy Image Frame Type",
-                section: "C.8.35.4.1",
-                table: &T_C_8_35_4_1_1,
-                usage: Usage::Mandatory,
-                placement: Placement::Any,
-                condition: None,
-                sequences: &[0x0048_0116],
-            },
-            FunctionalGroupMacro {
-                name: "Frame Anatomy",
-                section: "C.7.6.16.2.8",
-                table: &T_C_7_6_16_9,
-                usage: Usage::Mandatory,
-                placement: Placement::Any,
-                condition: None,
-                sequences: &[0x0020_9071],
-            },
-        ],
-        forbidden_modules: &[
-        ],
-        exclusive_modules: &[
-        ],
-    },
-    Iod {
-        section: "A.90.2",
-        name: "Confocal Microscopy Tiled Pyramidal Image",
-        module_table: "A.90.2.3-1",
-        functional_group_table: Some("A.90.2.5-1"),
-        sop_classes: &[
-            SopClass { uid: "1.2.840.10008.5.1.4.1.1.77.1.9", name: "Confocal Microscopy Tiled Pyramidal Image Storage" },
-        ],
-        modules: &[
-            Module {
-                name: "Patient",
-                section: "C.7.1.1",
-                table: &T_C_7_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_1120, 0x0010_0010, 0x0010_0020, 0x0010_0021, 0x0010_0022, 0x0010_0024, 0x0010_0026, 0x0010_0027, 0x0010_0030, 0x0010_0032, 0x0010_0033, 0x0010_0034, 0x0010_0035, 0x0010_0040, 0x0010_0200, 0x0010_0212, 0x0010_0213, 0x0010_0216, 0x0010_0218, 0x0010_0219, 0x0010_0221, 0x0010_1001, 0x0010_1002, 0x0010_1100, 0x0010_2161, 0x0010_2162, 0x0010_2201, 0x0010_2202, 0x0010_2292, 0x0010_2293, 0x0010_2294, 0x0010_2297, 0x0010_2298, 0x0010_2299, 0x0010_4000, 0x0012_0062, 0x0012_0063, 0x0012_0064],
-            },
-            Module {
-                name: "Clinical Trial Subject",
-                section: "C.7.1.3",
-                table: &T_C_7_2B,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0012_0010, 0x0012_0020, 0x0012_0021, 0x0012_0022, 0x0012_0023, 0x0012_0030, 0x0012_0031, 0x0012_0032, 0x0012_0040, 0x0012_0041, 0x0012_0042, 0x0012_0043, 0x0012_0081, 0x0012_0082],
-            },
-            Module {
-                name: "General Study",
-                section: "C.7.2.1",
-                table: &T_C_7_3,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0020, 0x0008_0030, 0x0008_0050, 0x0008_0051, 0x0008_0090, 0x0008_0096, 0x0008_009C, 0x0008_009D, 0x0008_1030, 0x0008_1032, 0x0008_1048, 0x0008_1049, 0x0008_1060, 0x0008_1062, 0x0008_1110, 0x0020_000D, 0x0020_0010, 0x0032_1033, 0x0032_1034, 0x0040_1012],
-            },
-            Module {
-                name: "Patient Study",
-                section: "C.7.2.2",
-                table: &T_C_7_4A,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0008_1080, 0x0008_1084, 0x0008_1301, 0x0008_1302, 0x0008_1303, 0x0008_1304, 0x0010_0011, 0x0010_0014, 0x0010_0041, 0x0010_0043, 0x0010_1010, 0x0010_1020, 0x0010_1021, 0x0010_1022, 0x0010_1023, 0x0010_1024, 0x0010_1030, 0x0010_2000, 0x0010_2110, 0x0010_2180, 0x0010_21A0, 0x0010_21B0, 0x0010_21C0, 0x0010_21D0, 0x0010_2203, 0x0032_1066, 0x0032_1067, 0x0038_0010, 0x0038_0014, 0x0038_0060, 0x0038_0062, 0x0038_0064, 0x0038_0500],
-            },
-            Module {
-                name: "Clinical Trial Study",
-                section: "C.7.2.3",
-                table: &T_C_7_4B,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0012_0050, 0x0012_0051, 0x0012_0052, 0x0012_0053, 0x0012_0054, 0x0012_0055, 0x0012_0083],
-            },
-            Module {
-                name: "General Series",
-                section: "C.7.3.1",
-                table: &T_C_7_5A__A_90_2,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0021, 0x0008_0031, 0x0008_0060, 0x0008_103E, 0x0008_103F, 0x0008_1050, 0x0008_1052, 0x0008_1070, 0x0008_1072, 0x0008_1111, 0x0008_1250, 0x0010_2210, 0x0018_0015, 0x0018_1030, 0x0018_5100, 0x0020_000E, 0x0020_0011, 0x0020_0060, 0x0028_0108, 0x0028_0109, 0x0040_0244, 0x0040_0245, 0x0040_0250, 0x0040_0251, 0x0040_0253, 0x0040_0254, 0x0040_0260, 0x0040_0275, 0x0040_0280, 0x300A_0700],
-            },
-            Module {
-                name: "Clinical Trial Series",
-                section: "C.7.3.2",
-                table: &T_C_7_5B,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0012_0060, 0x0012_0071, 0x0012_0072, 0x0012_0073],
-            },
-            Module {
-                name: "Frame of Reference",
-                section: "C.7.4.1",
-                table: &T_C_7_6,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0020_0052, 0x0020_1040],
-            },
-            Module {
-                name: "Synchronization",
-                section: "C.7.4.2",
-                table: &T_C_7_7,
-                usage: Usage::Conditional,
-                condition: Some(C::ModuleSynchronization_833be7),
-                signature: &[0x0018_1061, 0x0018_106A, 0x0018_106C, 0x0018_1800, 0x0018_1801, 0x0018_1802, 0x0018_1803, 0x0020_0200],
-            },
-            Module {
-                name: "General Equipment",
-                section: "C.7.5.1",
-                table: &T_C_7_8,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0080, 0x0008_0081, 0x0008_1010, 0x0008_1040, 0x0008_1041, 0x0018_1002, 0x0018_1008, 0x0018_100A, 0x0018_100B, 0x0018_1050, 0x0018_1200, 0x0018_1201, 0x0018_1204, 0x0018_1205, 0x0028_0120],
-            },
-            Module {
-                name: "Enhanced General Equipment",
-                section: "C.7.5.2",
-                table: &T_C_7_8B,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[],
-            },
-            Module {
-                name: "General Acquisition",
-                section: "C.7.10.1",
-                table: &T_C_7_10_1_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0017, 0x0008_0022, 0x0008_002A, 0x0008_0032, 0x0008_3010, 0x0018_9073, 0x0020_0012, 0x0020_1002],
-            },
-            Module {
-                name: "Multi-Resolution Pyramid",
-                section: "C.7.11.1",
-                table: &T_C_7_11_1_1,
-                usage: Usage::UserOption,
-                condition: Some(C::ModuleMultiResolutionPyramid_dfce04),
-                signature: &[0x0008_0019, 0x0008_1088, 0x0020_0027],
-            },
-            Module {
-                name: "General Image",
-                section: "C.7.6.1",
-                table: &T_C_7_9,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_2218, 0x0008_2228, 0x0020_0020, 0x0020_0062, 0x0020_4000, 0x0028_0300, 0x0028_0301, 0x0028_0302, 0x0028_2112, 0x0028_2114, 0x0040_9096, 0x0088_0200, 0x2050_0020],
-            },
-            Module {
-                name: "General Reference",
-                section: "C.12.4",
-                table: &T_C_12_10,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0008_1140, 0x0008_114A, 0x0008_2111, 0x0008_2112, 0x0008_9215, 0x0042_0013],
-            },
-            Module {
-                name: "Microscope Slide Layer Tile Organization",
-                section: "C.8.12.14",
-                table: &T_C_8_12_14_1,
-                usage: Usage::Conditional,
-                condition: Some(C::ModuleMicroscopeSlideLayerTileOrganization_031caa),
-                signature: &[0x0048_0006, 0x0048_0007, 0x0048_0008, 0x0048_0102, 0x0048_0303, 0x0048_0304],
-            },
-            Module {
-                name: "Image Pixel",
-                section: "C.7.6.3",
-                table: &T_C_7_11A,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0028_0010, 0x0028_0011, 0x0028_0034, 0x0028_0106, 0x0028_0107, 0x0028_0121, 0x0028_1101, 0x0028_1102, 0x0028_1103, 0x0028_1201, 0x0028_1202, 0x0028_1203, 0x0028_2000, 0x0028_2002, 0x0028_7FE0, 0x7FE0_0001, 0x7FE0_0002, 0x7FE0_0010],
-            },
-            Module {
-                name: "Multi-frame Functional Groups",
-                section: "C.7.6.16",
-                table: &T_C_7_6_16_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0020_0242, 0x0020_9161, 0x0020_9162, 0x0020_9163, 0x0020_9228, 0x0022_0028, 0x0028_0008, 0x0028_6010, 0x5200_9229, 0x5200_9230, 0x7FE0_0003],
-            },
-            Module {
-                name: "Multi-frame Dimension",
-                section: "C.7.6.17",
-                table: &T_C_7_6_17_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0020_9221, 0x0020_9222, 0x0020_9311],
-            },
-            Module {
-                name: "Specimen",
-                section: "C.7.6.22",
-                table: &T_C_7_6_22_1__A_90_2,
-                usage: Usage::Conditional,
-                condition: Some(C::ModuleSpecimen_5908f3),
-                signature: &[0x0040_0512, 0x0040_0513, 0x0040_0515, 0x0040_0518, 0x0040_051A, 0x0040_0520, 0x0040_0560],
-            },
-            Module {
-                name: "Acquisition Context",
-                section: "C.7.6.14",
-                table: &T_C_7_6_14_1__A_90_2,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0040_0555, 0x0040_0556],
-            },
-            Module {
-                name: "Confocal Microscopy Image",
-                section: "C.8.35.1",
-                table: &T_C_8_35_1_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0048_0114, 0x0048_0115],
-            },
-            Module {
-                name: "Confocal Microscopy Tiled Pyramidal Image",
-                section: "C.8.35.2",
-                table: &T_C_8_35_2_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_9206, 0x0048_0001, 0x0048_0002, 0x0048_0003],
-            },
-            Module {
-                name: "Cutaneous Confocal Microscopy Image Acquisition Parameters",
-                section: "C.8.35.3",
-                table: &T_C_8_35_3_1,
-                usage: Usage::Conditional,
-                condition: Some(C::ModuleCutaneousConfocalMicroscopyImageAcquisitionParameters_b64962),
-                signature: &[0x0016_1005, 0x0018_1147, 0x0018_1149, 0x0048_0117, 0x0062_0020, 0x0062_0021],
-            },
-            Module {
-                name: "Optical Path",
-                section: "C.8.12.5",
-                table: &T_C_8_12_5_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0048_0105, 0x0048_0302],
-            },
-            Module {
-                name: "SOP Common",
-                section: "C.12.1",
-                table: &T_C_12_1,
-                usage: Usage::Mandatory,
-                condition: None,
-                signature: &[0x0008_0005, 0x0008_0012, 0x0008_0013, 0x0008_0014, 0x0008_0015, 0x0008_0016, 0x0008_0018, 0x0008_001A, 0x0008_001B, 0x0008_001C, 0x0008_001D, 0x0008_0053, 0x0008_0110, 0x0008_0123, 0x0008_0124, 0x0008_0201, 0x0008_0300, 0x0018_9004, 0x0018_990C, 0x0018_990D, 0x0018_A001, 0x0020_9172, 0x0028_0303, 0x0040_A390, 0x0100_0410, 0x0100_0420, 0x0100_0424, 0x0100_0426, 0x0400_0500, 0x0400_0561, 0x0400_0600, 0x2200_0005, 0x4FFE_0001, 0xFFFA_FFFA],
-            },
-            Module {
-                name: "Common Instance Reference",
-                section: "C.12.2",
-                table: &T_C_12_8,
-                usage: Usage::UserOption,
-                condition: None,
-                signature: &[0x0008_1115, 0x0008_1200],
-            },
-            Module {
-                name: "Frame Extraction",
-                section: "C.12.3",
-                table: &T_C_12_9,
-                usage: Usage::Conditional,
-                condition: Some(C::ModuleFrameExtraction_221a2c),
-                signature: &[0x0008_1164],
-            },
-        ],
-        functional_groups: &[
-            FunctionalGroupMacro {
-                name: "Pixel Measures",
-                section: "C.7.6.16.2.1",
-                table: &T_C_7_6_16_2,
-                usage: Usage::Mandatory,
-                placement: Placement::SharedOnly,
-                condition: None,
-                sequences: &[0x0028_9110],
-            },
-            FunctionalGroupMacro {
-                name: "Derivation Image",
-                section: "C.7.6.16.2.6",
-                table: &T_C_7_6_16_7,
-                usage: Usage::Conditional,
-                placement: Placement::Any,
-                condition: Some(C::FgDerivationImage_6f39a8),
-                sequences: &[0x0008_9124],
-            },
-            FunctionalGroupMacro {
-                name: "Optical Path Identification",
-                section: "C.8.12.6.2",
-                table: &T_C_8_12_6_2_1,
-                usage: Usage::Conditional,
-                placement: Placement::Any,
-                condition: Some(C::FgPlanePositionSlide_dc3941),
-                sequences: &[0x0048_0207],
-            },
-            FunctionalGroupMacro {
-                name: "Specimen Reference",
-                section: "C.8.12.6.3",
-                table: &T_C_8_12_6_3_1,
-                usage: Usage::UserOption,
-                placement: Placement::Any,
-                condition: None,
-                sequences: &[0x0048_0110],
-            },
-            FunctionalGroupMacro {
-                name: "Referenced Image",
-                section: "C.7.6.16.2.5",
-                table: &T_C_7_6_16_6,
-                usage: Usage::Conditional,
-                placement: Placement::Any,
-                condition: Some(C::FgReferencedImage_0f385a),
-                sequences: &[0x0008_1140],
-            },
-            FunctionalGroupMacro {
-                name: "Frame Content",
-                section: "C.7.6.16.2.2",
-                table: &T_C_7_6_16_3,
-                usage: Usage::UserOption,
-                placement: Placement::NotShared,
-                condition: None,
-                sequences: &[0x0020_9111],
-            },
-            FunctionalGroupMacro {
-                name: "Real World Value Mapping",
-                section: "C.7.6.16.2.11",
-                table: &T_C_7_6_16_12,
-                usage: Usage::UserOption,
-                placement: Placement::Any,
-                condition: Some(C::FgRealWorldValueMapping_81c20c),
-                sequences: &[0x0040_9096],
-            },
-            FunctionalGroupMacro {
-                name: "Plane Position (Slide)",
-                section: "C.8.12.6.1",
-                table: &T_C_8_12_6_1_1,
-                usage: Usage::Conditional,
-                placement: Placement::Any,
-                condition: Some(C::FgPlanePositionSlide_7fb0bc),
-                sequences: &[0x0048_021A],
-            },
-            FunctionalGroupMacro {
-                name: "Confocal Microscopy Image Frame Type",
-                section: "C.8.35.4.1",
-                table: &T_C_8_35_4_1_1,
-                usage: Usage::Mandatory,
-                placement: Placement::Any,
-                condition: None,
-                sequences: &[0x0048_0116],
-            },
-            FunctionalGroupMacro {
-                name: "Frame Anatomy",
-                section: "C.7.6.16.2.8",
-                table: &T_C_7_6_16_9,
-                usage: Usage::Mandatory,
-                placement: Placement::Any,
-                condition: None,
-                sequences: &[0x0020_9071],
             },
         ],
         forbidden_modules: &[
@@ -3284,7 +2558,982 @@ pub(super) static IODS: &[Iod] = &[
             ExclusiveModules { constraint: "A.75.4", modules: &["Image Pixel", "Floating Point Image Pixel", "Double Floating Point Image Pixel"] },
         ],
     },
+    Iod {
+        section: "A.35.4",
+        name: "Key Object Selection Document",
+        module_table: "A.35.4-1",
+        functional_group_table: None,
+        sop_classes: &[
+            SopClass { uid: "1.2.840.10008.5.1.4.1.1.88.59", name: "Key Object Selection Document Storage" },
+        ],
+        modules: &[
+            Module {
+                name: "Patient",
+                section: "C.7.1.1",
+                table: &T_C_7_1,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_1120, 0x0010_0010, 0x0010_0020, 0x0010_0021, 0x0010_0022, 0x0010_0024, 0x0010_0026, 0x0010_0027, 0x0010_0030, 0x0010_0032, 0x0010_0033, 0x0010_0034, 0x0010_0035, 0x0010_0040, 0x0010_0200, 0x0010_0212, 0x0010_0213, 0x0010_0216, 0x0010_0218, 0x0010_0219, 0x0010_0221, 0x0010_1001, 0x0010_1002, 0x0010_1100, 0x0010_2161, 0x0010_2162, 0x0010_2201, 0x0010_2202, 0x0010_2292, 0x0010_2293, 0x0010_2294, 0x0010_2297, 0x0010_2298, 0x0010_2299, 0x0010_4000, 0x0012_0062, 0x0012_0063, 0x0012_0064],
+            },
+            Module {
+                name: "Clinical Trial Subject",
+                section: "C.7.1.3",
+                table: &T_C_7_2B,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0012_0010, 0x0012_0020, 0x0012_0021, 0x0012_0022, 0x0012_0023, 0x0012_0030, 0x0012_0031, 0x0012_0032, 0x0012_0040, 0x0012_0041, 0x0012_0042, 0x0012_0043, 0x0012_0081, 0x0012_0082],
+            },
+            Module {
+                name: "General Study",
+                section: "C.7.2.1",
+                table: &T_C_7_3,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0020, 0x0008_0030, 0x0008_0050, 0x0008_0051, 0x0008_0090, 0x0008_0096, 0x0008_009C, 0x0008_009D, 0x0008_1030, 0x0008_1032, 0x0008_1048, 0x0008_1049, 0x0008_1060, 0x0008_1062, 0x0008_1110, 0x0020_000D, 0x0020_0010, 0x0032_1033, 0x0032_1034, 0x0040_1012],
+            },
+            Module {
+                name: "Patient Study",
+                section: "C.7.2.2",
+                table: &T_C_7_4A,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0008_1080, 0x0008_1084, 0x0008_1301, 0x0008_1302, 0x0008_1303, 0x0008_1304, 0x0010_0011, 0x0010_0014, 0x0010_0041, 0x0010_0043, 0x0010_1010, 0x0010_1020, 0x0010_1021, 0x0010_1022, 0x0010_1023, 0x0010_1024, 0x0010_1030, 0x0010_2000, 0x0010_2110, 0x0010_2180, 0x0010_21A0, 0x0010_21B0, 0x0010_21C0, 0x0010_21D0, 0x0010_2203, 0x0032_1066, 0x0032_1067, 0x0038_0010, 0x0038_0014, 0x0038_0060, 0x0038_0062, 0x0038_0064, 0x0038_0500],
+            },
+            Module {
+                name: "Clinical Trial Study",
+                section: "C.7.2.3",
+                table: &T_C_7_4B,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0012_0050, 0x0012_0051, 0x0012_0052, 0x0012_0053, 0x0012_0054, 0x0012_0055, 0x0012_0083],
+            },
+            Module {
+                name: "Key Object Document Series",
+                section: "C.17.6.1",
+                table: &T_C_17_6_1,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0021, 0x0008_0031, 0x0008_0060, 0x0008_103E, 0x0008_103F, 0x0008_1111, 0x0018_1030, 0x0020_000E, 0x0020_0011, 0x300A_0700],
+            },
+            Module {
+                name: "Clinical Trial Series",
+                section: "C.7.3.2",
+                table: &T_C_7_5B,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0012_0060, 0x0012_0071, 0x0012_0072, 0x0012_0073],
+            },
+            Module {
+                name: "General Equipment",
+                section: "C.7.5.1",
+                table: &T_C_7_8,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0070, 0x0008_0080, 0x0008_0081, 0x0008_1010, 0x0008_1040, 0x0008_1041, 0x0008_1090, 0x0018_1000, 0x0018_1002, 0x0018_1008, 0x0018_100A, 0x0018_100B, 0x0018_1020, 0x0018_1050, 0x0018_1200, 0x0018_1201, 0x0018_1204, 0x0018_1205, 0x0028_0120],
+            },
+            Module {
+                name: "Key Object Document",
+                section: "C.17.6.2",
+                table: &T_C_17_6_2,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0023, 0x0008_0033, 0x0040_A370, 0x0040_A375, 0x0040_A525],
+            },
+            Module {
+                name: "SR Document Content",
+                section: "C.17.3",
+                table: &T_C_17_4,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_1199, 0x0040_A032, 0x0040_A040, 0x0040_A043, 0x0040_A050, 0x0040_A120, 0x0040_A121, 0x0040_A122, 0x0040_A123, 0x0040_A124, 0x0040_A130, 0x0040_A132, 0x0040_A138, 0x0040_A13A, 0x0040_A160, 0x0040_A168, 0x0040_A171, 0x0040_A300, 0x0040_A301, 0x0040_A504, 0x0040_A730, 0x0040_A801, 0x0048_0301, 0x0070_0022, 0x0070_0023, 0x0070_031A, 0x3006_0024],
+            },
+            Module {
+                name: "SOP Common",
+                section: "C.12.1",
+                table: &T_C_12_1,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0005, 0x0008_0012, 0x0008_0013, 0x0008_0014, 0x0008_0015, 0x0008_0016, 0x0008_0018, 0x0008_001A, 0x0008_001B, 0x0008_001C, 0x0008_001D, 0x0008_0053, 0x0008_0110, 0x0008_0123, 0x0008_0124, 0x0008_0201, 0x0008_0300, 0x0018_9004, 0x0018_990C, 0x0018_990D, 0x0018_A001, 0x0020_9172, 0x0028_0303, 0x0040_A390, 0x0100_0410, 0x0100_0420, 0x0100_0424, 0x0100_0426, 0x0400_0500, 0x0400_0561, 0x0400_0600, 0x2200_0005, 0x4FFE_0001, 0xFFFA_FFFA],
+            },
+        ],
+        functional_groups: &[
+        ],
+        forbidden_modules: &[
+        ],
+        exclusive_modules: &[
+        ],
+    },
+    Iod {
+        section: "A.35.1",
+        name: "Basic Text SR",
+        module_table: "A.35.1-1",
+        functional_group_table: None,
+        sop_classes: &[
+            SopClass { uid: "1.2.840.10008.5.1.4.1.1.88.11", name: "Basic Text SR Storage" },
+        ],
+        modules: &[
+            Module {
+                name: "Patient",
+                section: "C.7.1.1",
+                table: &T_C_7_1,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_1120, 0x0010_0010, 0x0010_0020, 0x0010_0021, 0x0010_0022, 0x0010_0024, 0x0010_0026, 0x0010_0027, 0x0010_0030, 0x0010_0032, 0x0010_0033, 0x0010_0034, 0x0010_0035, 0x0010_0040, 0x0010_0200, 0x0010_0212, 0x0010_0213, 0x0010_0216, 0x0010_0218, 0x0010_0219, 0x0010_0221, 0x0010_1001, 0x0010_1002, 0x0010_1100, 0x0010_2161, 0x0010_2162, 0x0010_2201, 0x0010_2202, 0x0010_2292, 0x0010_2293, 0x0010_2294, 0x0010_2297, 0x0010_2298, 0x0010_2299, 0x0010_4000, 0x0012_0062, 0x0012_0063, 0x0012_0064],
+            },
+            Module {
+                name: "Clinical Trial Subject",
+                section: "C.7.1.3",
+                table: &T_C_7_2B,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0012_0010, 0x0012_0020, 0x0012_0021, 0x0012_0022, 0x0012_0023, 0x0012_0030, 0x0012_0031, 0x0012_0032, 0x0012_0040, 0x0012_0041, 0x0012_0042, 0x0012_0043, 0x0012_0081, 0x0012_0082],
+            },
+            Module {
+                name: "General Study",
+                section: "C.7.2.1",
+                table: &T_C_7_3,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0020, 0x0008_0030, 0x0008_0050, 0x0008_0051, 0x0008_0090, 0x0008_0096, 0x0008_009C, 0x0008_009D, 0x0008_1030, 0x0008_1032, 0x0008_1048, 0x0008_1049, 0x0008_1060, 0x0008_1062, 0x0008_1110, 0x0020_000D, 0x0020_0010, 0x0032_1033, 0x0032_1034, 0x0040_1012],
+            },
+            Module {
+                name: "Patient Study",
+                section: "C.7.2.2",
+                table: &T_C_7_4A,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0008_1080, 0x0008_1084, 0x0008_1301, 0x0008_1302, 0x0008_1303, 0x0008_1304, 0x0010_0011, 0x0010_0014, 0x0010_0041, 0x0010_0043, 0x0010_1010, 0x0010_1020, 0x0010_1021, 0x0010_1022, 0x0010_1023, 0x0010_1024, 0x0010_1030, 0x0010_2000, 0x0010_2110, 0x0010_2180, 0x0010_21A0, 0x0010_21B0, 0x0010_21C0, 0x0010_21D0, 0x0010_2203, 0x0032_1066, 0x0032_1067, 0x0038_0010, 0x0038_0014, 0x0038_0060, 0x0038_0062, 0x0038_0064, 0x0038_0500],
+            },
+            Module {
+                name: "Clinical Trial Study",
+                section: "C.7.2.3",
+                table: &T_C_7_4B,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0012_0050, 0x0012_0051, 0x0012_0052, 0x0012_0053, 0x0012_0054, 0x0012_0055, 0x0012_0083],
+            },
+            Module {
+                name: "SR Document Series",
+                section: "C.17.1",
+                table: &T_C_17_1,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0021, 0x0008_0031, 0x0008_0060, 0x0008_103E, 0x0008_103F, 0x0008_1111, 0x0018_1030, 0x0020_000E, 0x0020_0011, 0x300A_0700],
+            },
+            Module {
+                name: "Clinical Trial Series",
+                section: "C.7.3.2",
+                table: &T_C_7_5B,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0012_0060, 0x0012_0071, 0x0012_0072, 0x0012_0073],
+            },
+            Module {
+                name: "General Equipment",
+                section: "C.7.5.1",
+                table: &T_C_7_8,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0070, 0x0008_0080, 0x0008_0081, 0x0008_1010, 0x0008_1040, 0x0008_1041, 0x0008_1090, 0x0018_1000, 0x0018_1002, 0x0018_1008, 0x0018_100A, 0x0018_100B, 0x0018_1020, 0x0018_1050, 0x0018_1200, 0x0018_1201, 0x0018_1204, 0x0018_1205, 0x0028_0120],
+            },
+            Module {
+                name: "SR Document General",
+                section: "C.17.2",
+                table: &T_C_17_2,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0023, 0x0008_0033, 0x0008_114A, 0x0040_A073, 0x0040_A078, 0x0040_A07A, 0x0040_A07C, 0x0040_A360, 0x0040_A370, 0x0040_A372, 0x0040_A375, 0x0040_A385, 0x0040_A491, 0x0040_A492, 0x0040_A493, 0x0040_A496, 0x0040_A525],
+            },
+            Module {
+                name: "SR Document Content",
+                section: "C.17.3",
+                table: &T_C_17_4,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_1199, 0x0040_A032, 0x0040_A040, 0x0040_A043, 0x0040_A050, 0x0040_A120, 0x0040_A121, 0x0040_A122, 0x0040_A123, 0x0040_A124, 0x0040_A130, 0x0040_A132, 0x0040_A138, 0x0040_A13A, 0x0040_A160, 0x0040_A168, 0x0040_A171, 0x0040_A300, 0x0040_A301, 0x0040_A504, 0x0040_A730, 0x0040_A801, 0x0048_0301, 0x0070_0022, 0x0070_0023, 0x0070_031A, 0x3006_0024],
+            },
+            Module {
+                name: "SOP Common",
+                section: "C.12.1",
+                table: &T_C_12_1,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0005, 0x0008_0012, 0x0008_0013, 0x0008_0014, 0x0008_0015, 0x0008_0016, 0x0008_0018, 0x0008_001A, 0x0008_001B, 0x0008_001C, 0x0008_001D, 0x0008_0053, 0x0008_0110, 0x0008_0123, 0x0008_0124, 0x0008_0201, 0x0008_0300, 0x0018_9004, 0x0018_990C, 0x0018_990D, 0x0018_A001, 0x0020_9172, 0x0028_0303, 0x0040_A390, 0x0100_0410, 0x0100_0420, 0x0100_0424, 0x0100_0426, 0x0400_0500, 0x0400_0561, 0x0400_0600, 0x2200_0005, 0x4FFE_0001, 0xFFFA_FFFA],
+            },
+        ],
+        functional_groups: &[
+        ],
+        forbidden_modules: &[
+        ],
+        exclusive_modules: &[
+        ],
+    },
+    Iod {
+        section: "A.35.2",
+        name: "Enhanced SR",
+        module_table: "A.35.2-1",
+        functional_group_table: None,
+        sop_classes: &[
+            SopClass { uid: "1.2.840.10008.5.1.4.1.1.88.22", name: "Enhanced SR Storage" },
+        ],
+        modules: &[
+            Module {
+                name: "Patient",
+                section: "C.7.1.1",
+                table: &T_C_7_1,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_1120, 0x0010_0010, 0x0010_0020, 0x0010_0021, 0x0010_0022, 0x0010_0024, 0x0010_0026, 0x0010_0027, 0x0010_0030, 0x0010_0032, 0x0010_0033, 0x0010_0034, 0x0010_0035, 0x0010_0040, 0x0010_0200, 0x0010_0212, 0x0010_0213, 0x0010_0216, 0x0010_0218, 0x0010_0219, 0x0010_0221, 0x0010_1001, 0x0010_1002, 0x0010_1100, 0x0010_2161, 0x0010_2162, 0x0010_2201, 0x0010_2202, 0x0010_2292, 0x0010_2293, 0x0010_2294, 0x0010_2297, 0x0010_2298, 0x0010_2299, 0x0010_4000, 0x0012_0062, 0x0012_0063, 0x0012_0064],
+            },
+            Module {
+                name: "Clinical Trial Subject",
+                section: "C.7.1.3",
+                table: &T_C_7_2B,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0012_0010, 0x0012_0020, 0x0012_0021, 0x0012_0022, 0x0012_0023, 0x0012_0030, 0x0012_0031, 0x0012_0032, 0x0012_0040, 0x0012_0041, 0x0012_0042, 0x0012_0043, 0x0012_0081, 0x0012_0082],
+            },
+            Module {
+                name: "General Study",
+                section: "C.7.2.1",
+                table: &T_C_7_3,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0020, 0x0008_0030, 0x0008_0050, 0x0008_0051, 0x0008_0090, 0x0008_0096, 0x0008_009C, 0x0008_009D, 0x0008_1030, 0x0008_1032, 0x0008_1048, 0x0008_1049, 0x0008_1060, 0x0008_1062, 0x0008_1110, 0x0020_000D, 0x0020_0010, 0x0032_1033, 0x0032_1034, 0x0040_1012],
+            },
+            Module {
+                name: "Patient Study",
+                section: "C.7.2.2",
+                table: &T_C_7_4A,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0008_1080, 0x0008_1084, 0x0008_1301, 0x0008_1302, 0x0008_1303, 0x0008_1304, 0x0010_0011, 0x0010_0014, 0x0010_0041, 0x0010_0043, 0x0010_1010, 0x0010_1020, 0x0010_1021, 0x0010_1022, 0x0010_1023, 0x0010_1024, 0x0010_1030, 0x0010_2000, 0x0010_2110, 0x0010_2180, 0x0010_21A0, 0x0010_21B0, 0x0010_21C0, 0x0010_21D0, 0x0010_2203, 0x0032_1066, 0x0032_1067, 0x0038_0010, 0x0038_0014, 0x0038_0060, 0x0038_0062, 0x0038_0064, 0x0038_0500],
+            },
+            Module {
+                name: "Clinical Trial Study",
+                section: "C.7.2.3",
+                table: &T_C_7_4B,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0012_0050, 0x0012_0051, 0x0012_0052, 0x0012_0053, 0x0012_0054, 0x0012_0055, 0x0012_0083],
+            },
+            Module {
+                name: "SR Document Series",
+                section: "C.17.1",
+                table: &T_C_17_1,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0021, 0x0008_0031, 0x0008_0060, 0x0008_103E, 0x0008_103F, 0x0008_1111, 0x0018_1030, 0x0020_000E, 0x0020_0011, 0x300A_0700],
+            },
+            Module {
+                name: "Clinical Trial Series",
+                section: "C.7.3.2",
+                table: &T_C_7_5B,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0012_0060, 0x0012_0071, 0x0012_0072, 0x0012_0073],
+            },
+            Module {
+                name: "Synchronization",
+                section: "C.7.4.2",
+                table: &T_C_7_7,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0018_1061, 0x0018_106A, 0x0018_106C, 0x0018_1800, 0x0018_1801, 0x0018_1802, 0x0018_1803, 0x0020_0200],
+            },
+            Module {
+                name: "General Equipment",
+                section: "C.7.5.1",
+                table: &T_C_7_8,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0070, 0x0008_0080, 0x0008_0081, 0x0008_1010, 0x0008_1040, 0x0008_1041, 0x0008_1090, 0x0018_1000, 0x0018_1002, 0x0018_1008, 0x0018_100A, 0x0018_100B, 0x0018_1020, 0x0018_1050, 0x0018_1200, 0x0018_1201, 0x0018_1204, 0x0018_1205, 0x0028_0120],
+            },
+            Module {
+                name: "SR Document General",
+                section: "C.17.2",
+                table: &T_C_17_2,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0023, 0x0008_0033, 0x0008_114A, 0x0040_A073, 0x0040_A078, 0x0040_A07A, 0x0040_A07C, 0x0040_A360, 0x0040_A370, 0x0040_A372, 0x0040_A375, 0x0040_A385, 0x0040_A491, 0x0040_A492, 0x0040_A493, 0x0040_A496, 0x0040_A525],
+            },
+            Module {
+                name: "SR Document Content",
+                section: "C.17.3",
+                table: &T_C_17_4,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_1199, 0x0040_A032, 0x0040_A040, 0x0040_A043, 0x0040_A050, 0x0040_A120, 0x0040_A121, 0x0040_A122, 0x0040_A123, 0x0040_A124, 0x0040_A130, 0x0040_A132, 0x0040_A138, 0x0040_A13A, 0x0040_A160, 0x0040_A168, 0x0040_A171, 0x0040_A300, 0x0040_A301, 0x0040_A504, 0x0040_A730, 0x0040_A801, 0x0048_0301, 0x0070_0022, 0x0070_0023, 0x0070_031A, 0x3006_0024],
+            },
+            Module {
+                name: "SOP Common",
+                section: "C.12.1",
+                table: &T_C_12_1,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0005, 0x0008_0012, 0x0008_0013, 0x0008_0014, 0x0008_0015, 0x0008_0016, 0x0008_0018, 0x0008_001A, 0x0008_001B, 0x0008_001C, 0x0008_001D, 0x0008_0053, 0x0008_0110, 0x0008_0123, 0x0008_0124, 0x0008_0201, 0x0008_0300, 0x0018_9004, 0x0018_990C, 0x0018_990D, 0x0018_A001, 0x0020_9172, 0x0028_0303, 0x0040_A390, 0x0100_0410, 0x0100_0420, 0x0100_0424, 0x0100_0426, 0x0400_0500, 0x0400_0561, 0x0400_0600, 0x2200_0005, 0x4FFE_0001, 0xFFFA_FFFA],
+            },
+        ],
+        functional_groups: &[
+        ],
+        forbidden_modules: &[
+        ],
+        exclusive_modules: &[
+        ],
+    },
+    Iod {
+        section: "A.35.3",
+        name: "Comprehensive SR",
+        module_table: "A.35.3-1",
+        functional_group_table: None,
+        sop_classes: &[
+            SopClass { uid: "1.2.840.10008.5.1.4.1.1.88.33", name: "Comprehensive SR Storage" },
+        ],
+        modules: &[
+            Module {
+                name: "Patient",
+                section: "C.7.1.1",
+                table: &T_C_7_1,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_1120, 0x0010_0010, 0x0010_0020, 0x0010_0021, 0x0010_0022, 0x0010_0024, 0x0010_0026, 0x0010_0027, 0x0010_0030, 0x0010_0032, 0x0010_0033, 0x0010_0034, 0x0010_0035, 0x0010_0040, 0x0010_0200, 0x0010_0212, 0x0010_0213, 0x0010_0216, 0x0010_0218, 0x0010_0219, 0x0010_0221, 0x0010_1001, 0x0010_1002, 0x0010_1100, 0x0010_2161, 0x0010_2162, 0x0010_2201, 0x0010_2202, 0x0010_2292, 0x0010_2293, 0x0010_2294, 0x0010_2297, 0x0010_2298, 0x0010_2299, 0x0010_4000, 0x0012_0062, 0x0012_0063, 0x0012_0064],
+            },
+            Module {
+                name: "Clinical Trial Subject",
+                section: "C.7.1.3",
+                table: &T_C_7_2B,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0012_0010, 0x0012_0020, 0x0012_0021, 0x0012_0022, 0x0012_0023, 0x0012_0030, 0x0012_0031, 0x0012_0032, 0x0012_0040, 0x0012_0041, 0x0012_0042, 0x0012_0043, 0x0012_0081, 0x0012_0082],
+            },
+            Module {
+                name: "General Study",
+                section: "C.7.2.1",
+                table: &T_C_7_3,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0020, 0x0008_0030, 0x0008_0050, 0x0008_0051, 0x0008_0090, 0x0008_0096, 0x0008_009C, 0x0008_009D, 0x0008_1030, 0x0008_1032, 0x0008_1048, 0x0008_1049, 0x0008_1060, 0x0008_1062, 0x0008_1110, 0x0020_000D, 0x0020_0010, 0x0032_1033, 0x0032_1034, 0x0040_1012],
+            },
+            Module {
+                name: "Patient Study",
+                section: "C.7.2.2",
+                table: &T_C_7_4A,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0008_1080, 0x0008_1084, 0x0008_1301, 0x0008_1302, 0x0008_1303, 0x0008_1304, 0x0010_0011, 0x0010_0014, 0x0010_0041, 0x0010_0043, 0x0010_1010, 0x0010_1020, 0x0010_1021, 0x0010_1022, 0x0010_1023, 0x0010_1024, 0x0010_1030, 0x0010_2000, 0x0010_2110, 0x0010_2180, 0x0010_21A0, 0x0010_21B0, 0x0010_21C0, 0x0010_21D0, 0x0010_2203, 0x0032_1066, 0x0032_1067, 0x0038_0010, 0x0038_0014, 0x0038_0060, 0x0038_0062, 0x0038_0064, 0x0038_0500],
+            },
+            Module {
+                name: "Clinical Trial Study",
+                section: "C.7.2.3",
+                table: &T_C_7_4B,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0012_0050, 0x0012_0051, 0x0012_0052, 0x0012_0053, 0x0012_0054, 0x0012_0055, 0x0012_0083],
+            },
+            Module {
+                name: "SR Document Series",
+                section: "C.17.1",
+                table: &T_C_17_1,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0021, 0x0008_0031, 0x0008_0060, 0x0008_103E, 0x0008_103F, 0x0008_1111, 0x0018_1030, 0x0020_000E, 0x0020_0011, 0x300A_0700],
+            },
+            Module {
+                name: "Clinical Trial Series",
+                section: "C.7.3.2",
+                table: &T_C_7_5B,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0012_0060, 0x0012_0071, 0x0012_0072, 0x0012_0073],
+            },
+            Module {
+                name: "Synchronization",
+                section: "C.7.4.2",
+                table: &T_C_7_7,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0018_1061, 0x0018_106A, 0x0018_106C, 0x0018_1800, 0x0018_1801, 0x0018_1802, 0x0018_1803, 0x0020_0200],
+            },
+            Module {
+                name: "General Equipment",
+                section: "C.7.5.1",
+                table: &T_C_7_8,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0070, 0x0008_0080, 0x0008_0081, 0x0008_1010, 0x0008_1040, 0x0008_1041, 0x0008_1090, 0x0018_1000, 0x0018_1002, 0x0018_1008, 0x0018_100A, 0x0018_100B, 0x0018_1020, 0x0018_1050, 0x0018_1200, 0x0018_1201, 0x0018_1204, 0x0018_1205, 0x0028_0120],
+            },
+            Module {
+                name: "SR Document General",
+                section: "C.17.2",
+                table: &T_C_17_2,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0023, 0x0008_0033, 0x0008_114A, 0x0040_A073, 0x0040_A078, 0x0040_A07A, 0x0040_A07C, 0x0040_A360, 0x0040_A370, 0x0040_A372, 0x0040_A375, 0x0040_A385, 0x0040_A491, 0x0040_A492, 0x0040_A493, 0x0040_A496, 0x0040_A525],
+            },
+            Module {
+                name: "SR Document Content",
+                section: "C.17.3",
+                table: &T_C_17_4,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_1199, 0x0040_A032, 0x0040_A040, 0x0040_A043, 0x0040_A050, 0x0040_A120, 0x0040_A121, 0x0040_A122, 0x0040_A123, 0x0040_A124, 0x0040_A130, 0x0040_A132, 0x0040_A138, 0x0040_A13A, 0x0040_A160, 0x0040_A168, 0x0040_A171, 0x0040_A300, 0x0040_A301, 0x0040_A504, 0x0040_A730, 0x0040_A801, 0x0048_0301, 0x0070_0022, 0x0070_0023, 0x0070_031A, 0x3006_0024],
+            },
+            Module {
+                name: "SOP Common",
+                section: "C.12.1",
+                table: &T_C_12_1,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0005, 0x0008_0012, 0x0008_0013, 0x0008_0014, 0x0008_0015, 0x0008_0016, 0x0008_0018, 0x0008_001A, 0x0008_001B, 0x0008_001C, 0x0008_001D, 0x0008_0053, 0x0008_0110, 0x0008_0123, 0x0008_0124, 0x0008_0201, 0x0008_0300, 0x0018_9004, 0x0018_990C, 0x0018_990D, 0x0018_A001, 0x0020_9172, 0x0028_0303, 0x0040_A390, 0x0100_0410, 0x0100_0420, 0x0100_0424, 0x0100_0426, 0x0400_0500, 0x0400_0561, 0x0400_0600, 0x2200_0005, 0x4FFE_0001, 0xFFFA_FFFA],
+            },
+        ],
+        functional_groups: &[
+        ],
+        forbidden_modules: &[
+        ],
+        exclusive_modules: &[
+        ],
+    },
+    Iod {
+        section: "A.35.13",
+        name: "Comprehensive 3D SR",
+        module_table: "A.35.13-1",
+        functional_group_table: None,
+        sop_classes: &[
+            SopClass { uid: "1.2.840.10008.5.1.4.1.1.88.34", name: "Comprehensive 3D SR Storage" },
+        ],
+        modules: &[
+            Module {
+                name: "Patient",
+                section: "C.7.1.1",
+                table: &T_C_7_1,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_1120, 0x0010_0010, 0x0010_0020, 0x0010_0021, 0x0010_0022, 0x0010_0024, 0x0010_0026, 0x0010_0027, 0x0010_0030, 0x0010_0032, 0x0010_0033, 0x0010_0034, 0x0010_0035, 0x0010_0040, 0x0010_0200, 0x0010_0212, 0x0010_0213, 0x0010_0216, 0x0010_0218, 0x0010_0219, 0x0010_0221, 0x0010_1001, 0x0010_1002, 0x0010_1100, 0x0010_2161, 0x0010_2162, 0x0010_2201, 0x0010_2202, 0x0010_2292, 0x0010_2293, 0x0010_2294, 0x0010_2297, 0x0010_2298, 0x0010_2299, 0x0010_4000, 0x0012_0062, 0x0012_0063, 0x0012_0064],
+            },
+            Module {
+                name: "Clinical Trial Subject",
+                section: "C.7.1.3",
+                table: &T_C_7_2B,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0012_0010, 0x0012_0020, 0x0012_0021, 0x0012_0022, 0x0012_0023, 0x0012_0030, 0x0012_0031, 0x0012_0032, 0x0012_0040, 0x0012_0041, 0x0012_0042, 0x0012_0043, 0x0012_0081, 0x0012_0082],
+            },
+            Module {
+                name: "General Study",
+                section: "C.7.2.1",
+                table: &T_C_7_3,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0020, 0x0008_0030, 0x0008_0050, 0x0008_0051, 0x0008_0090, 0x0008_0096, 0x0008_009C, 0x0008_009D, 0x0008_1030, 0x0008_1032, 0x0008_1048, 0x0008_1049, 0x0008_1060, 0x0008_1062, 0x0008_1110, 0x0020_000D, 0x0020_0010, 0x0032_1033, 0x0032_1034, 0x0040_1012],
+            },
+            Module {
+                name: "Patient Study",
+                section: "C.7.2.2",
+                table: &T_C_7_4A,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0008_1080, 0x0008_1084, 0x0008_1301, 0x0008_1302, 0x0008_1303, 0x0008_1304, 0x0010_0011, 0x0010_0014, 0x0010_0041, 0x0010_0043, 0x0010_1010, 0x0010_1020, 0x0010_1021, 0x0010_1022, 0x0010_1023, 0x0010_1024, 0x0010_1030, 0x0010_2000, 0x0010_2110, 0x0010_2180, 0x0010_21A0, 0x0010_21B0, 0x0010_21C0, 0x0010_21D0, 0x0010_2203, 0x0032_1066, 0x0032_1067, 0x0038_0010, 0x0038_0014, 0x0038_0060, 0x0038_0062, 0x0038_0064, 0x0038_0500],
+            },
+            Module {
+                name: "Clinical Trial Study",
+                section: "C.7.2.3",
+                table: &T_C_7_4B,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0012_0050, 0x0012_0051, 0x0012_0052, 0x0012_0053, 0x0012_0054, 0x0012_0055, 0x0012_0083],
+            },
+            Module {
+                name: "SR Document Series",
+                section: "C.17.1",
+                table: &T_C_17_1,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0021, 0x0008_0031, 0x0008_0060, 0x0008_103E, 0x0008_103F, 0x0008_1111, 0x0018_1030, 0x0020_000E, 0x0020_0011, 0x300A_0700],
+            },
+            Module {
+                name: "Clinical Trial Series",
+                section: "C.7.3.2",
+                table: &T_C_7_5B,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0012_0060, 0x0012_0071, 0x0012_0072, 0x0012_0073],
+            },
+            Module {
+                name: "Synchronization",
+                section: "C.7.4.2",
+                table: &T_C_7_7,
+                usage: Usage::UserOption,
+                condition: None,
+                signature: &[0x0018_1061, 0x0018_106A, 0x0018_106C, 0x0018_1800, 0x0018_1801, 0x0018_1802, 0x0018_1803, 0x0020_0200],
+            },
+            Module {
+                name: "General Equipment",
+                section: "C.7.5.1",
+                table: &T_C_7_8,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0070, 0x0008_0080, 0x0008_0081, 0x0008_1010, 0x0008_1040, 0x0008_1041, 0x0008_1090, 0x0018_1000, 0x0018_1002, 0x0018_1008, 0x0018_100A, 0x0018_100B, 0x0018_1020, 0x0018_1050, 0x0018_1200, 0x0018_1201, 0x0018_1204, 0x0018_1205, 0x0028_0120],
+            },
+            Module {
+                name: "SR Document General",
+                section: "C.17.2",
+                table: &T_C_17_2,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0023, 0x0008_0033, 0x0008_114A, 0x0040_A073, 0x0040_A078, 0x0040_A07A, 0x0040_A07C, 0x0040_A360, 0x0040_A370, 0x0040_A372, 0x0040_A375, 0x0040_A385, 0x0040_A491, 0x0040_A492, 0x0040_A493, 0x0040_A496, 0x0040_A525],
+            },
+            Module {
+                name: "SR Document Content",
+                section: "C.17.3",
+                table: &T_C_17_4,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_1199, 0x0040_A032, 0x0040_A040, 0x0040_A043, 0x0040_A050, 0x0040_A120, 0x0040_A121, 0x0040_A122, 0x0040_A123, 0x0040_A124, 0x0040_A130, 0x0040_A132, 0x0040_A138, 0x0040_A13A, 0x0040_A160, 0x0040_A168, 0x0040_A171, 0x0040_A300, 0x0040_A301, 0x0040_A504, 0x0040_A730, 0x0040_A801, 0x0048_0301, 0x0070_0022, 0x0070_0023, 0x0070_031A, 0x3006_0024],
+            },
+            Module {
+                name: "SOP Common",
+                section: "C.12.1",
+                table: &T_C_12_1,
+                usage: Usage::Mandatory,
+                condition: None,
+                signature: &[0x0008_0005, 0x0008_0012, 0x0008_0013, 0x0008_0014, 0x0008_0015, 0x0008_0016, 0x0008_0018, 0x0008_001A, 0x0008_001B, 0x0008_001C, 0x0008_001D, 0x0008_0053, 0x0008_0110, 0x0008_0123, 0x0008_0124, 0x0008_0201, 0x0008_0300, 0x0018_9004, 0x0018_990C, 0x0018_990D, 0x0018_A001, 0x0020_9172, 0x0028_0303, 0x0040_A390, 0x0100_0410, 0x0100_0420, 0x0100_0424, 0x0100_0426, 0x0400_0500, 0x0400_0561, 0x0400_0600, 0x2200_0005, 0x4FFE_0001, 0xFFFA_FFFA],
+            },
+        ],
+        functional_groups: &[
+        ],
+        forbidden_modules: &[
+        ],
+        exclusive_modules: &[
+        ],
+    },
 ];
+
+/// PS3.3 A.35 Content Constraints of the Structured Reporting IODs.
+pub(super) static DOCUMENT_CONSTRAINTS: &[DocumentConstraints] = &[
+    DocumentConstraints {
+        iod: "A.35.4",
+        value_types: &["TEXT", "CODE", "UIDREF", "PNAME", "COMPOSITE", "IMAGE", "WAVEFORM", "CONTAINER", "DATE", "TIME", "DATETIME", "NUM"],
+        table: "A.35.4-2",
+        relationships: &[
+            RelationshipConstraint { sources: &["CONTAINER"], relationship: "CONTAINS", targets: &["TEXT", "IMAGE", "WAVEFORM", "COMPOSITE", "CONTAINER"] },
+            RelationshipConstraint { sources: &["CONTAINER"], relationship: "HAS OBS CONTEXT", targets: &["TEXT", "CODE", "UIDREF", "PNAME", "CONTAINER"] },
+            RelationshipConstraint { sources: &["CONTAINER"], relationship: "HAS CONCEPT MOD", targets: &["CODE"] },
+            RelationshipConstraint { sources: &["CONTAINER"], relationship: "HAS ACQ CONTEXT", targets: &["CODE", "DATE", "TIME", "DATETIME", "UIDREF", "NUM", "TEXT"] },
+            RelationshipConstraint { sources: &["IMAGE"], relationship: "HAS ACQ CONTEXT", targets: &["CODE", "DATE", "TIME", "DATETIME", "UIDREF", "NUM", "TEXT"] },
+            RelationshipConstraint { sources: &["COMPOSITE"], relationship: "HAS ACQ CONTEXT", targets: &["CODE", "DATE", "TIME", "DATETIME", "UIDREF", "NUM", "TEXT"] },
+            RelationshipConstraint { sources: &["WAVEFORM"], relationship: "HAS ACQ CONTEXT", targets: &["CODE", "DATE", "TIME", "DATETIME", "UIDREF", "NUM", "TEXT"] },
+        ],
+        root_template: Some(2010),
+    },
+    DocumentConstraints {
+        iod: "A.35.1",
+        value_types: &["TEXT", "CODE", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "COMPOSITE", "IMAGE", "WAVEFORM", "CONTAINER"],
+        table: "A.35.1-2",
+        relationships: &[
+            RelationshipConstraint { sources: &["CONTAINER"], relationship: "CONTAINS", targets: &["TEXT", "CODE", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "COMPOSITE", "IMAGE", "WAVEFORM", "CONTAINER"] },
+            RelationshipConstraint { sources: &["CONTAINER"], relationship: "HAS OBS CONTEXT", targets: &["TEXT", "CODE", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "COMPOSITE", "CONTAINER"] },
+            RelationshipConstraint { sources: &["CONTAINER", "IMAGE", "WAVEFORM", "COMPOSITE"], relationship: "HAS ACQ CONTEXT", targets: &["TEXT", "CODE", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME"] },
+            RelationshipConstraint { sources: &[], relationship: "HAS CONCEPT MOD", targets: &["TEXT", "CODE"] },
+            RelationshipConstraint { sources: &["TEXT"], relationship: "HAS PROPERTIES", targets: &["TEXT", "CODE", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "IMAGE", "WAVEFORM", "COMPOSITE"] },
+            RelationshipConstraint { sources: &["PNAME"], relationship: "HAS PROPERTIES", targets: &["TEXT", "CODE", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME"] },
+            RelationshipConstraint { sources: &["TEXT"], relationship: "INFERRED FROM", targets: &["TEXT", "CODE", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "IMAGE", "WAVEFORM", "COMPOSITE"] },
+        ],
+        root_template: None,
+    },
+    DocumentConstraints {
+        iod: "A.35.2",
+        value_types: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "SCOORD", "TCOORD", "COMPOSITE", "IMAGE", "WAVEFORM", "CONTAINER"],
+        table: "A.35.2-2",
+        relationships: &[
+            RelationshipConstraint { sources: &["CONTAINER"], relationship: "CONTAINS", targets: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "SCOORD", "TCOORD", "COMPOSITE", "IMAGE", "WAVEFORM", "CONTAINER"] },
+            RelationshipConstraint { sources: &["CONTAINER"], relationship: "HAS OBS CONTEXT", targets: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "COMPOSITE", "CONTAINER"] },
+            RelationshipConstraint { sources: &["CONTAINER", "IMAGE", "WAVEFORM", "COMPOSITE", "NUM"], relationship: "HAS ACQ CONTEXT", targets: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME"] },
+            RelationshipConstraint { sources: &[], relationship: "HAS CONCEPT MOD", targets: &["TEXT", "CODE"] },
+            RelationshipConstraint { sources: &["TEXT", "CODE", "NUM"], relationship: "HAS PROPERTIES", targets: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "IMAGE", "WAVEFORM", "COMPOSITE", "SCOORD", "TCOORD"] },
+            RelationshipConstraint { sources: &["PNAME"], relationship: "HAS PROPERTIES", targets: &["TEXT", "CODE", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME"] },
+            RelationshipConstraint { sources: &["TEXT", "CODE", "NUM"], relationship: "INFERRED FROM", targets: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "IMAGE", "WAVEFORM", "COMPOSITE", "SCOORD", "TCOORD"] },
+            RelationshipConstraint { sources: &["SCOORD"], relationship: "SELECTED FROM", targets: &["IMAGE"] },
+            RelationshipConstraint { sources: &["TCOORD"], relationship: "SELECTED FROM", targets: &["SCOORD", "IMAGE", "WAVEFORM"] },
+        ],
+        root_template: None,
+    },
+    DocumentConstraints {
+        iod: "A.35.3",
+        value_types: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "SCOORD", "TCOORD", "COMPOSITE", "IMAGE", "WAVEFORM", "CONTAINER"],
+        table: "A.35.3-2",
+        relationships: &[
+            RelationshipConstraint { sources: &["CONTAINER"], relationship: "CONTAINS", targets: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "SCOORD", "TCOORD", "COMPOSITE", "IMAGE", "WAVEFORM", "CONTAINER"] },
+            RelationshipConstraint { sources: &["TEXT", "CODE", "NUM", "CONTAINER"], relationship: "HAS OBS CONTEXT", targets: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "COMPOSITE"] },
+            RelationshipConstraint { sources: &["CONTAINER"], relationship: "HAS OBS CONTEXT", targets: &["CONTAINER"] },
+            RelationshipConstraint { sources: &["CONTAINER", "IMAGE", "WAVEFORM", "COMPOSITE", "NUM"], relationship: "HAS ACQ CONTEXT", targets: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "CONTAINER"] },
+            RelationshipConstraint { sources: &[], relationship: "HAS CONCEPT MOD", targets: &["TEXT", "CODE"] },
+            RelationshipConstraint { sources: &["TEXT", "CODE", "NUM"], relationship: "HAS PROPERTIES", targets: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "IMAGE", "WAVEFORM", "COMPOSITE", "SCOORD", "TCOORD", "CONTAINER"] },
+            RelationshipConstraint { sources: &["PNAME"], relationship: "HAS PROPERTIES", targets: &["TEXT", "CODE", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME"] },
+            RelationshipConstraint { sources: &["TEXT", "CODE", "NUM"], relationship: "INFERRED FROM", targets: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "IMAGE", "WAVEFORM", "COMPOSITE", "SCOORD", "TCOORD", "CONTAINER"] },
+            RelationshipConstraint { sources: &["SCOORD"], relationship: "SELECTED FROM", targets: &["IMAGE"] },
+            RelationshipConstraint { sources: &["TCOORD"], relationship: "SELECTED FROM", targets: &["SCOORD", "IMAGE", "WAVEFORM"] },
+        ],
+        root_template: None,
+    },
+    DocumentConstraints {
+        iod: "A.35.13",
+        value_types: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "SCOORD", "SCOORD3D", "TCOORD", "COMPOSITE", "IMAGE", "WAVEFORM", "CONTAINER"],
+        table: "A.35.13-2",
+        relationships: &[
+            RelationshipConstraint { sources: &["CONTAINER"], relationship: "CONTAINS", targets: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "SCOORD", "SCOORD3D", "TCOORD", "COMPOSITE", "IMAGE", "WAVEFORM", "CONTAINER"] },
+            RelationshipConstraint { sources: &["TEXT", "CODE", "NUM", "CONTAINER"], relationship: "HAS OBS CONTEXT", targets: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "COMPOSITE"] },
+            RelationshipConstraint { sources: &["CONTAINER"], relationship: "HAS OBS CONTEXT", targets: &["CONTAINER"] },
+            RelationshipConstraint { sources: &["CONTAINER", "IMAGE", "WAVEFORM", "COMPOSITE", "NUM"], relationship: "HAS ACQ CONTEXT", targets: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "CONTAINER"] },
+            RelationshipConstraint { sources: &[], relationship: "HAS CONCEPT MOD", targets: &["TEXT", "CODE"] },
+            RelationshipConstraint { sources: &["TEXT", "CODE", "NUM"], relationship: "HAS PROPERTIES", targets: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "IMAGE", "WAVEFORM", "COMPOSITE", "SCOORD", "SCOORD3D", "TCOORD", "CONTAINER"] },
+            RelationshipConstraint { sources: &["PNAME"], relationship: "HAS PROPERTIES", targets: &["TEXT", "CODE", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME"] },
+            RelationshipConstraint { sources: &["TEXT", "CODE", "NUM"], relationship: "INFERRED FROM", targets: &["TEXT", "CODE", "NUM", "DATETIME", "DATE", "TIME", "UIDREF", "PNAME", "IMAGE", "WAVEFORM", "COMPOSITE", "SCOORD", "SCOORD3D", "TCOORD", "CONTAINER"] },
+            RelationshipConstraint { sources: &["SCOORD"], relationship: "SELECTED FROM", targets: &["IMAGE"] },
+            RelationshipConstraint { sources: &["TCOORD"], relationship: "SELECTED FROM", targets: &["SCOORD", "SCOORD3D", "IMAGE", "WAVEFORM"] },
+        ],
+        root_template: None,
+    },
+];
+
+/// PS3.3 F.3 Basic Directory IOD, the IOD of the DICOMDIR File (PS3.10 8.6).
+pub(super) static BASIC_DIRECTORY: Iod = Iod {
+    section: "F.3",
+    name: "Basic Directory",
+    module_table: "F.3-1",
+    functional_group_table: None,
+    sop_classes: &[
+        SopClass { uid: "1.2.840.10008.1.3.10", name: "Media Storage Directory Storage" },
+    ],
+    modules: &[
+        Module {
+            name: "File-set Identification",
+            section: "F.3.2.1",
+            table: &T_F_3_2,
+            usage: Usage::Mandatory,
+            condition: None,
+            signature: &[0x0004_1130, 0x0004_1141, 0x0004_1142],
+        },
+        Module {
+            name: "Directory Information",
+            section: "F.3.2.2",
+            table: &T_F_3_3,
+            usage: Usage::UserOption,
+            condition: None,
+            signature: &[0x0004_1200, 0x0004_1202, 0x0004_1212, 0x0004_1220],
+        },
+    ],
+    functional_groups: &[
+    ],
+    forbidden_modules: &[
+    ],
+    exclusive_modules: &[
+    ],
+};
+
+/// PS3.3 Table F.4-1: the Directory Record Types the Root Directory Entity may include.
+pub(super) static ROOT_DIRECTORY_RECORDS: &[&str] = &[
+    "PATIENT",
+    "HANGING PROTOCOL",
+    "PALETTE",
+    "IMPLANT",
+    "IMPLANT ASSY",
+    "IMPLANT GROUP",
+    "INVENTORY",
+    "PRIVATE",
+];
+
+/// PS3.3 Table F.4-1 Directory Record Types, in its order, each with the section
+/// defining it and its Record Selection Keys.
+pub(super) static DIRECTORY_RECORDS: &[DirectoryRecord] = &[
+    DirectoryRecord {
+        record_type: "PATIENT",
+        section: "F.5.1",
+        keys: Some(&T_F_5_1),
+        lower_level: &["STUDY", "PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "STUDY",
+        section: "F.5.2",
+        keys: Some(&T_F_5_2),
+        lower_level: &["SERIES", "PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "SERIES",
+        section: "F.5.3",
+        keys: Some(&T_F_5_3),
+        lower_level: &["IMAGE", "RT DOSE", "RT STRUCTURE SET", "RT PLAN", "RT TREAT RECORD", "PRESENTATION", "WAVEFORM", "SR DOCUMENT", "KEY OBJECT DOC", "SPECTROSCOPY", "RAW DATA", "REGISTRATION", "FIDUCIAL", "ENCAP DOC", "VALUE MAP", "STEREOMETRIC", "PLAN", "MEASUREMENT", "SURFACE", "TRACT", "ASSESSMENT", "RADIOTHERAPY", "ANNOTATION", "WF PRESENTATION", "PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "IMAGE",
+        section: "F.5.4",
+        keys: Some(&T_F_5_4),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "RT DOSE",
+        section: "F.5.19",
+        keys: Some(&T_F_5_19),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "RT STRUCTURE SET",
+        section: "F.5.20",
+        keys: Some(&T_F_5_20),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "RT PLAN",
+        section: "F.5.21",
+        keys: Some(&T_F_5_21),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "RT TREAT RECORD",
+        section: "F.5.22",
+        keys: Some(&T_F_5_22),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "PRESENTATION",
+        section: "F.5.23",
+        keys: Some(&T_F_5_23),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "WAVEFORM",
+        section: "F.5.24",
+        keys: Some(&T_F_5_24),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "SR DOCUMENT",
+        section: "F.5.25",
+        keys: Some(&T_F_5_25),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "KEY OBJECT DOC",
+        section: "F.5.26",
+        keys: Some(&T_F_5_26),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "SPECTROSCOPY",
+        section: "F.5.27",
+        keys: Some(&T_F_5_27),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "RAW DATA",
+        section: "F.5.28",
+        keys: Some(&T_F_5_28),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "REGISTRATION",
+        section: "F.5.29",
+        keys: Some(&T_F_5_29),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "FIDUCIAL",
+        section: "F.5.30",
+        keys: Some(&T_F_5_30),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "HANGING PROTOCOL",
+        section: "F.5.31",
+        keys: Some(&T_F_5_31),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "ENCAP DOC",
+        section: "F.5.32",
+        keys: Some(&T_F_5_32),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "VALUE MAP",
+        section: "F.5.34",
+        keys: Some(&T_F_5_34),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "STEREOMETRIC",
+        section: "F.5.35",
+        keys: Some(&T_F_5_35),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "PALETTE",
+        section: "F.5.36",
+        keys: Some(&T_F_5_36),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "IMPLANT",
+        section: "F.5.37",
+        keys: Some(&T_F_5_37),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "IMPLANT ASSY",
+        section: "F.5.38",
+        keys: Some(&T_F_5_38),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "IMPLANT GROUP",
+        section: "F.5.39",
+        keys: Some(&T_F_5_39),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "PLAN",
+        section: "F.5.40",
+        keys: Some(&T_F_5_40),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "MEASUREMENT",
+        section: "F.5.41",
+        keys: Some(&T_F_5_41),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "SURFACE",
+        section: "F.5.42",
+        keys: Some(&T_F_5_42),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "SURFACE SCAN",
+        section: "F.5.43",
+        keys: Some(&T_F_5_43),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "TRACT",
+        section: "F.5.44",
+        keys: Some(&T_F_5_44),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "ASSESSMENT",
+        section: "F.5.45",
+        keys: Some(&T_F_5_45),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "RADIOTHERAPY",
+        section: "F.5.46",
+        keys: Some(&T_F_5_46),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "ANNOTATION",
+        section: "F.5.47",
+        keys: Some(&T_F_5_47),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "INVENTORY",
+        section: "F.5.48",
+        keys: Some(&T_F_5_48),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "WF PRESENTATION",
+        section: "F.5.49",
+        keys: Some(&T_F_5_49),
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: false,
+    },
+    DirectoryRecord {
+        record_type: "PRIVATE",
+        section: "F.6.1",
+        keys: None,
+        lower_level: &["PRIVATE"],
+        any_private_lower_level: true,
+    },
+];
+
+/// PS3.3 Table F.3-3 "Include Record Selection Keys": the key table of each
+/// Directory Record Type (F.5).
+pub(super) static RECORD_SELECTION_KEYS: Selection = Selection {
+    key: 0x0004_1430,
+    tables: &[
+        ("PATIENT", &T_F_5_1),
+        ("STUDY", &T_F_5_2),
+        ("SERIES", &T_F_5_3),
+        ("IMAGE", &T_F_5_4),
+        ("RT DOSE", &T_F_5_19),
+        ("RT STRUCTURE SET", &T_F_5_20),
+        ("RT PLAN", &T_F_5_21),
+        ("RT TREAT RECORD", &T_F_5_22),
+        ("PRESENTATION", &T_F_5_23),
+        ("WAVEFORM", &T_F_5_24),
+        ("SR DOCUMENT", &T_F_5_25),
+        ("KEY OBJECT DOC", &T_F_5_26),
+        ("SPECTROSCOPY", &T_F_5_27),
+        ("RAW DATA", &T_F_5_28),
+        ("REGISTRATION", &T_F_5_29),
+        ("FIDUCIAL", &T_F_5_30),
+        ("HANGING PROTOCOL", &T_F_5_31),
+        ("ENCAP DOC", &T_F_5_32),
+        ("VALUE MAP", &T_F_5_34),
+        ("STEREOMETRIC", &T_F_5_35),
+        ("PALETTE", &T_F_5_36),
+        ("IMPLANT", &T_F_5_37),
+        ("IMPLANT ASSY", &T_F_5_38),
+        ("IMPLANT GROUP", &T_F_5_39),
+        ("PLAN", &T_F_5_40),
+        ("MEASUREMENT", &T_F_5_41),
+        ("SURFACE", &T_F_5_42),
+        ("SURFACE SCAN", &T_F_5_43),
+        ("TRACT", &T_F_5_44),
+        ("ASSESSMENT", &T_F_5_45),
+        ("RADIOTHERAPY", &T_F_5_46),
+        ("ANNOTATION", &T_F_5_47),
+        ("INVENTORY", &T_F_5_48),
+        ("WF PRESENTATION", &T_F_5_49),
+    ],
+};
 
 /// PS3.4 Table B.5-1 Standard Storage SOP Classes, sorted by UID.
 pub(super) static STORAGE_SOP_CLASSES: &[SopClass] = &[
@@ -4333,49 +4582,6 @@ pub(super) static T_C_8_12_4_1: Table = t("PS3.3", "C.8.12.4-1", "C.8.12.4", &[
     a(0x0048_0015, "Recommended Absent Pixel CIELab Value", T3, None, &[], ANY, None, &[]),
 ]);
 
-/// Optical Path Module Attributes
-pub(super) static T_C_8_12_5_1: Table = t("PS3.3", "C.8.12.5-1", "C.8.12.5", &[
-    a(0x0048_0302, "Number of Optical Paths", T1C, Some(C::TotalPixelMatrixFocalPlanes_d443dd), &[], ANY, None, &[]),
-    a(0x0048_0105, "Optical Path Sequence", T1, None, &[], AtLeast(1), None, &[
-        a(0x0048_0106, "Optical Path Identifier", T1, None, &[], ANY, None, &[]),
-        a(0x0048_0107, "Optical Path Description", T3, None, &[], ANY, None, &[]),
-        a(0x0048_0100, "Illuminator Type Code Sequence", T3, None, &[], AtMost(1), None, &[
-            i(&T_8_8_1),
-        ]),
-        a(0x0022_0055, "Illumination Wave Length", T1C, Some(C::IlluminationWaveLength_66d7d2), &[], ANY, None, &[]),
-        a(0x0048_0108, "Illumination Color Code Sequence", T1C, Some(C::IlluminationColorCodeSequence_e613f9), &[], Exactly(1), None, &[
-            i(&T_8_8_1),
-        ]),
-        a(0x0022_0016, "Illumination Type Code Sequence", T1, None, &[], AtLeast(1), None, &[
-            i(&T_8_8_1),
-        ]),
-        a(0x0022_0017, "Light Path Filter Type Stack Code Sequence", T3, None, &[], ANY, None, &[
-            i(&T_8_8_1),
-        ]),
-        a(0x0022_0001, "Light Path Filter Pass-Through Wavelength", T3, None, &[], ANY, None, &[]),
-        a(0x0022_0002, "Light Path Filter Pass Band", T3, None, &[], ANY, None, &[]),
-        a(0x0022_0018, "Image Path Filter Type Stack Code Sequence", T3, None, &[], ANY, None, &[
-            i(&T_8_8_1),
-        ]),
-        a(0x0022_0003, "Image Path Filter Pass-Through Wavelength", T3, None, &[], ANY, None, &[]),
-        a(0x0022_0004, "Image Path Filter Pass Band", T3, None, &[], ANY, None, &[]),
-        a(0x0022_0019, "Lenses Code Sequence", T3, None, &[], ANY, None, &[
-            i(&T_8_8_1),
-        ]),
-        a(0x0048_0111, "Condenser Lens Power", T3, None, &[], ANY, None, &[]),
-        a(0x0048_0112, "Objective Lens Power", T3, None, &[], ANY, None, &[]),
-        a(0x0048_0113, "Objective Lens Numerical Aperture", T3, None, &[], ANY, None, &[]),
-        a(0x0022_001A, "Channel Description Code Sequence", T1C, Some(C::ChannelDescriptionCodeSequence_5684e2), &[], ValueOf(0x0028_0003, 0x0028_0002), None, &[
-            i(&T_8_8_1),
-        ]),
-        a(0x0048_0120, "Palette Color Lookup Table Sequence", T3, None, &[], AtMost(1), None, &[
-            i(&T_C_7_22A),
-        ]),
-        a(0x0028_2000, "ICC Profile", T1C, Some(C::ICCProfile_3b45af), &[], ANY, None, &[]),
-        a(0x0028_2002, "Color Space", T3, None, &[], ANY, None, &[]),
-    ]),
-]);
-
 /// Palette Color Lookup Table Macro Attributes
 pub(super) static T_C_7_22A: Table = t("PS3.3", "C.7-22a", "C.7.9", &[
     a(0x0028_1101, "Red Palette Color Lookup Table Descriptor", T1, None, &[], ANY, None, &[]),
@@ -4705,157 +4911,6 @@ pub(super) static T_C_8_12_9_1: Table = t("PS3.3", "C.8.12.9-1", "C.8.12.9", &[
     ]),
 ]);
 
-/// Device Module Attributes
-pub(super) static T_C_7_18: Table = t("PS3.3", "C.7-18", "C.7.6.12", &[
-    a(0x0050_0010, "Device Sequence", T1, None, &[], AtLeast(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[4051])), &[
-        i(&T_8_8_1),
-        a(0x0008_0070, "Manufacturer", T3, None, &[], ANY, None, &[]),
-        a(0x0008_1090, "Manufacturer's Model Name", T3, None, &[], ANY, None, &[]),
-        a(0x0018_1000, "Device Serial Number", T3, None, &[], ANY, None, &[]),
-        a(0x0018_1204, "Date of Manufacture", T3, None, &[], ANY, None, &[]),
-        a(0x0018_1003, "Device ID", T3, None, &[], ANY, None, &[]),
-        a(0x0050_0014, "Device Length", T3, None, &[], ANY, None, &[]),
-        a(0x0050_0016, "Device Diameter", T3, None, &[], ANY, None, &[]),
-        a(0x0050_0017, "Device Diameter Units", T2C, Some(C::DeviceDiameterUnits_3c1081), &[], ANY, None, &[]),
-        a(0x0050_0018, "Device Volume", T3, None, &[], ANY, None, &[]),
-        a(0x0050_0019, "Inter-Marker Distance", T3, None, &[], ANY, None, &[]),
-        a(0x0050_0020, "Device Description", T3, None, &[], ANY, None, &[]),
-    ]),
-]);
-
-/// VL Image Module Attributes
-pub(super) static T_C_8_77: Table = t("PS3.3", "C.8-77", "C.8.12.1", &[
-    a(0x0008_0008, "Image Type", T1, None, &[], ANY, None, &[]),
-    a(0x0028_0004, "Photometric Interpretation", T1, None, &[e(None, None, &["MONOCHROME2", "RGB", "YBR_FULL_422", "YBR_PARTIAL_420", "YBR_RCT", "YBR_ICT"])], ANY, None, &[]),
-    a(0x0028_0100, "Bits Allocated", T1, None, &[], ANY, None, &[]),
-    a(0x0028_0101, "Bits Stored", T1, None, &[], ANY, None, &[]),
-    a(0x0028_0102, "High Bit", T1, None, &[], ANY, None, &[]),
-    a(0x0028_0103, "Pixel Representation", T1, None, &[e(None, None, &["0"])], ANY, None, &[]),
-    a(0x0028_0002, "Samples per Pixel", T1, None, &[], ANY, None, &[]),
-    a(0x0028_0006, "Planar Configuration", T1C, Some(C::PlanarConfiguration_290ffd), &[e(None, None, &["0"])], ANY, None, &[]),
-    a(0x0008_0033, "Content Time", T1C, Some(C::ContentTime_ed65a7), &[], ANY, None, &[]),
-    a(0x0028_2110, "Lossy Image Compression", T2, None, &[e(None, None, &["00", "01"])], ANY, None, &[]),
-    a(0x0008_1140, "Referenced Image Sequence", T1C, Some(C::ReferencedImageSequence_fcc4f5), &[], ANY, None, &[
-        i(&T_10_3),
-        a(0x0040_A170, "Purpose of Reference Code Sequence", T2, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Defined, &[7201])), &[
-            i(&T_8_8_1),
-        ]),
-    ]),
-    a(0x0028_1050, "Window Center", T3, None, &[], ANY, None, &[]),
-    a(0x0028_1051, "Window Width", T1C, Some(C::WindowWidth_65ee92), &[], ANY, None, &[]),
-    a(0x0020_0062, "Image Laterality", T3, None, &[e(None, None, &["R", "L", "U", "B"])], ANY, None, &[]),
-    a(0x0054_0220, "View Code Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Defined, &[4062, 4063])), &[
-        i(&T_8_8_1),
-        a(0x0054_0222, "View Modifier Code Sequence", T3, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Defined, &[4064, 4065])), &[
-            i(&T_8_8_1),
-        ]),
-    ]),
-    a(0x0008_2218, "Anatomic Region Sequence", T1C, Some(C::AnatomicRegionSequence_9fc37b), &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[4031, 7483, 4028])), &[
-        i(&T_8_8_1),
-        a(0x0008_2220, "Anatomic Region Modifier Sequence", T3, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Baseline, &[2])), &[
-            i(&T_8_8_1),
-        ]),
-    ]),
-    i(&T_10_8),
-    a(0x0022_001A, "Channel Description Code Sequence", T3, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Baseline, &[4206])), &[
-        i(&T_8_8_1),
-    ]),
-    a(0x0028_0030, "Pixel Spacing", T3, None, &[], ANY, None, &[]),
-    a(0x0018_1164, "Imager Pixel Spacing", T3, None, &[], ANY, None, &[]),
-]);
-
-/// Overlay Plane Module Attributes
-pub(super) static T_C_9_2: Table = t("PS3.3", "C.9-2", "C.9.2", &[
-    a(0x6000_0010, "Overlay Rows", T1, None, &[], ANY, None, &[]),
-    a(0x6000_0011, "Overlay Columns", T1, None, &[], ANY, None, &[]),
-    a(0x6000_0040, "Overlay Type", T1, None, &[e(None, None, &["G", "R"])], ANY, None, &[]),
-    a(0x6000_0050, "Overlay Origin", T1, None, &[], ANY, None, &[]),
-    a(0x6000_0100, "Overlay Bits Allocated", T1, None, &[e(None, None, &["1"])], ANY, None, &[]),
-    a(0x6000_0102, "Overlay Bit Position", T1, None, &[e(None, None, &["0"])], ANY, None, &[]),
-    a(0x6000_3000, "Overlay Data", T1, None, &[], ANY, None, &[]),
-    a(0x6000_0022, "Overlay Description", T3, None, &[], ANY, None, &[]),
-    a(0x6000_0045, "Overlay Subtype", T3, None, &[], ANY, None, &[]),
-    a(0x6000_1500, "Overlay Label", T3, None, &[], ANY, None, &[]),
-    a(0x6000_1301, "ROI Area", T3, None, &[], ANY, None, &[]),
-    a(0x6000_1302, "ROI Mean", T3, None, &[], ANY, None, &[]),
-    a(0x6000_1303, "ROI Standard Deviation", T3, None, &[], ANY, None, &[]),
-]);
-
-/// ICC Profile Module Attributes
-pub(super) static T_C_11_15_1: Table = t("PS3.3", "C.11.15-1", "C.11.15", &[
-    a(0x0028_2000, "ICC Profile", T1, None, &[], ANY, None, &[]),
-    a(0x0028_2002, "Color Space", T3, None, &[], ANY, None, &[]),
-]);
-
-/// Slide Coordinates Module Attributes
-pub(super) static T_C_8_78: Table = t("PS3.3", "C.8-78", "C.8.12.2", &[
-    a(0x0040_071A, "Image Center Point Coordinates Sequence", T2, None, &[], AtMost(1), None, &[
-        a(0x0040_072A, "X Offset in Slide Coordinate System", T1, None, &[], ANY, None, &[]),
-        a(0x0040_073A, "Y Offset in Slide Coordinate System", T1, None, &[], ANY, None, &[]),
-        a(0x0040_074A, "Z Offset in Slide Coordinate System", T2, None, &[], ANY, None, &[]),
-    ]),
-]);
-
-/// Synchronization Module Attributes
-pub(super) static T_C_7_7: Table = t("PS3.3", "C.7-7", "C.7.4.2", &[
-    a(0x0020_0200, "Synchronization Frame of Reference UID", T1, None, &[], ANY, None, &[]),
-    a(0x0018_106A, "Synchronization Trigger", T1, None, &[e(None, None, &["SOURCE", "EXTERNAL", "PASSTHRU", "NO TRIGGER"])], ANY, None, &[]),
-    a(0x0018_1061, "Trigger Source or Type", T3, None, &[], ANY, None, &[]),
-    a(0x0018_106C, "Synchronization Channel", T1C, Some(C::SynchronizationChannel_e1ebdb), &[], ANY, None, &[]),
-    a(0x0018_1800, "Acquisition Time Synchronized", T1, None, &[e(None, None, &["Y", "N"])], ANY, None, &[]),
-    a(0x0018_1801, "Time Source", T3, None, &[], ANY, None, &[]),
-    a(0x0018_1802, "Time Distribution Protocol", T3, None, &[e(None, None, &["NTP", "IRIG", "GPS", "SNTP", "PTP"])], ANY, None, &[]),
-    a(0x0018_1803, "NTP Source Address", T3, None, &[], ANY, None, &[]),
-]);
-
-/// Confocal Microscopy Image Module Attributes
-pub(super) static T_C_8_35_1_1: Table = t("PS3.3", "C.8.35.1-1", "C.8.35.1", &[
-    a(0x0008_0008, "Image Type", T1, None, &[e(Some(1), None, &["ORIGINAL", "DERIVED"]), e(Some(2), None, &["PRIMARY"])], ANY, None, &[]),
-    a(0x0028_0004, "Photometric Interpretation", T1, None, &[e(None, None, &["MONOCHROME2", "RGB", "YBR_FULL_422", "YBR_PARTIAL_420", "YBR_RCT", "YBR_ICT"])], ANY, None, &[]),
-    a(0x0028_0100, "Bits Allocated", T1, None, &[], ANY, None, &[]),
-    a(0x0028_0101, "Bits Stored", T1, None, &[], ANY, None, &[]),
-    a(0x0028_0102, "High Bit", T1, None, &[], ANY, None, &[]),
-    a(0x0028_0103, "Pixel Representation", T1, None, &[e(None, None, &["0"])], ANY, None, &[]),
-    a(0x0028_0002, "Samples per Pixel", T1, None, &[], ANY, None, &[]),
-    a(0x0028_0006, "Planar Configuration", T1C, Some(C::PlanarConfiguration_290ffd), &[e(None, None, &["0"])], ANY, None, &[]),
-    a(0x0028_2110, "Lossy Image Compression", T1, None, &[e(None, None, &["00", "01"])], ANY, None, &[]),
-    a(0x0048_0114, "Confocal Mode", T1, None, &[e(None, None, &["REFLECTANCE", "FLUORESCENCE"])], ANY, None, &[]),
-    a(0x0048_0115, "Tissue Location", T1, None, &[e(None, None, &["INVIVO", "EXVIVO"])], ANY, None, &[]),
-]);
-
-/// Cutaneous Confocal Microscopy Image Acquisition Parameters Module Attributes
-pub(super) static T_C_8_35_3_1: Table = t("PS3.3", "C.8.35.3-1", "C.8.35.3", &[
-    a(0x0016_1005, "Optical Magnification Factor", T2, None, &[], ANY, None, &[]),
-    a(0x0048_0117, "Image Acquisition Depth", T2, None, &[], ANY, None, &[]),
-    a(0x0018_1147, "Field of View Shape", T2, None, &[], ANY, None, &[]),
-    a(0x0018_1149, "Field of View Dimension(s)", T2, None, &[], ANY, None, &[]),
-    a(0x0062_0020, "Tracking ID", T1C, Some(C::TrackingID_aba688), &[], ANY, None, &[]),
-    a(0x0062_0021, "Tracking UID", T1C, Some(C::TrackingUID_f608d8), &[], ANY, None, &[]),
-]);
-
-/// Confocal Microscopy Image Frame Type Macro Attributes
-pub(super) static T_C_8_35_4_1_1: Table = t("PS3.3", "C.8.35.4.1-1", "C.8.35.4.1", &[
-    a(0x0048_0116, "Confocal Microscopy Image Frame Type Sequence", T1, None, &[], Exactly(1), None, &[
-        a(0x0008_9007, "Frame Type", T1, None, &[e(Some(1), None, &["ORIGINAL", "DERIVED"]), e(Some(2), None, &["PRIMARY"])], ANY, None, &[]),
-    ]),
-]);
-
-/// Frame Anatomy Macro Attributes
-pub(super) static T_C_7_6_16_9: Table = t("PS3.3", "C.7.6.16-9", "C.7.6.16.2.8", &[
-    a(0x0020_9071, "Frame Anatomy Sequence", T1, None, &[], Exactly(1), None, &[
-        a(0x0020_9072, "Frame Laterality", T1, None, &[e(None, None, &["R", "L", "U", "B"])], ANY, None, &[]),
-        i(&T_10_5__C_7_6_16_9),
-    ]),
-]);
-
-/// Confocal Microscopy Tiled Pyramidal Image Module Attributes
-pub(super) static T_C_8_35_2_1: Table = t("PS3.3", "C.8.35.2-1", "C.8.35.2", &[
-    a(0x0048_0001, "Imaged Volume Width", T1, None, &[], ANY, None, &[]),
-    a(0x0048_0002, "Imaged Volume Height", T1, None, &[], ANY, None, &[]),
-    a(0x0048_0003, "Imaged Volume Depth", T1, None, &[], ANY, None, &[]),
-    a(0x0008_9206, "Volumetric Properties", T1, None, &[e(None, None, &["VOLUME"])], ANY, None, &[]),
-]);
-
 /// Microscopy Bulk Simple Annotations Series Module Attributes
 pub(super) static T_C_37_1_1: Table = t("PS3.3", "C.37.1-1", "C.37.1.1", &[
     a(0x0008_0060, "Modality", T1, None, &[e(None, None, &["ANN"])], ANY, None, &[]),
@@ -4972,6 +5027,12 @@ pub(super) static T_10_7B: Table = t("PS3.3", "10-7b", "10.5", &[
     i(&T_10_8),
 ]);
 
+/// ICC Profile Module Attributes
+pub(super) static T_C_11_15_1: Table = t("PS3.3", "C.11.15-1", "C.11.15", &[
+    a(0x0028_2000, "ICC Profile", T1, None, &[], ANY, None, &[]),
+    a(0x0028_2002, "Color Space", T3, None, &[], ANY, None, &[]),
+]);
+
 /// Segmentation Series Module Attributes
 pub(super) static T_C_8_20_1: Table = t("PS3.3", "C.8.20-1", "C.8.20.1", &[
     a(0x0008_0060, "Modality", T1, None, &[e(None, None, &["SEG"])], ANY, None, &[]),
@@ -5039,6 +5100,18 @@ pub(super) static T_PS3_3_C_8_32_1: Table = t("PS3.3", "C.8.32-1", "C.8.32.1", &
     a(0x0008_1111, "Referenced Performed Procedure Step Sequence", T1C, Some(C::ReferencedPerformedProcedureStepSequence_d5d6e5), &[], Exactly(1), None, &[
         i(&T_10_11),
     ]),
+]);
+
+/// Synchronization Module Attributes
+pub(super) static T_C_7_7: Table = t("PS3.3", "C.7-7", "C.7.4.2", &[
+    a(0x0020_0200, "Synchronization Frame of Reference UID", T1, None, &[], ANY, None, &[]),
+    a(0x0018_106A, "Synchronization Trigger", T1, None, &[e(None, None, &["SOURCE", "EXTERNAL", "PASSTHRU", "NO TRIGGER"])], ANY, None, &[]),
+    a(0x0018_1061, "Trigger Source or Type", T3, None, &[], ANY, None, &[]),
+    a(0x0018_106C, "Synchronization Channel", T1C, Some(C::SynchronizationChannel_e1ebdb), &[], ANY, None, &[]),
+    a(0x0018_1800, "Acquisition Time Synchronized", T1, None, &[e(None, None, &["Y", "N"])], ANY, None, &[]),
+    a(0x0018_1801, "Time Source", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1802, "Time Distribution Protocol", T3, None, &[e(None, None, &["NTP", "IRIG", "GPS", "SNTP", "PTP"])], ANY, None, &[]),
+    a(0x0018_1803, "NTP Source Address", T3, None, &[], ANY, None, &[]),
 ]);
 
 /// Floating Point Image Pixel Module Attributes
@@ -5117,6 +5190,24 @@ pub(super) static T_C_7_6_18_3: Table = t("PS3.3", "C.7.6.18-3", "C.7.6.18.3", &
     a(0x0018_9173, "Bulk Motion Signal Source", T1C, Some(C::BulkMotionSignalSource_bb311d), &[], ANY, None, &[]),
 ]);
 
+/// Device Module Attributes
+pub(super) static T_C_7_18: Table = t("PS3.3", "C.7-18", "C.7.6.12", &[
+    a(0x0050_0010, "Device Sequence", T1, None, &[], AtLeast(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[4051])), &[
+        i(&T_8_8_1),
+        a(0x0008_0070, "Manufacturer", T3, None, &[], ANY, None, &[]),
+        a(0x0008_1090, "Manufacturer's Model Name", T3, None, &[], ANY, None, &[]),
+        a(0x0018_1000, "Device Serial Number", T3, None, &[], ANY, None, &[]),
+        a(0x0018_1204, "Date of Manufacture", T3, None, &[], ANY, None, &[]),
+        a(0x0018_1003, "Device ID", T3, None, &[], ANY, None, &[]),
+        a(0x0050_0014, "Device Length", T3, None, &[], ANY, None, &[]),
+        a(0x0050_0016, "Device Diameter", T3, None, &[], ANY, None, &[]),
+        a(0x0050_0017, "Device Diameter Units", T2C, Some(C::DeviceDiameterUnits_3c1081), &[], ANY, None, &[]),
+        a(0x0050_0018, "Device Volume", T3, None, &[], ANY, None, &[]),
+        a(0x0050_0019, "Inter-Marker Distance", T3, None, &[], ANY, None, &[]),
+        a(0x0050_0020, "Device Description", T3, None, &[], ANY, None, &[]),
+    ]),
+]);
+
 /// Cardiac Synchronization Macro Attributes
 pub(super) static T_C_7_6_16_8: Table = t("PS3.3", "C.7.6.16-8", "C.7.6.16.2.7", &[
     a(0x0018_9118, "Cardiac Synchronization Sequence", T1, None, &[], Exactly(1), None, &[
@@ -5131,6 +5222,14 @@ pub(super) static T_C_7_6_16_8: Table = t("PS3.3", "C.7.6.16-8", "C.7.6.16.2.7",
         a(0x0020_9251, "R-R Interval Time Nominal", T1C, Some(C::RRIntervalTimeNominal_0c4d07), &[], ANY, None, &[]),
         a(0x0018_1081, "Low R-R Value", T3, None, &[], ANY, None, &[]),
         a(0x0018_1082, "High R-R Value", T3, None, &[], ANY, None, &[]),
+    ]),
+]);
+
+/// Frame Anatomy Macro Attributes
+pub(super) static T_C_7_6_16_9: Table = t("PS3.3", "C.7.6.16-9", "C.7.6.16.2.8", &[
+    a(0x0020_9071, "Frame Anatomy Sequence", T1, None, &[], Exactly(1), None, &[
+        a(0x0020_9072, "Frame Laterality", T1, None, &[e(None, None, &["R", "L", "U", "B"])], ANY, None, &[]),
+        i(&T_10_5__C_7_6_16_9),
     ]),
 ]);
 
@@ -5212,6 +5311,809 @@ pub(super) static T_C_7_6_16_2_25_2_1: Table = t("PS3.3", "C.7.6.16.2.25.2-1", "
     a(0x0020_9171, "Unassigned Per-Frame Converted Attributes Sequence", T1C, Some(C::UnassignedPerFrameConvertedAttributesSequence_30ffda), &[], Exactly(1), None, &[]),
 ]);
 
+/// Key Object Document Series Module Attributes
+pub(super) static T_C_17_6_1: Table = t("PS3.3", "C.17.6-1", "C.17.6.1", &[
+    a(0x0008_0060, "Modality", T1, None, &[e(None, None, &["KO"])], ANY, None, &[]),
+    a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
+    a(0x0020_0011, "Series Number", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0021, "Series Date", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0031, "Series Time", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1030, "Protocol Name", T3, None, &[], ANY, None, &[]),
+    a(0x0008_103E, "Series Description", T3, None, &[], ANY, None, &[]),
+    a(0x0008_103F, "Series Description Code Sequence", T3, None, &[], AtMost(1), None, &[
+        i(&T_8_8_1),
+    ]),
+    a(0x0008_1111, "Referenced Performed Procedure Step Sequence", T2, None, &[], AtMost(1), None, &[
+        i(&T_10_11),
+    ]),
+    a(0x300A_0700, "Treatment Session UID", T3, None, &[], ANY, None, &[]),
+]);
+
+/// Key Object Document Module Attributes
+pub(super) static T_C_17_6_2: Table = t("PS3.3", "C.17.6-2", "C.17.6.2", &[
+    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+    a(0x0040_A370, "Referenced Request Sequence", T1C, Some(C::ReferencedRequestSequence_d87c48), &[], AtLeast(1), None, &[
+        i(&T_C_17_3C),
+    ]),
+    a(0x0040_A375, "Current Requested Procedure Evidence Sequence", T1, None, &[], AtLeast(1), None, &[
+        i(&T_C_17_3),
+    ]),
+    a(0x0040_A525, "Identical Documents Sequence", T1C, Some(C::IdenticalDocumentsSequence_9954fb), &[], AtLeast(1), None, &[
+        i(&T_C_17_3),
+    ]),
+]);
+
+/// Referenced Request Macro Attributes
+pub(super) static T_C_17_3C: Table = t("PS3.3", "C.17-3c", "C.17.2.8", &[
+    a(0x0020_000D, "Study Instance UID", T1, None, &[], ANY, None, &[]),
+    a(0x0008_1110, "Referenced Study Sequence", T2, None, &[], AtMost(1), None, &[
+        i(&T_10_11),
+    ]),
+    a(0x0008_0050, "Accession Number", T2, None, &[], ANY, None, &[]),
+    a(0x0008_0051, "Issuer of Accession Number Sequence", T3, None, &[], AtMost(1), None, &[
+        i(&T_10_17),
+    ]),
+    a(0x0040_2016, "Placer Order Number / Imaging Service Request", T2, None, &[], ANY, None, &[]),
+    a(0x0040_0026, "Order Placer Identifier Sequence", T3, None, &[], AtMost(1), None, &[
+        i(&T_10_17),
+    ]),
+    a(0x0040_2017, "Filler Order Number / Imaging Service Request", T2, None, &[], ANY, None, &[]),
+    a(0x0040_0027, "Order Filler Identifier Sequence", T3, None, &[], AtMost(1), None, &[
+        i(&T_10_17),
+    ]),
+    a(0x0040_1001, "Requested Procedure ID", T2, None, &[], ANY, None, &[]),
+    a(0x0032_1060, "Requested Procedure Description", T2, None, &[], ANY, None, &[]),
+    a(0x0032_1064, "Requested Procedure Code Sequence", T2, None, &[], AtMost(1), None, &[
+        i(&T_8_8_1),
+    ]),
+    a(0x0040_1002, "Reason for the Requested Procedure", T3, None, &[], ANY, None, &[]),
+    a(0x0040_100A, "Reason for Requested Procedure Code Sequence", T3, None, &[], ANY, None, &[
+        i(&T_8_8_1),
+    ]),
+]);
+
+/// Hierarchical SOP Instance Reference Macro Attributes
+pub(super) static T_C_17_3: Table = t("PS3.3", "C.17-3", "C.17.2.1", &[
+    a(0x0020_000D, "Study Instance UID", T1, None, &[], ANY, None, &[]),
+    a(0x0040_E012, "Display URI", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1115, "Referenced Series Sequence", T1, None, &[], AtLeast(1), None, &[
+        i(&T_C_17_3A),
+    ]),
+]);
+
+/// Hierarchical Series Reference Macro Attributes
+pub(super) static T_C_17_3A: Table = t("PS3.3", "C.17-3a", "C.17.2.1", &[
+    a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0054, "Retrieve AE Title", T3, None, &[], ANY, None, &[]),
+    a(0x0040_E011, "Retrieve Location UID", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1190, "Retrieve URL", T3, None, &[], ANY, None, &[]),
+    a(0x0088_0130, "Storage Media File-Set ID", T3, None, &[], ANY, None, &[]),
+    a(0x0088_0140, "Storage Media File-Set UID", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1199, "Referenced SOP Sequence", T1, None, &[], AtLeast(1), None, &[
+        i(&T_10_11),
+        a(0x0040_A170, "Purpose of Reference Code Sequence", T3, None, &[], ANY, None, &[
+            i(&T_8_8_1),
+        ]),
+        a(0x0400_0402, "Referenced Digital Signature Sequence", T3, None, &[], ANY, None, &[
+            a(0x0400_0100, "Digital Signature UID", T1, None, &[], ANY, None, &[]),
+            a(0x0400_0120, "Signature", T1, None, &[], ANY, None, &[]),
+        ]),
+        a(0x0400_0403, "Referenced SOP Instance MAC Sequence", T3, None, &[], AtMost(1), None, &[
+            a(0x0400_0010, "MAC Calculation Transfer Syntax UID", T1, None, &[], ANY, None, &[]),
+            a(0x0400_0015, "MAC Algorithm", T1, None, &[], ANY, None, &[]),
+            a(0x0400_0020, "Data Elements Signed", T1, None, &[], ANY, None, &[]),
+            a(0x0400_0404, "MAC", T1, None, &[], ANY, None, &[]),
+        ]),
+    ]),
+]);
+
+/// SR Document Content Module Attributes
+pub(super) static T_C_17_4: Table = t("PS3.3", "C.17-4", "C.17.3", &[
+    i(&T_C_17_5),
+    i(&T_C_17_6),
+]);
+
+/// Document Content Macro Attributes
+pub(super) static T_C_17_5: Table = t("PS3.3", "C.17-5", "C.17.3.3", &[
+    a(0x0040_A040, "Value Type", T1, None, &[e(None, None, &["TEXT", "NUM", "CODE", "DATE", "TIME", "DATETIME", "UIDREF", "PNAME", "COMPOSITE", "IMAGE", "WAVEFORM", "SCOORD", "SCOORD3D", "TCOORD", "CONTAINER", "TABLE"])], ANY, None, &[]),
+    a(0x0040_A043, "Concept Name Code Sequence", T1C, Some(C::ConceptNameCodeSequence_abde30), &[], Exactly(1), None, &[
+        i(&T_8_8_1),
+    ]),
+    a(0x0040_A160, "Text Value", T1C, Some(C::TextValue_6d4c4e), &[], ANY, None, &[]),
+    a(0x0040_A120, "DateTime", T1C, Some(C::DateTime_e5e09c), &[], ANY, None, &[]),
+    a(0x0040_A121, "Date", T1C, Some(C::Date_f120f4), &[], ANY, None, &[]),
+    a(0x0040_A122, "Time", T1C, Some(C::Time_ad089b), &[], ANY, None, &[]),
+    a(0x0040_A123, "Person Name", T1C, Some(C::PersonName_a1fae7), &[], ANY, None, &[]),
+    a(0x0040_A124, "UID", T1C, Some(C::UID_ca8b4b), &[], ANY, None, &[]),
+    ic(&T_C_18_1_1, C::IncludeC1811_b4d406),
+    ic(&T_C_18_2_1, C::IncludeC1821_a2ce9a),
+    ic(&T_C_18_3_1, C::IncludeC1831_61f144),
+    ic(&T_C_18_4_1, C::IncludeC1841_08c4c7),
+    ic(&T_C_18_5_1, C::IncludeC1851_08552e),
+    ic(&T_C_18_6_1, C::IncludeC1861_80daf7),
+    ic(&T_C_18_9_1, C::IncludeC1891_3cfefc),
+    ic(&T_C_18_7_1, C::IncludeC1871_2dd22d),
+    ic(&T_C_18_8_1, C::IncludeC1881_0f7a08),
+    ic(&T_C_18_10_1, C::IncludeC18101_0ab121),
+]);
+
+/// Numeric Measurement Macro Attributes
+pub(super) static T_C_18_1_1: Table = t("PS3.3", "C.18.1-1", "C.18.1", &[
+    a(0x0040_A300, "Measured Value Sequence", T2, None, &[], AtMost(1), None, &[
+        a(0x0040_A30A, "Numeric Value", T1, None, &[], ANY, None, &[]),
+        a(0x0040_A161, "Floating Point Value", T1C, Some(C::FloatingPointValue_a84f01), &[], ANY, None, &[]),
+        a(0x0040_A162, "Rational Numerator Value", T1C, Some(C::RationalNumeratorValue_5600ef), &[], ANY, None, &[]),
+        a(0x0040_A163, "Rational Denominator Value", T1C, Some(C::RationalDenominatorValue_553a6d), &[], ANY, None, &[]),
+        a(0x0040_08EA, "Measurement Units Code Sequence", T1, None, &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Defined, &[82])), &[
+            i(&T_8_8_1),
+        ]),
+    ]),
+    a(0x0040_A301, "Numeric Value Qualifier Code Sequence", T1C, Some(C::NumericValueQualifierCodeSequence_2d34c8), &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Defined, &[42])), &[
+        i(&T_8_8_1),
+    ]),
+]);
+
+/// Code Macro Attributes
+pub(super) static T_C_18_2_1: Table = t("PS3.3", "C.18.2-1", "C.18.2", &[
+    a(0x0040_A168, "Concept Code Sequence", T1, None, &[], Exactly(1), None, &[
+        i(&T_8_8_1),
+    ]),
+]);
+
+/// Composite Object Reference Macro Attributes
+pub(super) static T_C_18_3_1: Table = t("PS3.3", "C.18.3-1", "C.18.3", &[
+    a(0x0008_1199, "Referenced SOP Sequence", T1, None, &[], Exactly(1), None, &[
+        i(&T_10_11),
+    ]),
+]);
+
+/// Image Reference Macro Attributes
+pub(super) static T_C_18_4_1: Table = t("PS3.3", "C.18.4-1", "C.18.4", &[
+    i(&T_C_18_3_1__C_18_4_1),
+]);
+
+/// Waveform Reference Macro Attributes
+pub(super) static T_C_18_5_1: Table = t("PS3.3", "C.18.5-1", "C.18.5", &[
+    i(&T_C_18_3_1__C_18_5_1),
+]);
+
+/// Spatial Coordinates Macro Attributes
+pub(super) static T_C_18_6_1: Table = t("PS3.3", "C.18.6-1", "C.18.6", &[
+    a(0x0070_0022, "Graphic Data", T1, None, &[], ANY, None, &[]),
+    a(0x0070_0023, "Graphic Type", T1, None, &[e(None, None, &["POINT", "MULTIPOINT", "POLYLINE", "CIRCLE", "ELLIPSE"])], ANY, None, &[]),
+    a(0x0048_0301, "Pixel Origin Interpretation", T1C, Some(C::PixelOriginInterpretation_2ad28a), &[e(None, None, &["FRAME", "VOLUME"])], ANY, None, &[]),
+    a(0x0070_031A, "Fiducial UID", T3, None, &[], ANY, None, &[]),
+]);
+
+/// 3D Spatial Coordinates Macro Attributes
+pub(super) static T_C_18_9_1: Table = t("PS3.3", "C.18.9-1", "C.18.9", &[
+    a(0x3006_0024, "Referenced Frame of Reference UID", T1, None, &[], ANY, None, &[]),
+    a(0x0070_0022, "Graphic Data", T1, None, &[], ANY, None, &[]),
+    a(0x0070_0023, "Graphic Type", T1, None, &[e(None, None, &["POINT", "MULTIPOINT", "POLYLINE", "POLYGON", "ELLIPSE", "ELLIPSOID"])], ANY, None, &[]),
+    a(0x0070_031A, "Fiducial UID", T3, None, &[], ANY, None, &[]),
+]);
+
+/// Temporal Coordinates Macro Attributes
+pub(super) static T_C_18_7_1: Table = t("PS3.3", "C.18.7-1", "C.18.7", &[
+    a(0x0040_A130, "Temporal Range Type", T1, None, &[e(None, None, &["POINT", "MULTIPOINT", "SEGMENT", "MULTISEGMENT", "BEGIN", "END"])], ANY, None, &[]),
+    a(0x0040_A132, "Referenced Sample Positions", T1C, Some(C::ReferencedSamplePositions_0a7da3), &[], ANY, None, &[]),
+    a(0x0040_A138, "Referenced Time Offsets", T1C, Some(C::ReferencedTimeOffsets_263fb1), &[], ANY, None, &[]),
+    a(0x0040_A13A, "Referenced DateTime", T1C, Some(C::ReferencedDateTime_b68814), &[], ANY, None, &[]),
+]);
+
+/// Container Macro Attributes
+pub(super) static T_C_18_8_1: Table = t("PS3.3", "C.18.8-1", "C.18.8", &[
+    a(0x0040_A050, "Continuity of Content", T1, None, &[e(None, None, &["SEPARATE", "CONTINUOUS"])], ANY, None, &[]),
+    a(0x0040_A504, "Content Template Sequence", T1C, Some(C::ContentTemplateSequence_613106), &[], Exactly(1), None, &[
+        a(0x0008_0105, "Mapping Resource", T1, None, &[], ANY, None, &[]),
+        a(0x0008_0118, "Mapping Resource UID", T3, None, &[], ANY, None, &[]),
+        a(0x0040_DB00, "Template Identifier", T1, None, &[], ANY, None, &[]),
+    ]),
+]);
+
+/// Table Content Item Macro Attributes
+pub(super) static T_C_18_10_1: Table = t("PS3.3", "C.18.10-1", "C.18.10", &[
+    a(0x0040_A801, "Tabulated Values Sequence", T1, None, &[], Exactly(1), None, &[
+        a(0x0040_A802, "Number of Table Rows", T1, None, &[], ANY, None, &[]),
+        a(0x0040_A803, "Number of Table Columns", T1, None, &[], ANY, None, &[]),
+        a(0x0040_A806, "Table Row Definition Sequence", T3, None, &[], ANY, None, &[
+            a(0x0040_A804, "Table Row Number", T1C, Some(C::TableRowNumber_c720fb), &[], ANY, None, &[]),
+            a(0x0040_A043, "Concept Name Code Sequence", T1, None, &[], Exactly(1), None, &[
+                i(&T_8_8_1),
+            ]),
+            a(0x0040_08EA, "Measurement Units Code Sequence", T1C, Some(C::MeasurementUnitsCodeSequence_95167c), &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Defined, &[82])), &[
+                i(&T_8_8_1),
+            ]),
+        ]),
+        a(0x0040_A807, "Table Column Definition Sequence", T3, None, &[], ANY, None, &[
+            a(0x0040_A805, "Table Column Number", T1C, Some(C::TableColumnNumber_a0b28f), &[], ANY, None, &[]),
+            a(0x0040_A043, "Concept Name Code Sequence", T1, None, &[], Exactly(1), None, &[
+                i(&T_8_8_1),
+            ]),
+            a(0x0040_08EA, "Measurement Units Code Sequence", T1C, Some(C::MeasurementUnitsCodeSequence_641853), &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Defined, &[82])), &[
+                i(&T_8_8_1),
+            ]),
+        ]),
+        a(0x0040_A808, "Cell Values Sequence", T1, None, &[], AtLeast(1), None, &[
+            a(0x0040_A804, "Table Row Number", T1C, Some(C::TableRowNumber_0a17c3), &[], ANY, None, &[]),
+            a(0x0040_A805, "Table Column Number", T1C, Some(C::TableColumnNumber_325185), &[], ANY, None, &[]),
+            a(0x0040_DB73, "Referenced Content Item Identifier", T1C, Some(C::ReferencedContentItemIdentifier_64a61e), &[], ANY, None, &[]),
+            a(0x0072_0050, "Selector Attribute VR", T1C, Some(C::SelectorAttributeVR_b521fa), &[e(None, None, &["DS", "DT", "FD", "FL", "IS", "SL", "SQ", "SS", "SV", "UC", "UL", "US", "UV"])], ANY, None, &[]),
+            a(0x0072_0072, "Selector DS Value", T1C, Some(C::SelectorDSValue_e13c3c), &[], ANY, None, &[]),
+            a(0x0072_0063, "Selector DT Value", T1C, Some(C::SelectorDTValue_01484a), &[], ANY, None, &[]),
+            a(0x0072_0074, "Selector FD Value", T1C, Some(C::SelectorFDValue_3dcd6f), &[], ANY, None, &[]),
+            a(0x0072_0076, "Selector FL Value", T1C, Some(C::SelectorFLValue_99138e), &[], ANY, None, &[]),
+            a(0x0072_0064, "Selector IS Value", T1C, Some(C::SelectorISValue_eb854f), &[], ANY, None, &[]),
+            a(0x0072_007C, "Selector SL Value", T1C, Some(C::SelectorSLValue_ee2837), &[], ANY, None, &[]),
+            a(0x0072_007E, "Selector SS Value", T1C, Some(C::SelectorSSValue_43d1ea), &[], ANY, None, &[]),
+            a(0x0072_0082, "Selector SV Value", T1C, Some(C::SelectorSVValue_88fa3d), &[], ANY, None, &[]),
+            a(0x0072_006F, "Selector UC Value", T1C, Some(C::SelectorUCValue_7e35c8), &[], ANY, None, &[]),
+            a(0x0072_0078, "Selector UL Value", T1C, Some(C::SelectorULValue_6707ef), &[], ANY, None, &[]),
+            a(0x0072_007A, "Selector US Value", T1C, Some(C::SelectorUSValue_e61eaf), &[], ANY, None, &[]),
+            a(0x0072_0083, "Selector UV Value", T1C, Some(C::SelectorUVValue_0bfd57), &[], ANY, None, &[]),
+            a(0x0040_A168, "Concept Code Sequence", T1C, Some(C::ConceptCodeSequence_9c9892), &[], AtLeast(1), None, &[
+                i(&T_8_8_1),
+            ]),
+            a(0x0040_08EA, "Measurement Units Code Sequence", T1C, Some(C::MeasurementUnitsCodeSequence_685e98), &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Defined, &[82])), &[
+                i(&T_8_8_1),
+            ]),
+            a(0x0040_A301, "Numeric Value Qualifier Code Sequence", T1C, Some(C::NumericValueQualifierCodeSequence_21892a), &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Defined, &[42])), &[
+                i(&T_8_8_1),
+            ]),
+        ]),
+    ]),
+]);
+
+/// Document Relationship Macro Attributes
+pub(super) static T_C_17_6: Table = t("PS3.3", "C.17-6", "C.17.3.4", &[
+    a(0x0040_A032, "Observation DateTime", T1C, Some(C::ObservationDateTime_51faf7), &[], ANY, None, &[]),
+    a(0x0040_A171, "Observation UID", T3, None, &[], ANY, None, &[]),
+    a(0x0040_A730, "Content Sequence", T1C, Some(C::ContentSequence_2857ac), &[], AtLeast(1), None, &[
+        a(0x0040_A010, "Relationship Type", T1, None, &[e(None, None, &["CONTAINS", "HAS PROPERTIES", "HAS OBS CONTEXT", "HAS ACQ CONTEXT", "INFERRED FROM", "SELECTED FROM", "HAS CONCEPT MOD"])], ANY, None, &[]),
+        ic(&T_C_17_6, C::IncludeC176_aad59d),
+        ic(&T_C_17_5, C::IncludeC176_aad59d),
+        a(0x0040_DB73, "Referenced Content Item Identifier", T1C, Some(C::ReferencedContentItemIdentifier_74d9aa), &[], ANY, None, &[]),
+    ]),
+]);
+
+/// SR Document Series Module Attributes
+pub(super) static T_C_17_1: Table = t("PS3.3", "C.17-1", "C.17.1", &[
+    a(0x0008_0060, "Modality", T1, None, &[e(None, None, &["SR"])], ANY, None, &[]),
+    a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
+    a(0x0020_0011, "Series Number", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0021, "Series Date", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0031, "Series Time", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1030, "Protocol Name", T3, None, &[], ANY, None, &[]),
+    a(0x0008_103E, "Series Description", T3, None, &[], ANY, None, &[]),
+    a(0x0008_103F, "Series Description Code Sequence", T3, None, &[], AtMost(1), None, &[
+        i(&T_8_8_1),
+    ]),
+    a(0x0008_1111, "Referenced Performed Procedure Step Sequence", T2, None, &[], AtMost(1), None, &[
+        i(&T_10_11),
+    ]),
+    a(0x300A_0700, "Treatment Session UID", T3, None, &[], ANY, None, &[]),
+]);
+
+/// SR Document General Module Attributes
+pub(super) static T_C_17_2: Table = t("PS3.3", "C.17-2", "C.17.2", &[
+    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, None, &[]),
+    a(0x0040_A496, "Preliminary Flag", T3, None, &[e(None, None, &["PRELIMINARY", "FINAL"])], ANY, None, &[]),
+    a(0x0040_A491, "Completion Flag", T1, None, &[e(None, None, &["PARTIAL", "COMPLETE"])], ANY, None, &[]),
+    a(0x0040_A492, "Completion Flag Description", T3, None, &[], ANY, None, &[]),
+    a(0x0040_A493, "Verification Flag", T1, None, &[e(None, None, &["UNVERIFIED", "VERIFIED"])], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+    a(0x0040_A073, "Verifying Observer Sequence", T1C, Some(C::VerifyingObserverSequence_bea66d), &[], AtLeast(1), None, &[
+        a(0x0040_A075, "Verifying Observer Name", T1, None, &[], ANY, None, &[]),
+        a(0x0040_A088, "Verifying Observer Identification Code Sequence", T2, None, &[], AtMost(1), None, &[
+            i(&T_8_8_1),
+        ]),
+        a(0x0040_A027, "Verifying Organization", T1, None, &[], ANY, None, &[]),
+        a(0x0040_A030, "Verification DateTime", T1, None, &[], ANY, None, &[]),
+    ]),
+    a(0x0040_A078, "Author Observer Sequence", T3, None, &[], ANY, None, &[
+        i(&T_C_17_3B),
+    ]),
+    a(0x0040_A07A, "Participant Sequence", T3, None, &[], ANY, None, &[
+        a(0x0040_A080, "Participation Type", T1, None, &[], ANY, None, &[]),
+        a(0x0040_A082, "Participation DateTime", T2, None, &[], ANY, None, &[]),
+        i(&T_C_17_3B),
+    ]),
+    a(0x0040_A07C, "Custodial Organization Sequence", T3, None, &[], AtMost(1), None, &[
+        a(0x0008_0080, "Institution Name", T2, None, &[], ANY, None, &[]),
+        a(0x0008_0082, "Institution Code Sequence", T2, None, &[], AtMost(1), None, &[
+            i(&T_8_8_1),
+        ]),
+        a(0x0008_0220, "Responsible Group Code Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[7030])), &[
+            i(&T_8_8_1),
+        ]),
+    ]),
+    a(0x0040_A360, "Predecessor Documents Sequence", T1C, Some(C::PredecessorDocumentsSequence_e99aef), &[], AtLeast(1), None, &[
+        i(&T_C_17_3__C_17_2),
+    ]),
+    a(0x0040_A525, "Identical Documents Sequence", T1C, Some(C::IdenticalDocumentsSequence_ad93a0), &[], AtLeast(1), None, &[
+        i(&T_C_17_3),
+    ]),
+    a(0x0040_A370, "Referenced Request Sequence", T1C, Some(C::ReferencedRequestSequence_c43dd8), &[], AtLeast(1), None, &[
+        i(&T_C_17_3C),
+    ]),
+    a(0x0040_A372, "Performed Procedure Code Sequence", T2, None, &[], ANY, None, &[
+        i(&T_8_8_1),
+    ]),
+    a(0x0040_A375, "Current Requested Procedure Evidence Sequence", T1C, Some(C::CurrentRequestedProcedureEvidenceSequence_0cdfc8), &[], AtLeast(1), None, &[
+        i(&T_C_17_3),
+    ]),
+    a(0x0040_A385, "Pertinent Other Evidence Sequence", T1C, Some(C::PertinentOtherEvidenceSequence_68205a), &[], AtLeast(1), None, &[
+        i(&T_C_17_3),
+    ]),
+    a(0x0008_114A, "Referenced Instance Sequence", T1C, Some(C::ReferencedInstanceSequence_fa9b97), &[], AtLeast(1), None, &[
+        i(&T_10_11),
+        a(0x0040_A170, "Purpose of Reference Code Sequence", T1, None, &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Defined, &[7006])), &[
+            i(&T_8_8_1),
+        ]),
+    ]),
+]);
+
+/// Identified Person or Device Macro Attributes
+pub(super) static T_C_17_3B: Table = t("PS3.3", "C.17-3b", "C.17.2.4", &[
+    a(0x0040_A084, "Observer Type", T1, None, &[e(None, None, &["PSN", "DEV"])], ANY, None, &[]),
+    a(0x0040_A123, "Person Name", T1C, Some(C::PersonName_5a02d8), &[], ANY, None, &[]),
+    a(0x0040_1101, "Person Identification Code Sequence", T2C, Some(C::PersonName_5a02d8), &[], AtMost(1), None, &[
+        i(&T_8_8_1),
+    ]),
+    a(0x0044_010A, "Organizational Role Code Sequence", T3, None, &[], ANY, None, &[
+        i(&T_8_8_1),
+    ]),
+    a(0x0008_1010, "Station Name", T2C, Some(C::StationName_c7d092), &[], ANY, None, &[]),
+    a(0x0018_1002, "Device UID", T1C, Some(C::StationName_c7d092), &[], ANY, None, &[]),
+    a(0x0008_0070, "Manufacturer", T1C, Some(C::StationName_c7d092), &[], ANY, None, &[]),
+    a(0x0008_1090, "Manufacturer's Model Name", T1C, Some(C::StationName_c7d092), &[], ANY, None, &[]),
+    a(0x0008_0055, "Station AE Title", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1000, "Device Serial Number", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1020, "Software Versions", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1204, "Date of Manufacture", T3, None, &[], ANY, None, &[]),
+    a(0x0018_1205, "Date of Installation", T3, None, &[], ANY, None, &[]),
+    a(0x0008_0080, "Institution Name", T2, None, &[], ANY, None, &[]),
+    a(0x0008_0082, "Institution Code Sequence", T2, None, &[], AtMost(1), None, &[
+        i(&T_8_8_1),
+    ]),
+    a(0x0008_1040, "Institutional Department Name", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1041, "Institutional Department Type Code Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[7030])), &[
+        i(&T_8_8_1),
+    ]),
+]);
+
+/// File-Set Identification Module Attributes
+pub(super) static T_F_3_2: Table = t("PS3.3", "F.3-2", "F.3.2.1", &[
+    a(0x0004_1130, "File-set ID", T2, None, &[], ANY, None, &[]),
+    a(0x0004_1141, "File-set Descriptor File ID", T3, None, &[], ANY, None, &[]),
+    a(0x0004_1142, "Specific Character Set of File-set Descriptor File", T1C, Some(C::SpecificCharacterSetOfFileSetDescriptorFile_793b31), &[], ANY, None, &[]),
+]);
+
+/// Directory Information Module Attributes
+pub(super) static T_F_3_3: Table = t("PS3.3", "F.3-3", "F.3.2.2", &[
+    a(0x0004_1200, "Offset of the First Directory Record of the Root Directory Entity", T1, None, &[], ANY, None, &[]),
+    a(0x0004_1202, "Offset of the Last Directory Record of the Root Directory Entity", T1, None, &[], ANY, None, &[]),
+    a(0x0004_1212, "File-set Consistency Flag", T1, None, &[e(None, None, &["0"])], ANY, None, &[]),
+    a(0x0004_1220, "Directory Record Sequence", T2, None, &[], ANY, None, &[
+        a(0x0004_1400, "Offset of the Next Directory Record", T1, None, &[], ANY, None, &[]),
+        a(0x0004_1410, "Record In-use Flag", T1, None, &[e(None, None, &["65535"])], ANY, None, &[]),
+        a(0x0004_1420, "Offset of Referenced Lower-Level Directory Entity", T1, None, &[], ANY, None, &[]),
+        a(0x0004_1430, "Directory Record Type", T1, None, &[e(None, None, &["PATIENT", "STUDY", "SERIES", "IMAGE", "RADIOTHERAPY", "RT DOSE", "RT STRUCTURE SET", "RT PLAN", "PLAN", "RT TREAT RECORD", "PRESENTATION", "WAVEFORM", "SR DOCUMENT", "KEY OBJECT DOC", "SPECTROSCOPY", "RAW DATA", "REGISTRATION", "FIDUCIAL", "HANGING PROTOCOL", "ENCAP DOC", "VALUE MAP", "STEREOMETRIC", "PALETTE", "IMPLANT", "IMPLANT GROUP", "IMPLANT ASSY", "MEASUREMENT", "SURFACE", "SURFACE SCAN", "TRACT", "ASSESSMENT", "ANNOTATION", "INVENTORY", "WF PRESENTATION", "PRIVATE"])], ANY, None, &[]),
+        a(0x0004_1432, "Private Record UID", T1C, Some(C::PrivateRecordUID_399277), &[], ANY, None, &[]),
+        a(0x0004_1500, "Referenced File ID", T1C, Some(C::ReferencedFileID_3760d0), &[], ANY, None, &[]),
+        a(0x0004_1510, "Referenced SOP Class UID in File", T1C, Some(C::ReferencedSOPClassUIDInFile_b5b28b), &[], ANY, None, &[]),
+        a(0x0004_1511, "Referenced SOP Instance UID in File", T1C, Some(C::ReferencedSOPClassUIDInFile_b5b28b), &[], ANY, None, &[]),
+        a(0x0004_1512, "Referenced Transfer Syntax UID in File", T1C, Some(C::ReferencedSOPClassUIDInFile_b5b28b), &[], ANY, None, &[]),
+        a(0x0004_151A, "Referenced Related General SOP Class UID in File", T1C, Some(C::ReferencedRelatedGeneralSOPClassUIDInFile_f4b354), &[], ANY, None, &[]),
+        k(&RECORD_SELECTION_KEYS),
+    ]),
+]);
+
+/// Patient Keys
+pub(super) static T_F_5_1: Table = t("PS3.3", "F.5-1", "F.5.1", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0010_0010, "Patient's Name", T2, None, &[], ANY, None, &[]),
+    a(0x0010_0020, "Patient ID", T1, None, &[], ANY, None, &[]),
+]);
+
+/// Study Keys
+pub(super) static T_F_5_2: Table = t("PS3.3", "F.5-2", "F.5.2", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0008_0020, "Study Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0030, "Study Time", T1, None, &[], ANY, None, &[]),
+    a(0x0008_1030, "Study Description", T2, None, &[], ANY, None, &[]),
+    a(0x0020_000D, "Study Instance UID", T1, None, &[], ANY, None, &[]),
+    a(0x0020_0010, "Study ID", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0050, "Accession Number", T2, None, &[], ANY, None, &[]),
+]);
+
+/// Series Keys
+pub(super) static T_F_5_3: Table = t("PS3.3", "F.5-3", "F.5.3", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0008_0060, "Modality", T1, None, &[], ANY, None, &[]),
+    a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
+    a(0x0020_0011, "Series Number", T1, None, &[], ANY, None, &[]),
+    a(0x0088_0200, "Icon Image Sequence", T3, None, &[], AtMost(1), None, &[
+        i(&T_C_7_11B),
+    ]),
+]);
+
+/// Image Keys
+pub(super) static T_F_5_4: Table = t("PS3.3", "F.5-4", "F.5.4", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, None, &[]),
+    a(0x0088_0200, "Icon Image Sequence", T3, None, &[], AtMost(1), None, &[
+        i(&T_C_7_11B),
+    ]),
+]);
+
+/// RT Dose Keys
+pub(super) static T_F_5_19: Table = t("PS3.3", "F.5-19", "F.5.19", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, None, &[]),
+    a(0x3004_000A, "Dose Summation Type", T1, None, &[], ANY, None, &[]),
+    a(0x3004_0006, "Dose Comment", T3, None, &[], ANY, None, &[]),
+    a(0x0088_0200, "Icon Image Sequence", T3, None, &[], AtMost(1), None, &[
+        i(&T_C_7_11B),
+    ]),
+]);
+
+/// RT Structure Set Keys
+pub(super) static T_F_5_20: Table = t("PS3.3", "F.5-20", "F.5.20", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, None, &[]),
+    a(0x3006_0002, "Structure Set Label", T1, None, &[], ANY, None, &[]),
+    a(0x3006_0008, "Structure Set Date", T2, None, &[], ANY, None, &[]),
+    a(0x3006_0009, "Structure Set Time", T2, None, &[], ANY, None, &[]),
+]);
+
+/// RT Plan Keys
+pub(super) static T_F_5_21: Table = t("PS3.3", "F.5-21", "F.5.21", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, None, &[]),
+    a(0x300A_0002, "RT Plan Label", T1, None, &[], ANY, None, &[]),
+    a(0x300A_0006, "RT Plan Date", T2, None, &[], ANY, None, &[]),
+    a(0x300A_0007, "RT Plan Time", T2, None, &[], ANY, None, &[]),
+]);
+
+/// RT Treatment Record Keys
+pub(super) static T_F_5_22: Table = t("PS3.3", "F.5-22", "F.5.22", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, None, &[]),
+    a(0x3008_0250, "Treatment Date", T2, None, &[], ANY, None, &[]),
+    a(0x3008_0251, "Treatment Time", T2, None, &[], ANY, None, &[]),
+]);
+
+/// Presentation Keys
+pub(super) static T_F_5_23: Table = t("PS3.3", "F.5-23", "F.5.23", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0070_0082, "Presentation Creation Date", T1, None, &[], ANY, None, &[]),
+    a(0x0070_0083, "Presentation Creation Time", T1, None, &[], ANY, None, &[]),
+    i(&T_10_12),
+    a(0x0008_1115, "Referenced Series Sequence", T1C, Some(C::ReferencedSeriesSequence_5fba33), &[], AtLeast(1), None, &[
+        a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
+        a(0x0008_1140, "Referenced Image Sequence", T1, None, &[], AtLeast(1), None, &[
+            i(&T_10_11),
+        ]),
+    ]),
+    a(0x0070_0402, "Blending Sequence", T1C, Some(C::BlendingSequence_942c1d), &[], Exactly(2), None, &[
+        a(0x0020_000D, "Study Instance UID", T1, None, &[], ANY, None, &[]),
+        a(0x0008_1115, "Referenced Series Sequence", T1, None, &[], Exactly(1), None, &[
+            a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
+            a(0x0008_1140, "Referenced Image Sequence", T1, None, &[], AtLeast(1), None, &[
+                i(&T_10_11),
+            ]),
+        ]),
+    ]),
+]);
+
+/// Waveform Keys
+pub(super) static T_F_5_24: Table = t("PS3.3", "F.5-24", "F.5.24", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+]);
+
+/// SR Document Keys
+pub(super) static T_F_5_25: Table = t("PS3.3", "F.5-25", "F.5.25", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, None, &[]),
+    a(0x0040_A491, "Completion Flag", T1, None, &[], ANY, None, &[]),
+    a(0x0040_A493, "Verification Flag", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+    a(0x0040_A030, "Verification DateTime", T1C, Some(C::VerifyingObserverSequence_bea66d), &[], ANY, None, &[]),
+    a(0x0040_A043, "Concept Name Code Sequence", T1, None, &[], Exactly(1), None, &[
+        i(&T_8_8_1),
+    ]),
+    a(0x0040_A730, "Content Sequence", T1C, Some(C::ContentSequence_fd3381), &[], AtLeast(1), None, &[
+        a(0x0040_A010, "Relationship Type", T1, None, &[e(None, None, &["HAS CONCEPT MOD"])], ANY, None, &[]),
+        i(&T_C_17_5),
+    ]),
+]);
+
+/// Key Object Document Keys
+pub(super) static T_F_5_26: Table = t("PS3.3", "F.5-26", "F.5.26", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+    a(0x0040_A043, "Concept Name Code Sequence", T1, None, &[], Exactly(1), None, &[
+        i(&T_8_8_1),
+    ]),
+    a(0x0040_A730, "Content Sequence", T1C, Some(C::ContentSequence_fd3381), &[], AtLeast(1), None, &[
+        a(0x0040_A010, "Relationship Type", T1, None, &[e(None, None, &["HAS CONCEPT MOD"])], ANY, None, &[]),
+        i(&T_C_17_5),
+    ]),
+]);
+
+/// Spectroscopy Keys
+pub(super) static T_F_5_27: Table = t("PS3.3", "F.5-27", "F.5.27", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0008_0008, "Image Type", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, None, &[]),
+    a(0x0008_9092, "Referenced Image Evidence Sequence", T1C, Some(C::ReferencedImageEvidenceSequence_52b821), &[], AtLeast(1), None, &[
+        i(&T_C_17_3),
+    ]),
+    a(0x0028_0008, "Number of Frames", T1, None, &[], ANY, None, &[]),
+    a(0x0028_0010, "Rows", T1, None, &[], ANY, None, &[]),
+    a(0x0028_0011, "Columns", T1, None, &[], ANY, None, &[]),
+    a(0x0028_9001, "Data Point Rows", T1, None, &[], ANY, None, &[]),
+    a(0x0028_9002, "Data Point Columns", T1, None, &[], ANY, None, &[]),
+    a(0x0088_0200, "Icon Image Sequence", T3, None, &[], AtMost(1), None, &[
+        i(&T_C_7_11B),
+    ]),
+]);
+
+/// Raw Data Keys
+pub(super) static T_F_5_28: Table = t("PS3.3", "F.5-28", "F.5.28", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+    a(0x0020_0013, "Instance Number", T2, None, &[], ANY, None, &[]),
+    a(0x0088_0200, "Icon Image Sequence", T3, None, &[], AtMost(1), None, &[
+        i(&T_C_7_11B),
+    ]),
+]);
+
+/// Registration Keys
+pub(super) static T_F_5_29: Table = t("PS3.3", "F.5-29", "F.5.29", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+    i(&T_10_12),
+]);
+
+/// Fiducial Keys
+pub(super) static T_F_5_30: Table = t("PS3.3", "F.5-30", "F.5.30", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+    i(&T_10_12),
+]);
+
+/// Hanging Protocol Keys
+pub(super) static T_F_5_31: Table = t("PS3.3", "F.5-31", "F.5.31", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0072_0002, "Hanging Protocol Name", T1, None, &[], ANY, None, &[]),
+    a(0x0072_0004, "Hanging Protocol Description", T1, None, &[], ANY, None, &[]),
+    a(0x0072_0006, "Hanging Protocol Level", T1, None, &[], ANY, None, &[]),
+    a(0x0072_0008, "Hanging Protocol Creator", T1, None, &[], ANY, None, &[]),
+    a(0x0072_000A, "Hanging Protocol Creation DateTime", T1, None, &[], ANY, None, &[]),
+    a(0x0072_000C, "Hanging Protocol Definition Sequence", T1, None, &[], AtLeast(1), None, &[
+        a(0x0008_0060, "Modality", T1C, Some(C::Modality_12e144), &[], ANY, None, &[]),
+        a(0x0008_2218, "Anatomic Region Sequence", T1C, Some(C::AnatomicRegionSequence_e8c3b8), &[], AtLeast(1), None, &[
+            i(&T_8_8_1),
+        ]),
+        a(0x0020_0060, "Laterality", T2C, Some(C::Laterality_463eac), &[], ANY, None, &[]),
+        a(0x0008_1032, "Procedure Code Sequence", T2, None, &[], ANY, None, &[
+            i(&T_8_8_1),
+        ]),
+        a(0x0040_100A, "Reason for Requested Procedure Code Sequence", T2, None, &[], ANY, None, &[
+            i(&T_8_8_1),
+        ]),
+    ]),
+    a(0x0072_0014, "Number of Priors Referenced", T1, None, &[], ANY, None, &[]),
+    a(0x0072_000E, "Hanging Protocol User Identification Code Sequence", T2, None, &[], AtMost(1), None, &[
+        i(&T_8_8_1),
+    ]),
+]);
+
+/// Encapsulated Document Keys
+pub(super) static T_F_5_32: Table = t("PS3.3", "F.5-32", "F.5.32", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T2, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T2, None, &[], ANY, None, &[]),
+    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, None, &[]),
+    a(0x0042_0010, "Document Title", T2, None, &[], ANY, None, &[]),
+    a(0x0040_E001, "HL7 Instance Identifier", T1C, Some(C::HL7InstanceIdentifier_bf2ac9), &[], ANY, None, &[]),
+    a(0x0040_A043, "Concept Name Code Sequence", T2, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[7020])), &[
+        i(&T_8_8_1),
+    ]),
+    a(0x0042_0012, "MIME Type of Encapsulated Document", T1, None, &[], ANY, None, &[]),
+]);
+
+/// Real World Value Mapping Keys
+pub(super) static T_F_5_34: Table = t("PS3.3", "F.5-34", "F.5.34", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+    i(&T_10_12),
+]);
+
+/// Stereometric Relationship Keys
+pub(super) static T_F_5_35: Table = t("PS3.3", "F.5-35", "F.5.35", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+]);
+
+/// Palette Keys
+pub(super) static T_F_5_36: Table = t("PS3.3", "F.5-36", "F.5.36", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0070_0080, "Content Label", T1, None, &[], ANY, None, &[]),
+    a(0x0070_0081, "Content Description", T2, None, &[], ANY, None, &[]),
+]);
+
+/// Implant Keys
+pub(super) static T_F_5_37: Table = t("PS3.3", "F.5-37", "F.5.37", &[
+    a(0x0008_0070, "Manufacturer", T1, None, &[], ANY, None, &[]),
+    a(0x0022_1095, "Implant Name", T1, None, &[], ANY, None, &[]),
+    a(0x0068_6210, "Implant Size", T1C, Some(C::ImplantSize_62ba2f), &[], ANY, None, &[]),
+    a(0x0022_1097, "Implant Part Number", T1, None, &[], ANY, None, &[]),
+]);
+
+/// Implant Assembly Keys
+pub(super) static T_F_5_38: Table = t("PS3.3", "F.5-38", "F.5.38", &[
+    a(0x0076_0001, "Implant Assembly Template Name", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0070, "Manufacturer", T1, None, &[], ANY, None, &[]),
+    a(0x0076_0020, "Procedure Type Code Sequence", T1, None, &[], AtLeast(1), None, &[
+        i(&T_8_8_1),
+    ]),
+]);
+
+/// Implant Group Keys
+pub(super) static T_F_5_39: Table = t("PS3.3", "F.5-39", "F.5.39", &[
+    a(0x0078_0001, "Implant Template Group Name", T1, None, &[], ANY, None, &[]),
+    a(0x0078_0010, "Implant Template Group Description", T3, None, &[], ANY, None, &[]),
+    a(0x0078_0020, "Implant Template Group Issuer", T1, None, &[], ANY, None, &[]),
+]);
+
+/// Plan Keys
+pub(super) static T_F_5_40: Table = t("PS3.3", "F.5-40", "F.5.40", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+]);
+
+/// Measurement Keys
+pub(super) static T_F_5_41: Table = t("PS3.3", "F.5-41", "F.5.41", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+    i(&T_10_12),
+]);
+
+/// Surface Keys
+pub(super) static T_F_5_42: Table = t("PS3.3", "F.5-42", "F.5.42", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+    i(&T_10_12),
+]);
+
+/// Surface Scan Keys
+pub(super) static T_F_5_43: Table = t("PS3.3", "F.5-43", "F.5.43", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+]);
+
+/// Tractography Results Keys
+pub(super) static T_F_5_44: Table = t("PS3.3", "F.5-44", "F.5.44", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+    i(&T_10_12),
+]);
+
+/// Content Assessment Results Directory Record Results Keys
+pub(super) static T_F_5_45: Table = t("PS3.3", "F.5-45", "F.5.45", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0012, "Instance Creation Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0013, "Instance Creation Time", T2, None, &[], ANY, None, &[]),
+]);
+
+/// Radiotherapy Keys
+pub(super) static T_F_5_46: Table = t("PS3.3", "F.5-46", "F.5.46", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0020_0013, "Instance Number", T1, None, &[], ANY, None, &[]),
+    a(0x3010_0033, "User Content Label", T1C, Some(C::UserContentLabel_c9e668), &[], ANY, None, &[]),
+    a(0x3010_0034, "User Content Long Label", T1C, Some(C::UserContentLongLabel_22bf5d), &[], ANY, None, &[]),
+    a(0x0070_0081, "Content Description", T2, None, &[], ANY, None, &[]),
+    a(0x0070_0084, "Content Creator's Name", T2, None, &[], ANY, None, &[]),
+]);
+
+/// Microscopy Bulk Simple Annotations Keys
+pub(super) static T_F_5_47: Table = t("PS3.3", "F.5-47", "F.5.47", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+    i(&T_10_12),
+]);
+
+/// Inventory Keys
+pub(super) static T_F_5_48: Table = t("PS3.3", "F.5-48", "F.5.48", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0008_0023, "Content Date", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0033, "Content Time", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0401, "Inventory Purpose", T2, None, &[], ANY, None, &[]),
+    a(0x0008_0403, "Inventory Level", T1, None, &[], ANY, None, &[]),
+    i(&T_C_38_2_1),
+    a(0x0008_0426, "Inventory Completion Status", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0428, "Total Number of Study Records", T1, None, &[], ANY, None, &[]),
+]);
+
+/// Scope of Inventory Macro Attributes
+pub(super) static T_C_38_2_1: Table = t("PS3.3", "C.38.2-1", "C.38.2.1", &[
+    a(0x0008_0400, "Scope of Inventory Sequence", T2, None, &[], AtMost(1), None, &[
+        a(0x0008_040F, "Extended Matching Mechanisms", T1C, Some(C::ExtendedMatchingMechanisms_af2f2b), &[e(None, None, &["RELATIONAL", "COMBINED_DT", "FUZZY_SEMANTIC", "TIMEZONE_ADJUST", "EMPTY_VALUE", "MULTIPLE_VALUE"])], ANY, None, &[]),
+        a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_00ceec), &[], ANY, None, &[]),
+        a(0x0008_0201, "Timezone Offset from UTC", T1C, Some(C::TimezoneOffsetFromUTC_68b8ba), &[], ANY, None, &[]),
+        a(0x0008_0052, "Query/Retrieve Level", T1C, Some(C::QueryRetrieveLevel_29856c), &[e(None, None, &["STUDY", "SERIES", "IMAGE"])], ANY, None, &[]),
+        a(0x0008_0410, "Range Matching Sequence", T1C, Some(C::RangeMatchingSequence_ce4c8a), &[], Exactly(2), None, &[]),
+        a(0x0008_0411, "List of UID Matching Sequence", T1C, Some(C::ListOfUIDMatchingSequence_e8cd11), &[], AtLeast(1), None, &[]),
+        a(0x0008_0412, "Empty Value Matching Sequence", T1C, Some(C::EmptyValueMatchingSequence_714fca), &[], AtMost(1), None, &[]),
+        a(0x0008_0413, "General Matching Sequence", T1C, Some(C::GeneralMatchingSequence_e9665b), &[], AtMost(1), None, &[]),
+    ]),
+]);
+
+/// Waveform Presentation Keys
+pub(super) static T_F_5_49: Table = t("PS3.3", "F.5-49", "F.5.49", &[
+    a(0x0008_0005, "Specific Character Set", T1C, Some(C::SpecificCharacterSet_ebd0ce), &[], ANY, None, &[]),
+    a(0x0070_0082, "Presentation Creation Date", T1, None, &[], ANY, None, &[]),
+    a(0x0070_0083, "Presentation Creation Time", T1, None, &[], ANY, None, &[]),
+    i(&T_10_12),
+    a(0x0008_1115, "Referenced Series Sequence", T1C, Some(C::ReferencedSeriesSequence_8c3b36), &[], AtLeast(1), None, &[
+        a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
+        a(0x0008_114A, "Referenced Instance Sequence", T1C, Some(C::ReferencedInstanceSequence_e2c71a), &[], AtLeast(1), None, &[
+            i(&T_10_11),
+        ]),
+        a(0x0008_113A, "Referenced Waveform Sequence", T1C, Some(C::ReferencedWaveformSequence_f42349), &[], AtLeast(1), None, &[
+            i(&T_10_11),
+        ]),
+    ]),
+]);
+
+/// Composite Object Reference Macro Attributes
+pub(super) static T_C_18_3_1__C_18_4_1: Table = t("PS3.3", "C.18.3-1", "C.18.3", &[
+    a(0x0008_1199, "Referenced SOP Sequence", T1, None, &[], Exactly(1), None, &[
+        i(&T_10_11),
+        a(0x0008_1160, "Referenced Frame Number", T1C, Some(C::ReferencedFrameNumber_1e1f84), &[], ANY, None, &[]),
+        a(0x0062_000B, "Referenced Segment Number", T1C, Some(C::ReferencedSegmentNumber_19fe72), &[], ANY, None, &[]),
+        a(0x0008_1199, "Referenced SOP Sequence", T3, None, &[], AtMost(1), None, &[
+            i(&T_10_11),
+        ]),
+        a(0x0008_114B, "Referenced Real World Value Mapping Instance Sequence", T3, None, &[], AtMost(1), None, &[
+            i(&T_10_11),
+        ]),
+        a(0x0088_0200, "Icon Image Sequence", T3, None, &[], AtMost(1), None, &[
+            i(&T_C_7_11B),
+        ]),
+    ]),
+]);
+
+/// Composite Object Reference Macro Attributes
+pub(super) static T_C_18_3_1__C_18_5_1: Table = t("PS3.3", "C.18.3-1", "C.18.3", &[
+    a(0x0008_1199, "Referenced SOP Sequence", T1, None, &[], Exactly(1), None, &[
+        i(&T_10_11),
+        a(0x0040_A0B0, "Referenced Waveform Channels", T1C, Some(C::ReferencedWaveformChannels_6a695a), &[], ANY, None, &[]),
+    ]),
+]);
+
 /// General Anatomy Optional Macro Attributes
 pub(super) static T_10_7__C_7_9: Table = t("PS3.3", "10-7", "10.5", &[
     a(0x0008_2218, "Anatomic Region Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[4031, 7483])), &[
@@ -5252,6 +6154,20 @@ pub(super) static T_C_7_6_16_12B__C_7_6_16_12: Table = t("PS3.3", "C.7.6.16-12b"
     ]),
 ]);
 
+/// Algorithm Identification Macro Attributes
+pub(super) static T_10_19__C_8_20_2: Table = t("PS3.3", "10-19", "10.16", &[
+    a(0x0066_002F, "Algorithm Family Code Sequence", T1, None, &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[7162])), &[
+        i(&T_8_8_1),
+    ]),
+    a(0x0066_0030, "Algorithm Name Code Sequence", T3, None, &[], AtMost(1), None, &[
+        i(&T_8_8_1),
+    ]),
+    a(0x0066_0036, "Algorithm Name", T1, None, &[], ANY, None, &[]),
+    a(0x0066_0031, "Algorithm Version", T1, None, &[], ANY, None, &[]),
+    a(0x0066_0032, "Algorithm Parameters", T3, None, &[], ANY, None, &[]),
+    a(0x0024_0202, "Algorithm Source", T3, None, &[], ANY, None, &[]),
+]);
+
 /// Primary Anatomic Structure Macro Attributes
 pub(super) static T_10_8__C_7_6_16_9: Table = t("PS3.3", "10-8", "10.5", &[
     a(0x0008_2228, "Primary Anatomic Structure Sequence", T3, None, &[], ANY, None, &[
@@ -5273,18 +6189,39 @@ pub(super) static T_10_5__C_7_6_16_9: Table = t("PS3.3", "10-5", "10.5", &[
     i(&T_10_8__C_7_6_16_9),
 ]);
 
-/// Algorithm Identification Macro Attributes
-pub(super) static T_10_19__C_8_20_2: Table = t("PS3.3", "10-19", "10.16", &[
-    a(0x0066_002F, "Algorithm Family Code Sequence", T1, None, &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[7162])), &[
-        i(&T_8_8_1),
+/// Hierarchical Series Reference Macro Attributes
+pub(super) static T_C_17_3A__C_17_2: Table = t("PS3.3", "C.17-3a", "C.17.2.1", &[
+    a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
+    a(0x0008_0054, "Retrieve AE Title", T3, None, &[], ANY, None, &[]),
+    a(0x0040_E011, "Retrieve Location UID", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1190, "Retrieve URL", T3, None, &[], ANY, None, &[]),
+    a(0x0088_0130, "Storage Media File-Set ID", T3, None, &[], ANY, None, &[]),
+    a(0x0088_0140, "Storage Media File-Set UID", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1199, "Referenced SOP Sequence", T1, None, &[], AtLeast(1), None, &[
+        i(&T_10_11),
+        a(0x0040_A170, "Purpose of Reference Code Sequence", T3, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Defined, &[7009])), &[
+            i(&T_8_8_1),
+        ]),
+        a(0x0400_0402, "Referenced Digital Signature Sequence", T3, None, &[], ANY, None, &[
+            a(0x0400_0100, "Digital Signature UID", T1, None, &[], ANY, None, &[]),
+            a(0x0400_0120, "Signature", T1, None, &[], ANY, None, &[]),
+        ]),
+        a(0x0400_0403, "Referenced SOP Instance MAC Sequence", T3, None, &[], AtMost(1), None, &[
+            a(0x0400_0010, "MAC Calculation Transfer Syntax UID", T1, None, &[], ANY, None, &[]),
+            a(0x0400_0015, "MAC Algorithm", T1, None, &[], ANY, None, &[]),
+            a(0x0400_0020, "Data Elements Signed", T1, None, &[], ANY, None, &[]),
+            a(0x0400_0404, "MAC", T1, None, &[], ANY, None, &[]),
+        ]),
     ]),
-    a(0x0066_0030, "Algorithm Name Code Sequence", T3, None, &[], AtMost(1), None, &[
-        i(&T_8_8_1),
+]);
+
+/// Hierarchical SOP Instance Reference Macro Attributes
+pub(super) static T_C_17_3__C_17_2: Table = t("PS3.3", "C.17-3", "C.17.2.1", &[
+    a(0x0020_000D, "Study Instance UID", T1, None, &[], ANY, None, &[]),
+    a(0x0040_E012, "Display URI", T3, None, &[], ANY, None, &[]),
+    a(0x0008_1115, "Referenced Series Sequence", T1, None, &[], AtLeast(1), None, &[
+        i(&T_C_17_3A__C_17_2),
     ]),
-    a(0x0066_0036, "Algorithm Name", T1, None, &[], ANY, None, &[]),
-    a(0x0066_0031, "Algorithm Version", T1, None, &[], ANY, None, &[]),
-    a(0x0066_0032, "Algorithm Parameters", T3, None, &[], ANY, None, &[]),
-    a(0x0024_0202, "Algorithm Source", T3, None, &[], ANY, None, &[]),
 ]);
 
 /// Optical Path Module Attributes
@@ -5338,252 +6275,6 @@ pub(super) static T_C_7_6_16_6__A_32_8: Table = t("PS3.3", "C.7.6.16-6", "C.7.6.
             i(&T_8_8_1),
         ]),
     ]),
-]);
-
-/// General Series Module Attributes
-pub(super) static T_C_7_5A__A_32_2: Table = t("PS3.3", "C.7-5a", "C.7.3.1", &[
-    a(0x0008_0060, "Modality", T1, None, &[e(None, None, &["GM"])], ANY, None, &[]),
-    a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
-    a(0x0020_0011, "Series Number", T2, None, &[], ANY, None, &[]),
-    a(0x0020_0060, "Laterality", T2C, Some(C::Laterality_0273c7), &[e(None, None, &["R", "L"])], ANY, None, &[]),
-    a(0x0008_0021, "Series Date", T3, None, &[], ANY, None, &[]),
-    a(0x0008_0031, "Series Time", T3, None, &[], ANY, None, &[]),
-    a(0x0008_1050, "Performing Physician's Name", T3, None, &[], ANY, None, &[]),
-    a(0x0008_1052, "Performing Physician Identification Sequence", T3, None, &[], ANY, None, &[
-        i(&T_10_1),
-    ]),
-    a(0x0018_1030, "Protocol Name", T3, None, &[], ANY, None, &[]),
-    a(0x0008_103E, "Series Description", T3, None, &[], ANY, None, &[]),
-    a(0x0008_103F, "Series Description Code Sequence", T3, None, &[], AtMost(1), None, &[
-        i(&T_8_8_1),
-    ]),
-    a(0x0008_1070, "Operators' Name", T3, None, &[], ANY, None, &[]),
-    a(0x0008_1072, "Operator Identification Sequence", T3, None, &[], ANY, None, &[
-        i(&T_10_1),
-    ]),
-    a(0x0008_1111, "Referenced Performed Procedure Step Sequence", T3, None, &[], AtMost(1), None, &[
-        i(&T_10_11),
-    ]),
-    a(0x0008_1250, "Related Series Sequence", T3, None, &[], ANY, None, &[
-        a(0x0020_000D, "Study Instance UID", T1, None, &[], ANY, None, &[]),
-        a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
-        a(0x0040_A170, "Purpose of Reference Code Sequence", T2, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Defined, &[7210])), &[
-            i(&T_8_8_1),
-        ]),
-    ]),
-    a(0x0018_0015, "Body Part Examined", T3, None, &[], ANY, None, &[]),
-    a(0x0018_5100, "Patient Position", T2C, Some(C::PatientPosition_3d8fad), &[], ANY, None, &[]),
-    a(0x0028_0108, "Smallest Pixel Value in Series", T3, None, &[], ANY, None, &[]),
-    a(0x0028_0109, "Largest Pixel Value in Series", T3, None, &[], ANY, None, &[]),
-    a(0x0040_0275, "Request Attributes Sequence", T3, None, &[], ANY, None, &[
-        i(&T_10_9),
-    ]),
-    i(&T_10_16),
-    a(0x0010_2210, "Anatomical Orientation Type", T1C, Some(C::AnatomicalOrientationType_a42424), &[e(None, None, &["BIPED", "QUADRUPED"])], ANY, None, &[]),
-    a(0x300A_0700, "Treatment Session UID", T3, None, &[], ANY, None, &[]),
-]);
-
-/// General Series Module Attributes
-pub(super) static T_C_7_5A__A_32_3: Table = t("PS3.3", "C.7-5a", "C.7.3.1", &[
-    a(0x0008_0060, "Modality", T1, None, &[e(None, None, &["SM"])], ANY, None, &[]),
-    a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
-    a(0x0020_0011, "Series Number", T2, None, &[], ANY, None, &[]),
-    a(0x0020_0060, "Laterality", T2C, Some(C::Laterality_0273c7), &[e(None, None, &["R", "L"])], ANY, None, &[]),
-    a(0x0008_0021, "Series Date", T3, None, &[], ANY, None, &[]),
-    a(0x0008_0031, "Series Time", T3, None, &[], ANY, None, &[]),
-    a(0x0008_1050, "Performing Physician's Name", T3, None, &[], ANY, None, &[]),
-    a(0x0008_1052, "Performing Physician Identification Sequence", T3, None, &[], ANY, None, &[
-        i(&T_10_1),
-    ]),
-    a(0x0018_1030, "Protocol Name", T3, None, &[], ANY, None, &[]),
-    a(0x0008_103E, "Series Description", T3, None, &[], ANY, None, &[]),
-    a(0x0008_103F, "Series Description Code Sequence", T3, None, &[], AtMost(1), None, &[
-        i(&T_8_8_1),
-    ]),
-    a(0x0008_1070, "Operators' Name", T3, None, &[], ANY, None, &[]),
-    a(0x0008_1072, "Operator Identification Sequence", T3, None, &[], ANY, None, &[
-        i(&T_10_1),
-    ]),
-    a(0x0008_1111, "Referenced Performed Procedure Step Sequence", T3, None, &[], AtMost(1), None, &[
-        i(&T_10_11),
-    ]),
-    a(0x0008_1250, "Related Series Sequence", T3, None, &[], ANY, None, &[
-        a(0x0020_000D, "Study Instance UID", T1, None, &[], ANY, None, &[]),
-        a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
-        a(0x0040_A170, "Purpose of Reference Code Sequence", T2, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Defined, &[7210])), &[
-            i(&T_8_8_1),
-        ]),
-    ]),
-    a(0x0018_0015, "Body Part Examined", T3, None, &[], ANY, None, &[]),
-    a(0x0018_5100, "Patient Position", T2C, Some(C::PatientPosition_3d8fad), &[], ANY, None, &[]),
-    a(0x0028_0108, "Smallest Pixel Value in Series", T3, None, &[], ANY, None, &[]),
-    a(0x0028_0109, "Largest Pixel Value in Series", T3, None, &[], ANY, None, &[]),
-    a(0x0040_0275, "Request Attributes Sequence", T3, None, &[], ANY, None, &[
-        i(&T_10_9),
-    ]),
-    i(&T_10_16),
-    a(0x0010_2210, "Anatomical Orientation Type", T1C, Some(C::AnatomicalOrientationType_a42424), &[e(None, None, &["BIPED", "QUADRUPED"])], ANY, None, &[]),
-    a(0x300A_0700, "Treatment Session UID", T3, None, &[], ANY, None, &[]),
-]);
-
-/// General Series Module Attributes
-pub(super) static T_C_7_5A__A_90_1: Table = t("PS3.3", "C.7-5a", "C.7.3.1", &[
-    a(0x0008_0060, "Modality", T1, None, &[e(None, None, &["CFM"])], ANY, None, &[]),
-    a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
-    a(0x0020_0011, "Series Number", T2, None, &[], ANY, None, &[]),
-    a(0x0020_0060, "Laterality", T2C, Some(C::Laterality_0273c7), &[e(None, None, &["R", "L"])], ANY, None, &[]),
-    a(0x0008_0021, "Series Date", T3, None, &[], ANY, None, &[]),
-    a(0x0008_0031, "Series Time", T3, None, &[], ANY, None, &[]),
-    a(0x0008_1050, "Performing Physician's Name", T3, None, &[], ANY, None, &[]),
-    a(0x0008_1052, "Performing Physician Identification Sequence", T3, None, &[], ANY, None, &[
-        i(&T_10_1),
-    ]),
-    a(0x0018_1030, "Protocol Name", T3, None, &[], ANY, None, &[]),
-    a(0x0008_103E, "Series Description", T3, None, &[], ANY, None, &[]),
-    a(0x0008_103F, "Series Description Code Sequence", T3, None, &[], AtMost(1), None, &[
-        i(&T_8_8_1),
-    ]),
-    a(0x0008_1070, "Operators' Name", T3, None, &[], ANY, None, &[]),
-    a(0x0008_1072, "Operator Identification Sequence", T3, None, &[], ANY, None, &[
-        i(&T_10_1),
-    ]),
-    a(0x0008_1111, "Referenced Performed Procedure Step Sequence", T3, None, &[], AtMost(1), None, &[
-        i(&T_10_11),
-    ]),
-    a(0x0008_1250, "Related Series Sequence", T3, None, &[], ANY, None, &[
-        a(0x0020_000D, "Study Instance UID", T1, None, &[], ANY, None, &[]),
-        a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
-        a(0x0040_A170, "Purpose of Reference Code Sequence", T2, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Defined, &[7210])), &[
-            i(&T_8_8_1),
-        ]),
-    ]),
-    a(0x0018_0015, "Body Part Examined", T3, None, &[], ANY, None, &[]),
-    a(0x0018_5100, "Patient Position", T2C, Some(C::PatientPosition_3d8fad), &[], ANY, None, &[]),
-    a(0x0028_0108, "Smallest Pixel Value in Series", T3, None, &[], ANY, None, &[]),
-    a(0x0028_0109, "Largest Pixel Value in Series", T3, None, &[], ANY, None, &[]),
-    a(0x0040_0275, "Request Attributes Sequence", T3, None, &[], ANY, None, &[
-        i(&T_10_9),
-    ]),
-    i(&T_10_16),
-    a(0x0010_2210, "Anatomical Orientation Type", T1C, Some(C::AnatomicalOrientationType_a42424), &[e(None, None, &["BIPED", "QUADRUPED"])], ANY, None, &[]),
-    a(0x300A_0700, "Treatment Session UID", T3, None, &[], ANY, None, &[]),
-]);
-
-/// Acquisition Context Module Attributes
-pub(super) static T_C_7_6_14_1__A_90_1: Table = t("PS3.3", "C.7.6.14-1", "C.7.6.14", &[
-    a(0x0040_0555, "Acquisition Context Sequence", T2, None, &[], ANY, Some(ValueSet::Template(Strength::Defined, 8300)), &[
-        i(&T_10_2_1_1),
-    ]),
-    a(0x0040_0556, "Acquisition Context Description", T3, None, &[], ANY, None, &[]),
-]);
-
-/// General Series Module Attributes
-pub(super) static T_C_7_5A__A_90_2: Table = t("PS3.3", "C.7-5a", "C.7.3.1", &[
-    a(0x0008_0060, "Modality", T1, None, &[e(None, None, &["CFM"])], ANY, None, &[]),
-    a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
-    a(0x0020_0011, "Series Number", T2, None, &[], ANY, None, &[]),
-    a(0x0020_0060, "Laterality", T2C, Some(C::Laterality_0273c7), &[e(None, None, &["R", "L"])], ANY, None, &[]),
-    a(0x0008_0021, "Series Date", T3, None, &[], ANY, None, &[]),
-    a(0x0008_0031, "Series Time", T3, None, &[], ANY, None, &[]),
-    a(0x0008_1050, "Performing Physician's Name", T3, None, &[], ANY, None, &[]),
-    a(0x0008_1052, "Performing Physician Identification Sequence", T3, None, &[], ANY, None, &[
-        i(&T_10_1),
-    ]),
-    a(0x0018_1030, "Protocol Name", T3, None, &[], ANY, None, &[]),
-    a(0x0008_103E, "Series Description", T3, None, &[], ANY, None, &[]),
-    a(0x0008_103F, "Series Description Code Sequence", T3, None, &[], AtMost(1), None, &[
-        i(&T_8_8_1),
-    ]),
-    a(0x0008_1070, "Operators' Name", T3, None, &[], ANY, None, &[]),
-    a(0x0008_1072, "Operator Identification Sequence", T3, None, &[], ANY, None, &[
-        i(&T_10_1),
-    ]),
-    a(0x0008_1111, "Referenced Performed Procedure Step Sequence", T3, None, &[], AtMost(1), None, &[
-        i(&T_10_11),
-    ]),
-    a(0x0008_1250, "Related Series Sequence", T3, None, &[], ANY, None, &[
-        a(0x0020_000D, "Study Instance UID", T1, None, &[], ANY, None, &[]),
-        a(0x0020_000E, "Series Instance UID", T1, None, &[], ANY, None, &[]),
-        a(0x0040_A170, "Purpose of Reference Code Sequence", T2, None, &[], ANY, Some(ValueSet::ContextGroups(Strength::Defined, &[7210])), &[
-            i(&T_8_8_1),
-        ]),
-    ]),
-    a(0x0018_0015, "Body Part Examined", T3, None, &[], ANY, None, &[]),
-    a(0x0018_5100, "Patient Position", T2C, Some(C::PatientPosition_3d8fad), &[], ANY, None, &[]),
-    a(0x0028_0108, "Smallest Pixel Value in Series", T3, None, &[], ANY, None, &[]),
-    a(0x0028_0109, "Largest Pixel Value in Series", T3, None, &[], ANY, None, &[]),
-    a(0x0040_0275, "Request Attributes Sequence", T3, None, &[], ANY, None, &[
-        i(&T_10_9),
-    ]),
-    i(&T_10_16),
-    a(0x0010_2210, "Anatomical Orientation Type", T1C, Some(C::AnatomicalOrientationType_a42424), &[e(None, None, &["BIPED", "QUADRUPED"])], ANY, None, &[]),
-    a(0x300A_0700, "Treatment Session UID", T3, None, &[], ANY, None, &[]),
-]);
-
-/// Specimen Macro Attributes
-pub(super) static T_C_7_6_22_2__A_90_2: Table = t("PS3.3", "C.7.6.22-2", "C.7.6.22", &[
-    a(0x0040_0512, "Container Identifier", T1, None, &[], ANY, None, &[]),
-    a(0x0040_0513, "Issuer of the Container Identifier Sequence", T2, None, &[], AtMost(1), None, &[
-        i(&T_10_17),
-    ]),
-    a(0x0040_0515, "Alternate Container Identifier Sequence", T3, None, &[], ANY, None, &[
-        a(0x0040_0512, "Container Identifier", T1, None, &[], ANY, None, &[]),
-        a(0x0040_0513, "Issuer of the Container Identifier Sequence", T2, None, &[], AtMost(1), None, &[
-            i(&T_10_17),
-        ]),
-    ]),
-    a(0x0040_0518, "Container Type Code Sequence", T2, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[8101])), &[
-        i(&T_8_8_1),
-    ]),
-    a(0x0040_051A, "Container Description", T3, None, &[], ANY, None, &[]),
-    a(0x0040_0520, "Container Component Sequence", T3, None, &[], ANY, None, &[
-        a(0x0050_0012, "Container Component Type Code Sequence", T1, None, &[], Exactly(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[8102])), &[
-            i(&T_8_8_1),
-        ]),
-        a(0x0008_0070, "Manufacturer", T3, None, &[], ANY, None, &[]),
-        a(0x0008_1090, "Manufacturer's Model Name", T3, None, &[], ANY, None, &[]),
-        a(0x0050_001B, "Container Component ID", T3, None, &[], ANY, None, &[]),
-        a(0x0050_001C, "Container Component Length", T3, None, &[], ANY, None, &[]),
-        a(0x0050_0015, "Container Component Width", T3, None, &[], ANY, None, &[]),
-        a(0x0050_001D, "Container Component Diameter", T3, None, &[], ANY, None, &[]),
-        a(0x0050_0013, "Container Component Thickness", T3, None, &[], ANY, None, &[]),
-        a(0x0050_001A, "Container Component Material", T3, None, &[], ANY, None, &[]),
-        a(0x0050_001E, "Container Component Description", T3, None, &[], ANY, None, &[]),
-    ]),
-    a(0x0040_0560, "Specimen Description Sequence", T1, None, &[], AtLeast(1), None, &[
-        a(0x0040_0551, "Specimen Identifier", T1, None, &[], ANY, None, &[]),
-        a(0x0040_0562, "Issuer of the Specimen Identifier Sequence", T2, None, &[], AtMost(1), None, &[
-            i(&T_10_17),
-        ]),
-        a(0x0040_0554, "Specimen UID", T1, None, &[], ANY, None, &[]),
-        a(0x0040_059A, "Specimen Type Code Sequence", T3, None, &[], AtMost(1), Some(ValueSet::ContextGroups(Strength::Baseline, &[8103])), &[
-            i(&T_8_8_1),
-        ]),
-        a(0x0040_0600, "Specimen Short Description", T3, None, &[], ANY, None, &[]),
-        a(0x0040_0602, "Specimen Detailed Description", T3, None, &[], ANY, None, &[]),
-        a(0x0040_0610, "Specimen Preparation Sequence", T2, None, &[], ANY, None, &[
-            a(0x0040_0612, "Specimen Preparation Step Content Item Sequence", T1, None, &[], AtLeast(1), Some(ValueSet::Template(Strength::Defined, 8301)), &[
-                i(&T_10_2),
-            ]),
-        ]),
-        i(&T_10_8__C_7_6_22_2),
-        a(0x0040_0620, "Specimen Localization Content Item Sequence", T1C, Some(C::SpecimenLocalizationContentItemSequence_4cd40e), &[], AtLeast(1), Some(ValueSet::Template(Strength::Defined, 8004)), &[
-            i(&T_10_2),
-        ]),
-    ]),
-]);
-
-/// Specimen Module Attributes
-pub(super) static T_C_7_6_22_1__A_90_2: Table = t("PS3.3", "C.7.6.22-1", "C.7.6.22", &[
-    i(&T_C_7_6_22_2__A_90_2),
-]);
-
-/// Acquisition Context Module Attributes
-pub(super) static T_C_7_6_14_1__A_90_2: Table = t("PS3.3", "C.7.6.14-1", "C.7.6.14", &[
-    a(0x0040_0555, "Acquisition Context Sequence", T2, None, &[], ANY, Some(ValueSet::Template(Strength::Defined, 8300)), &[
-        i(&T_10_2_1_1),
-    ]),
-    a(0x0040_0556, "Acquisition Context Description", T3, None, &[], ANY, None, &[]),
 ]);
 
 /// General Equipment Module Attributes

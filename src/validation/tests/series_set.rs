@@ -302,3 +302,52 @@ fn concatenation_members_must_agree_and_number_in_frame_order() {
         assert!(message.contains(expected), "{expected}: {message}");
     }
 }
+
+#[test]
+fn a_derived_wsi_image_of_a_lossy_source_is_an_advisory_not_a_failure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let directory = pair(tmp.path(), "lossy-source", |object| {
+        object.put(text(tags::LOSSY_IMAGE_COMPRESSION, VR::CS, "00"));
+        object.remove_element(tags::LOSSY_IMAGE_COMPRESSION_METHOD);
+        object.remove_element(tags::LOSSY_IMAGE_COMPRESSION_RATIO);
+    });
+    let source = directory.join("a.dcm");
+    edited(source, |object| {
+        object.put(text(tags::LOSSY_IMAGE_COMPRESSION, VR::CS, "01"));
+        object.put(text(
+            tags::LOSSY_IMAGE_COMPRESSION_METHOD,
+            VR::CS,
+            "ISO_10918_1",
+        ));
+        object.put(text(tags::LOSSY_IMAGE_COMPRESSION_RATIO, VR::DS, "10"));
+    });
+    let uid = dicom_object::open_file(directory.join("a.dcm"))
+        .unwrap()
+        .element(tags::SOP_INSTANCE_UID)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    edited(directory.join("b.dcm"), move |object| {
+        object.put(DataElement::new(
+            tags::SOURCE_IMAGE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![item(vec![
+                text(
+                    tags::REFERENCED_SOP_CLASS_UID,
+                    VR::UI,
+                    crate::VL_WSI_SOP_CLASS_UID,
+                ),
+                text(tags::REFERENCED_SOP_INSTANCE_UID, VR::UI, &uid),
+            ])]),
+        ));
+    });
+    let (status, message) = series_set(&directory);
+    assert_eq!(status, ValidationStatus::Passed, "{message}");
+    assert!(
+        message.contains("advisory")
+            && message.contains("b.dcm")
+            && message.contains("\"at a point in its lifetime\" (PS3.3"),
+        "{message}"
+    );
+}

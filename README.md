@@ -360,16 +360,18 @@ does not follow (`advisories`); none of them are failures. Most absent ones
 need facts a slide file does not hold (clinical trial, physician or procedure
 details). `--required` skips the list.
 
-The IOD requirements apply to every pathology-slide IOD, chosen by SOP Class
-UID as PS3.4 Table B.5-1 assigns it: VL Whole Slide Microscopy Image, VL
-Microscopic Image, VL Slide-Coordinates Microscopic Image, Confocal Microscopy
-Image, Confocal Microscopy Tiled Pyramidal Image, Microscopy Bulk Simple
-Annotations, Segmentation (including Label Map Segmentation) and Parametric
-Map. An object of another SOP Class is reported as one to which no IOD rules
-apply.
+The IOD requirements apply to the pathology objects, chosen by SOP Class UID
+as PS3.4 Table B.5-1 assigns it: VL Whole Slide Microscopy Image,
+Segmentation (including Label Map Segmentation), Parametric Map, Microscopy
+Bulk Simple Annotations, the Key Object Selection Document, and Basic Text,
+Enhanced, Comprehensive and Comprehensive 3D SR; a DICOMDIR is held to the
+Basic Directory IOD. An object of another SOP Class is reported as one to
+which no IOD rules apply.
 
 `wsi-dicom requirements` prints the catalog of the normative statements of
-PS3.3, PS3.5 and PS3.10 for those IODs, with the IODs each applies to and its
+PS3.3, PS3.5, PS3.10, PS3.15 Annex E and PS3.18 for those objects, the
+File-set and DICOMweb, each with its strength (`shall`, or `should` for a
+recommendation, which is only ever an advisory), the IODs it applies to and its
 disposition for each: enforced by the generated tables, the intrinsic check
 that enforces it, the check family it awaits, or why an encoded object cannot
 be held to it (another IOD or encoding, application behavior, or a fact the
@@ -396,9 +398,16 @@ DICOMweb origin server for the transactions a slide viewer uses: Retrieve
 Capabilities, Study, Series and Instance Search with matching, includefield
 and paging, Series and Instance Metadata (JSON and XML), Frames in their own
 and in uncompressed media types, Bulk Data, Rendered Frames, Thumbnails and
-Instance retrieval; each check cites PS3.18, missing optional capabilities are
-`unsupported`, and the Metadata, Frames and Instance retrieved are validated as
-files are. Store runs only with `--allow-store <FILE>`. Requests have
+Instance retrieval, with content negotiation, character sets, Transfer Syntax
+defaults, the Rendering Query Parameters, the matching parameters and
+attributes, the Mandatory Search resources, Range, and the response message
+and header fields of every response; each check cites PS3.18, missing optional
+capabilities are `unsupported`, a recommendation not followed is an advisory,
+never a failure, and the Metadata, Frames and Instance retrieved are validated
+as files are. Store runs only with `--allow-store <FILE>`, and the stored copy
+fails only checks the file stored passes. The two requests that ask for a 401
+and a 405, one with an invalid bearer token and a TRACE, run only with
+`--probe-error-responses`, since either can raise alerts on a server. Requests have
 per-request timeouts, response-size limits and a request budget, follow
 redirects only to the same origin, and send the bearer token held by the
 environment variable `--bearer-token-env` names to the base URL's origin only.
@@ -406,6 +415,80 @@ environment variable `--bearer-token-env` names to the base URL's origin only.
 feature (`cargo install wsi-dicom --features dicomweb`), which the release
 archives include; without it they report that the build has no DICOMweb
 transport.
+
+## Convention profiles
+
+DICOM conformance is one question. Whether objects meet the conventions a
+partner requires, and whether common viewers and archives will read them, are
+two more. `validate --conventions` answers them separately. Select profiles
+comma-separated or by repeating the flag:
+
+```sh
+wsi-dicom validate slide-dir --conventions wg26,ihe-dpia --conventions interop --json
+```
+
+| Profile | What it checks | Source |
+|---|---|---|
+| `wg26` | the nine checks `dciodvfy -profile WG26SP2025` adds (TILED_FULL, one focal plane, no Concatenation UID, Specimen Type, Specimen Preparation and Primary Anatomic Structure present, 2D annotations; missing Acquisition UID and Pyramid UID are warnings, as in dciodvfy), and the connectathon requirements: one Series per scan, a LABEL or OVERVIEW image with Barcode Value, true color brightfield, baseline JPEG or JPEG 2000 (the top layer, LABEL and OVERVIEW may be uncompressed), a pyramid, TILED_FULL without Per-Frame Functional Groups, one Z-plane, no Concatenations and one instance per layer, the ICC Profile in the single Optical Path Item, coded fixation, embedding and staining, SNOMED CT Specimen Type, and annotations sharing the images' patient | DICOM WG-26 Digital Pathology Connectathon Technical Requirements 2026 (2026/07/31); dicom3tools 1.00.snapshot.20260927113651 `libsrc/standard/module/vl.tpl:700-719, 1614-1616` |
+| `ihe-dpia` | Appendix B: Request Attributes Accession Number, Issuer and Study Instance UID equal the top level; collection, fixation, embedding and staining steps with their codes, the Specimen Identifier and Issuer in every step, in chronological order; a coded Specimen Type; Patient's Sex from PID-8; one Accession Number per Study | IHE PaLM DPIA Rev. 1.4 (Trial Implementation, 2026-03-06) |
+| `ihe-dpia-draft` | True Color Tiled Full Single Z Plane Pyramid Option (true color, pyramid, TILED_FULL, one pyramid and Z-plane, one Acquisition UID per Series, shared Frame of Reference and Pyramid UID, no Concatenations, a Basic or Extended Offset Table) and the Acquisition Complete Option's KOS (new Series, whole images, the images' identity, every image of the scan) | IHE PaLM CP-LAB-279 and CP-LAB-281, draft (CP under ballot) |
+| `ihe-dpia-draft-jpeg` | JPEG Storage Option: baseline JPEG pyramid layers | IHE PaLM CP-LAB-279, draft (CP under ballot) |
+| `interop` | advisories only: what dicom-microscopy-viewer 0.49.5, OpenSlide 4.0.1, Slim 0.46.10, the Orthanc WSI plugin 4.0, wsidicom 0.36.1, highdicom 0.28.2, the IDC index, the Google Cloud Healthcare API and dciodvfy's base checks reject or warn about | each advisory names the tool, version and source lines |
+
+Convention results never enter `checks` and never make validation fail; the
+exit status still reports DICOM conformance alone. The JSON report adds a
+`conventions` object (absent when no profile is selected) with the selected
+`profiles`, one `checks` entry per check and object or Series it applies to
+(`passed`, `failed`, or `skipped` with the reason when the object lacks what
+the check reads), and `advisories`, listed only where they apply. Each entry
+is named `convention-<profile>-<topic>` and carries its `source`; messages of
+the draft profiles say "draft (CP under ballot)". The text summary prints the
+counts, each check that did not pass and each advisory. `wsi-dicom
+requirements --json` lists every convention, with its kind, source and what
+it requires, under `conventions`, apart from the DICOM `requirements`;
+`wsi_dicom::convention_catalog()` returns the same entries, and
+`ValidationOptions::conventions` selects profiles from the Rust API.
+`validate-json` and `dicomweb` do not run conventions yet. The connectathon's
+Patient's Name scheme (`26CN^...`) is event logistics and is not checked; its
+DIMSE, DICOMweb and HL7 requirements need a transaction, not an object.
+
+### Conflicts between sources
+
+DICOM normative text is followed over informative text and conventions, and
+each conflict is reported as an advisory of the profile it affects:
+
+| Conflict | Position | Advisory |
+|---|---|---|
+| DPIA maps order numbers into the Request Attributes Sequence, which the Request Attributes Macro does not define | the DICOM checks decide conformance; `ihe-dpia` does not require the order numbers | `convention-ihe-dpia-order-numbers-standard-extended` |
+| CP-LAB-281 wants Specimen information in the completion KOS; the KOS IOD has no Specimen Module until CP-2656 | Patient and Study identity are required; Specimen Attributes are compared only where present | `convention-ihe-dpia-draft-completion-specimen-standard-extended` |
+| DPIA's SPM-4 uses HL7 Table 0487; the Specimen Type Code Sequence's Baseline CID 8103 and the connectathon use SNOMED CT | `wg26` requires SCT; `ihe-dpia` accepts any coded type and notes other schemes | `convention-ihe-dpia-specimen-type-coding` |
+| PS3.17 NN.6.2 describes preparation steps newest first; PS3.3 C.7.6.22.1.3 requires ascending chronological order | PS3.3: steps out of order fail `convention-ihe-dpia-step-order` | `convention-ihe-dpia-preparation-order-conflict` |
+| The PS3.3 A.1.2.30 Note puts LABEL and OVERVIEW images in a pyramid's Series only if they share its Frame of Reference; Table A.32.8-1 (CP-2406) does not require one for them | Table A.32.8-1: no DICOM or convention failure | `convention-interop-associated-frame-of-reference` |
+| PS3.15 Table E.3.4-1 (Clean Structured Content) removes the step Specimen Identifier and Issuer that TID 8001 and DPIA put in every step | for an object declaring Patient Identity Removed YES with (113104, DCM), the step identifier check is skipped | `convention-ihe-dpia-deidentified-step-identifiers` |
+| Philips writes Photometric Interpretation XYB for JPEG XL; C.8.12.4.1.5 does not list it for VL WSI | the Enumerated Values: DICOM validation fails it | `convention-interop-xyb-photometric` |
+
+### Changes after the pinned edition
+
+These are known and not yet normative, so validation of the pinned edition
+(2026d) does not apply them:
+
+- Letter Ballot (2026-09-06): CP-2540 (Total Number of Frames in
+  Concatenation, In-concatenation Total Number above one), CP-2541 (EFO coding
+  scheme, "single cell identifier" in CID 8136), CP-2542 (Image Region
+  concept), CP-2588 (Image Storage SOP Class UID types), CP-2610 (Institution
+  Code Sequence in the General Equipment Module), CP-2620 and CP-2621 (STOW-RS,
+  Storage Commitment and C-MOVE/C-GET response contents), CP-2559 (VM
+  corrections).
+- November 2026 voting packet: CP-2628 (WSI scan quality KOS titles), CP-2633
+  (more WSI QC segmentation properties), CP-2625 (de-identification of overlay
+  attributes), CP-2632 (de-identification of retrieval URIs).
+- Assigned: CP-2656 (Specimen Module in SR and KOS IODs).
+- Public Comment: Supplement 255 (Microscopy Bulk Enhanced Annotations) and
+  Supplement 248 (DICOMweb Send).
+- IHE PaLM: CP-LAB-279 and CP-LAB-281 (selectable as `ihe-dpia-draft` and
+  `ihe-dpia-draft-jpeg`) and CP-LAB-283, under ballot.
+
+The weekly edition check fails when a newer edition is published.
 
 ## Rust API
 

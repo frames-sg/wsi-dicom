@@ -11,13 +11,14 @@ use super::client::{Exchange, Request};
 use super::media::{any_frame_accept, bulk_media_type, media_type_of, MediaType};
 use super::report::Verdict;
 use super::response::{expect_multipart, expect_status, integer, sec};
+use super::url::Url;
 use super::{DicomWebTransaction, Session, Target};
 use crate::lossy::method_for_lossy_transfer_syntax;
 use crate::validation::check_retrieved_frames;
 
 const NAME: &str = "dicomweb-retrieve-frames";
 const SECTIONS: &str =
-    "10.4.1.1.6 Table 10.4.1.6-1, 8.6.1.2, 8.7.3.3.2 Table 8.7.3-5, 8.7.3.5.2, 8.7.8.2 and 8.7.9";
+    "10.4.1.1.6 Table 10.4.1.6-1, 8.6.1.2, 8.7.3.3.2 Table 8.7.3-5, 8.7.3.5.2, 8.7.8.2, 8.7.9 and 10.4.3.3.6";
 const UNCOMPRESSED_NAME: &str = "dicomweb-retrieve-frames-uncompressed";
 const UNCOMPRESSED_SECTIONS: &str = "10.4.4 Table 10.4.4-1, 8.7.3.3.1 Table 8.7.3-4 and 8.7.3.4";
 const MISSING_NAME: &str = "dicomweb-retrieve-frames-missing";
@@ -28,6 +29,7 @@ pub(super) fn run(
     session: &mut Session<'_>,
     target: &Target,
     object: Option<&InMemDicomObject>,
+    pixel_uri: Option<&Url>,
 ) -> Option<String> {
     let reason = if session.skipped(DicomWebTransaction::Frames) {
         Some("skipped by request (--skip frames)")
@@ -50,7 +52,7 @@ pub(super) fn run(
         .and_then(|object| integer(object, tags::NUMBER_OF_FRAMES))
         .or(target.frames);
     let numbers = frame_numbers(&session.options.frames, count);
-    let syntax = native(session, target, object, &numbers);
+    let syntax = native(session, target, object, &numbers, pixel_uri);
     uncompressed(session, target, object, numbers[0], syntax.as_deref());
     missing(session, target, count);
     syntax
@@ -79,11 +81,23 @@ fn list(numbers: &[usize]) -> String {
 
 /// The Frames in the Transfer Syntax the origin server holds: the one the
 /// Search named, else any of Table 8.7.3-5 ("transfer-syntax=*").
+/// What a Frames request asked for and the run knows of the Frames.
+struct Asked<'a> {
+    numbers: &'a [usize],
+    known: Option<&'a str>,
+    object: Option<&'a InMemDicomObject>,
+    /// The Instance's URL and the BulkDataURI of its Pixel Data in the
+    /// Metadata, which each part's Content-Location corresponds to.
+    instance: Url,
+    pixel_uri: Option<&'a Url>,
+}
+
 fn native(
     session: &mut Session<'_>,
     target: &Target,
     object: Option<&InMemDicomObject>,
     numbers: &[usize],
+    pixel_uri: Option<&Url>,
 ) -> Option<String> {
     let mut verdict = Verdict::default();
     let path = target.instance_path().unwrap_or_default();
@@ -101,19 +115,19 @@ fn native(
     };
     let url = session.url(&format!("{path}/frames/{}", list(numbers)), None);
     let label = PathBuf::from(url.to_string());
+    let asked = Asked {
+        numbers,
+        known: known.as_deref(),
+        object,
+        instance: session.url(&path, None),
+        pixel_uri,
+    };
     let mut syntax = None;
     if let Some(exchange) = session.send(&mut verdict, &Request::get(url, &accept)) {
         if expect_status(&mut verdict, &exchange, &[200], "10.4.3.1") {
             session.retrieved = true;
-            syntax = frame_parts(
-                session,
-                &mut verdict,
-                &exchange,
-                numbers,
-                known.as_deref(),
-                object,
-                label,
-            );
+            session.served("frames");
+            syntax = frame_parts(session, &mut verdict, &exchange, &asked, label);
         }
     }
     session.push(verdict.finish(
@@ -174,11 +188,10 @@ fn frame_parts(
     session: &mut Session<'_>,
     verdict: &mut Verdict,
     exchange: &Exchange,
-    numbers: &[usize],
-    known: Option<&str>,
-    object: Option<&InMemDicomObject>,
+    asked: &Asked<'_>,
     label: PathBuf,
 ) -> Option<String> {
+    let (numbers, known, object) = (asked.numbers, asked.known, asked.object);
     let (media, parts) = expect_multipart(verdict, exchange, None, "10.4.4 Table 10.4.4-1")?;
     session.audit.parts(exchange, &parts);
     let line = exchange.request_line();
@@ -198,6 +211,9 @@ fn frame_parts(
     let mut syntaxes: Vec<String> = Vec::new();
     for (index, part) in parts.iter().enumerate() {
         let number = numbers.get(index).copied().unwrap_or(index + 1);
+        if let Some(location) = part.header("content-location") {
+            corresponding_location(verdict, exchange, asked, (index + 1, number), location);
+        }
         let Some(found) = part_syntax(verdict, &line, index + 1, part.header("content-type"))
         else {
             continue;
@@ -247,6 +263,42 @@ fn frame_parts(
     syntaxes.into_iter().next()
 }
 
+/// 10.4.3.3.6: "Pixel Data in a multipart response shall have a
+/// Content-Location Header Field that corresponds to the URI contained in
+/// the corresponding Element in the Metadata": the Pixel Data BulkDataURI,
+/// or the Frame of it or of the Instance.
+fn corresponding_location(
+    verdict: &mut Verdict,
+    exchange: &Exchange,
+    asked: &Asked<'_>,
+    (part, number): (usize, usize),
+    location: &str,
+) {
+    let line = exchange.request_line();
+    let resolved = match exchange.url.resolve(location) {
+        Ok(resolved) => resolved.to_string(),
+        Err(reason) => {
+            verdict.fail(format!(
+                "{line}: part {part}'s Content-Location {location:?} is not a URI reference: {reason} ({})",
+                sec("10.4.3.3.6")
+            ));
+            return;
+        }
+    };
+    let mut corresponding = vec![format!("{}/frames/{number}", asked.instance)];
+    if let Some(pixel) = asked.pixel_uri {
+        corresponding.push(pixel.to_string());
+        corresponding.push(format!("{pixel}/frames/{number}"));
+    }
+    if !corresponding.contains(&resolved) {
+        verdict.fail(format!(
+            "{line}: part {part}'s Content-Location is {resolved}; it corresponds to the Pixel Data of the Instance in the Metadata, such as {} ({})",
+            corresponding.join(" or "),
+            sec("10.4.3.3.6")
+        ));
+    }
+}
+
 /// The codestream check of the retrieved Frames, as a file's Frames get it.
 fn codestreams(
     session: &mut Session<'_>,
@@ -272,7 +324,7 @@ fn codestreams(
 
 /// The bytes of one native Frame: Rows x Columns x Samples per Pixel x Bits
 /// Allocated, packed without padding for Bits Allocated 1 (8.7.3.3.1).
-fn frame_bytes(object: &InMemDicomObject) -> Option<u64> {
+pub(super) fn frame_bytes(object: &InMemDicomObject) -> Option<u64> {
     let bits = integer(object, tags::ROWS)?
         .checked_mul(integer(object, tags::COLUMNS)?)?
         .checked_mul(integer(object, tags::SAMPLES_PER_PIXEL)?)?

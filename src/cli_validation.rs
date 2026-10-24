@@ -2,10 +2,11 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 use wsi_dicom::{
-    check_dicomweb_server, doctor_dicom_environment, requirement_catalog, run_dicom_self_test,
-    validate_dicom_json_path, validate_dicom_path, DicomJsonOptions, DicomWebOptions,
-    DicomWebReport, DicomWebStatus, DoctorOptions, DoctorReport, Error, RequirementDisposition,
-    RequirementEntry, SelfTestOptions, SelfTestReport, ValidationOptions, ValidationProfile,
+    check_dicomweb_server, convention_catalog, doctor_dicom_environment, requirement_catalog,
+    run_dicom_self_test, validate_dicom_json_path, validate_dicom_path, ConventionEntry,
+    ConventionKind, ConventionReport, DicomJsonOptions, DicomWebOptions, DicomWebReport,
+    DicomWebStatus, DoctorOptions, DoctorReport, Error, RequirementDisposition, RequirementEntry,
+    RequirementStrength, SelfTestOptions, SelfTestReport, ValidationOptions, ValidationProfile,
     ValidationReport, ValidationStatus, DICOM_EDITION,
 };
 
@@ -45,11 +46,13 @@ pub(crate) fn handle_validate(arguments: crate::cli_args::ValidateArgs) -> Resul
         profile,
         max_input_bytes,
         conformance,
+        conventions,
         json,
     } = arguments;
     let mut options = ValidationOptions::default();
     options.profile = profile;
     options.conformance = conformance.level();
+    options.conventions = conventions.into_iter().collect();
     options.max_input_bytes = max_input_bytes;
     options.strict = strict;
     options.dcmvalidate_iod = dcmvalidate_iod;
@@ -153,6 +156,7 @@ pub(crate) fn handle_dicomweb(arguments: DicomwebArgs) -> Result<(), Error> {
     options.frames = arguments.frames;
     options.skip = arguments.skip;
     options.store_file = arguments.allow_store;
+    options.probe_error_responses = arguments.probe_error_responses;
     options.max_requests = usize::try_from(arguments.max_requests).unwrap_or(usize::MAX);
     options.http = arguments.http.options()?;
     options.validation.profile = arguments.profile;
@@ -206,6 +210,9 @@ fn format_dicomweb_summary(report: &DicomWebReport) -> String {
             "\n  {status} {} [{}]: {}",
             check.name, check.section, check.message
         ));
+        for advisory in &check.advisories {
+            summary.push_str(&format!("\n    advisory: {advisory}"));
+        }
     }
     append_unpassed(&mut summary, &report.objects.checks);
     summary
@@ -243,6 +250,9 @@ struct RequirementsCliReport {
     schema_version: &'static str,
     dicom_edition: &'static str,
     requirements: Vec<RequirementEntry>,
+    /// What the convention profiles add to the standard, with their
+    /// sources; none of it is a DICOM statement.
+    conventions: Vec<ConventionEntry>,
 }
 
 pub(crate) fn handle_requirements(json: bool) -> Result<(), Error> {
@@ -250,10 +260,35 @@ pub(crate) fn handle_requirements(json: bool) -> Result<(), Error> {
         schema_version: REQUIREMENTS_SCHEMA,
         dicom_edition: DICOM_EDITION,
         requirements: requirement_catalog(),
+        conventions: convention_catalog(),
     };
     print_cli_output(json, &report, |report| {
-        format_requirements_summary(&report.requirements)
+        let mut summary = format_requirements_summary(&report.requirements);
+        append_convention_catalog(&mut summary, &report.conventions);
+        summary
     })
+}
+
+/// Checks and advisories per convention profile.
+fn append_convention_catalog(summary: &mut String, conventions: &[ConventionEntry]) {
+    let mut counts = std::collections::BTreeMap::<&str, (usize, usize)>::new();
+    for entry in conventions {
+        let (checks, advisories) = counts.entry(entry.profile.name()).or_default();
+        match entry.kind {
+            ConventionKind::Check => *checks += 1,
+            _ => *advisories += 1,
+        }
+    }
+    summary.push_str(&format!(
+        "\n{} conventions of {} opt-in profiles (validate --conventions), not DICOM statements:",
+        conventions.len(),
+        counts.len()
+    ));
+    for (profile, (checks, advisories)) in counts {
+        summary.push_str(&format!(
+            "\n  {profile}: {checks} checks, {advisories} advisories"
+        ));
+    }
 }
 
 /// Counts per IOD and disposition, then per Part and disposition, then each
@@ -263,7 +298,7 @@ fn format_requirements_summary(requirements: &[RequirementEntry]) -> String {
         RequirementDisposition::Tables => "generated tables",
         RequirementDisposition::Checked(_) => "checked",
         RequirementDisposition::Unchecked(_) => "not yet checked",
-        RequirementDisposition::OutsideScope(_) => "outside the IOD's scope",
+        RequirementDisposition::OutsideScope(_) => "outside the scope",
         RequirementDisposition::Behavior(_) => "application behavior",
         RequirementDisposition::Undecidable(_) => "undecidable from the objects",
         _ => "other",
@@ -285,26 +320,31 @@ fn format_requirements_summary(requirements: &[RequirementEntry]) -> String {
         }
     }
     let mut summary = format!(
-        "{} normative statements of DICOM {DICOM_EDITION} in the scope of {} pathology-slide IODs",
+        "{} normative statements of DICOM {DICOM_EDITION} in {} scopes ({})",
         requirements.len(),
-        iods.len()
+        iods.len(),
+        iods.join(", ")
     );
     for &iod in &iods {
         let mut counts = std::collections::BTreeMap::<&str, usize>::new();
-        let mut total = 0;
+        let (mut total, mut recommendations) = (0, 0);
         for entry in requirements
             .iter()
             .filter(|entry| entry.iods.contains(&iod))
         {
             *counts.entry(kind(&in_iod(entry, iod))).or_insert(0) += 1;
             total += 1;
+            recommendations += usize::from(entry.strength == RequirementStrength::Should);
         }
         let counts = counts
             .into_iter()
             .map(|(kind, count)| format!("{kind} {count}"))
             .collect::<Vec<_>>()
             .join(", ");
-        summary.push_str(&format!("\n  {iod}: {total} statements: {counts}"));
+        summary.push_str(&format!(
+            "\n  {iod}: {total} statements ({} shall, {recommendations} should): {counts}",
+            total - recommendations
+        ));
     }
     let mut counts = std::collections::BTreeMap::<(&str, &str), usize>::new();
     for entry in requirements {
@@ -312,7 +352,7 @@ fn format_requirements_summary(requirements: &[RequirementEntry]) -> String {
             .entry((entry.part, kind(&entry.disposition)))
             .or_insert(0) += 1;
     }
-    summary.push_str("\nper Part, as in VL WSI objects or in every IOD of the statement:");
+    summary.push_str("\nper Part, as in VL WSI objects or in every scope of the statement:");
     for ((part, kind), count) in counts {
         summary.push_str(&format!("\n  {part} {kind}: {count}"));
     }
@@ -394,7 +434,55 @@ fn format_validation_summary(report: &ValidationReport) -> String {
         "suggested codes and templates not followed",
         optional.iter().flat_map(|object| &object.advisories),
     );
+    append_conventions(&mut summary, &report.conventions);
     summary
+}
+
+/// The convention profiles' counts, then each check that did not pass and
+/// each advisory, apart from the DICOM checks.
+fn append_conventions(summary: &mut String, conventions: &ConventionReport) {
+    if conventions.is_empty() {
+        return;
+    }
+    let profiles = conventions
+        .profiles
+        .iter()
+        .map(|profile| profile.name())
+        .collect::<Vec<_>>()
+        .join(", ");
+    summary.push_str(&format!(
+        "\nconventions {profiles} (not DICOM failures): checks passed={} failed={} skipped={}; advisories={}",
+        conventions.count(ValidationStatus::Passed),
+        conventions.count(ValidationStatus::Failed),
+        conventions.count(ValidationStatus::Skipped),
+        conventions.advisories.len()
+    ));
+    let subject = |path: &Option<PathBuf>, series: &Option<String>| match (path, series) {
+        (Some(path), _) => format!(" {}", path.display()),
+        (None, Some(series)) => format!(" series {series}"),
+        (None, None) => String::new(),
+    };
+    for check in &conventions.checks {
+        let status = match check.status {
+            ValidationStatus::Failed => "failed",
+            ValidationStatus::Skipped => "skipped",
+            _ => continue,
+        };
+        summary.push_str(&format!(
+            "\n  {status} {}{}: {}",
+            check.name,
+            subject(&check.path, &check.series),
+            check.message
+        ));
+    }
+    for advisory in &conventions.advisories {
+        summary.push_str(&format!(
+            "\n  advisory {}{}: {}",
+            advisory.name,
+            subject(&advisory.path, &advisory.series),
+            advisory.message
+        ));
+    }
 }
 
 /// Appends each distinct entry with the number of files that list it.

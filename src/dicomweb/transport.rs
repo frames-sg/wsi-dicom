@@ -2,10 +2,49 @@
 //! `dicomweb` feature is enabled. Without it every request fails with that
 //! reason, so a file-validation build carries no network stack.
 
+use std::fmt;
+
 use super::client::Method;
 
 /// Status, lowercased header fields and body of one response.
 pub(super) type RawResponse = (u16, Vec<(String, String)>, Vec<u8>);
+
+/// What the origin server did wrong when a request brought no response: the
+/// faults of PS3.18 8.1.2, which "shall always return a response message"
+/// with "a valid 3-digit status code" (8.1.2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "dicomweb"), allow(dead_code))]
+pub(crate) enum Fault {
+    /// The response is not an HTTP/1.1 response message, such as a status
+    /// line without a valid 3-digit status code.
+    Malformed,
+    /// The connection closed or was reset before a complete response.
+    Closed,
+}
+
+/// Why a request brought no usable response.
+#[derive(Debug, Clone)]
+pub(crate) struct Failure {
+    pub(crate) reason: String,
+    /// The origin server's fault, if it is one; `None` for a timeout, a
+    /// size limit, an unreachable host or a TLS failure.
+    pub(crate) fault: Option<Fault>,
+}
+
+impl Failure {
+    pub(super) fn other(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            fault: None,
+        }
+    }
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
 
 /// One request, as the client has prepared it. A build without the
 /// transport never sends it.
@@ -16,7 +55,12 @@ pub(super) struct Outgoing<'r> {
     pub(super) accept: Option<&'r str>,
     pub(super) content_type: Option<&'r str>,
     pub(super) authorization: Option<&'r str>,
+    /// Further header fields, such as Accept-Charset or Range.
+    pub(super) headers: &'r [(&'r str, &'r str)],
     pub(super) body: &'r [u8],
+    /// Send the body with Transfer-Encoding: chunked rather than
+    /// Content-Length.
+    pub(super) chunked: bool,
 }
 
 #[cfg(feature = "dicomweb")]
@@ -33,7 +77,7 @@ mod enabled {
     use ureq::tls::{PemItem, RootCerts, TlsConfig, TlsProvider};
     use ureq::{Agent, RequestBuilder};
 
-    use super::{Method, Outgoing, RawResponse};
+    use super::{Failure, Fault, Method, Outgoing, RawResponse};
     use crate::Error;
 
     /// Bytes of a CA bundle read before it is refused.
@@ -82,11 +126,17 @@ mod enabled {
             &self,
             outgoing: &Outgoing<'_>,
             max_response_bytes: u64,
-        ) -> Result<RawResponse, String> {
+        ) -> Result<RawResponse, Failure> {
             let failure = |err| transport_error(err, max_response_bytes);
             let response = match outgoing.method {
                 Method::Get => headers(self.agent.get(outgoing.url), outgoing).call(),
                 Method::Options => headers(self.agent.options(outgoing.url), outgoing).call(),
+                Method::Trace => headers(self.agent.trace(outgoing.url), outgoing).call(),
+                Method::Post if outgoing.chunked => {
+                    let mut body = outgoing.body;
+                    headers(self.agent.post(outgoing.url), outgoing)
+                        .send(ureq::SendBody::from_reader(&mut body))
+                }
                 Method::Post => {
                     headers(self.agent.post(outgoing.url), outgoing).send(outgoing.body)
                 }
@@ -113,7 +163,7 @@ mod enabled {
                 .read_to_vec()
                 .map_err(failure)?;
             if body.len() as u64 > max_response_bytes {
-                return Err(too_large(max_response_bytes));
+                return Err(Failure::other(too_large(max_response_bytes)));
             }
             Ok((status, fields, body))
         }
@@ -129,14 +179,43 @@ mod enabled {
         if let Some(authorization) = outgoing.authorization {
             builder = builder.header("Authorization", authorization);
         }
+        for (name, value) in outgoing.headers {
+            builder = builder.header(*name, *value);
+        }
         builder
     }
 
-    fn transport_error(err: ureq::Error, max_response_bytes: u64) -> String {
+    fn transport_error(err: ureq::Error, max_response_bytes: u64) -> Failure {
+        let fault = |fault, reason: String| Failure {
+            reason,
+            fault: Some(fault),
+        };
         match err {
-            ureq::Error::BodyExceedsLimit(_) => too_large(max_response_bytes),
-            ureq::Error::Timeout(which) => format!("timed out ({which:?})"),
-            other => other.to_string(),
+            ureq::Error::BodyExceedsLimit(_) => Failure::other(too_large(max_response_bytes)),
+            ureq::Error::Timeout(which) => Failure::other(format!("timed out ({which:?})")),
+            ureq::Error::Protocol(err) => fault(
+                Fault::Malformed,
+                format!("the response is not an HTTP/1.1 response message: {err}"),
+            ),
+            ureq::Error::Http(err) => fault(
+                Fault::Malformed,
+                format!("the response is not an HTTP/1.1 response message: {err}"),
+            ),
+            ureq::Error::Io(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::UnexpectedEof
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                ) =>
+            {
+                fault(
+                    Fault::Closed,
+                    format!("the connection closed before a complete response: {err}"),
+                )
+            }
+            other => Failure::other(other.to_string()),
         }
     }
 
@@ -171,7 +250,7 @@ mod enabled {
 mod disabled {
     use std::path::Path;
 
-    use super::{Outgoing, RawResponse};
+    use super::{Failure, Outgoing, RawResponse};
     use crate::Error;
 
     const UNAVAILABLE: &str =
@@ -197,8 +276,8 @@ mod disabled {
             &self,
             _outgoing: &Outgoing<'_>,
             _max_response_bytes: u64,
-        ) -> Result<RawResponse, String> {
-            Err(UNAVAILABLE.to_string())
+        ) -> Result<RawResponse, Failure> {
+            Err(Failure::other(UNAVAILABLE))
         }
     }
 }

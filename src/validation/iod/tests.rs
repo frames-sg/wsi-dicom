@@ -534,7 +534,7 @@ fn every_pathology_slide_iod_is_dispatched_by_its_ps3_4_sop_classes() {
     let sections: Vec<&str> = IODS.iter().map(|iod| iod.section).collect();
     assert_eq!(
         sections,
-        ["A.32.8", "A.32.2", "A.32.3", "A.90.1", "A.90.2", "A.87", "A.51", "A.75"]
+        ["A.32.8", "A.87", "A.51", "A.75", "A.35.4", "A.35.1", "A.35.2", "A.35.3", "A.35.13"]
     );
     let uids = |section: &str| {
         iod(section)
@@ -552,13 +552,34 @@ fn every_pathology_slide_iod_is_dispatched_by_its_ps3_4_sop_classes() {
         ]
     );
     assert_eq!(uids("A.87"), ["1.2.840.10008.5.1.4.1.1.91.1"]);
+    // The Key Object Selection Document and the SR documents (PS3.4 B.5).
+    for (section, uid) in [
+        ("A.35.4", "1.2.840.10008.5.1.4.1.1.88.59"),
+        ("A.35.1", "1.2.840.10008.5.1.4.1.1.88.11"),
+        ("A.35.2", "1.2.840.10008.5.1.4.1.1.88.22"),
+        ("A.35.3", "1.2.840.10008.5.1.4.1.1.88.33"),
+        ("A.35.13", "1.2.840.10008.5.1.4.1.1.88.34"),
+    ] {
+        assert_eq!(uids(section), [uid]);
+        assert_eq!(iod(section).functional_group_table, None);
+    }
     // Height Map Segmentation (A.91) is not a pathology-slide IOD.
     assert!(IODS.iter().all(|iod| iod
         .sop_classes
         .iter()
         .all(|class| class.uid != "1.2.840.10008.5.1.4.1.1.66.8")));
-    assert_eq!(iod("A.32.2").functional_group_table, None);
-    assert!(iod("A.32.2").functional_groups.is_empty());
+    // VL Microscopic, VL Slide-Coordinates Microscopic and the Confocal
+    // Microscopy IODs are not among them.
+    for uid in [
+        "1.2.840.10008.5.1.4.1.1.77.1.2",
+        "1.2.840.10008.5.1.4.1.1.77.1.3",
+        "1.2.840.10008.5.1.4.1.1.77.1.8",
+        "1.2.840.10008.5.1.4.1.1.77.1.9",
+    ] {
+        assert!(super::iod_of(uid).is_none(), "{uid}");
+    }
+    assert_eq!(iod("A.87").functional_group_table, None);
+    assert!(iod("A.87").functional_groups.is_empty());
     let forbidden: Vec<&str> = iod("A.51")
         .forbidden_modules
         .iter()
@@ -690,16 +711,6 @@ fn frames_of_reference_are_slide_or_patient_by_the_positions_encoded() {
     expect(
         C::FgPlanePositionPatient_183b05,
         &slide,
-        Requirement::Forbidden,
-    );
-    expect(
-        C::FgPlanePositionSlide_7fb0bc,
-        &slide,
-        Requirement::Required,
-    );
-    expect(
-        C::FgPlanePositionSlide_7fb0bc,
-        &derived,
         Requirement::Forbidden,
     );
     let tiled = shared_groups(
@@ -869,40 +880,6 @@ fn parametric_map_modules_follow_the_pixel_data_attribute() {
 }
 
 #[test]
-fn microscopy_module_usage_reads_the_slide_evidence() {
-    let slide = data_set(vec![sequence(
-        tags::CONTAINER_TYPE_CODE_SEQUENCE,
-        vec![data_set(vec![
-            text(tags::CODE_VALUE, VR::SH, &["433466003"]),
-            text(tags::CODING_SCHEME_DESIGNATOR, VR::SH, &["SCT"]),
-        ])],
-    )]);
-    let unknown = data_set(vec![]);
-    expect(
-        C::ModuleMicroscopeSlideLayerTileOrganization_031caa,
-        &slide,
-        Requirement::Required,
-    );
-    expect(
-        C::ModuleMicroscopeSlideLayerTileOrganization_031caa,
-        &unknown,
-        Requirement::Undeterminable,
-    );
-    let icc = data_set(vec![DataElement::new(
-        tags::ICC_PROFILE,
-        VR::OB,
-        PrimitiveValue::from(vec![0u8; 4]),
-    )]);
-    expect(C::ModuleOpticalPath_e06f79, &icc, Requirement::Forbidden);
-    expect(C::ModuleOpticalPath_e06f79, &unknown, Requirement::Optional);
-    expect(
-        C::ModuleMultiResolutionPyramid_dfce04,
-        &image("OVERVIEW"),
-        Requirement::Forbidden,
-    );
-}
-
-#[test]
 fn dictionary_resolves_multi_vr_retired_and_repeating_entries() {
     let image_type = entry(tags::IMAGE_TYPE).unwrap();
     assert_eq!(image_type.vr, &[VR::CS]);
@@ -978,7 +955,16 @@ fn value_format_follows_ps3_5_section_6_2() {
         (VR::DT, "2024-0000"),
         (VR::DT, "202401011200.5"),
         (VR::IS, "2147483648"),
+        // PS3.5 6.2: "Embedded spaces are not allowed" (DS, IS); "Leading and
+        // embedded spaces are not allowed" (DT, TM); "Leading spaces are not
+        // allowed" (UR).
         (VR::IS, "1 2"),
+        (VR::DS, "1 5"),
+        (VR::TM, " 120000"),
+        (VR::TM, "12 0000"),
+        (VR::DT, " 20240101"),
+        (VR::DT, "2024 0101"),
+        (VR::UR, " https://example.org/a"),
         (VR::DS, "1,5"),
         (VR::DS, "12345678901234567"),
         (VR::UI, "1.02.3"),
@@ -1023,6 +1009,7 @@ fn unknown_vr_stands_in_for_a_short_vr_whose_value_exceeds_65534_bytes() {
         super::values::ValueChecks {
             vr_vm: &mut vr_vm,
             format: &mut format,
+            advisories: &mut super::report::Advisories::default(),
             encoding: super::values::Encoding {
                 explicit_vr: true,
                 extended_characters: false,
@@ -1051,4 +1038,529 @@ fn code_extension_values_are_counted_by_the_encoding_check() {
     // "^" bytes inside two-byte characters are no component delimiters.
     let name = format!("A=\u{1b}$B{}\u{1b}(B", "0^".repeat(40));
     assert_eq!(check_value(VR::PN, &name, true), Ok(()));
+}
+
+#[test]
+fn every_table_e_1_1_row_is_found_by_its_tag() {
+    use super::deidentification::{
+        confidentiality_attribute, confidentiality_attributes, ConfidentialityOption as O,
+        DeidentificationAction as A, TagPattern,
+    };
+    let accession = confidentiality_attribute(tags::ACCESSION_NUMBER).unwrap();
+    assert_eq!(
+        (accession.name, accession.basic),
+        ("Accession Number", A::Z)
+    );
+    assert!(accession.options.is_empty() && accession.in_standard_iod && !accession.retired);
+    let date = confidentiality_attribute(tags::ACQUISITION_DATE).unwrap();
+    assert_eq!(date.basic, A::XZ);
+    assert_eq!(
+        date.action(O::RetainLongitudinalTemporalInformationFullDates),
+        Some(A::K)
+    );
+    assert_eq!(
+        date.action(O::RetainLongitudinalTemporalInformationModifiedDates),
+        Some(A::C)
+    );
+    assert_eq!(date.action(O::RetainSafePrivate), None);
+    let referenced = confidentiality_attribute(tags::REFERENCED_IMAGE_SEQUENCE).unwrap();
+    assert_eq!(
+        (referenced.basic.code(), referenced.action(O::RetainUIDs)),
+        ("X/Z/U*", Some(A::K))
+    );
+    // Repeating groups and Private Data Elements.
+    let comments = confidentiality_attribute(Tag(0x6002, 0x4000)).unwrap();
+    assert_eq!(comments.name, "Overlay Comments");
+    let curve = confidentiality_attribute(Tag(0x501E, 0x3000)).unwrap();
+    assert_eq!(curve.name, "Curve Data");
+    let private = confidentiality_attribute(Tag(0x0009, 0x1001)).unwrap();
+    assert_eq!((private.tag, private.basic), (TagPattern::Private, A::X));
+    assert_eq!(private.action(O::RetainSafePrivate), Some(A::C));
+    // Rows is not listed: the Profile leaves it as it is.
+    assert!(confidentiality_attribute(tags::ROWS).is_none());
+    // Every row is found again by the tag it names.
+    for row in confidentiality_attributes() {
+        let tag = match row.tag {
+            TagPattern::Tag(tag) | TagPattern::Repeating { tag, .. } => tag,
+            TagPattern::Private => 0x0009_1001,
+        };
+        let found = confidentiality_attribute(Tag((tag >> 16) as u16, (tag & 0xFFFF) as u16));
+        assert!(
+            found.is_some_and(|found| std::ptr::eq(found, row)),
+            "{}",
+            row.name
+        );
+    }
+    assert!(confidentiality_attributes().count() > 600);
+}
+
+#[test]
+fn clean_structured_content_rows_are_found_by_concept_and_value_type() {
+    use super::deidentification::{
+        structured_content_concept, structured_content_concepts, ConfidentialityOption as O,
+        DeidentificationAction as A,
+    };
+    let accession = structured_content_concept("DCM", "121022", "TEXT").unwrap();
+    assert_eq!(
+        (accession.code.meaning, accession.basic),
+        ("Accession Number", A::X)
+    );
+    // One concept, one row per Value Type.
+    let report = structured_content_concept("SCT", "371524004", "TEXT").unwrap();
+    assert_eq!(report.action(O::CleanDescriptors), Some(A::C));
+    let composite = structured_content_concept("SCT", "371524004", "COMPOSITE").unwrap();
+    assert_eq!(composite.action(O::RetainUIDs), Some(A::K));
+    assert!(structured_content_concept("SCT", "371524004", "CODE").is_none());
+    // A Coding Scheme Designator with a version, "NCDR [2.0b]".
+    let admission = structured_content_concept("NCDR", "15", "DATETIME").unwrap();
+    assert_eq!(
+        (admission.code.scheme, admission.scheme_version),
+        ("NCDR", "2.0b")
+    );
+    for row in structured_content_concepts() {
+        assert!(
+            structured_content_concept(row.code.scheme, row.code.value, row.value_type)
+                .is_some_and(|found| std::ptr::eq(found, row))
+        );
+    }
+}
+
+#[test]
+fn every_confidentiality_option_has_its_cid_7050_code() {
+    use super::deidentification::{
+        deidentification_methods, ConfidentialityOption, DeidentificationAction, BASIC_PROFILE,
+        BASIC_PROFILE_SECTION,
+    };
+    let methods = deidentification_methods();
+    assert_eq!(methods.len(), ConfidentialityOption::ALL.len() + 1);
+    assert!(methods.contains(&BASIC_PROFILE));
+    assert_eq!(BASIC_PROFILE_SECTION, "E.2");
+    for option in ConfidentialityOption::ALL {
+        let code = option.code();
+        assert!(methods.contains(&code), "{option:?}");
+        assert_eq!(
+            ConfidentialityOption::from_code(code.scheme, code.value),
+            Some(*option)
+        );
+        assert!(option.section().starts_with("E.3."));
+    }
+    assert_eq!(ConfidentialityOption::from_code("DCM", "113100"), None);
+    assert_eq!(
+        ConfidentialityOption::from_code("DCM", "113111"),
+        Some(ConfidentialityOption::RetainSafePrivate)
+    );
+    let codes: Vec<&str> = DeidentificationAction::ALL
+        .iter()
+        .map(|action| action.code())
+        .collect();
+    assert_eq!(
+        codes,
+        ["D", "Z", "X", "K", "C", "U", "Z/D", "X/Z", "X/D", "X/Z/D", "X/Z/U*"]
+    );
+}
+
+/// The findings of a Specimen Preparation step holding its Processing type
+/// alone, missing TID 8001 Row 1 (121041, DCM, "Specimen Identifier"), held
+/// to TID 8001 as a Defined Template in an object whose De-identification
+/// Method Code Sequence lists `methods`.
+fn unidentified_step(methods: &[(&str, &str)]) -> super::report::Findings {
+    let coded = |scheme: &str, value: &str| {
+        data_set(vec![
+            text(tags::CODE_VALUE, VR::SH, &[value]),
+            text(tags::CODING_SCHEME_DESIGNATOR, VR::SH, &[scheme]),
+            text(tags::CODE_MEANING, VR::LO, &["meaning"]),
+        ])
+    };
+    let step = data_set(vec![
+        text(tags::VALUE_TYPE, VR::CS, &["CODE"]),
+        sequence(
+            tags::CONCEPT_NAME_CODE_SEQUENCE,
+            vec![coded("DCM", "111701")],
+        ),
+        sequence(tags::CONCEPT_CODE_SEQUENCE, vec![coded("SCT", "9265001")]),
+    ]);
+    let object = data_set(vec![sequence(
+        tags::DEIDENTIFICATION_METHOD_CODE_SEQUENCE,
+        methods
+            .iter()
+            .map(|(scheme, value)| coded(scheme, value))
+            .collect(),
+    )]);
+    let mut findings = super::report::Findings::default();
+    super::templates::check_items(
+        &mut findings,
+        "Steps",
+        super::model::Strength::Defined,
+        8001,
+        &[step],
+        &object,
+    );
+    findings
+}
+
+#[test]
+fn a_required_item_clean_structured_content_removes_is_advised_citing_both_parts() {
+    use crate::validation::ValidationStatus;
+    let missing =
+        "TID 8001 \"Specimen Preparation\" Row 1 TEXT (121041, DCM, \"Specimen Identifier\") missing";
+    let status = |findings: &super::report::Findings| {
+        findings
+            .value_sets
+            .check(std::path::Path::new("step.dcm"), "value-sets", "citation")
+    };
+    // Under the Basic Profile alone the Template's requirement stands.
+    let basic = unidentified_step(&[("DCM", "113100")]);
+    let check = status(&basic);
+    assert_eq!(check.status, ValidationStatus::Failed);
+    assert!(
+        check
+            .message
+            .contains(&format!("Steps: {missing} (PS3.16 {EDITION})")),
+        "{}",
+        check.message
+    );
+    assert!(basic.advisories.describe().is_empty());
+    // Table E.3.4-1 removes the Item under Clean Structured Content, with or
+    // without an Option naming no other action for it.
+    for methods in [
+        &[("DCM", "113100"), ("DCM", "113104")][..],
+        &[("DCM", "113104"), ("DCM", "113105")],
+    ] {
+        let cleaned = unidentified_step(methods);
+        assert_eq!(
+            status(&cleaned).status,
+            ValidationStatus::Passed,
+            "{methods:?}"
+        );
+        assert_eq!(
+            cleaned.advisories.describe(),
+            [format!(
+                "Steps: {missing}, a Content Item PS3.15 {EDITION} Table E.3.4-1 removes under the Clean Structured Content Option the De-identification Method Code Sequence (0012,0064) declares (PS3.15 {EDITION} E.3.4; PS3.16 {EDITION} TID 8001)"
+            )]
+        );
+    }
+}
+
+#[test]
+fn structured_reporting_iods_expose_their_content_constraints_and_templates() {
+    use super::structured_report::{
+        document_constraints, document_constraints_of_sop_class, template, templates,
+    };
+    // Table A.35.4-2: a KOS CONTAINER CONTAINS IMAGE, and nothing CONTAINS
+    // a NUM; HAS ACQ CONTEXT has IMAGE among its Sources.
+    let kos = document_constraints_of_sop_class("1.2.840.10008.5.1.4.1.1.88.59").unwrap();
+    assert_eq!(
+        (kos.iod, kos.table, kos.root_template),
+        ("A.35.4", "A.35.4-2", Some(2010))
+    );
+    assert!(kos.admits("CONTAINER", "CONTAINS", "IMAGE"));
+    assert!(!kos.admits("CONTAINER", "CONTAINS", "NUM"));
+    assert!(kos.admits("IMAGE", "HAS ACQ CONTEXT", "DATETIME"));
+    assert!(!kos.admits("TEXT", "HAS ACQ CONTEXT", "DATETIME"));
+    // Table A.35.3-2: "any type" HAS CONCEPT MOD TEXT or CODE; a Comprehensive
+    // SR permits SCOORD3D nowhere, the Comprehensive 3D SR does.
+    let comprehensive = document_constraints("A.35.3").unwrap();
+    assert!(comprehensive.admits("SCOORD", "HAS CONCEPT MOD", "CODE"));
+    assert!(!comprehensive.admits("SCOORD", "HAS CONCEPT MOD", "NUM"));
+    assert!(comprehensive.admits("SCOORD", "SELECTED FROM", "IMAGE"));
+    assert!(!comprehensive.value_types.contains(&"SCOORD3D"));
+    assert!(document_constraints("A.35.13")
+        .unwrap()
+        .value_types
+        .contains(&"SCOORD3D"));
+    // The Basic Text SR has no NUM Content Items (A.35.1.3.1.1).
+    assert!(!document_constraints("A.35.1")
+        .unwrap()
+        .value_types
+        .contains(&"NUM"));
+    assert!(document_constraints("A.32.8").is_none());
+    assert!(document_constraints_of_sop_class(crate::VL_WSI_SOP_CLASS_UID).is_none());
+    // TID 2010 Row 1 is the CONTAINER; its children are the rows one level
+    // down, Row 8 IMAGE among them, and none of the root's own level.
+    let kos_template = template(2010).unwrap();
+    assert_eq!(kos_template.rows[0].value_type, "CONTAINER");
+    let children: Vec<&str> = kos_template.children(0).map(|row| row.row).collect();
+    assert_eq!(
+        children,
+        ["2", "3", "4", "4b", "5", "6", "7", "8", "9", "10", "11"]
+    );
+    assert!(kos_template.children(1).next().is_none());
+    // TID 1500 and the Templates it includes are reachable, in ID order.
+    assert!(template(1500).is_some() && template(1501).is_some());
+    assert!(templates().windows(2).all(|pair| pair[0].id < pair[1].id));
+    assert!(template(1).is_none());
+}
+
+#[test]
+fn template_rows_and_context_groups_judge_content_items_for_the_content_rule() {
+    use super::model::Strength;
+    use super::structured_report::{code_finding, context_group_name, template, CodeFinding};
+    let coded = |scheme: &str, value: &str, flag: Option<&str>| {
+        let mut elements = vec![
+            text(tags::CODE_VALUE, VR::SH, &[value]),
+            text(tags::CODING_SCHEME_DESIGNATOR, VR::SH, &[scheme]),
+            text(tags::CODE_MEANING, VR::LO, &["meaning"]),
+        ];
+        elements.extend(flag.map(|flag| text(tags::CONTEXT_GROUP_EXTENSION_FLAG, VR::CS, &[flag])));
+        data_set(elements)
+    };
+    let content = |value_type: &str, scheme: &str, value: &str| {
+        data_set(vec![
+            text(tags::VALUE_TYPE, VR::CS, &[value_type]),
+            sequence(
+                tags::CONCEPT_NAME_CODE_SEQUENCE,
+                vec![coded(scheme, value, None)],
+            ),
+        ])
+    };
+    // TID 2010 Row 1: a CONTAINER titled from CID 7010; Row 7: TEXT
+    // (113012, DCM, "Key Object Description"); Row 8: IMAGE of any name.
+    let rows = template(2010).unwrap().rows;
+    assert!(rows[0].admits(&content("CONTAINER", "DCM", "113000")));
+    assert!(!rows[0].admits(&content("TEXT", "DCM", "113000")));
+    assert!(!rows[0].admits(&content("CONTAINER", "99LOCAL", "t1")));
+    assert_eq!(rows[0].concept_text(), "CID 7010");
+    let description = rows.iter().find(|row| row.row == "7").unwrap();
+    assert!(description.admits(&content("TEXT", "DCM", "113012")));
+    assert!(!description.admits(&content("TEXT", "DCM", "113011")));
+    assert_eq!(
+        description.concept_text(),
+        "(113012, DCM, \"Key Object Description\")"
+    );
+    let image = rows.iter().find(|row| row.row == "8").unwrap();
+    assert!(image.admits(&content("IMAGE", "SCT", "260753009")));
+    // A member, a declared extension and a non-coded Item pass; a code
+    // outside an extensible Defined group is advised, outside a
+    // non-extensible one (CID 82) a violation.
+    assert_eq!(
+        code_finding(Strength::Defined, &[7010], &coded("DCM", "113000", None)),
+        None
+    );
+    assert_eq!(
+        code_finding(
+            Strength::Defined,
+            &[7010],
+            &coded("99LOCAL", "t1", Some("Y"))
+        ),
+        None
+    );
+    assert_eq!(
+        code_finding(Strength::Defined, &[7010], &data_set(vec![])),
+        None
+    );
+    assert!(matches!(
+        code_finding(Strength::Defined, &[7010], &coded("99LOCAL", "t1", None)),
+        Some(CodeFinding::Advisory(message)) if message.starts_with("(t1, 99LOCAL, \"meaning\") is not in Defined CID 7010 \"Key Object Selection Document Title\"")
+    ));
+    assert!(matches!(
+        code_finding(Strength::Baseline, &[7010], &coded("99LOCAL", "t1", None)),
+        Some(CodeFinding::Advisory(message)) if message.contains("Baseline CID 7010")
+    ));
+    assert!(matches!(
+        code_finding(Strength::Defined, &[82], &coded("99LOCAL", "mm", None)),
+        Some(CodeFinding::Violation(message)) if message.contains("Defined CID 82 \"Measurement Unit\"")
+    ));
+    assert_eq!(
+        context_group_name(7010),
+        Some("Key Object Selection Document Title")
+    );
+    assert_eq!(context_group_name(1), None);
+}
+
+#[test]
+fn directory_records_follow_table_f_4_1() {
+    use super::file_set::{
+        basic_directory_section, basic_directory_sop_class, directory_record, directory_records,
+        root_directory_records,
+    };
+    assert_eq!(basic_directory_sop_class(), "1.2.840.10008.1.3.10");
+    assert_eq!(basic_directory_section(), "F.3");
+    assert!(root_directory_records().contains(&"PATIENT"));
+    assert!(!root_directory_records().contains(&"STUDY"));
+    let patient = directory_record("PATIENT").unwrap();
+    assert_eq!(
+        (patient.section, patient.keys_table()),
+        ("F.5.1", Some("F.5-1"))
+    );
+    assert!(patient.admits_lower_level("STUDY") && !patient.admits_lower_level("IMAGE"));
+    let keys = patient.selection_keys();
+    assert!(keys
+        .iter()
+        .any(|key| key.tag == 0x0010_0020 && key.kind == "1"));
+    assert!(keys
+        .iter()
+        .any(|key| key.tag == 0x0008_0005 && key.kind == "1C"));
+    let series = directory_record("SERIES").unwrap();
+    assert!(series.admits_lower_level("IMAGE") && series.admits_lower_level("ANNOTATION"));
+    let private = directory_record("PRIVATE").unwrap();
+    assert_eq!((private.section, private.keys_table()), ("F.6.1", None));
+    assert!(private.selection_keys().is_empty());
+    assert!(private.any_private_lower_level && !patient.any_private_lower_level);
+    assert!(directory_record("OVERLAY").is_none());
+    // Every record type the records admit is defined.
+    for record in directory_records() {
+        for lower in record.lower_level {
+            assert!(directory_record(lower).is_some(), "{lower}");
+        }
+    }
+}
+
+#[test]
+fn directory_record_conditions_read_the_record_type_and_its_references() {
+    let root = data_set(vec![]);
+    let record = |record_type: &str, extra: Vec<InMemElement>| {
+        let mut elements = vec![text(tags::DIRECTORY_RECORD_TYPE, VR::CS, &[record_type])];
+        elements.extend(extra);
+        data_set(elements)
+    };
+    let file_id = || text(tags::REFERENCED_FILE_ID, VR::CS, &["IM0001"]);
+    let image = record("IMAGE", vec![]);
+    let patient = record("PATIENT", vec![]);
+    let private = record("PRIVATE", vec![]);
+    // IMAGE records reference a SOP Instance; PATIENT records do not.
+    expect_in_item(
+        C::ReferencedFileID_3760d0,
+        &root,
+        &image,
+        Requirement::Required,
+    );
+    expect_in_item(
+        C::ReferencedFileID_3760d0,
+        &root,
+        &patient,
+        Requirement::Forbidden,
+    );
+    let patient_file = record("PATIENT", vec![file_id()]);
+    expect_in_item(
+        C::ReferencedSOPClassUIDInFile_b5b28b,
+        &root,
+        &patient_file,
+        Requirement::Forbidden,
+    );
+    // A PRIVATE record references one when it names one.
+    let private_file = record("PRIVATE", vec![file_id()]);
+    expect_in_item(
+        C::ReferencedSOPClassUIDInFile_b5b28b,
+        &root,
+        &private_file,
+        Requirement::Required,
+    );
+    expect_in_item(
+        C::ReferencedFileID_3760d0,
+        &root,
+        &private,
+        Requirement::Undeterminable,
+    );
+    expect_in_item(
+        C::PrivateRecordUID_399277,
+        &root,
+        &private,
+        Requirement::Required,
+    );
+    expect_in_item(
+        C::PrivateRecordUID_399277,
+        &root,
+        &image,
+        Requirement::Forbidden,
+    );
+    // Specific Character Set of a record: required by a key outside ISO 646.
+    let named = |name: &str| record("PATIENT", vec![text(tags::PATIENT_NAME, VR::PN, &[name])]);
+    expect_in_item(
+        C::SpecificCharacterSet_ebd0ce,
+        &root,
+        &named("Muller^Anna"),
+        Requirement::Forbidden,
+    );
+    expect_in_item(
+        C::SpecificCharacterSet_ebd0ce,
+        &root,
+        &named("Müller^Anna"),
+        Requirement::Required,
+    );
+}
+
+#[test]
+fn content_item_macros_follow_the_value_type() {
+    let root = data_set(vec![text(tags::VALUE_TYPE, VR::CS, &["CONTAINER"])]);
+    let content = |value_type: &str| data_set(vec![text(tags::VALUE_TYPE, VR::CS, &[value_type])]);
+    // Table C.17-5 includes each Content Item Macro if and only if its Value Type.
+    expect_in_item(
+        C::IncludeC1811_b4d406,
+        &root,
+        &content("NUM"),
+        Requirement::Required,
+    );
+    expect_in_item(
+        C::IncludeC1811_b4d406,
+        &root,
+        &content("TEXT"),
+        Requirement::Forbidden,
+    );
+    expect_in_item(
+        C::IncludeC1841_08c4c7,
+        &root,
+        &content("IMAGE"),
+        Requirement::Required,
+    );
+    expect_in_item(
+        C::IncludeC1881_0f7a08,
+        &root,
+        &content("CONTAINER"),
+        Requirement::Required,
+    );
+    // The root CONTAINER has a Concept Name; a nested one, or a reference, may not.
+    expect(
+        C::ConceptNameCodeSequence_abde30,
+        &root,
+        Requirement::Required,
+    );
+    for (value_type, expected) in [
+        ("CONTAINER", Requirement::Optional),
+        ("IMAGE", Requirement::Optional),
+        ("CODE", Requirement::Required),
+    ] {
+        expect_in_item(
+            C::ConceptNameCodeSequence_abde30,
+            &root,
+            &content(value_type),
+            expected,
+        );
+    }
+    // A table cell holds its Value in the Selector Attribute of its VR.
+    let cell = |vr: &str, extra: Vec<InMemElement>| {
+        let mut elements = vec![text(tags::SELECTOR_ATTRIBUTE_VR, VR::CS, &[vr])];
+        elements.extend(extra);
+        data_set(elements)
+    };
+    let fd = cell("FD", vec![]);
+    expect_in_item(C::SelectorFDValue_3dcd6f, &root, &fd, Requirement::Required);
+    expect_in_item(
+        C::SelectorFDValue_3dcd6f,
+        &root,
+        &cell("DS", vec![]),
+        Requirement::Forbidden,
+    );
+    let qualifier = sequence(
+        tags::NUMERIC_VALUE_QUALIFIER_CODE_SEQUENCE,
+        vec![data_set(vec![])],
+    );
+    let qualified = cell("FD", vec![qualifier]);
+    expect_in_item(
+        C::SelectorFDValue_3dcd6f,
+        &root,
+        &qualified,
+        Requirement::Forbidden,
+    );
+    expect_in_item(
+        C::NumericValueQualifierCodeSequence_21892a,
+        &root,
+        &fd,
+        Requirement::Required,
+    );
+    expect_in_item(
+        C::NumericValueQualifierCodeSequence_21892a,
+        &root,
+        &cell("UC", vec![]),
+        Requirement::Forbidden,
+    );
 }

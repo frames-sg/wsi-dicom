@@ -448,6 +448,11 @@ pub(crate) struct ValidateArgs {
     pub(crate) max_input_bytes: u64,
     #[command(flatten)]
     pub(crate) conformance: ConformanceArgs,
+    /// Convention profiles to check as well, comma-separated or repeated:
+    /// wg26, ihe-dpia, ihe-dpia-draft, ihe-dpia-draft-jpeg, interop. They are
+    /// reported apart from the DICOM checks and never make validation fail.
+    #[arg(long, value_enum, value_delimiter = ',', value_name = "PROFILE")]
+    pub(crate) conventions: Vec<wsi_dicom::ConventionProfile>,
     #[arg(long)]
     pub(crate) json: bool,
 }
@@ -500,8 +505,15 @@ pub(crate) struct DicomwebArgs {
     /// the server's state: use it only on a server you own.
     #[arg(long, value_name = "FILE")]
     pub(crate) allow_store: Option<PathBuf>,
-    /// Requests sent at most.
-    #[arg(long, default_value_t = 64, value_parser = clap::value_parser!(u64).range(1..))]
+    /// Ask for a 401 with an invalid bearer token and for a 405 with TRACE,
+    /// to check their WWW-Authenticate and Allow fields. Off by default: a
+    /// bad credential can raise alerts or lock an account, and security
+    /// scanners flag TRACE.
+    #[arg(long)]
+    pub(crate) probe_error_responses: bool,
+    /// Requests sent at most; a full run against a conforming server sends
+    /// about 100.
+    #[arg(long, default_value_t = 192, value_parser = clap::value_parser!(u64).range(1..))]
     pub(crate) max_requests: u64,
     #[command(flatten)]
     pub(crate) http: HttpArgs,

@@ -73,6 +73,27 @@ pub(in crate::validation) fn is_jpip_referenced(uid: &str) -> bool {
     .contains(&uid.trim_end_matches(['\0', ' ']))
 }
 
+/// The SMPTE ST 2110 syntaxes and what each describes. Each is "used for"
+/// pixels or audio "carried in a DICOM-RTV Flow (separated from DICOM-RTV
+/// Metadata Flow)" (PS3.5 10.15, 10.16 and 10.17), in a DICOM-RTV Metadata
+/// Flow "to describe the accompanying" Video or Audio Flow (A.8, A.9 and
+/// A.10): none defines how a Data Set is encoded, which is what the Transfer
+/// Syntax UID of a file identifies (PS3.10 7.1 and 7.2).
+pub(in crate::validation) fn smpte_st2110(uid: &str) -> Option<(&'static str, &'static str)> {
+    Some(match uid.trim_end_matches(['\0', ' ']) {
+        "1.2.840.10008.1.2.7.1" => (
+            "SMPTE ST 2110-20 Uncompressed Progressive Active Video",
+            "10.15 and A.8",
+        ),
+        "1.2.840.10008.1.2.7.2" => (
+            "SMPTE ST 2110-20 Uncompressed Interlaced Active Video",
+            "10.16 and A.9",
+        ),
+        "1.2.840.10008.1.2.7.3" => ("SMPTE ST 2110-30 PCM Digital Audio", "10.17 and A.10"),
+        _ => return None,
+    })
+}
+
 fn one_per_frame(uid: &str) -> Option<Fragments> {
     let (section, native_payload) = match uid {
         uids::RLE_LOSSLESS => ("A.4.2", false),

@@ -289,3 +289,77 @@ fn a_timestamp_the_rule_cannot_read_fails() {
         "Certified Timestamp Type (0400,0305) is \"PGP\"; CMS_TSP, the RFC 3161 token of PS3.15 2026d C.1, is the type whose Certified Timestamp (0400,0310) can be read (PS3.3 2026d Table C.12-6)",
     );
 }
+
+/// DER tag, length and `content`.
+fn tlv(tag: u8, content: &[u8]) -> Vec<u8> {
+    let mut encoded = vec![tag];
+    let length = content.len();
+    if length < 0x80 {
+        encoded.push(length as u8);
+    } else {
+        let bytes: Vec<u8> = length
+            .to_be_bytes()
+            .into_iter()
+            .skip_while(|byte| *byte == 0)
+            .collect();
+        encoded.push(0x80 | bytes.len() as u8);
+        encoded.extend(bytes);
+    }
+    encoded.extend_from_slice(content);
+    encoded
+}
+
+/// A TimeStampToken certifying `signature` whose certificates SET OF lists
+/// the TSA certificate twice, encoded field by field since a SetOfVec holds
+/// no duplicates (RFC 5652 5.1).
+fn token_listing_its_certificate_twice(signature: &[u8]) -> Vec<u8> {
+    let request = Token::certifying(signature);
+    let tst_info = tst_info(&request);
+    let certificate = Certificate::from_der(&tsa().certificate).unwrap();
+    let signer = signer_info(&request, &certificate, &tst_info);
+    let encoded_certificate = certificate.to_der().unwrap();
+    let mut fields = CmsVersion::V3.to_der().unwrap();
+    fields.extend(
+        SetOfVec::try_from(vec![algorithm(MacAlgorithm::Sha256.oid())])
+            .unwrap()
+            .to_der()
+            .unwrap(),
+    );
+    fields.extend(
+        EncapsulatedContentInfo {
+            econtent_type: TST_INFO,
+            econtent: Some(Any::new(DerTag::OctetString, tst_info).unwrap()),
+        }
+        .to_der()
+        .unwrap(),
+    );
+    fields.extend(tlv(
+        0xA0,
+        &[encoded_certificate.clone(), encoded_certificate].concat(),
+    ));
+    fields.extend(
+        SignerInfos(SetOfVec::try_from(vec![signer]).unwrap())
+            .to_der()
+            .unwrap(),
+    );
+    let signed_data = tlv(0x30, &fields);
+    let mut content_info = SIGNED_DATA.to_der().unwrap();
+    content_info.extend(tlv(0xA0, &signed_data));
+    tlv(0x30, &content_info)
+}
+
+#[test]
+fn a_token_listing_its_tsa_certificate_twice_verifies() {
+    // Neither X.690 (SET OF) nor RFC 5652 (CertificateSet) forbids equal
+    // elements; dcmsign and OpenSSL accept such tokens.
+    let duplicated = ContentInfo::from_der(&token_listing_its_certificate_twice(&[0; 32])).unwrap();
+    assert!(
+        duplicated.content.decode_as::<SignedData>().is_err(),
+        "a strict SET OF decoding rejects the duplicate"
+    );
+    let data_set = timestamped(token_listing_its_certificate_twice);
+    assert_verified(
+        &file(data_set, JPEG_BASELINE),
+        "1 Digital Signature verified, 1 with a verified Certified Timestamp",
+    );
+}

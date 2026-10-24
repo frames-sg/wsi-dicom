@@ -2,14 +2,15 @@
 
 use dicom_core::value::Value;
 use dicom_core::{PrimitiveValue, Tag, VR};
-use dicom_dictionary_std::StandardDataDictionary;
+use dicom_dictionary_std::{tags, StandardDataDictionary};
 use dicom_object::mem::InMemElement;
 use dicom_object::InMemDicomObject;
 
 use super::dictionary::{DICTIONARY, DICTIONARY_REPEATING};
 use super::file_meta::long_length;
 use super::model::{DictionaryEntry, ValueMultiplicity};
-use super::report::{excerpt, tag_text, Family};
+use super::recommendations;
+use super::report::{excerpt, tag_text, Advisories, Family};
 use super::scope::{declared_length, is_private, raw_tag};
 use super::MAX_NESTING;
 use crate::uid::is_valid_dicom_uid;
@@ -38,6 +39,8 @@ pub(super) struct Encoding {
 pub(super) struct ValueChecks<'f> {
     pub(super) vr_vm: &'f mut Family,
     pub(super) format: &'f mut Family,
+    /// Departures from recommendations (`recommendations`).
+    pub(super) advisories: &'f mut Advisories,
     pub(super) encoding: Encoding,
 }
 
@@ -109,6 +112,31 @@ impl ValueChecks<'_> {
         self.length(element, label);
         if let Value::Primitive(primitive) = element.value() {
             self.format_values(vr, primitive, label);
+        }
+        self.value_rules(element, label);
+    }
+
+    /// Value rules of particular Attributes that their VR does not give.
+    fn value_rules(&mut self, element: &InMemElement, label: Label<'_>) {
+        match label.tag {
+            tags::ICC_PROFILE => {
+                if let Ok(bytes) = element.to_bytes() {
+                    recommendations::icc_profile(&bytes, &label, self.advisories);
+                }
+            }
+            // C.12.1.1.7.1: "The stride is not permitted to be 0."
+            tags::PRIVATE_DATA_ELEMENT_VALUE_MULTIPLICITY => {
+                let values = element.to_multi_int::<u32>().unwrap_or_default();
+                if values.len() == 3 && values[2] == 0 {
+                    self.format.push(|| {
+                        format!(
+                            "{label}: the stride (third Value) is 0, which is not permitted (PS3.3 {} C.12.1.1.7.1)",
+                            super::tables::EDITION
+                        )
+                    });
+                }
+            }
+            _ => {}
         }
     }
 

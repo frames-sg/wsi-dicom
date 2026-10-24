@@ -191,3 +191,34 @@ fn malformed_headers_are_reported() {
         "RLE Segment 1 ends inside a literal run of 6 bytes (PS3.5 2026d G.3.1)",
     );
 }
+
+#[test]
+fn a_run_header_of_minus_128_fails_and_a_data_byte_of_80h_does_not() {
+    let forbidden = |segment: usize, frame: usize| {
+        format!("Frame 1: RLE Segment 1 has a run header of -128 (80H) at byte {segment} of the segment (byte {frame} of the Frame); the value of -128 may not be used to prefix a byte value (PS3.5 {} G.3.1)", crate::validation::iod::EDITION)
+    };
+    // The header before a literal run of 2Ah 2Bh.
+    assert_violation(
+        &check_frame(&frame(&[vec![0x80, 0x01, 0x2A, 0x2B]]), &monochrome((1, 2))),
+        &forbidden(0, 64),
+    );
+    // Between a literal run and a replicate run of 07h: the walk steps over
+    // the literal run's bytes to reach it.
+    assert_violation(
+        &check_frame(
+            &frame(&[vec![0x01, 0x2A, 0x2B, 0x80, 0xFF, 0x07]]),
+            &monochrome((1, 4)),
+        ),
+        &forbidden(3, 67),
+    );
+    // 80H as a byte of a literal run, or as the byte a run replicates, is
+    // pixel data, not a header.
+    assert_conformant(&check_frame(
+        &frame(&[vec![0x01, 0x80, 0x2B, 0x00]]),
+        &monochrome((1, 2)),
+    ));
+    assert_conformant(&check_frame(
+        &frame(&[vec![0xFF, 0x80]]),
+        &monochrome((1, 2)),
+    ));
+}

@@ -8,7 +8,7 @@ use dicom_object::mem::InMemElement;
 use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
 use super::iod::EDITION;
-use super::transfer_syntaxes::{pixel_encoding, Fragments, PixelEncoding};
+use super::transfer_syntaxes::{pixel_encoding, smpte_st2110, Fragments, PixelEncoding};
 use super::{failed_check, intrinsic_check, ValidationCheck, ValidationStatus};
 
 pub(super) fn run_intrinsic_pixel_structure_check(
@@ -36,6 +36,11 @@ fn check_pixel_structure(
     max_frame_bytes: usize,
 ) -> Result<(), String> {
     let transfer_syntax = object.meta().transfer_syntax.trim_end_matches('\0');
+    if let Some((name, sections)) = smpte_st2110(transfer_syntax) {
+        return Err(format!(
+            "Transfer Syntax {transfer_syntax} ({name}) describes a DICOM-RTV Flow, carried outside any file, and defines no encoding of a Data Set (PS3.5 {EDITION} {sections}); a file's Transfer Syntax UID identifies the Transfer Syntax that encodes its Data Set (PS3.10 {EDITION} 7.1 and 7.2), so no file uses it"
+        ));
+    }
     let encoding = pixel_encoding(transfer_syntax);
     let Some(pixel_data) = check_pixel_elements(object, transfer_syntax, encoding)? else {
         return Ok(());
@@ -551,6 +556,17 @@ impl<'a> EncapsulatedFrame<'a> {
             bytes.extend_from_slice(&fragment[..fragment.len().min(remaining)]);
         }
         Ok(Cow::Owned(bytes))
+    }
+
+    /// The Frame payload as slices of its Fragments, in order, without
+    /// copying them.
+    pub(super) fn parts(&self) -> impl Iterator<Item = &'a [u8]> {
+        let mut remaining = self.len;
+        self.fragments.iter().map(move |fragment| {
+            let part = &fragment[..fragment.len().min(remaining)];
+            remaining -= part.len();
+            part
+        })
     }
 }
 

@@ -94,11 +94,12 @@ pub use request::{
     RouteProgressSink, SlideRouteCoverageRequest,
 };
 pub use validation::{
-    doctor_dicom_environment, requirement_catalog, validate_dicom_json_path, validate_dicom_path,
-    DicomJsonOptions, DoctorOptions, DoctorReport, DoctorStatus, DoctorTool, ExecutionFailure,
-    OptionalConformance, RequirementDisposition, RequirementEntry, ValidationCheck,
-    ValidationExecution, ValidationOptions, ValidationProfile, ValidationReport, ValidationStatus,
-    DICOM_EDITION,
+    convention_catalog, doctor_dicom_environment, requirement_catalog, validate_dicom_json_path,
+    validate_dicom_path, ConventionAdvisory, ConventionCheck, ConventionEntry, ConventionKind,
+    ConventionProfile, ConventionReport, DicomJsonOptions, DoctorOptions, DoctorReport,
+    DoctorStatus, DoctorTool, ExecutionFailure, OptionalConformance, RequirementDisposition,
+    RequirementEntry, RequirementStrength, ValidationCheck, ValidationExecution, ValidationOptions,
+    ValidationProfile, ValidationReport, ValidationStatus, DICOM_EDITION,
 };
 
 pub mod prelude {
