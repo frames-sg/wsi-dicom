@@ -5,10 +5,13 @@ use j2k_core::CompressedTransferSyntax;
 use rayon::prelude::*;
 use wsi_rs::{Compression, Slide, TileLayout};
 
-use super::frame_region::{FrameRectGrid, FrameRectOverflowReasons, OutputFrameRect};
+use super::frame_region::{FrameExtent, FrameRectGrid, FrameRectOverflowReasons, OutputFrameRect};
 use super::j2k_policy::{reject_lossy_j2k_lossless_fallback, RawJ2kInspection};
 use super::jpeg_baseline::{declare_untransformed_rgb, read_raw_source_tile};
 use super::jpeg_retile::{read_raw_jpeg_retile_display_tile, RawJpegRetileProbe};
+use super::raw_tile::{
+    raw_tile_read_declined, undersized_jpeg_tile, undersized_jpeg_tile_lossy_counts,
+};
 use super::route_plan::{
     FrameRouteDecision, FrameRouteSource, RouteExecutionContext, RoutePlanner,
 };
@@ -300,6 +303,8 @@ fn plan_lossless_j2k_frame_at(
             reason: "J2K frame planning source level is unavailable".into(),
         })?;
     let (native_col, native_row) = native_tile_position(level, rect, col_i64, row_i64)?;
+    let frame = rect.extent(request.grid.frame_columns, request.grid.frame_rows);
+    let native_is_frame = native_tile_is_frame(level, (native_col, native_row), frame);
     let allow_raw_probe = request.allow_passthrough_probe
         || jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax);
     let (
@@ -310,7 +315,7 @@ fn plan_lossless_j2k_frame_at(
         source_jpeg_profile_unsupported,
         mut source_lossy_compression,
         passthrough,
-        source_is_jpeg,
+        source_is_compressed,
     ) = if allow_raw_probe {
         let tile_request = request.location.tile_request(native_col, native_row);
         match read_raw_source_tile(slide, &tile_request) {
@@ -333,22 +338,16 @@ fn plan_lossless_j2k_frame_at(
                 let source_lossy_compression = lossy_compression_from_raw(&raw, source_j2k_syntax)?;
                 let raw_is_jpeg = raw.compression() == Compression::Jpeg;
                 let source_jpeg_profile_unsupported = raw_is_jpeg
+                    && native_is_frame
                     && jpeg_direct_htj2k::frame_profile_is_unsupported(
                         &raw,
-                        request.grid.frame_columns,
-                        request.grid.frame_rows,
+                        frame,
                         request.transfer_syntax,
                     );
-                let passthrough_profile = request
-                    .allow_passthrough_probe
+                let passthrough_profile = (request.allow_passthrough_probe && native_is_frame)
                     .then(|| {
                         inspection.as_ref().and_then(|inspection| {
-                            inspection.passthrough_profile(
-                                &raw,
-                                request.grid.frame_columns,
-                                request.grid.frame_rows,
-                                request.transfer_syntax,
-                            )
+                            inspection.passthrough_profile(&raw, frame, request.transfer_syntax)
                         })
                     })
                     .flatten();
@@ -370,23 +369,19 @@ fn plan_lossless_j2k_frame_at(
                                     .expect("passthrough profile requires a parsed syntax"),
                             }),
                         )
+                    } else if !native_is_frame {
+                        (None, None, None)
                     } else if raw_is_jpeg {
                         (
                             None,
-                            jpeg_direct_htj2k::frame(
-                                raw,
-                                request.grid.frame_columns,
-                                request.grid.frame_rows,
-                                request.transfer_syntax,
-                            ),
+                            jpeg_direct_htj2k::frame(raw, frame, request.transfer_syntax),
                             None,
                         )
                     } else {
                         (
                             j2k_direct_htj2k::frame(
                                 raw,
-                                request.grid.frame_columns,
-                                request.grid.frame_rows,
+                                frame,
                                 request.transfer_syntax,
                                 source_j2k_profile,
                             ),
@@ -409,7 +404,19 @@ fn plan_lossless_j2k_frame_at(
                     raw_is_jpeg,
                 )
             }
-            Err(wsi_rs::WsiError::Unsupported { .. }) => {
+            // A stored JPEG smaller than its tile has no raw form but holds
+            // JPEG pixels: it is re-encoded under the policy.
+            Err(error) if undersized_jpeg_tile(&error) => (
+                None,
+                None,
+                None,
+                jpeg_direct_htj2k::transfer_syntax(request.transfer_syntax),
+                false,
+                undersized_jpeg_tile_lossy_counts(slide, &tile_request)?,
+                None,
+                true,
+            ),
+            Err(error) if raw_tile_read_declined(&error) => {
                 (None, None, None, false, false, None, None, false)
             }
             Err(error) => {
@@ -433,24 +440,13 @@ fn plan_lossless_j2k_frame_at(
             source_jpeg_direct_rejected = true;
             source_jpeg_retile_rejection = Some(JpegRetileRejectionReason::ProfileUnsupported);
         } else {
-            match read_raw_jpeg_retile_display_tile(
-                slide,
-                request.location,
-                col,
-                row,
-                request.grid.frame_columns,
-                request.grid.frame_rows,
-            )? {
+            match read_raw_jpeg_retile_display_tile(slide, request.location, col, row, frame)? {
                 RawJpegRetileProbe::Accepted(retiled) => {
                     if source_lossy_compression.is_none() {
                         source_lossy_compression = lossy_compression_from_raw(&retiled.raw, None)?;
                     }
-                    source_jpeg = jpeg_direct_htj2k::frame(
-                        retiled.raw,
-                        request.grid.frame_columns,
-                        request.grid.frame_rows,
-                        request.transfer_syntax,
-                    );
+                    source_jpeg =
+                        jpeg_direct_htj2k::frame(retiled.raw, frame, request.transfer_syntax);
                     if source_jpeg.is_some() {
                         source_jpeg_retiled = true;
                         source_jpeg_retile_duration = retiled.duration;
@@ -488,7 +484,7 @@ fn plan_lossless_j2k_frame_at(
         && planned.source_j2k.is_none()
         && planned.source_jpeg.is_none()
         && (planned.source_j2k_syntax.is_some()
-            || source_is_jpeg
+            || source_is_compressed
             || planned.source_jpeg_direct_rejected)
     {
         reject_lossy_j2k_lossless_fallback(&planned, request.transfer_syntax, row)?;
@@ -532,6 +528,35 @@ fn native_tile_position(
             })?,
         )),
         _ => Ok((col, row)),
+    }
+}
+
+/// Whether the native tile at (`col`, `row`) is, on its own, the output
+/// `frame` whose origin it contains, so its raw bytes may stand for that
+/// frame. Regular and whole-level tiles start at the frame origin when they
+/// are frame-sized, which the raw tile's geometry shows. An irregular tile
+/// map places tile (col, row) at its advance plus an offset, and neighbours
+/// paint over overlaps, so the tile with the frame's grid indices is the
+/// frame only on a grid of frame-sized advances with no offsets.
+pub(super) fn native_tile_is_frame(
+    level: &wsi_rs::Level,
+    (col, row): (i64, i64),
+    frame: FrameExtent,
+) -> bool {
+    match &level.tile_layout {
+        TileLayout::Regular { .. } | TileLayout::WholeLevel { .. } => true,
+        TileLayout::Irregular {
+            tile_advance,
+            extra_tiles,
+            tiles,
+        } => {
+            *tile_advance == (f64::from(frame.columns), f64::from(frame.rows))
+                && *extra_tiles == (0, 0, 0, 0)
+                && tiles
+                    .get(&(col, row))
+                    .is_some_and(|entry| entry.offset == (0.0, 0.0))
+        }
+        _ => false,
     }
 }
 

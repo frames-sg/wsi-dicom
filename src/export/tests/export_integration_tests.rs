@@ -1120,9 +1120,18 @@ fn jpeg_baseline_raw_passthrough_requires_jpeg_compression_and_matching_geometry
     // A right-edge tile reports its logical width inside a full encoded tile.
     let padded_edge = jpeg_tile(100);
 
-    assert!(!raw_jpeg_matches_frame_geometry(&raw_j2k, 512, 512));
-    assert!(raw_jpeg_matches_frame_geometry(&raw_jpeg, 512, 512));
-    assert!(!raw_jpeg_matches_frame_geometry(&raw_jpeg, 256, 512));
-    assert!(raw_jpeg_matches_frame_geometry(&padded_edge, 512, 512));
-    assert!(!raw_jpeg_matches_frame_geometry(&padded_edge, 100, 512));
+    let interior = FrameExtent::interior(512, 512);
+    // The right-edge frame of a 612-column matrix holds 100 matrix columns.
+    let right_edge = FrameExtent::at(1, 0, 512, 512, 612, 512);
+    assert!(!raw_jpeg_matches_frame_geometry(&raw_j2k, interior));
+    assert!(raw_jpeg_matches_frame_geometry(&raw_jpeg, interior));
+    assert!(!raw_jpeg_matches_frame_geometry(
+        &raw_jpeg,
+        FrameExtent::interior(256, 512)
+    ));
+    assert!(raw_jpeg_matches_frame_geometry(&padded_edge, right_edge));
+    assert!(!raw_jpeg_matches_frame_geometry(
+        &padded_edge,
+        FrameExtent::at(1, 0, 100, 512, 200, 512)
+    ));
 }

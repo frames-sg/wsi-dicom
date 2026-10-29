@@ -19,6 +19,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frames. Passthrough and retiled frames keep their source bytes. Deterministic
   UIDs are unchanged unless the option is enabled.
 
+### Changed
+
+- Source tiles follow the raw tile contract of
+  [wsi-rs#27](https://github.com/frames-sg/wsi-rs/issues/27). A raw tile is
+  copied, or transcoded in the compressed domain, only when its encoded image
+  is exactly the output frame with the tile at its origin. JPEG crops that
+  start at an earlier MCU boundary, and tiles cut from a larger stored JPEG,
+  JPEG 2000 codestream or JPEG XR subblock, are decoded instead. A DICOM edge
+  frame, or a padded TIFF edge tile whose stored image is the full tile, still
+  fills a TILED_FULL edge frame whole. Tiles of irregular tile maps (Ventana,
+  MIRAX, Zeiss ZVI) stand for frames only on a frame-sized grid without offsets
+  or overlaps.
+- A TIFF JPEG tile whose stored image is smaller than its tile, which wsi-rs
+  reads only decoded and padded, is re-encoded under `pixel_reencode` and keeps
+  its source JPEG stage in the lossy history. A TIFF JPEG 2000 codestream
+  smaller than its tile, which wsi-rs cannot decode, fails the export naming the
+  tile.
+- MONOCHROME1 source frames, which VL Whole Slide Microscopy does not admit,
+  are decoded instead of being copied as MONOCHROME2. Frames with fewer
+  significant bits than they occupy (DICOM Bits Stored 12 of 16) are decoded
+  instead of being copied under Bits Stored equal to Bits Allocated.
+- A raw read that wsi-rs refuses for memory takes the decode route, like one
+  refused for want of stored bytes. PNG and BMP sources count as lossless.
+
 ### Removed
 
 - **Breaking:** validation no longer runs external codecs. The `djpeg`,

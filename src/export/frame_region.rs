@@ -48,6 +48,65 @@ impl OutputFrameRect {
                 .min(u64::from(grid.frame_rows)) as u32,
         })
     }
+
+    /// This rectangle as the in-matrix part of a `frame_columns` x
+    /// `frame_rows` output frame.
+    pub(super) const fn extent(self, frame_columns: u32, frame_rows: u32) -> FrameExtent {
+        FrameExtent {
+            columns: frame_columns,
+            rows: frame_rows,
+            inside_columns: self.width,
+            inside_rows: self.height,
+        }
+    }
+}
+
+/// An output frame's size and how much of it lies inside the Total Pixel
+/// Matrix: less than the frame only in the last column or row of frames,
+/// whose remaining pixels are padding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FrameExtent {
+    pub(crate) columns: u32,
+    pub(crate) rows: u32,
+    pub(crate) inside_columns: u32,
+    pub(crate) inside_rows: u32,
+}
+
+impl FrameExtent {
+    /// A frame wholly inside the Total Pixel Matrix.
+    #[cfg(test)]
+    pub(crate) const fn interior(columns: u32, rows: u32) -> Self {
+        Self {
+            columns,
+            rows,
+            inside_columns: columns,
+            inside_rows: rows,
+        }
+    }
+
+    /// The frame at grid position (`col`, `row`) of `columns` x `rows`
+    /// frames over a `matrix_columns` x `matrix_rows` Total Pixel Matrix.
+    pub(crate) fn at(
+        col: u64,
+        row: u64,
+        columns: u32,
+        rows: u32,
+        matrix_columns: u64,
+        matrix_rows: u64,
+    ) -> Self {
+        let inside = |index: u64, size: u32, matrix: u64| {
+            index
+                .checked_mul(u64::from(size))
+                .map_or(0, |start| matrix.saturating_sub(start).min(u64::from(size)))
+                as u32
+        };
+        Self {
+            columns,
+            rows,
+            inside_columns: inside(col, columns, matrix_columns),
+            inside_rows: inside(row, rows, matrix_rows),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

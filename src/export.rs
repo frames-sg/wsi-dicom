@@ -101,6 +101,7 @@ mod metal_route;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_row_batch;
 mod profiling;
+mod raw_tile;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod route_cache;
 mod route_plan;
@@ -149,6 +150,8 @@ use route_cache::{
     load_persistent_auto_metal_input_route_cache_if_requested,
 };
 
+#[cfg(test)]
+use self::frame_region::FrameExtent;
 pub(crate) use self::frame_region::FrameRectGrid;
 #[cfg(test)]
 use self::frame_region::OutputFrameRect;
@@ -524,6 +527,7 @@ mod tests {
     mod jpeg_baseline_route_tests;
     mod jpeg_lossless_tests;
     mod options_builder_tests;
+    mod raw_tile_tests;
     mod route_profile_tests;
     mod support;
     mod unit_tests;

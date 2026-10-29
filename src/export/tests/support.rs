@@ -253,7 +253,7 @@ pub(super) fn ndpi_jpeg_passthrough_level(
         )) else {
             continue;
         };
-        if !raw_jpeg_matches_frame_geometry(&raw, geometry.frame_columns, geometry.frame_rows) {
+        if !raw_jpeg_matches_frame_geometry(&raw, geometry.frame_extent(0, 0)) {
             continue;
         }
         let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&raw) else {

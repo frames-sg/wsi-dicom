@@ -11,10 +11,11 @@ pub(crate) const JPEG_XR_METHOD: &str = "ISO_29199_2";
 pub(crate) const JPEG_LS_METHOD: &str = "ISO_14495_1";
 
 /// Lossy Image Compression Method for pixels a source stored with
-/// `compression`, or `None` for lossless storage. JPEG 2000 and JPEG-LS can
-/// be lossless, but a reported codec alone does not say so; they are recorded
-/// as lossy rather than risk declaring lossy pixels lossless. A codec this
-/// crate does not know is an error, for the same reason.
+/// `compression`, or `None` for lossless storage, which includes whole PNG
+/// and BMP files. JPEG 2000 and JPEG-LS can be lossless, but a reported codec
+/// alone does not say so; they are recorded as lossy rather than risk
+/// declaring lossy pixels lossless. A codec this crate does not know is an
+/// error, for the same reason.
 pub(crate) fn lossy_method_for_compression(
     compression: Compression,
 ) -> Result<Option<&'static str>, Error> {
@@ -27,7 +28,9 @@ pub(crate) fn lossy_method_for_compression(
         | Compression::Lzw
         | Compression::Deflate
         | Compression::Zstd
-        | Compression::Rle => Ok(None),
+        | Compression::Rle
+        | Compression::Png
+        | Compression::Bmp => Ok(None),
         other => Err(Error::Metadata {
             reason: format!(
                 "source codec {other:?} cannot be classified as lossless or lossy, so its compression history cannot be recorded"
@@ -38,8 +41,10 @@ pub(crate) fn lossy_method_for_compression(
 
 /// Whether pixels stored with `compression` can only be kept by a
 /// compressed-domain route, so decoding them is a re-encode the
-/// `pixel_reencode` policy governs. General-purpose lossless coding is not;
-/// a codec this crate does not know is treated as an image codec.
+/// `pixel_reencode` policy governs. General-purpose lossless coding is not,
+/// nor are PNG and BMP files, which are lossless and have no DICOM transfer
+/// syntax to keep them in; a codec this crate does not know is treated as an
+/// image codec.
 pub(crate) fn is_image_codec(compression: Compression) -> bool {
     !matches!(
         compression,
@@ -48,6 +53,8 @@ pub(crate) fn is_image_codec(compression: Compression) -> bool {
             | Compression::Deflate
             | Compression::Zstd
             | Compression::Rle
+            | Compression::Png
+            | Compression::Bmp
     )
 }
 
@@ -279,6 +286,18 @@ impl LossyCompressionAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn png_and_bmp_sources_are_lossless_general_purpose_storage() {
+        for compression in [Compression::Png, Compression::Bmp] {
+            assert_eq!(lossy_method_for_compression(compression).unwrap(), None);
+            assert!(!is_image_codec(compression), "{compression:?}");
+        }
+        for compression in [Compression::Jpeg, Compression::JpegXr, Compression::Jp2kRgb] {
+            assert!(is_image_codec(compression), "{compression:?}");
+        }
+        assert!(is_image_codec(Compression::Other(34_712)));
+    }
 
     #[test]
     fn declared_history_rejects_invalid_dicom_method_and_ratio_values() {

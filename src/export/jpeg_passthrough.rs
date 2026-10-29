@@ -211,7 +211,8 @@ fn read_direct_jpeg_passthrough_frame(
         jpeg_passthrough_tile_coordinates(geometry, frame_idx).map_err(io::Error::other)?;
     let raw =
         read_raw_source_tile(slide, &location.tile_request(col, row)).map_err(io::Error::other)?;
-    if !raw_jpeg_matches_frame_geometry(&raw, geometry.frame_columns, geometry.frame_rows) {
+    let frame = geometry.frame_extent(col.unsigned_abs(), row.unsigned_abs());
+    if !raw_jpeg_matches_frame_geometry(&raw, frame) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "direct JPEG passthrough frame is no longer passthrough-eligible",
@@ -239,10 +240,8 @@ pub(crate) fn read_raw_jpeg_passthrough_tile(
         Ok(raw) => raw,
         Err(_) => return Ok(None),
     };
-    Ok(
-        raw_jpeg_matches_frame_geometry(&raw, geometry.frame_columns, geometry.frame_rows)
-            .then_some(raw),
-    )
+    let frame = geometry.frame_extent(col.unsigned_abs(), row.unsigned_abs());
+    Ok(raw_jpeg_matches_frame_geometry(&raw, frame).then_some(raw))
 }
 
 fn jpeg_passthrough_tile_coordinates(

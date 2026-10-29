@@ -13,6 +13,7 @@ use rayon::prelude::*;
 
 use wsi_rs::RawCompressedTile;
 
+use super::frame_region::FrameExtent;
 use super::{
     ensure_consistent_pixel_profile, pixel_profile_from_raw_jpeg_tile,
     raw_jpeg_matches_frame_geometry,
@@ -83,24 +84,22 @@ pub(super) fn raw_profile_is_unsupported_for_htj2k(raw: &RawCompressedTile) -> b
 
 pub(super) fn frame_profile_is_unsupported(
     raw: &RawCompressedTile,
-    frame_columns: u32,
-    frame_rows: u32,
+    frame: FrameExtent,
     transfer_syntax: TransferSyntax,
 ) -> bool {
     self::transfer_syntax(transfer_syntax)
-        && raw_jpeg_matches_frame_geometry(raw, frame_columns, frame_rows)
+        && raw_jpeg_matches_frame_geometry(raw, frame)
         && raw_profile_is_unsupported_for_htj2k(raw)
 }
 
+/// The raw JPEG transcoded as `frame`, when it encodes exactly that frame;
+/// see [`raw_jpeg_matches_frame_geometry`].
 pub(super) fn frame(
     raw: RawCompressedTile,
-    frame_columns: u32,
-    frame_rows: u32,
+    frame: FrameExtent,
     transfer_syntax: TransferSyntax,
 ) -> Option<Frame> {
-    if !self::transfer_syntax(transfer_syntax)
-        || !raw_jpeg_matches_frame_geometry(&raw, frame_columns, frame_rows)
-    {
+    if !self::transfer_syntax(transfer_syntax) || !raw_jpeg_matches_frame_geometry(&raw, frame) {
         return None;
     }
     let profile = htj2k_direct_pixel_profile(pixel_profile_from_raw_jpeg_tile(&raw).ok()?);

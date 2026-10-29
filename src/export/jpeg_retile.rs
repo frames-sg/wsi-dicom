@@ -2,7 +2,9 @@ use std::time::{Duration, Instant};
 
 use wsi_rs::{PlaneSelection, RawCompressedTile, Slide, TileViewRequest, WsiError};
 
+use super::frame_region::FrameExtent;
 use super::jpeg_baseline::declare_untransformed_rgb;
+use super::raw_tile::raw_tile_read_declined;
 use super::{raw_jpeg_matches_frame_geometry, JpegBaselineFrameLocation};
 use crate::error::Error;
 use crate::report::JpegRetileRejectionReason;
@@ -22,8 +24,7 @@ pub(super) fn read_raw_jpeg_retile_display_tile(
     location: JpegBaselineFrameLocation,
     col: u64,
     row: u64,
-    frame_columns: u32,
-    frame_rows: u32,
+    frame: FrameExtent,
 ) -> Result<RawJpegRetileProbe, Error> {
     let col_i64 = i64::try_from(col).map_err(|_| Error::Unsupported {
         reason: "JPEG retile tile column exceeds i64".into(),
@@ -40,15 +41,15 @@ pub(super) fn read_raw_jpeg_retile_display_tile(
                 location.level_idx,
                 col_i64,
                 row_i64,
-                frame_columns,
-                frame_rows,
+                frame.columns,
+                frame.rows,
             )
             .with_plane(PlaneSelection::new(location.z, location.c, location.t)),
         )
         .and_then(declare_untransformed_rgb)
     {
         Ok(raw) => raw,
-        Err(err @ WsiError::Unsupported { .. }) => {
+        Err(err) if raw_tile_read_declined(&err) => {
             return Ok(RawJpegRetileProbe::Rejected(
                 classify_raw_jpeg_retile_error(&err),
             ));
@@ -59,7 +60,7 @@ pub(super) fn read_raw_jpeg_retile_display_tile(
             });
         }
     };
-    if raw_jpeg_matches_frame_geometry(&raw, frame_columns, frame_rows) {
+    if raw_jpeg_matches_frame_geometry(&raw, frame) {
         Ok(RawJpegRetileProbe::Accepted(RawJpegRetileFrame {
             raw,
             duration: started.elapsed(),

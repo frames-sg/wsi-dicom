@@ -271,9 +271,13 @@ fn raw_j2k_lossless_tile_can_passthrough_when_geometry_matches() {
         codestream.clone(),
     );
 
-    let passed = j2k_passthrough_frame(raw, 2, 2, TransferSyntax::Jpeg2000Lossless)
-        .unwrap()
-        .expect("J2K passthrough");
+    let passed = j2k_passthrough_frame(
+        raw,
+        FrameExtent::interior(2, 2),
+        TransferSyntax::Jpeg2000Lossless,
+    )
+    .unwrap()
+    .expect("J2K passthrough");
 
     assert_eq!(passed.codestream, codestream);
     assert_eq!(
@@ -313,7 +317,7 @@ fn raw_j2k_ycbcr_tile_can_passthrough_to_general_jpeg2000() {
         codestream.clone(),
     );
 
-    let passed = j2k_passthrough_frame(raw, 2, 2, TransferSyntax::Jpeg2000)
+    let passed = j2k_passthrough_frame(raw, FrameExtent::interior(2, 2), TransferSyntax::Jpeg2000)
         .unwrap()
         .expect("general J2K passthrough");
 
@@ -1028,16 +1032,20 @@ fn raw_j2k_passthrough_rejects_geometry_or_syntax_mismatch() {
         codestream,
     );
 
-    assert!(
-        j2k_passthrough_frame(raw.clone(), 1, 2, TransferSyntax::Jpeg2000Lossless)
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        j2k_passthrough_frame(raw, 2, 2, TransferSyntax::Htj2kLosslessRpcl)
-            .unwrap()
-            .is_none()
-    );
+    assert!(j2k_passthrough_frame(
+        raw.clone(),
+        FrameExtent::interior(1, 2),
+        TransferSyntax::Jpeg2000Lossless
+    )
+    .unwrap()
+    .is_none());
+    assert!(j2k_passthrough_frame(
+        raw,
+        FrameExtent::interior(2, 2),
+        TransferSyntax::Htj2kLosslessRpcl
+    )
+    .unwrap()
+    .is_none());
 }
 
 #[test]
@@ -1063,9 +1071,13 @@ fn raw_htj2k_rpcl_tile_can_passthrough_when_geometry_matches() {
         codestream.clone(),
     );
 
-    let passed = j2k_passthrough_frame(raw, 2, 2, TransferSyntax::Htj2kLosslessRpcl)
-        .unwrap()
-        .expect("HTJ2K RPCL passthrough");
+    let passed = j2k_passthrough_frame(
+        raw,
+        FrameExtent::interior(2, 2),
+        TransferSyntax::Htj2kLosslessRpcl,
+    )
+    .unwrap()
+    .expect("HTJ2K RPCL passthrough");
 
     assert_eq!(passed.codestream, codestream);
     assert_eq!(
@@ -1101,11 +1113,13 @@ fn raw_htj2k_lrcp_tile_rejects_rpcl_passthrough() {
         codestream,
     );
 
-    assert!(
-        j2k_passthrough_frame(raw, 2, 2, TransferSyntax::Htj2kLosslessRpcl)
-            .unwrap()
-            .is_none()
-    );
+    assert!(j2k_passthrough_frame(
+        raw,
+        FrameExtent::interior(2, 2),
+        TransferSyntax::Htj2kLosslessRpcl
+    )
+    .unwrap()
+    .is_none());
 }
 
 #[test]

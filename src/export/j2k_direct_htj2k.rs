@@ -7,6 +7,8 @@ use rayon::prelude::*;
 use wsi_rs::{Compression, RawCompressedTile};
 
 use super::ensure_consistent_pixel_profile;
+use super::frame_region::FrameExtent;
+use super::raw_tile::raw_tile_copies_as_frame;
 use crate::error::Error;
 use crate::options::{CodecValidation, TransferSyntax};
 use crate::report::ExportMetrics;
@@ -31,16 +33,18 @@ pub(super) fn transfer_syntax(transfer_syntax: TransferSyntax) -> bool {
     )
 }
 
+/// The raw codestream recoded as `frame`, when it is exactly one frame with
+/// the tile where the frame needs it; see [`raw_tile_copies_as_frame`].
 pub(super) fn frame(
     raw: RawCompressedTile,
-    frame_columns: u32,
-    frame_rows: u32,
+    frame: FrameExtent,
     transfer_syntax: TransferSyntax,
     profile: Option<PixelProfile>,
 ) -> Option<Frame> {
     if !self::transfer_syntax(transfer_syntax)
-        || raw.width() != frame_columns
-        || raw.height() != frame_rows
+        || raw.width() != frame.columns
+        || raw.height() != frame.rows
+        || !raw_tile_copies_as_frame(&raw, frame)
         || !matches!(
             raw.compression(),
             Compression::Jp2kRgb | Compression::Jp2kYcbcr
