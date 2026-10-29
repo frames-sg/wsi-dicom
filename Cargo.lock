@@ -4729,7 +4729,7 @@ dependencies = [
 [[package]]
 name = "wsi-rs"
 version = "0.8.1"
-source = "git+https://github.com/frames-sg/wsi-rs?rev=1fcbd903bd14aa808e123d869af755d2b2516c3c#1fcbd903bd14aa808e123d869af755d2b2516c3c"
+source = "git+https://github.com/frames-sg/wsi-rs?rev=97ca1b4656b3cedb2b80738af3bd21ccc1960f0c#97ca1b4656b3cedb2b80738af3bd21ccc1960f0c"
 dependencies = [
  "base64",
  "byteorder",

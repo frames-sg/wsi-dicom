@@ -59,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - J2K requirements move to 0.13.1, built from J2K `main` with `wsi-rs` `main`
-  (1fcbd903). This takes zstd 0.14.3, which fixes RUSTSEC-2026-0391,
+  (97ca1b4). This takes zstd 0.14.3, which fixes RUSTSEC-2026-0391,
   RUSTSEC-2026-0398, RUSTSEC-2026-0403 and RUSTSEC-2026-0410, and libz-sys
   1.1.31, which fixes RUSTSEC-2026-0418.
 
