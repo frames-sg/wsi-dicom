@@ -5,9 +5,11 @@ use wsi_rs::{Compression, EncodedTilePhotometricInterpretation, RawCompressedTil
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use std::path::Path;
 
+use super::frame_region::FrameExtent;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use super::jpeg_baseline::JpegBaselineFrameLocation;
 use super::jpeg_direct_htj2k;
+use super::raw_tile::raw_tile_copies_as_frame;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use super::route_cache::AutoMetalInputRouteCacheKey;
 #[cfg(test)]
@@ -115,15 +117,19 @@ impl<'a> RawJ2kInspection<'a> {
         self.profile
     }
 
+    /// The frame profile when the codestream can be copied unchanged as
+    /// `frame`: it is exactly one frame, with the tile where the frame needs
+    /// it (see [`raw_tile_copies_as_frame`]), in the requested syntax.
     pub(super) fn passthrough_profile(
         &self,
         raw: &RawCompressedTile,
-        frame_columns: u32,
-        frame_rows: u32,
+        frame: FrameExtent,
         transfer_syntax: TransferSyntax,
     ) -> Option<PixelProfile> {
+        let (frame_columns, frame_rows) = (frame.columns, frame.rows);
         if raw.width() != frame_columns
             || raw.height() != frame_rows
+            || !raw_tile_copies_as_frame(raw, frame)
             || (transfer_syntax == TransferSyntax::Htj2kLosslessRpcl && !self.rpcl)
         {
             return None;
@@ -146,16 +152,13 @@ impl<'a> RawJ2kInspection<'a> {
 #[cfg(test)]
 pub(super) fn j2k_passthrough_frame(
     raw: RawCompressedTile,
-    frame_columns: u32,
-    frame_rows: u32,
+    frame: FrameExtent,
     transfer_syntax: TransferSyntax,
 ) -> Result<Option<J2kPassthroughFrame>, Error> {
     let Some(inspection) = RawJ2kInspection::new(&raw) else {
         return Ok(None);
     };
-    let Some(profile) =
-        inspection.passthrough_profile(&raw, frame_columns, frame_rows, transfer_syntax)
-    else {
+    let Some(profile) = inspection.passthrough_profile(&raw, frame, transfer_syntax) else {
         return Ok(None);
     };
     let passthrough_syntax = inspection.syntax();
@@ -194,6 +197,9 @@ fn j2k_passthrough_photometric_interpretation(
     // must pass the same pixel-profile check before any DICOM file is published.
     // MCT=0 YCbCr still cannot be declared RGB.
     match (info.components, raw_photometric) {
+        // VL Whole Slide Microscopy admits no MONOCHROME1, and copying the
+        // codestream as MONOCHROME2 would invert it; the frame is decoded.
+        (_, EncodedTilePhotometricInterpretation::Monochrome1) => None,
         (1, EncodedTilePhotometricInterpretation::Monochrome2)
             if matches!(info.colorspace, Colorspace::Grayscale | Colorspace::SGray) =>
         {

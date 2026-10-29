@@ -18,6 +18,9 @@ use super::jpeg_baseline::{
     JpegBaselinePlannedFrame,
 };
 use super::jpeg_retile::{read_raw_jpeg_retile_display_tile, RawJpegRetileProbe};
+use super::raw_tile::{
+    raw_tile_read_declined, undersized_jpeg_tile, undersized_jpeg_tile_lossy_counts,
+};
 use super::{ensure_consistent_pixel_profile, missing_metal_frame_indices};
 use crate::error::Error;
 use crate::options::{EncodeBackendPreference, PixelReencodePolicy, TransferSyntax};
@@ -244,6 +247,7 @@ fn plan_jpeg_baseline_frame_at(
     col: u64,
 ) -> Result<(JpegBaselinePlannedFrame, Option<JpegRetileRejectionReason>), Error> {
     let frame = jpeg_baseline_fallback_frame(col, request.row, request.grid)?;
+    let frame_extent = frame.extent(request.grid.frame_columns, request.grid.frame_rows);
     let native_dimensions = match request.level.tile_layout {
         TileLayout::Regular {
             tile_width,
@@ -267,21 +271,28 @@ fn plan_jpeg_baseline_frame_at(
             i64::try_from(frame.y / u64::from(height)).ok()?,
         ))
     });
-    let raw = native_position
-        .map(|(col, row)| read_raw_source_tile(slide, &request.location.tile_request(col, row)));
+    let native_request = native_position.map(|(col, row)| request.location.tile_request(col, row));
+    let raw = native_request
+        .as_ref()
+        .map(|native_request| read_raw_source_tile(slide, native_request));
     // The display-tile reader owns retiling eligibility. An unavailable native
     // probe must not prevent it from resolving a valid output rectangle.
     let raw_jpeg_retile_candidate =
         !matches!(&raw, Some(Ok(raw)) if raw.compression() != Compression::Jpeg);
+    // A JPEG smaller than its tile has no raw form but is still a JPEG source.
+    let undersized_jpeg = matches!(&raw, Some(Err(error)) if undersized_jpeg_tile(error));
     let mut source_is_jpeg =
-        matches!(&raw, Some(Ok(raw)) if raw.compression() == Compression::Jpeg);
+        undersized_jpeg || matches!(&raw, Some(Ok(raw)) if raw.compression() == Compression::Jpeg);
     let mut retile_rejection = None;
-    let source_lossy_compression = match raw.as_ref() {
-        Some(Ok(raw)) if raw.compression() == Compression::Jpeg => {
+    let source_lossy_compression = match (raw.as_ref(), native_request.as_ref()) {
+        (Some(Ok(raw)), _) if raw.compression() == Compression::Jpeg => {
             Some(crate::lossy::LossyCompressionByteCounts::from_raw_tile(
                 crate::lossy::JPEG_BASELINE_METHOD,
                 raw,
             )?)
+        }
+        (_, Some(native_request)) if undersized_jpeg => {
+            undersized_jpeg_tile_lossy_counts(slide, native_request)?
         }
         _ => None,
     };
@@ -289,7 +300,7 @@ fn plan_jpeg_baseline_frame_at(
     let empty_raw_tile = native_grid_matches
         && matches!(&raw, Some(Err(err)) if raw_compressed_error_is_empty_tile(err));
     if let Some(Err(error)) = &raw {
-        if !matches!(error, wsi_rs::WsiError::Unsupported { .. }) {
+        if !raw_tile_read_declined(error) {
             return Err(Error::SlideRead {
                 message: format!(
                     "raw JPEG source read failed at row={} col={col}: {error}",
@@ -300,12 +311,7 @@ fn plan_jpeg_baseline_frame_at(
     }
     match raw {
         Some(Ok(raw))
-            if native_grid_matches
-                && raw_jpeg_matches_frame_geometry(
-                    &raw,
-                    request.grid.frame_columns,
-                    request.grid.frame_rows,
-                ) =>
+            if native_grid_matches && raw_jpeg_matches_frame_geometry(&raw, frame_extent) =>
         {
             if let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&raw) {
                 if raw_jpeg_profile_can_passthrough(profile, request.allow_raw_rgb_passthrough) {
@@ -336,8 +342,7 @@ fn plan_jpeg_baseline_frame_at(
             request.location,
             col,
             request.row,
-            request.grid.frame_columns,
-            request.grid.frame_rows,
+            frame_extent,
         )? {
             RawJpegRetileProbe::Accepted(retiled) => {
                 source_is_jpeg = true;

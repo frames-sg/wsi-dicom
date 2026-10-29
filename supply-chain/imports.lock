@@ -1,6 +1,12 @@
 
 # cargo-vet imports lock
 
+[[audits.wsi-rs.audits.j2k-cuda-j2k-engine]]
+who = "Codex-assisted source review"
+criteria = "safe-to-deploy"
+violation = "=0.13.0"
+notes = "Published 0.13.0 adds write/write races in src/cuda_oxide_j2k_encode/simt/src/parallel_header.rs:187-190 and 337. Multiple threads write FLAG_SERIAL or FLAG_ANY_DATA in the same shared scratch.flags slots; store_u32 calls simt_store, which is an ordinary raw-pointer assignment in j2k-cuda-build-support/src/cuda_oxide_simt_prelude.rs. The following sync_threads barrier orders later reads but does not order the conflicting writes. The ANY_DATA race is reached by ordinary packets with coded blocks in multiple lanes, even though every writer stores 1. CUDA data races violate the memory model (https://docs.nvidia.com/cuda/archive/13.2.2/cuda-programming-guide/05-appendices/cuda-cpp-memory-model.html). Require atomic flag updates or disjoint per-thread flags reduced by one thread, then a CUDA racecheck regression before accepting a fixed release. Reproduced on an RTX 4070 SUPER with Compute Sanitizer 2026.1.1.0: the existing four-block native/CUDA byte comparison passed, but racecheck with --racecheck-detect-level info --print-level info reported 12 WAW hazards at the same packetizer write instruction and exited 99. The default warning level reported no hazards. These are identical-value flag writes; output corruption or memory disclosure was not demonstrated. A local unpublished J2K fix uses disjoint per-thread scratch slots and thread-0 reduction for eligibility and overflow flags. With required CUDA runtime and PTX generation, all six packetization tests, including expanded warp/chunk-boundary and overflow/fallback cases, passed memcheck with zero errors and INFO-level racecheck with zero hazards on the same GPU. The published 0.13.0 package remains unchanged, so this exact-version violation remains. Other engine source changes are not certified by this record."
+
 [[audits.wsi-rs.audits.jxr]]
 who = "Codex-assisted source review"
 criteria = "safe-to-deploy"
@@ -120,3 +126,21 @@ who = "Codex-assisted source review"
 criteria = "safe-to-deploy"
 version = "0.6.4"
 notes = "Reviewed the published MIT package manifest, build.rs, Rust facade, and macOS/aarch64 assembly selected by its build script for this project's target-restricted use. The build script reads Cargo target architecture/vendor and invokes the existing cc dependency on packaged assembly; no runtime filesystem, network or subprocess access is present. The selected assembly reads a fixed 32-byte state and 64-byte input block, uses a bounded 64-byte stack frame, preserves the required callee-saved registers, and writes only the state. wsi-rs does not call this facade directly: enabling sha2 0.10.9's asm feature on macOS/aarch64 selects sha2's own CPU-feature-guarded ARM intrinsics with its software fallback. Independent hash vectors across padding/file boundaries pass in accelerated and forced-software configurations. Other target configurations retain the previous sha2 feature set. This acceptance is for the reviewed integration, not a claim of formal cryptographic verification or testing every assembly target."
+
+[[audits.wsi-rs.audits.zstd]]
+who = "Codex-assisted source review"
+criteria = "safe-to-deploy"
+delta = "0.13.3 -> 0.14.3"
+notes = "Reviewed the published delta against the existing 0.13.3 acceptance, focusing on context and dictionary lifetimes, bounded output allocation, reader/writer state, and error handling. Borrowed contexts reset their sessions before reuse; prepared dictionary references now outlive their contexts. Bulk decompression checks the combined frame size against the caller cap, and streaming preallocation is capped. New file-compression helpers read only an explicitly supplied path. No hidden network or subprocess access. The low-level wrapper and bundled C package are accepted separately."
+
+[[audits.wsi-rs.audits.zstd-safe]]
+who = "Codex-assisted source review"
+criteria = "safe-to-deploy"
+delta = "7.2.4 -> 8.2.0"
+notes = "Reviewed the published wrapper delta against the existing 7.2.4 acceptance: streaming poison/reset state, dictionary borrows, successful-output commits, capacity checks, seekable offset clamping, callback unwind containment, context cloning, and optional Rust allocator ownership. Failed C operations restore buffer positions before Drop can commit output; write counts are checked against capacity. Unsafe block APIs become explicitly unsafe. Allocator headers use checked size/alignment, handle allocation failure and free(NULL), and are paired on release. No runtime network or subprocess access. This is a source review of the integration, not an independent proof of the Zstandard C implementation."
+
+[[audits.wsi-rs.audits.zstd-sys]]
+who = "Codex-assisted source review"
+criteria = "safe-to-deploy"
+delta = "2.0.16+zstd.1.5.7 -> 2.1.2+zstd.1.5.7"
+notes = "Reviewed the published manifest, build script, binding, and wasm-shim delta against the existing acceptance. Bundled C/H codec sources remain Zstandard 1.5.7 and are unchanged. The default build still compiles packaged sources through cc; optional CMake builds only the selected packaged library and contrib sources. No source downloads are introduced. Assembly selection now follows the target architecture, and symbol visibility changes require an explicit build environment override. Wasm allocation now checks multiplication, addition, Layout, NULL allocation and free(NULL); raw-pointer shims become explicitly unsafe. The BSD-3-Clause license is allowed by repository policy."

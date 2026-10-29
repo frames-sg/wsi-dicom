@@ -430,11 +430,14 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
   Sequence and a shared Derivation Image functional group (DCM 113085 "Spatial
   resampling").
 - JPEG Baseline output copies compatible native JPEG frames or retiles them
-  without pixel re-encoding. Padded TIFF edge tiles are copied whole into
-  full-size edge frames. A JPEG whose container declares RGB but whose bitstream
-  identifies RGB only by component identifiers 0, 1, 2 (Aperio) gains an Adobe
-  APP14 transform-0 marker, so bitstream-only decoders read the same RGB samples;
-  its entropy-coded data is unchanged.
+  without pixel re-encoding. Padded TIFF edge tiles and DICOM edge frames are
+  copied whole into full-size edge frames. A tile cut from a larger stored
+  image, or starting inside its encoded image (a JPEG crop from an earlier MCU
+  boundary), is decoded instead, as is a MONOCHROME1 frame. A JPEG whose
+  container declares RGB but whose bitstream identifies RGB only by component
+  identifiers 0, 1, 2 (Aperio) gains an Adobe APP14 transform-0 marker, so
+  bitstream-only decoders read the same RGB samples; its entropy-coded data is
+  unchanged.
 - JPEG 2000 and HTJ2K passthrough preserve compatible source codestreams,
   including ICT/9/7, regardless of the source container extension. Incompatible
   edges and mixed color profiles fail before the instance is published.

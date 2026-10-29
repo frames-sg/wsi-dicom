@@ -128,6 +128,38 @@ fn with_component_ids_012(jpeg: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+fn rgb_declaration_keeps_the_raw_tile_region_and_significant_bits() {
+    // A crop whose tile starts 8 columns into its image, as wsi-rs returns
+    // when the tile origin is off the MCU grid. Declaring its RGB components
+    // must not make it look like a whole-image tile.
+    let region = wsi_rs::PixelRect::new(8, 0, 8, 8);
+    let jpeg = with_component_ids_012(&crate::test_support::encode_test_jpeg_with_subsampling(
+        16,
+        8,
+        [200, 40, 90],
+        JpegSubsampling::Ybr444,
+    ));
+    let raw = RawCompressedTile::builder(Compression::Jpeg)
+        .dimensions(16, 8)
+        .bits_allocated(8)
+        .significant_bits(7)
+        .samples_per_pixel(3)
+        .photometric_interpretation(EncodedTilePhotometricInterpretation::Rgb)
+        .tile_region(region)
+        .data(jpeg.clone())
+        .build()
+        .unwrap();
+
+    let declared = super::super::jpeg_baseline::declare_untransformed_rgb(raw).unwrap();
+
+    assert_eq!(&declared.data()[..4], &[0xFF, 0xD8, 0xFF, 0xEE]);
+    assert_eq!(&declared.data()[18..], &jpeg[2..]);
+    assert_eq!(declared.tile_region(), region);
+    assert_eq!(declared.significant_bits(), Some(7));
+    assert_eq!((declared.width(), declared.height()), (16, 8));
+}
+
+#[test]
 fn rgb_jpeg_with_component_ids_012_is_copied_with_an_adobe_rgb_marker() {
     let tmp = tempfile::tempdir().unwrap();
     // A 12x8 level in 8x8 tiles: the second tile is a padded edge tile.

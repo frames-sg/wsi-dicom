@@ -5,7 +5,7 @@
 version = "0.10"
 
 [imports.wsi-rs]
-url = "https://raw.githubusercontent.com/frames-sg/wsi-rs/f15cf386613d88889f0ea94ee4694152235fbc4b/supply-chain/audits.toml"
+url = "https://raw.githubusercontent.com/frames-sg/wsi-rs/1fcbd903bd14aa808e123d869af755d2b2516c3c/supply-chain/audits.toml"
 
 [policy.j2k]
 audit-as-crates-io = false
@@ -56,6 +56,18 @@ audit-as-crates-io = false
 audit-as-crates-io = false
 
 [policy.j2k-types]
+audit-as-crates-io = false
+
+[policy.jxr]
+audit-as-crates-io = false
+
+[policy.jxr-core]
+audit-as-crates-io = false
+
+[policy.jxr-math]
+audit-as-crates-io = false
+
+[policy.jxr-native]
 audit-as-crates-io = false
 
 [policy.wsi-dicom]
@@ -965,7 +977,7 @@ version = "0.1.18"
 criteria = "safe-to-deploy"
 
 [[exemptions.libz-sys]]
-version = "1.1.29"
+version = "1.1.31"
 criteria = "safe-to-deploy"
 
 [[exemptions.linebender_resource_handle]]

@@ -5,12 +5,13 @@ use super::super::frame_region::OutputFrameRect;
 use super::super::lossless_j2k_cpu::{
     lossless_j2k_samples_from_prepared_region, prepare_cpu_input_batch,
 };
+use super::super::raw_tile::raw_tile_read_declined;
 use super::{
     empty_metal_tile_run, MetalEncodedTileRun, MetalInputTileReader, MetalInputTileRunRequest,
 };
 use crate::encode::DicomJ2kEncoder;
 use crate::{EncodeBackendPreference, Error};
-use wsi_rs::{Compression, Slide, TileLayout, WsiError};
+use wsi_rs::{Compression, Slide, TileLayout};
 
 pub(super) fn try_encode_canonical_source(
     slide: &Slide,
@@ -72,7 +73,7 @@ pub(super) fn try_encode_canonical_source(
                 .read_raw_compressed_tile(&request.location.tile_request(source_col, source_row))
             {
                 Ok(raw) => raw,
-                Err(WsiError::Unsupported { .. }) => {
+                Err(error) if raw_tile_read_declined(&error) => {
                     canonical = true;
                     continue;
                 }

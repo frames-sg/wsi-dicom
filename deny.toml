@@ -54,12 +54,19 @@ skip = [
     { name = "windows_x86_64_gnu", version = "0.52.6" },
     { name = "windows_x86_64_gnullvm", version = "0.52.6" },
     { name = "windows_x86_64_msvc", version = "0.52.6" },
+    # J2K 0.13's j2k-core uses windows-sys 0.61 while clap still uses 0.60.
+    { name = "windows-sys", version = "0.60.2" },
 ]
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# First-party J2K and wsi-rs pinned to main-branch commits in Cargo.toml
-# [patch.crates-io]; remove together with that patch once both are on crates.io.
-allow-git = ["https://github.com/frames-sg/j2k", "https://github.com/frames-sg/wsi-rs"]
+# First-party J2K and wsi-rs from Cargo.toml [patch.crates-io], and the JXR
+# main branch that wsi-rs main names; remove together with that patch once
+# they are on crates.io.
+allow-git = [
+    "https://github.com/frames-sg/j2k",
+    "https://github.com/frames-sg/jxr",
+    "https://github.com/frames-sg/wsi-rs",
+]

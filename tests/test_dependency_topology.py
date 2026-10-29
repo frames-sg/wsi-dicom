@@ -12,6 +12,26 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 GIT_REVISION = re.compile(r"[?&]rev=([0-9a-f]{40})(?:$|[&#])")
+# A git source in Cargo.lock: the manifest's `rev` or `branch`, then the commit
+# cargo locked. A branch source is as reproducible as a rev source because the
+# lock pins the commit. J2K follows `branch = "main"` because wsi-rs itself
+# takes J2K from its main branch; a `rev` pin here would add a second J2K
+# source to the graph.
+LOCKED_GIT_SOURCE = re.compile(
+    r"git\+https://[^?#\s]+"
+    r"\?(?:rev=(?P<rev>[0-9a-f]{40})|branch=[A-Za-z0-9._/-]+)"
+    r"#(?P<commit>[0-9a-f]{40})"
+)
+
+
+def locked_git_commit(source):
+    """The commit a Cargo.lock git source pins, or None if it pins none."""
+    match = LOCKED_GIT_SOURCE.fullmatch(source or "")
+    if match is None:
+        return None
+    if match["rev"] is not None and match["rev"] != match["commit"]:
+        return None
+    return match["commit"]
 
 
 def load_toml(relative_path):
@@ -170,6 +190,32 @@ class DependencyTopologyTests(unittest.TestCase):
             REPO_ROOT.resolve(),
         )
 
+    def test_locked_git_sources_must_pin_a_full_commit(self):
+        commit = "49b513c9d31b46d9e52aca5afbd2a9aeeb567343"
+        other = "97ca1b4656b3cedb2b80738af3bd21ccc1960f0c"
+        repository = "git+https://github.com/frames-sg/j2k"
+        for source in (
+            f"{repository}?branch=main#{commit}",
+            f"{repository}?branch=release/0.13#{commit}",
+            f"{repository}?rev={commit}#{commit}",
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(locked_git_commit(source), commit)
+        for source in (
+            None,
+            f"{repository}?branch=main",
+            f"{repository}#{commit}",
+            f"{repository}?branch=main#{commit[:8]}",
+            f"{repository}?rev={commit}",
+            f"{repository}?rev={commit}#{other}",
+            f"{repository}?tag=v0.13.1#{commit}",
+            f"{repository}?branch=main#{commit}&rev={commit}",
+            f"git+http://github.com/frames-sg/j2k?branch=main#{commit}",
+            REGISTRY_SOURCE,
+        ):
+            with self.subTest(source=source):
+                self.assertIsNone(locked_git_commit(source))
+
     def test_lockfiles_match_the_manifest_j2k_family(self):
         minimum_version = dependency_version(load_toml("Cargo.toml"), "j2k")
         minimum_wsi_version = dependency_version(load_toml("Cargo.toml"), "wsi-rs")
@@ -207,10 +253,7 @@ class DependencyTopologyTests(unittest.TestCase):
                     for package in j2k_packages:
                         self.assertRegex(package.get("checksum", ""), r"^[0-9a-f]{64}$")
                 else:
-                    self.assertIsNotNone(source)
-                    match = GIT_REVISION.search(source)
-                    self.assertIsNotNone(match, source)
-                    self.assertTrue(source.endswith(f"#{match.group(1)}"), source)
+                    self.assertIsNotNone(locked_git_commit(source), source)
                 self.assertFalse(
                     any(package["name"].startswith("signinum") for package in packages)
                 )

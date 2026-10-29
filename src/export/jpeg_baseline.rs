@@ -9,7 +9,8 @@ use wsi_rs::{
 use crate::error::Error;
 use crate::tile::PixelProfile;
 
-use super::frame_region::{FrameLocation, OutputFrameRect};
+use super::frame_region::{FrameExtent, FrameLocation, OutputFrameRect};
+use super::raw_tile::raw_tile_copies_as_frame;
 use super::route_plan::{
     FrameRouteDecision, FrameRouteSource, RouteExecutionContext, RoutePlanner,
 };
@@ -25,6 +26,23 @@ pub(crate) struct JpegBaselineFrameGeometry {
     pub(crate) frame_rows: u32,
     pub(crate) tiles_across: u64,
     pub(crate) tiles_down: u64,
+    /// Total Pixel Matrix the frames cover.
+    pub(crate) matrix_columns: u64,
+    pub(crate) matrix_rows: u64,
+}
+
+impl JpegBaselineFrameGeometry {
+    /// The frame at grid position (`col`, `row`).
+    pub(crate) fn frame_extent(&self, col: u64, row: u64) -> FrameExtent {
+        FrameExtent::at(
+            col,
+            row,
+            self.frame_columns,
+            self.frame_rows,
+            self.matrix_columns,
+            self.matrix_rows,
+        )
+    }
 }
 
 pub(crate) type JpegBaselineFrameLocation = FrameLocation;
@@ -169,6 +187,8 @@ pub(super) fn jpeg_baseline_frame_geometry(
         frame_rows,
         tiles_across,
         tiles_down,
+        matrix_columns,
+        matrix_rows,
     })
 }
 
@@ -218,6 +238,8 @@ fn jpeg_baseline_native_regular_passthrough_geometry(
         frame_rows: tile_height,
         tiles_across,
         tiles_down,
+        matrix_columns: level.dimensions.0,
+        matrix_rows: level.dimensions.1,
     };
     let allow_raw_rgb_passthrough =
         raw_rgb_passthrough_has_no_geometry_fallback(slide, level, location, geometry);
@@ -226,7 +248,8 @@ fn jpeg_baseline_native_regular_passthrough_geometry(
             Ok(raw) => raw,
             Err(_) => continue,
         };
-        if !raw_jpeg_matches_frame_geometry(&raw, tile_width, tile_height) {
+        let frame = geometry.frame_extent(col.unsigned_abs(), row.unsigned_abs());
+        if !raw_jpeg_matches_frame_geometry(&raw, frame) {
             continue;
         }
         let Ok(profile) = pixel_profile_from_raw_jpeg_tile(&raw) else {
@@ -356,6 +379,13 @@ pub(crate) fn pixel_profile_from_raw_jpeg_tile(
         EncodedTilePhotometricInterpretation::Monochrome2 => "MONOCHROME2",
         EncodedTilePhotometricInterpretation::Rgb => "RGB",
         EncodedTilePhotometricInterpretation::YbrFull422 => "YBR_FULL_422",
+        // VL Whole Slide Microscopy admits no MONOCHROME1, and copying the
+        // frame as MONOCHROME2 would invert it.
+        EncodedTilePhotometricInterpretation::Monochrome1 => {
+            return Err(Error::UnsupportedPixelData {
+                reason: "JPEG passthrough tile is MONOCHROME1, which VL Whole Slide Microscopy does not admit; the frame is decoded instead".into(),
+            });
+        }
         _ => {
             return Err(Error::UnsupportedPixelData {
                 reason: "JPEG passthrough tile has unsupported photometric interpretation".into(),
@@ -491,8 +521,8 @@ pub(crate) fn read_raw_source_tile(
 /// Interpretation, but decoders that infer it from the bitstream read a
 /// marker-less frame with component identifiers 0, 1, 2 as YCbCr. Such a frame
 /// whose container declares RGB gains an Adobe APP14 transform-0 segment after
-/// SOI; the entropy-coded data and decoded samples are unchanged. Other tiles
-/// are returned as read.
+/// SOI; the entropy-coded data and decoded samples are unchanged, as are the
+/// tile's region and significant bits. Other tiles are returned as read.
 pub(crate) fn declare_untransformed_rgb(
     raw: RawCompressedTile,
 ) -> Result<RawCompressedTile, WsiError> {
@@ -508,6 +538,7 @@ pub(crate) fn declare_untransformed_rgb(
         return Ok(raw);
     }
     let (width, height, bits_allocated) = (raw.width(), raw.height(), raw.bits_allocated());
+    let (tile_region, significant_bits) = (raw.tile_region(), raw.significant_bits());
     let data = raw.into_data();
     let mut declared = Vec::new();
     declared
@@ -518,11 +549,17 @@ pub(crate) fn declare_untransformed_rgb(
     declared.extend_from_slice(&data[..2]);
     declared.extend_from_slice(&ADOBE_APP14_UNTRANSFORMED);
     declared.extend_from_slice(&data[2..]);
-    RawCompressedTile::builder(Compression::Jpeg)
+    let builder = RawCompressedTile::builder(Compression::Jpeg)
         .dimensions(width, height)
         .bits_allocated(bits_allocated)
         .samples_per_pixel(3)
         .photometric_interpretation(EncodedTilePhotometricInterpretation::Rgb)
+        .tile_region(tile_region);
+    let builder = match significant_bits {
+        Some(bits) => builder.significant_bits(bits),
+        None => builder,
+    };
+    builder
         .data(declared)
         .build()
         .map_err(|error| WsiError::Unsupported {
@@ -537,21 +574,21 @@ pub(crate) fn raw_jpeg_profile_can_passthrough(
     profile.photometric_interpretation != "RGB" || allow_raw_rgb_passthrough
 }
 
-/// Whether a raw JPEG tile encodes exactly one output frame.
+/// Whether a raw JPEG tile encodes exactly one output `frame`.
 ///
-/// wsi-rs reports the logical (cropped) size of right and bottom edge tiles,
-/// while TIFF edge tiles encode a full physical tile. A TILED_FULL edge frame
-/// is also full size, with pixels beyond the Total Pixel Matrix as padding, so
-/// the encoded size must equal the frame and the logical size may be smaller.
-pub(crate) fn raw_jpeg_matches_frame_geometry(
-    raw: &RawCompressedTile,
-    frame_columns: u32,
-    frame_rows: u32,
-) -> bool {
+/// wsi-rs reports the logical (cropped) size of right and bottom TIFF edge
+/// tiles, which encode a full physical tile, and DICOM edge frames as their
+/// full frame with the logical size as the tile region. A TILED_FULL edge
+/// frame is also full size, with pixels beyond the Total Pixel Matrix as
+/// padding, so the encoded size must equal the frame and the logical size
+/// may be smaller. The tile must also sit where the frame needs it; see
+/// [`raw_tile_copies_as_frame`].
+pub(crate) fn raw_jpeg_matches_frame_geometry(raw: &RawCompressedTile, frame: FrameExtent) -> bool {
     raw.compression() == Compression::Jpeg
-        && raw.width() <= frame_columns
-        && raw.height() <= frame_rows
-        && jpeg_encoded_dimensions(raw.data()) == Some((frame_columns, frame_rows))
+        && raw.width() <= frame.columns
+        && raw.height() <= frame.rows
+        && raw_tile_copies_as_frame(raw, frame)
+        && jpeg_encoded_dimensions(raw.data()) == Some((frame.columns, frame.rows))
 }
 
 fn jpeg_encoded_dimensions(data: &[u8]) -> Option<(u32, u32)> {
@@ -691,8 +728,7 @@ fn edge_tiles_match_frame_geometry(
                 .is_ok_and(|raw| {
                     raw_jpeg_matches_frame_geometry(
                         &raw,
-                        geometry.frame_columns,
-                        geometry.frame_rows,
+                        geometry.frame_extent(col.unsigned_abs(), row.unsigned_abs()),
                     )
                 })
         })
