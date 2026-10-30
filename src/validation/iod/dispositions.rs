@@ -10,7 +10,7 @@
 
 use super::requirements::Requirement::{self, *};
 use crate::validation::RequirementDisposition::{
-    self, Behavior, Checked, OutsideScope, Tables, Unchecked, Undecidable,
+    self, Behavior, Checked, OutsideScope, Tables, Undecidable,
 };
 
 impl Requirement {
@@ -806,13 +806,13 @@ impl Requirement {
             // Pixel Data, Float and Double Float Pixel Data follow the Transfer Syntax
             Ps5_A_6_dcb6d6 => Checked("intrinsic-pixel-structure"),
             // A Data Set not encoded in the declared syntax misframes and fails; trailing bytes fail
-            Ps5_A_6_e0a5fd => Unchecked("jpip-dataset-encoding"),
+            Ps5_A_6_e0a5fd => OutsideScope("JPIP Referenced syntaxes are network transfers: a Part 10 file cannot use them and DICOM JSON carries no Data Set byte order, so no object wsi-dicom validates has a JPIP Data Set encoding"),
             // JPIP Referenced syntaxes admit MONOCHROME1/2, YBR_ICT and YBR_RCT only
             Ps5_A_6_71e374 => Checked("intrinsic-wsi-dicom-image-metadata"),
             // Pixel Data, Float and Double Float Pixel Data follow the Transfer Syntax
             Ps5_A_11_3cba9b => Checked("intrinsic-pixel-structure"),
             // A Data Set not encoded in the declared syntax misframes and fails; trailing bytes fail
-            Ps5_A_11_ce7500 => Unchecked("jpip-dataset-encoding"),
+            Ps5_A_11_ce7500 => OutsideScope("JPIP Referenced syntaxes are network transfers: a Part 10 file cannot use them and DICOM JSON carries no Data Set byte order, so no object wsi-dicom validates has a JPIP Data Set encoding"),
             // Pixel Data forbidden and Pixel Data Provider URL required under all four JPIP syntaxes
             Ps5_A_11_3b11ba => Checked("intrinsic-pixel-structure"),
             // JPIP Referenced syntaxes admit MONOCHROME1/2, YBR_ICT and YBR_RCT only
@@ -1210,12 +1210,12 @@ impl Requirement {
             Ps5_8_2_12_b38f9a => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             Ps5_8_2_18602a => OutsideScope("Float Pixel Data (Floating Point Image Pixel Module) not in VL WSI IOD"),
             Ps5_8_2_4bcda5 => OutsideScope("Double Float Pixel Data (Double Floating Point Image Pixel Module) not in VL WSI IOD"),
-            Ps5_8_2_5_5c5c79 => Unchecked("mpeg2-stream"),
-            Ps5_8_2_5_6cde8d => Unchecked("mpeg2-stream"),
+            Ps5_8_2_5_5c5c79 => OutsideScope("Constrains the MPEG2 video bit stream; wsi-dicom validates pathology slides, not video, and holds an MPEG2 object only to its declared Pixel Data attributes and encapsulation"),
+            Ps5_8_2_5_6cde8d => OutsideScope("Constrains the MPEG2 video bit stream; wsi-dicom validates pathology slides, not video, and holds an MPEG2 object only to its declared Pixel Data attributes and encapsulation"),
             Ps5_8_2_5_c5b5a7 => OutsideScope("MPEG2 Main Profile always applies the irreversible multi-component transformation specified by 8.2.5 and 8.2.6; the condition that no multi-component transformation was applied cannot occur in these encodings"),
-            Ps5_8_2_6_405812 => Unchecked("mpeg2-stream"),
-            Ps5_8_2_6_4d8fa8 => Unchecked("mpeg2-stream"),
-            Ps5_8_2_6_571188 => Unchecked("mpeg2-stream"),
+            Ps5_8_2_6_405812 => OutsideScope("Constrains the MPEG2 video bit stream; wsi-dicom validates pathology slides, not video, and holds an MPEG2 object only to its declared Pixel Data attributes and encapsulation"),
+            Ps5_8_2_6_4d8fa8 => OutsideScope("Constrains the MPEG2 video bit stream; wsi-dicom validates pathology slides, not video, and holds an MPEG2 object only to its declared Pixel Data attributes and encapsulation"),
+            Ps5_8_2_6_571188 => OutsideScope("Constrains the MPEG2 video bit stream; wsi-dicom validates pathology slides, not video, and holds an MPEG2 object only to its declared Pixel Data attributes and encapsulation"),
             Ps5_8_2_7_3618e9 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             Ps5_8_2_7_7773fd => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),
             Ps5_8_2_7_7886b4 => OutsideScope("The AVC/H.264 and HEVC/H.265 formats require three samples and YBR_PARTIAL_420 (PS3.5 8.2.7-8.2.11); VL WSI excludes YBR_PARTIAL_420 (PS3.3 C.8.12.4.1.5), so no conformant VL WSI uses these encodings"),

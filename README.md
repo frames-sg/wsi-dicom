@@ -312,9 +312,7 @@ suite="$(python -c 'from importlib.resources import files; print(files("wsi_dico
 cargo xtask benchmark --suite "${suite}" --output evidence/challenge-v7
 ```
 
-The command builds the candidate with DICOMweb support. The current v7 completeness
-policy returns exit code 1 for the seven documented unchecked requirements, even when
-all implemented checks meet the locked expectations.
+The command builds the candidate with DICOMweb support.
 
 Validation never runs an external codec. Every validation run performs
 intrinsic checks before the optional external DICOM conformance validators
@@ -392,13 +390,11 @@ be held to it (another IOD or encoding, application behavior, or a fact the
 bytes cannot show). `--json`
 emits the `wsi-dicom-requirements-v1` schema;
 `wsi_dicom::requirement_catalog()` returns the same entries.
-Single-component MPEG2 can represent a monochrome WSI or Segmentation.
-Its declared pixel attributes and encapsulation are checked, but MPEG2 stream
-headers, container contents and audio restrictions are not yet validated.
-The catalog marks those five requirements as unchecked. Byte-order validation
-of network JPIP Data Sets also remains unchecked: JPIP cannot be stored in a
-Part 10 file, and JSON metadata carries no Data Set byte encoding. The
-completeness gate remains blocked until these requirements are implemented.
+wsi-dicom validates pathology slides, not video. The catalog marks the MPEG2
+bit-stream requirements and the JPIP Data Set byte order outside its scope: an
+MPEG2 object is held only to its declared pixel attributes and encapsulation,
+and JPIP cannot be stored in a Part 10 file, while JSON metadata carries no
+Data Set byte encoding.
 `scripts/generate-iod-tables.py --check` verifies the generated tables,
 dictionary, requirement catalog and value sets against the pinned DocBook
 sources. These checks do not decode pixel

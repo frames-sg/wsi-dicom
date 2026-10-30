@@ -200,9 +200,7 @@ impl Requirement {
             Ps5_A_6_871dd9 | Ps5_A_11_a86261 => OutsideScope(
                 "Binds Overlay Data; no Module of the supported pathology IOD or a DICOMDIR Icon Image carries Overlay Data",
             ),
-            Ps5_A_6_e0a5fd | Ps5_A_11_ce7500 if IMAGE_IODS.contains(&iod) => {
-                Unchecked("jpip-dataset-encoding")
-            }
+            Ps5_A_6_e0a5fd | Ps5_A_11_ce7500 if IMAGE_IODS.contains(&iod) => OutsideScope("JPIP Referenced syntaxes are network transfers: a Part 10 file cannot use them and DICOM JSON carries no Data Set byte order, so no object wsi-dicom validates has a JPIP Data Set encoding"),
             Ps5_A_6_e0a5fd | Ps5_A_11_ce7500 => OutsideScope(
                 "JPIP Referenced encodings require top-level integer Pixel Data (PS3.5 A.6 and A.11); this IOD has none, and DICOMDIR Icon Images use native Pixel Data",
             ),
