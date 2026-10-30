@@ -743,6 +743,56 @@ pub(super) fn uncompressed_frame_bytes(raw: &RawCompressedTile) -> Result<u64, E
     )
 }
 
+pub(super) fn jpeg_baseline_samples(
+    data: &[u8],
+    profile: PixelProfile,
+    width: u32,
+    height: u32,
+) -> Result<JpegSamples<'_>, Error> {
+    match profile.components {
+        1 => Ok(JpegSamples::Gray8 {
+            data,
+            width,
+            height,
+        }),
+        3 => Ok(JpegSamples::Rgb8 {
+            data,
+            width,
+            height,
+        }),
+        components => Err(Error::UnsupportedPixelData {
+            reason: format!("JPEG Baseline supports 1 or 3 components, got {components}"),
+        }),
+    }
+}
+
+pub(super) fn jpeg_baseline_output_profile(
+    source: PixelProfile,
+) -> Result<(PixelProfile, JpegSubsampling), Error> {
+    if source.bits_allocated != 8 {
+        return Err(Error::UnsupportedPixelData {
+            reason: format!(
+                "JPEG Baseline fallback requires 8-bit samples, got {}",
+                source.bits_allocated
+            ),
+        });
+    }
+    match source.components {
+        1 => Ok((source, JpegSubsampling::Gray)),
+        3 => Ok((
+            PixelProfile {
+                components: 3,
+                bits_allocated: 8,
+                photometric_interpretation: "YBR_FULL_422",
+            },
+            JpegSubsampling::Ybr422,
+        )),
+        components => Err(Error::UnsupportedPixelData {
+            reason: format!("JPEG Baseline supports 1 or 3 components, got {components}"),
+        }),
+    }
+}
+
 pub(super) fn jpeg_baseline_fallback_uncompressed_bytes(
     frame_columns: u32,
     frame_rows: u32,

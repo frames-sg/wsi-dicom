@@ -2,14 +2,34 @@
 extend-exclude = [
     ".git",
     "target",
+    # Generated from the DICOM DocBook; they keep the standard's own spelling.
+    "**/src/validation/iod/confidentiality.rs",
+    "**/src/validation/iod/dictionary.rs",
+    "**/src/validation/iod/requirements.rs",
+    "**/src/validation/iod/tables.rs",
+    "**/src/validation/iod/value_sets.rs",
+]
+
+[default]
+extend-ignore-re = [
+    # The text digest that ends a requirement or condition identifier.
+    '_[0-9a-f]{6}\b',
+    # Four-character codes such as the ICC tag type signature "mBA ".
+    'b?\\?"[A-Za-z0-9 ]{4}\\?"',
+    # A word ending in a Rust Unicode escape, as in caf\u{e9}.
+    '[A-Za-z]+\\u\{[0-9a-fA-F]+\}',
 ]
 
 [default.extend-words]
 dicom = "dicom"
+ede = "ede"
 flate = "flate"
 HTJ2K = "HTJ2K"
 ndpi = "ndpi"
+OT = "OT"
 PN = "PN"
+Psot = "Psot"
+SIZ = "SIZ"
 SOP = "SOP"
 UID = "UID"
 uids = "uids"

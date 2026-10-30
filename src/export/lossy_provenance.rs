@@ -24,14 +24,8 @@ pub(super) fn source_lossy_history(
     slide: &Slide,
     coordinate: InstanceCoordinate,
 ) -> Result<LossyCompressionHistory, Error> {
-    if let Some(paths) = dicom_source_paths(
-        slide,
-        &format!("dicom.level.{}.source-files", coordinate.level_idx),
-    )? {
-        let declared = declared_lossy_history_for_parts(&paths)?;
-        if !declared.is_empty() {
-            return Ok(declared);
-        }
+    if let Some(declared) = declared_source_history(slide, Source::Level(coordinate.level_idx))? {
+        return Ok(declared);
     }
     let encoding = slide
         .level_encoding(
@@ -52,23 +46,44 @@ pub(super) fn associated_source_lossy_history(
     name: &str,
     encoding: SourceEncoding,
 ) -> Result<LossyCompressionHistory, Error> {
-    if let Some(paths) = dicom_source_paths(slide, &format!("dicom.associated.{name}.source-file"))?
-    {
-        let declared = declared_lossy_history_for_parts(&paths)?;
-        if !declared.is_empty() {
-            return Ok(declared);
-        }
+    if let Some(declared) = declared_source_history(slide, Source::Associated(name))? {
+        return Ok(declared);
     }
     reported_encoding_history(Some(encoding), &format!("associated image '{name}'"))
 }
 
-/// Source instances a DICOM reader lists under `property`: a JSON path array
-/// for a level, a single path for an associated image. A DICOM source that
+/// A source image a DICOM reader lists the instances of.
+#[derive(Clone, Copy)]
+enum Source<'a> {
+    /// A pyramid level, listed as a JSON path array.
+    Level(u32),
+    /// An associated image, listed as a single path.
+    Associated(&'a str),
+}
+
+/// The lossy history the source's DICOM instances declare, if they declare
+/// any.
+fn declared_source_history(
+    slide: &Slide,
+    source: Source<'_>,
+) -> Result<Option<LossyCompressionHistory>, Error> {
+    let Some(paths) = dicom_source_paths(slide, source)? else {
+        return Ok(None);
+    };
+    let declared = declared_lossy_history_for_parts(&paths)?;
+    Ok((!declared.is_empty()).then_some(declared))
+}
+
+/// Source instances a DICOM reader lists for `source`. A DICOM source that
 /// does not list them (its paths are not UTF-8) cannot have its declared
 /// history read, which is an error rather than a guess.
-fn dicom_source_paths(slide: &Slide, property: &str) -> Result<Option<Vec<PathBuf>>, Error> {
+fn dicom_source_paths(slide: &Slide, source: Source<'_>) -> Result<Option<Vec<PathBuf>>, Error> {
+    let property = match source {
+        Source::Level(level) => format!("dicom.level.{level}.source-files"),
+        Source::Associated(name) => format!("dicom.associated.{name}.source-file"),
+    };
     let properties = &slide.dataset().properties;
-    let Some(value) = properties.get(property) else {
+    let Some(value) = properties.get(&property) else {
         if properties
             .get("openslide.vendor")
             .is_some_and(|vendor| vendor == "dicom")
@@ -81,7 +96,7 @@ fn dicom_source_paths(slide: &Slide, property: &str) -> Result<Option<Vec<PathBu
         }
         return Ok(None);
     };
-    if !property.ends_with("source-files") {
+    if let Source::Associated(_) = source {
         return Ok(Some(vec![PathBuf::from(value)]));
     }
     let paths: Vec<PathBuf> = serde_json::from_str(value).map_err(|err| Error::Metadata {
@@ -120,9 +135,10 @@ fn declared_lossy_history_for_parts(paths: &[PathBuf]) -> Result<LossyCompressio
             .map(|stage| stage.method().to_owned())
             .collect::<Vec<_>>()
     };
+    let first_methods = methods(first);
     if let Some((path, _, _)) = parts
         .iter()
-        .find(|(_, _, history)| methods(history) != methods(first))
+        .find(|(_, _, history)| methods(history) != first_methods)
     {
         return Err(Error::Metadata {
             reason: format!(
@@ -418,12 +434,10 @@ mod tests {
             ));
         }
         object
-            .with_meta(
-                FileMetaTableBuilder::new()
-                    .media_storage_sop_class_uid(uids::VL_WHOLE_SLIDE_MICROSCOPY_IMAGE_STORAGE)
-                    .media_storage_sop_instance_uid("1.2.826.0.1.3680043.10.999.802")
-                    .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN),
-            )
+            .with_meta(crate::instance_context::vl_wsi_file_meta(
+                "1.2.826.0.1.3680043.10.999.802",
+                uids::EXPLICIT_VR_LITTLE_ENDIAN,
+            ))
             .unwrap()
             .write_to_file(path)
             .unwrap();

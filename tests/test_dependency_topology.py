@@ -110,7 +110,8 @@ class DependencyTopologyTests(unittest.TestCase):
         )
         self.assertIn(
             "cargo audit --file Cargo.lock "
-            "--ignore RUSTSEC-2021-0153 --ignore RUSTSEC-2024-0436",
+            "--ignore RUSTSEC-2021-0153 --ignore RUSTSEC-2024-0436 "
+            "--ignore RUSTSEC-2023-0071",
             workflow,
         )
 

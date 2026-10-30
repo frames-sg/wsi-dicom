@@ -21,6 +21,7 @@ pub mod bench_support;
 mod calibration;
 mod coordinate;
 mod diagnostics;
+mod dicomweb;
 mod encode;
 mod error;
 mod export;
@@ -61,6 +62,10 @@ pub use calibration::{
     IccProfile, ScannerIdentity, ICC_CALIBRATION_REGISTRY_MAX_BYTES, ICC_PROFILE_MAX_BYTES,
 };
 pub use diagnostics::{run_dicom_self_test, SelfTestOptions, SelfTestReport};
+pub use dicomweb::{
+    check_dicomweb_server, DicomWebCheck, DicomWebExchange, DicomWebHttpOptions, DicomWebOptions,
+    DicomWebReport, DicomWebStatus, DicomWebTransaction,
+};
 pub use error::Error;
 pub use export::default_transfer_syntax_for_source;
 pub use export::{
@@ -89,9 +94,12 @@ pub use request::{
     RouteProgressSink, SlideRouteCoverageRequest,
 };
 pub use validation::{
-    doctor_dicom_environment, validate_dicom_path, DoctorOptions, DoctorReport, DoctorStatus,
-    DoctorTool, ExecutionFailure, OptionalAbsence, ValidationCheck, ValidationExecution,
-    ValidationOptions, ValidationProfile, ValidationReport, ValidationStatus,
+    convention_catalog, doctor_dicom_environment, requirement_catalog, validate_dicom_json_path,
+    validate_dicom_path, ConventionAdvisory, ConventionCheck, ConventionEntry, ConventionKind,
+    ConventionProfile, ConventionReport, DicomJsonOptions, DoctorOptions, DoctorReport,
+    DoctorStatus, DoctorTool, ExecutionFailure, OptionalConformance, RequirementDisposition,
+    RequirementEntry, RequirementStrength, ValidationCheck, ValidationExecution, ValidationOptions,
+    ValidationProfile, ValidationReport, ValidationStatus, DICOM_EDITION,
 };
 
 pub mod prelude {

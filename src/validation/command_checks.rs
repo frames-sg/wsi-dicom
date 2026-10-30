@@ -133,8 +133,8 @@ pub(super) fn run_named_command_check(
                 }
                 None => format!("{command_name} failed"),
             };
-            check.stdout = outcome.stdout;
-            check.stderr = outcome.stderr;
+            check.stdout = disclosure::external_diagnostics(&outcome.stdout);
+            check.stderr = disclosure::external_diagnostics(&outcome.stderr);
         }
         Err(source) => {
             execution.failure = Some(ExecutionFailure::Launch);

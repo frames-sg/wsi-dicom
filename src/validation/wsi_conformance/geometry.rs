@@ -1,10 +1,10 @@
 use dicom_dictionary_std::tags;
 use dicom_object::DefaultDicomObject;
 
-use super::fields::{
-    required_finite_float64, required_float64, required_positive_u64, required_string,
-    sequence_items, PixelSpacingMm, PlanePosition,
-};
+use super::dimensions::validate_dimension_indices;
+use super::fields::{required_finite_float64, sequence_items, PixelSpacingMm};
+use super::wsi_image::{functional_group_items, integer, number, sequence, string, strings};
+use crate::validation::iod::EDITION;
 
 pub(super) fn validate_slide_coordinate_system_rule(
     object: &DefaultDicomObject,
@@ -123,220 +123,133 @@ pub(super) fn slide_coordinate_identity(
 }
 
 pub(super) fn validate_dimension_rule(object: &DefaultDicomObject) -> Result<(), String> {
-    let dimension_items = match object.element(tags::DIMENSION_INDEX_SEQUENCE) {
-        Ok(element) => element
-            .items()
-            .ok_or_else(|| "Dimension Index Sequence is not a sequence".to_string())?,
-        Err(_) => return Ok(()),
-    };
-    let pointers = dimension_items
-        .iter()
-        .map(|item| {
-            item.element(tags::DIMENSION_INDEX_POINTER)
-                .map_err(|_| "Dimension Index item is missing Dimension Index Pointer".to_string())?
-                .value()
-                .to_tag()
-                .map_err(|err| format!("Dimension Index Pointer is invalid: {err}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let row_index = pointers
-        .iter()
-        .position(|pointer| *pointer == tags::ROW_POSITION_IN_TOTAL_IMAGE_PIXEL_MATRIX);
-    let column_index = pointers
-        .iter()
-        .position(|pointer| *pointer == tags::COLUMN_POSITION_IN_TOTAL_IMAGE_PIXEL_MATRIX);
-    let (Some(row_index), Some(column_index)) = (row_index, column_index) else {
-        if row_index.is_none() && column_index.is_none() {
-            return Ok(());
-        }
-        return Err(
-            "Dimension Index Sequence must contain both row and column or omit both redundant TILED_FULL indices"
-                .into(),
-        );
-    };
-    if row_index >= column_index {
-        return Err(
-            "row must precede column in Dimension Index Sequence because row is slower-varying"
-                .into(),
-        );
-    }
+    let mut violations = validate_dimension_indices(object);
+    frame_index_values(object, &mut violations);
+    super::violation_result(violations)
+}
 
-    // PS3.3 C.7.6.17.3: TILED_FULL frames follow the implicit row-major tile
-    // order, so the Per-frame Functional Groups Sequence may be omitted even
-    // when the Dimension Index Sequence names the row and column positions.
-    if object
-        .element(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)
-        .is_err()
-        && required_string(
-            object,
-            tags::DIMENSION_ORGANIZATION_TYPE,
-            "Dimension Organization Type",
-        )
-        .is_ok_and(|dimension_type| dimension_type == "TILED_FULL")
+/// C.7.6.17.1: each Attribute the Dimension Index Sequence references has an
+/// index for each Frame. A TILED_FULL image may omit its Frame Content Items
+/// with its Per-Frame Functional Groups (C.7.6.17.3); other images place
+/// their Frames only through them.
+fn frame_index_values(object: &DefaultDicomObject, violations: &mut Vec<String>) {
+    if sequence(object, tags::DIMENSION_INDEX_SEQUENCE).is_empty()
+        || string(object, tags::DIMENSION_ORGANIZATION_TYPE).as_deref() == Some("TILED_FULL")
     {
-        return Ok(());
+        return;
     }
-
-    let frame_rows = required_positive_u64(object, tags::ROWS, "Rows")?;
-    let frame_columns = required_positive_u64(object, tags::COLUMNS, "Columns")?;
-    let per_frame = sequence_items(
-        object,
-        tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE,
-        "Per-frame Functional Groups Sequence",
-    )?;
-    for (frame, item) in per_frame.iter().enumerate() {
-        let frame_content = item
-            .element(tags::FRAME_CONTENT_SEQUENCE)
-            .ok()
-            .and_then(|element| element.items())
-            .and_then(|items| items.first())
-            .ok_or_else(|| format!("frame {frame} is missing Frame Content Sequence"))?;
-        let values = frame_content
-            .element(tags::DIMENSION_INDEX_VALUES)
-            .map_err(|_| format!("frame {frame} is missing Dimension Index Values"))?
-            .to_multi_int::<u32>()
-            .map_err(|err| format!("frame {frame} has invalid Dimension Index Values: {err}"))?;
-        if values.len() != pointers.len() {
-            return Err(format!(
-                "frame {frame} Dimension Index Values VM {} does not match {} index items",
-                values.len(),
-                pointers.len()
-            ));
-        }
-        let position = PlanePosition::from_frame_functional_group(item, frame)?;
-        let (expected_row, expected_column) =
-            position.dimension_indices(frame, frame_rows, frame_columns)?;
-        if values[row_index] != expected_row || values[column_index] != expected_column {
-            return Err(format!(
-                "frame {frame} Dimension Index Values do not match its row/column plane position"
-            ));
-        }
+    let frames = integer(object, tags::NUMBER_OF_FRAMES).unwrap_or(0);
+    let indexed = sequence(object, tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)
+        .iter()
+        .filter(|frame| {
+            sequence(frame, tags::FRAME_CONTENT_SEQUENCE)
+                .first()
+                .is_some_and(|content| content.element(tags::DIMENSION_INDEX_VALUES).is_ok())
+        })
+        .count();
+    if (indexed as i64) < frames {
+        violations.push(format!(
+            "{} of {frames} Frames have Dimension Index Values; outside TILED_FULL each Frame has an index for each Attribute of the Dimension Index Sequence (PS3.3 {EDITION} C.7.6.17.1 and C.7.6.17.3)",
+            indexed
+        ));
     }
-    Ok(())
 }
 
 pub(super) fn validate_tile_geometry_rule(object: &DefaultDicomObject) -> Result<(), String> {
-    // The generated IOD presence family owns missing required Attributes, and
-    // without the optional organization type this TILED_FULL rule does not
-    // apply. Evaluate geometry only once all inputs exist.
-    if [
-        tags::DIMENSION_ORGANIZATION_TYPE,
-        tags::NUMBER_OF_FRAMES,
-        tags::ROWS,
-        tags::COLUMNS,
-        tags::TOTAL_PIXEL_MATRIX_ROWS,
-        tags::TOTAL_PIXEL_MATRIX_COLUMNS,
-    ]
-    .into_iter()
-    .any(|tag| object.element(tag).is_err())
-    {
-        return Ok(());
-    }
-    let dimension_type = required_string(
-        object,
-        tags::DIMENSION_ORGANIZATION_TYPE,
-        "Dimension Organization Type",
-    )?;
-    if dimension_type != "TILED_FULL" {
-        return Ok(());
-    }
+    let mut violations = Vec::new();
+    super::tiled_full::validate_tiled_full(object, &mut violations);
+    imaged_volume(object, &mut violations);
+    equally_spaced_planes(object, &mut violations);
+    super::violation_result(violations)
+}
 
-    let frame_count = required_positive_u64(object, tags::NUMBER_OF_FRAMES, "Number of Frames")?;
-    let frame_rows = required_positive_u64(object, tags::ROWS, "Rows")?;
-    let frame_columns = required_positive_u64(object, tags::COLUMNS, "Columns")?;
-    let matrix_rows = required_positive_u64(
-        object,
-        tags::TOTAL_PIXEL_MATRIX_ROWS,
-        "Total Pixel Matrix Rows",
-    )?;
-    let matrix_columns = required_positive_u64(
-        object,
-        tags::TOTAL_PIXEL_MATRIX_COLUMNS,
-        "Total Pixel Matrix Columns",
-    )?;
-    let expected_rows = matrix_rows.div_ceil(frame_rows);
-    let expected_columns = matrix_columns.div_ceil(frame_columns);
-    let expected_frames = expected_rows
-        .checked_mul(expected_columns)
-        .ok_or_else(|| "TILED_FULL frame count overflows u64".to_string())?;
-    if frame_count != expected_frames {
-        return Err(format!(
-            "TILED_FULL declares {frame_count} frames but matrix geometry requires {expected_frames}"
+/// C.8.12.4.1.2 and C.8.12.14.1.1: the imaged volume is the Total Pixel
+/// Matrix at the Pixel Spacing, within a pixel. Imaged Volume Width and Height
+/// are required for VOLUME images and may be present otherwise; LABEL and
+/// OVERVIEW images need no Pixel Spacing (C.7.6.16.2.1).
+fn imaged_volume(object: &DefaultDicomObject, violations: &mut Vec<String>) {
+    let volume = strings(object, tags::IMAGE_TYPE)
+        .and_then(|values| values.get(2).cloned())
+        .is_none_or(|flavor| flavor == "VOLUME");
+    let declared = (
+        number(object, tags::IMAGED_VOLUME_WIDTH),
+        number(object, tags::IMAGED_VOLUME_HEIGHT),
+    );
+    let (Some(width), Some(height)) = declared else {
+        if volume {
+            for (value, name) in [
+                (declared.0, "Imaged Volume Width (0048,0001)"),
+                (declared.1, "Imaged Volume Height (0048,0002)"),
+            ] {
+                if value.is_none() {
+                    violations.push(format!(
+                        "{name} is absent or not a number; it is required for Image Type Value 3 VOLUME (PS3.3 {EDITION} C.8.12.4)"
+                    ));
+                }
+            }
+        }
+        return;
+    };
+    let (Some(rows), Some(columns)) = (
+        integer(object, tags::TOTAL_PIXEL_MATRIX_ROWS),
+        integer(object, tags::TOTAL_PIXEL_MATRIX_COLUMNS),
+    ) else {
+        return;
+    };
+    let Ok(spacing) = PixelSpacingMm::from_shared_functional_groups(object) else {
+        return; // reported by the IOD and pixel measure checks when required
+    };
+    let expected = (
+        spacing.matrix_width(columns.max(0) as u64),
+        spacing.matrix_height(rows.max(0) as u64),
+    );
+    let within = |declared: f64, expected: f64, pixel: f64| {
+        (declared - expected).abs() <= pixel.max(expected.abs() * 1e-6)
+    };
+    if !within(width, expected.0, spacing.column()) || !within(height, expected.1, spacing.row()) {
+        violations.push(format!(
+            "Imaged Volume Width and Height are {width}x{height} mm, but the {columns}x{rows} pixel Total Pixel Matrix at Pixel Spacing {}\\{} mm is {}x{} mm (PS3.3 {EDITION} C.8.12.4.1.2 and C.8.12.14.1.1)",
+            spacing.row(),
+            spacing.column(),
+            expected.0,
+            expected.1
         ));
     }
+}
 
-    // TILED_FULL encodes positions implicitly in row-major frame order.
-    // Explicit positions are optional, but must agree with that same order.
-    if object
-        .element(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)
-        .is_ok()
-    {
-        let per_frame = sequence_items(
-            object,
-            tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE,
-            "Per-frame Functional Groups Sequence",
-        )?;
-        if u64::try_from(per_frame.len()).ok() != Some(frame_count) {
-            return Err(format!(
-                "Per-frame Functional Groups Sequence has {} items for {frame_count} frames",
-                per_frame.len()
+/// C.7.6.17-1: a 3D image is a set of equally spaced parallel planes, so its
+/// Frames' Z offsets step evenly, by Spacing Between Slices when present.
+fn equally_spaced_planes(object: &DefaultDicomObject, violations: &mut Vec<String>) {
+    if string(object, tags::DIMENSION_ORGANIZATION_TYPE).as_deref() != Some("3D") {
+        return;
+    }
+    let mut depths: Vec<f64> = functional_group_items(object)
+        .into_iter()
+        .flat_map(|(_, item)| sequence(item, tags::PLANE_POSITION_SLIDE_SEQUENCE))
+        .filter_map(|position| number(position, tags::Z_OFFSET_IN_SLIDE_COORDINATE_SYSTEM))
+        .collect();
+    depths.sort_by(f64::total_cmp);
+    depths.dedup_by(|later, earlier| (*later - *earlier).abs() <= 1e-6);
+    let steps: Vec<f64> = depths.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    let Some(first) = steps.first().copied() else {
+        return;
+    };
+    let tolerance = first.abs() * 1e-3 + 1e-6;
+    if let Some(step) = steps.iter().find(|step| (**step - first).abs() > tolerance) {
+        violations.push(format!(
+            "Dimension Organization Type is 3D, a set of equally spaced parallel planes, but its focal planes are {first} µm and {step} µm apart (PS3.3 {EDITION} C.7.6.17 Table C.7.6.17-1)"
+        ));
+        return;
+    }
+    let spacing = functional_group_items(object)
+        .into_iter()
+        .flat_map(|(_, item)| sequence(item, tags::PIXEL_MEASURES_SEQUENCE))
+        .find_map(|measures| number(measures, tags::SPACING_BETWEEN_SLICES));
+    if let Some(spacing) = spacing {
+        if (spacing * 1000.0 - first).abs() > tolerance {
+            violations.push(format!(
+                "Spacing Between Slices (0018,0088) is {spacing} mm, but the 3D focal planes are {first} µm apart (PS3.3 {EDITION} C.7.6.16.2.1)"
             ));
         }
-        for (frame, item) in per_frame.iter().enumerate() {
-            if item.element(tags::PLANE_POSITION_SLIDE_SEQUENCE).is_err() {
-                continue;
-            }
-            let position = PlanePosition::from_frame_functional_group(item, frame)?;
-            let ordinal = u64::try_from(frame).map_err(|_| "frame index exceeds u64")?;
-            let expected = PlanePosition::new(
-                (ordinal / expected_columns) * frame_rows + 1,
-                (ordinal % expected_columns) * frame_columns + 1,
-            );
-            if position != expected {
-                return Err(format!("TILED_FULL frame {frame} position ({}, {}) differs from implicit position ({}, {})", position.row(), position.column(), expected.row(), expected.column()));
-            }
-        }
     }
-
-    // Imaged Volume Width and Height are required only for VOLUME images, and
-    // Pixel Spacing is not required for LABEL or OVERVIEW (PS3.3 C.8.12.4,
-    // C.7.6.16.2.1). Other flavours are checked when they declare a volume.
-    if !declares_volume_flavor(object) && object.element(tags::IMAGED_VOLUME_WIDTH).is_err() {
-        return Ok(());
-    }
-    validate_imaged_volume_spacing(object, matrix_rows, matrix_columns)
-}
-
-/// Whether Image Type Value 3 is VOLUME; a missing or short Image Type is
-/// treated as VOLUME, so the stricter checks apply.
-fn declares_volume_flavor(object: &DefaultDicomObject) -> bool {
-    object
-        .element(tags::IMAGE_TYPE)
-        .ok()
-        .and_then(|element| element.to_multi_str().ok())
-        .and_then(|values| values.get(2).map(|value| value.trim() == "VOLUME"))
-        .unwrap_or(true)
-}
-
-fn validate_imaged_volume_spacing(
-    object: &DefaultDicomObject,
-    matrix_rows: u64,
-    matrix_columns: u64,
-) -> Result<(), String> {
-    let spacing = PixelSpacingMm::from_shared_functional_groups(object)?;
-    let width = required_float64(object, tags::IMAGED_VOLUME_WIDTH, "Imaged Volume Width")?;
-    let height = required_float64(object, tags::IMAGED_VOLUME_HEIGHT, "Imaged Volume Height")?;
-    let expected_width = spacing.matrix_width(matrix_columns);
-    let expected_height = spacing.matrix_height(matrix_rows);
-    if !approximately_equal(width, expected_width) || !approximately_equal(height, expected_height)
-    {
-        return Err(format!(
-            "Pixel Spacing and total matrix imply imaged volume {expected_width}x{expected_height} mm, declared {width}x{height} mm"
-        ));
-    }
-    Ok(())
-}
-
-fn approximately_equal(left: f64, right: f64) -> bool {
-    (left - right).abs() <= 1e-6_f64.max(right.abs() * 1e-6)
 }

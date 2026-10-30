@@ -149,7 +149,7 @@ jobs:
           toolchain: "1.99.0"
           targets: ${{ matrix.target }}
       - name: Build CPU-only CLI
-        run: cargo build --release --locked --no-default-features --target ${{ matrix.target }}
+        run: cargo build --release --locked --no-default-features --features dicomweb --target ${{ matrix.target }}
       - name: Package Unix CLI archive
         if: matrix.archive == 'tar'
         shell: bash
@@ -166,7 +166,7 @@ jobs:
           stage="dist/wsi-dicom-${version}-${RELEASE_TARGET}"
           mkdir -p "$stage"
           cp "$binary" "$stage/wsi-dicom"
-          cp README.md LICENSE-MIT LICENSE-APACHE "$stage/"
+          cp README.md LICENSE LICENSE-AGPL COMMERCIAL-LICENSE.md LICENSE-MIT LICENSE-APACHE "$stage/"
           lock_sha="$(shasum -a 256 Cargo.lock | awk '{print $1}')"
           scripts/write-release-metadata.py \
             --version "$version" \
@@ -195,7 +195,7 @@ jobs:
           $stage = "dist/wsi-dicom-$version-$env:RELEASE_TARGET"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item $binary "$stage/wsi-dicom.exe"
-          Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE $stage
+          Copy-Item README.md, LICENSE, LICENSE-AGPL, COMMERCIAL-LICENSE.md, LICENSE-MIT, LICENSE-APACHE $stage
           $lockSha = (Get-FileHash Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant()
           python scripts/write-release-metadata.py `
             --version $version `
@@ -253,7 +253,7 @@ jobs:
           echo "${RUNNER_TEMP}/dicom-validator/bin" >> "$GITHUB_PATH"
           # Prepare the standard cache before per-file validation's 15s limit.
           mkdir -p "${RUNNER_TEMP}/empty-dicom"
-          "${RUNNER_TEMP}/dicom-validator/bin/validate_iods" --edition 2026c "${RUNNER_TEMP}/empty-dicom"
+          "${RUNNER_TEMP}/dicom-validator/bin/validate_iods" --edition 2026d "${RUNNER_TEMP}/empty-dicom"
       - name: Build and test the exact crate package
         shell: bash
         run: |

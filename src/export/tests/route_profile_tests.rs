@@ -319,6 +319,61 @@ fn profile_and_export_route_classification_match_for_cpu_pipelines() {
 }
 
 #[test]
+fn profile_and_export_count_compressed_jpeg_fallback_equally() {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let source = temporary_directory.path().join("source.svs");
+    let tiles = [
+        encode_test_jpeg(16, 2, [160, 20, 40]),
+        encode_test_jpeg(16, 2, [20, 160, 40]),
+        encode_test_jpeg(16, 2, [40, 20, 160]),
+        encode_test_jpeg(16, 2, [160, 160, 40]),
+    ];
+    write_tiled_jpeg_tiff(&source, 32, 4, 16, 2, &tiles);
+    let options = ExportOptions {
+        tile_size: 8,
+        transfer_syntax: TransferSyntax::JpegBaseline8Bit,
+        encode_backend: EncodeBackendPreference::CpuOnly,
+        codec_validation: CodecValidation::Disabled,
+        source_device_decode: false,
+        pixel_reencode: PixelReencodePolicy::Any,
+        ..ExportOptions::default()
+    };
+
+    let profile = profile_dicom_routes(RouteProfileRequest {
+        source_path: source.clone(),
+        options: options.clone(),
+        source_aware_transfer_syntax: false,
+        level: 0,
+        max_frames: 4,
+    })
+    .unwrap();
+    let mut coverage_request = RouteCoverageRequest::new(source.clone(), options.clone());
+    coverage_request.source_aware_transfer_syntax = false;
+    coverage_request.max_frames_per_level = 4;
+    coverage_request.max_levels = Some(1);
+    let coverage = profile_dicom_route_coverage(coverage_request).unwrap();
+    let export = export_dicom(ExportRequest {
+        source_path: source,
+        output_dir: temporary_directory.path().join("out"),
+        options,
+        color_management: ColorManagement::SourceOrSrgb,
+        metadata: MetadataSource::ResearchPlaceholder,
+        level_filter: Some(0),
+    })
+    .unwrap();
+
+    assert_eq!(
+        profile.metrics.routes.compressed_source_reencoded_frames,
+        export.metrics.routes.compressed_source_reencoded_frames,
+    );
+    assert_eq!(
+        coverage.metrics.routes.compressed_source_reencoded_frames,
+        export.metrics.routes.compressed_source_reencoded_frames,
+    );
+    assert_eq!(profile.metrics.routes.compressed_source_reencoded_frames, 4);
+}
+
+#[test]
 fn route_coverage_report_serializes_metrics_for_batch_aggregation() {
     let report = RouteCoverageReport {
         source_path: PathBuf::from("source.svs"),
@@ -517,7 +572,7 @@ fn corpus_candidate_limits_apply_equally_to_direct_files_and_directories() {
 #[test]
 fn corpus_candidate_discovery_matches_wsi_rs_entry_file_formats() {
     let tmp = tempfile::tempdir().unwrap();
-    let supported = crate::export::corpus_discovery::BUILTIN_SLIDE_CANDIDATE_EXTENSIONS
+    let supported = wsi_rs::BUILTIN_SLIDE_CANDIDATE_EXTENSIONS
         .iter()
         .map(|extension| format!("slide.{extension}"))
         .collect::<Vec<_>>();

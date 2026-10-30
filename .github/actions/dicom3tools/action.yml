@@ -1,0 +1,40 @@
+name: Pinned dicom3tools
+description: >-
+  Builds the pinned dicom3tools snapshot, or restores it from the cache, and
+  puts dciodvfy and dcentvfy on PATH. Ubuntu's 2024 snapshot does not
+  recognize the HTJ2K transfer syntaxes or Tiles Overlap.
+runs:
+  using: composite
+  steps:
+    - id: cache
+      uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+      with:
+        path: ${{ runner.temp }}/dicom3tools-dcfile
+        key: dicom3tools-${{ runner.os }}-a78040922ed52008280fab06fcadcff03f40926784d8b129948d4ffac8c0b09e
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        DICOM3TOOLS_VERSION: 1.00.snapshot.20260927113651
+        DICOM3TOOLS_SHA256: a78040922ed52008280fab06fcadcff03f40926784d8b129948d4ffac8c0b09e
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xutils-dev libx11-dev libxext-dev
+        source_dir="${RUNNER_TEMP}/dicom3tools_${DICOM3TOOLS_VERSION}"
+        archive_path="${source_dir}.tar.bz2"
+        curl -sSfL --retry 3 \
+          "https://dclunie.com/dicom3tools/workinprogress/dicom3tools_${DICOM3TOOLS_VERSION}.tar.bz2" \
+          --output "${archive_path}"
+        printf '%s  %s\n' "${DICOM3TOOLS_SHA256}" "${archive_path}" | sha256sum --check --strict
+        tar -xjf "${archive_path}" -C "${RUNNER_TEMP}"
+        cd "${source_dir}"
+        ./Configure
+        imake -I./config -DInstallInTopDir
+        # dicom3tools generates headers during the build, which a parallel make races.
+        make World
+        mkdir -p "${RUNNER_TEMP}/dicom3tools-dcfile"
+        cp appsrc/dcfile/dciodvfy appsrc/dcfile/dcentvfy "${RUNNER_TEMP}/dicom3tools-dcfile/"
+    - shell: bash
+      run: |
+        "${RUNNER_TEMP}/dicom3tools-dcfile/dciodvfy" -version
+        "${RUNNER_TEMP}/dicom3tools-dcfile/dcentvfy" -version
+        printf '%s\n' "${RUNNER_TEMP}/dicom3tools-dcfile" >> "${GITHUB_PATH}"

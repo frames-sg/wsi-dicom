@@ -3,15 +3,6 @@ use std::path::{Path, PathBuf};
 
 use crate::Error;
 
-/// Entry-file extensions handled by the built-in readers in locked `wsi-rs` 0.6.0.
-///
-/// Companion files and archives are intentionally excluded so corpus discovery
-/// opens each source slide once through its canonical entry point.
-pub(super) const BUILTIN_SLIDE_CANDIDATE_EXTENSIONS: &[&str] = &[
-    "svs", "avs", "tif", "tiff", "ndpi", "scn", "bif", "dcm", "zvi", "mrxs", "vms", "vmu", "vsi",
-    "j2k", "j2c", "svcache",
-];
-
 pub(super) fn collect_wsi_candidate_paths(
     root: &Path,
     max_sources: usize,
@@ -106,11 +97,5 @@ pub(super) fn collect_wsi_candidate_paths(
 }
 
 fn is_wsi_candidate_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            BUILTIN_SLIDE_CANDIDATE_EXTENSIONS
-                .iter()
-                .any(|candidate| extension.eq_ignore_ascii_case(candidate))
-        })
+    wsi_rs::is_builtin_slide_candidate_path(path)
 }

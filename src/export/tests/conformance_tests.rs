@@ -15,10 +15,8 @@ fn export(
         source_path: source.to_path_buf(),
         output_dir: out,
         options: ExportOptions {
-            tile_size: 32,
-            transfer_syntax: TransferSyntax::JpegBaseline8Bit,
             conformance,
-            ..ExportOptions::default()
+            ..passthrough_jpeg_options()
         },
         color_management: ColorManagement::SourceOrSrgb,
         metadata: MetadataSource::ResearchPlaceholder,
@@ -28,12 +26,7 @@ fn export(
 }
 
 fn open(report: &ExportReport, flavor: ImageFlavor) -> dicom_object::DefaultDicomObject {
-    let instance = report
-        .instances
-        .iter()
-        .find(|instance| instance.flavor == flavor)
-        .unwrap_or_else(|| panic!("no {flavor:?} instance"));
-    dicom_object::open_file(&instance.path).unwrap()
+    dicom_object::open_file(&instance(report, flavor).path).unwrap()
 }
 
 fn optical_path(object: &dicom_object::InMemDicomObject) -> &dicom_object::InMemDicomObject {
@@ -116,7 +109,7 @@ fn required_conformance_writes_only_the_pyramid_with_required_attributes() {
     for check in validation
         .checks
         .iter()
-        .filter(|check| check.name.contains("2026c-iod-"))
+        .filter(|check| check.name.contains("intrinsic-wsi-dicom-iod-"))
     {
         assert_eq!(
             check.status,
@@ -126,7 +119,7 @@ fn required_conformance_writes_only_the_pyramid_with_required_attributes() {
             check.message
         );
     }
-    let absent = &validation.optional_absent[0].absent;
+    let absent = &validation.optional[0].absent;
     assert!(
         absent
             .iter()
@@ -136,13 +129,27 @@ fn required_conformance_writes_only_the_pyramid_with_required_attributes() {
     assert!(absent
         .iter()
         .any(|item| item.starts_with("Multi-Resolution Pyramid Module")));
+    // Nothing optional is written, judged by the generated requirements,
+    // except the Type 3 choices of encoding: TILED_FULL, which makes frame
+    // positions implicit, and the frame index of encapsulated Pixel Data.
+    for object in &validation.optional {
+        let written: Vec<&String> = object
+            .present
+            .iter()
+            .filter(|item| {
+                !item.starts_with("Dimension Organization Type (0020,9311)")
+                    && !item.starts_with("Extended Offset Table (7FE0,0001)")
+            })
+            .collect();
+        assert!(written.is_empty(), "{}: {written:?}", object.path.display());
+    }
 
     let required = ValidationOptions {
         conformance: ConformanceLevel::Required,
         ..ValidationOptions::default()
     };
     let validation = validate_dicom_path(&report.output_dir, &required).unwrap();
-    assert!(validation.optional_absent.is_empty());
+    assert!(validation.optional.is_empty());
 
     // Readers group the levels without the optional Pyramid UID.
     let reread = wsi_rs::Slide::open(&report.output_dir).unwrap();
@@ -156,23 +163,28 @@ fn required_conformance_writes_only_the_pyramid_with_required_attributes() {
 }
 
 #[test]
-fn optional_absent_omits_what_the_object_encodes() {
+fn optional_conformance_separates_what_the_object_encodes() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("associated.svs");
     write_aperio_svs_with_associated_images(&source, false);
     let report = export(&source, tmp.path().join("out"), ConformanceLevel::Optional);
-    let volume = report
-        .instances
-        .iter()
-        .find(|instance| instance.flavor == ImageFlavor::Volume)
-        .unwrap();
+    let volume = instance(&report, ImageFlavor::Volume);
 
     let validation = validate_dicom_path(&volume.path, &ValidationOptions::default()).unwrap();
 
-    let absent = &validation.optional_absent[0].absent;
-    assert!(!absent.is_empty());
-    assert!(!absent.iter().any(|item| item.starts_with("Tiles Overlap")));
-    assert!(!absent.iter().any(|item| item.starts_with("Pyramid Label")));
+    let optional = &validation.optional[0];
+    assert!(!optional.absent.is_empty());
+    for encoded in ["Tiles Overlap", "Pyramid Label"] {
+        assert!(!optional.absent.iter().any(|item| item.starts_with(encoded)));
+        assert!(
+            optional
+                .present
+                .iter()
+                .any(|item| item.starts_with(encoded)),
+            "{encoded}: {:?}",
+            optional.present
+        );
+    }
 }
 
 #[test]

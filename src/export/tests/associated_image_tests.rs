@@ -1,5 +1,5 @@
 use super::*;
-use crate::report::{ImageFlavor, InstanceReport};
+use crate::report::ImageFlavor;
 use crate::test_support::write_aperio_svs_with_associated_images;
 use crate::validation::{validate_dicom_path, ValidationOptions, ValidationStatus};
 use crate::{AssociatedImageExclusions, AssociatedImageKind, PixelReencodePolicy};
@@ -21,22 +21,6 @@ fn export_fixture(
         level_filter,
     });
     (tmp, source, result)
-}
-
-fn passthrough_jpeg_options() -> ExportOptions {
-    ExportOptions {
-        tile_size: 32,
-        transfer_syntax: TransferSyntax::JpegBaseline8Bit,
-        ..ExportOptions::default()
-    }
-}
-
-fn instance(report: &ExportReport, flavor: ImageFlavor) -> &InstanceReport {
-    report
-        .instances
-        .iter()
-        .find(|instance| instance.flavor == flavor)
-        .unwrap_or_else(|| panic!("no {flavor:?} instance"))
 }
 
 fn flavors(report: &ExportReport) -> Vec<ImageFlavor> {

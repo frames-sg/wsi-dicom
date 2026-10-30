@@ -56,6 +56,9 @@ pub(crate) struct DicomObjectParams<'a> {
     /// `Optional` also writes the optional attributes this writer can fill
     /// truthfully; `Required` leaves every optional descriptive one out.
     pub(crate) conformance: ConformanceLevel,
+    /// The frames are a subset of the tile grid, positioned per frame
+    /// (TILED_SPARSE); otherwise they are the whole grid (TILED_FULL).
+    pub(crate) sparse: bool,
 }
 
 struct DicomObjectBuildContext<'a> {
@@ -177,7 +180,7 @@ fn put_sop_common_and_identification_modules(
             identifiers.frame_of_reference_uid,
         );
     }
-    let optional = params.conformance == ConformanceLevel::Optional;
+    let optional = params.conformance.is_optional();
     // The Multi-Resolution Pyramid module may be present for pyramid levels.
     if let Some((pyramid_uid, pyramid_label)) = identifiers.pyramid.filter(|_| optional) {
         put_str(object, tags::PYRAMID_UID, VR::UI, pyramid_uid);
@@ -260,7 +263,7 @@ fn put_study_and_frame_of_reference_modules(
         metadata.study_id.as_deref().unwrap_or("1"),
     );
     if let Some(description) = non_empty(metadata.study_description.as_deref())
-        .filter(|_| context.params.conformance == ConformanceLevel::Optional)
+        .filter(|_| context.params.conformance.is_optional())
     {
         put_str(object, tags::STUDY_DESCRIPTION, VR::LO, description);
     }
@@ -460,12 +463,28 @@ fn put_wsi_image_module(object: &mut InMemDicomObject, context: &DicomObjectBuil
     let params = &context.params;
     let metadata = &context.metadata;
 
+    // Number of Optical Paths and Total Pixel Matrix Focal Planes are
+    // required for TILED_FULL and may be present otherwise.
+    let organization = if params.sparse {
+        "TILED_SPARSE"
+    } else {
+        "TILED_FULL"
+    };
     put_str(
         object,
         tags::DIMENSION_ORGANIZATION_TYPE,
         VR::CS,
-        "TILED_FULL",
+        organization,
     );
+    if params.sparse {
+        // Viewers draw absent frames black, as partial frames are padded
+        // (CIELab L*=0, a*=b*=0; PS3.3 C.10.7.1.1).
+        object.put(DataElement::new(
+            tags::RECOMMENDED_ABSENT_PIXEL_CIE_LAB_VALUE,
+            VR::US,
+            PrimitiveValue::U16([0x0000, 0x8080, 0x8080].as_slice().into()),
+        ));
+    }
     put_u32(object, tags::NUMBER_OF_OPTICAL_PATHS, 1);
     put_u32(object, tags::TOTAL_PIXEL_MATRIX_FOCAL_PLANES, 1);
     // Specimen Label in Image shall be YES for OVERVIEW and LABEL (PS3.3
@@ -488,7 +507,7 @@ fn put_wsi_image_module(object: &mut InMemDicomObject, context: &DicomObjectBuil
     put_str(object, tags::EXTENDED_DEPTH_OF_FIELD, VR::CS, "NO");
     put_is(object, tags::SERIES_NUMBER, params.series_number);
     put_is(object, tags::INSTANCE_NUMBER, params.instance_number);
-    if params.conformance == ConformanceLevel::Optional {
+    if params.conformance.is_optional() {
         put_u16(object, tags::REPRESENTATIVE_FRAME_NUMBER, 1);
         put_str(object, tags::TILES_OVERLAP, VR::CS, "NONE");
         put_str(object, tags::QUALITY_CONTROL_IMAGE, VR::CS, "NO");
@@ -520,6 +539,7 @@ fn put_wsi_sequences(object: &mut InMemDicomObject, context: &DicomObjectBuildCo
     let params = &context.params;
     let metadata = &context.metadata;
     let identifiers = &params.identifiers;
+    let optional = params.conformance.is_optional();
 
     object.put(DataElement::<InMemDicomObject>::new(
         tags::OPTICAL_PATH_SEQUENCE,
@@ -531,7 +551,7 @@ fn put_wsi_sequences(object: &mut InMemDicomObject, context: &DicomObjectBuildCo
             params
                 .objective_lens_power
                 .filter(|_| flavor_is_slide_registered(params.flavor)),
-            params.conformance,
+            optional,
         )]),
     ));
     object.put(DataElement::<InMemDicomObject>::new(
@@ -555,7 +575,7 @@ fn put_wsi_sequences(object: &mut InMemDicomObject, context: &DicomObjectBuildCo
         DataSetSequence::from(vec![specimen_description_item(
             metadata.as_metadata(),
             identifiers.specimen_uid,
-            params.conformance,
+            optional,
         )]),
     ));
     object.put(DataElement::<InMemDicomObject>::new(
@@ -571,15 +591,11 @@ fn put_wsi_sequences(object: &mut InMemDicomObject, context: &DicomObjectBuildCo
             params.pixel_spacing_mm,
             flavor_is_slide_registered(params.flavor).then(|| metadata.slice_thickness_mm_ds()),
             identifiers.derivation_source_sop_instance_uid,
+            optional,
         )]),
     ));
     if let Some(source_uid) = identifiers.derivation_source_sop_instance_uid {
-        put_derivation_references(
-            object,
-            identifiers.series_uid,
-            source_uid,
-            params.conformance,
-        );
+        put_derivation_references(object, identifiers.series_uid, source_uid, optional);
     }
     object.put(DataElement::<InMemDicomObject>::new(
         tags::DIMENSION_ORGANIZATION_SEQUENCE,
@@ -589,9 +605,10 @@ fn put_wsi_sequences(object: &mut InMemDicomObject, context: &DicomObjectBuildCo
         )]),
     ));
     // Dimension Index Sequence is 1C, not required for TILED_FULL; its
-    // pointers name the per-frame Plane Position (Slide) that pyramid levels
-    // carry. Single-frame LABEL, OVERVIEW and THUMBNAIL images carry none.
-    if params.flavor == ImageFlavor::Volume {
+    // pointers name the per-frame Plane Position (Slide) that optional pyramid
+    // levels carry. Single-frame LABEL, OVERVIEW and THUMBNAIL images carry
+    // none.
+    if optional && params.flavor == ImageFlavor::Volume {
         object.put(DataElement::<InMemDicomObject>::new(
             tags::DIMENSION_INDEX_SEQUENCE,
             VR::SQ,
@@ -605,9 +622,8 @@ fn put_wsi_sequences(object: &mut InMemDicomObject, context: &DicomObjectBuildCo
 fn optical_path_item(
     icc_profile: Option<&[u8]>,
     objective_lens_power: Option<f64>,
-    conformance: ConformanceLevel,
+    optional: bool,
 ) -> InMemDicomObject {
-    let optional = conformance == ConformanceLevel::Optional;
     let mut item = InMemDicomObject::new_empty();
     put_str(&mut item, tags::OPTICAL_PATH_IDENTIFIER, VR::SH, "0");
     if optional {
@@ -628,7 +644,10 @@ fn optical_path_item(
         VR::SQ,
         DataSetSequence::from(vec![code_item("371251000", "SCT", "White")]),
     ));
-    put_fl(&mut item, tags::ILLUMINATION_WAVE_LENGTH, 550.0);
+    // Illumination Wave Length is required only without the color code.
+    if optional {
+        put_fl(&mut item, tags::ILLUMINATION_WAVE_LENGTH, 550.0);
+    }
     if let Some(power) = objective_lens_power.filter(|_| optional) {
         put_ds(&mut item, tags::OBJECTIVE_LENS_POWER, power);
     }
@@ -650,7 +669,7 @@ fn optical_path_item(
 fn specimen_description_item(
     metadata: &DicomMetadata,
     specimen_uid: &str,
-    conformance: ConformanceLevel,
+    optional: bool,
 ) -> InMemDicomObject {
     let identifier = metadata.specimen_identifier_or_default();
     let description = metadata
@@ -660,7 +679,7 @@ fn specimen_description_item(
     let mut item = InMemDicomObject::new_empty();
     put_str(&mut item, tags::SPECIMEN_IDENTIFIER, VR::LO, identifier);
     put_str(&mut item, tags::SPECIMEN_UID, VR::UI, specimen_uid);
-    if conformance == ConformanceLevel::Optional {
+    if optional {
         put_str(
             &mut item,
             tags::SPECIMEN_SHORT_DESCRIPTION,
@@ -742,9 +761,9 @@ fn put_derivation_references(
     object: &mut InMemDicomObject,
     series_uid: &str,
     source_uid: &str,
-    conformance: ConformanceLevel,
+    optional: bool,
 ) {
-    if conformance == ConformanceLevel::Optional {
+    if optional {
         object.put(DataElement::<InMemDicomObject>::new(
             tags::SOURCE_IMAGE_SEQUENCE,
             VR::SQ,
@@ -821,6 +840,7 @@ fn shared_functional_groups_item(
     pixel_spacing_mm: Option<(f64, f64)>,
     slice_thickness_mm_ds: Option<&str>,
     derivation_source_uid: Option<&str>,
+    optional: bool,
 ) -> InMemDicomObject {
     let mut item = InMemDicomObject::new_empty();
     if let Some(source_uid) = derivation_source_uid {
@@ -843,11 +863,15 @@ fn shared_functional_groups_item(
         VR::SQ,
         DataSetSequence::from(vec![frame_type_item(image_type)]),
     ));
-    item.put(DataElement::<InMemDicomObject>::new(
-        tags::OPTICAL_PATH_IDENTIFICATION_SEQUENCE,
-        VR::SQ,
-        DataSetSequence::from(vec![optical_path_identification_item()]),
-    ));
+    // Required only when Dimension Organization Type is not TILED_FULL, which
+    // optional TILED_SPARSE instances are.
+    if optional {
+        item.put(DataElement::<InMemDicomObject>::new(
+            tags::OPTICAL_PATH_IDENTIFICATION_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![optical_path_identification_item()]),
+        ));
+    }
     item
 }
 

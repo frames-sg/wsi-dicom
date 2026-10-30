@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 
-"""Generate the VL Whole Slide Microscopy IOD requirement tables.
+"""Generate the requirement tables of the pathology-slide IODs.
 
 Reads the pinned DICOM DocBook sources (PS3.3 for the IOD, module and macro
-tables, PS3.6 for the data dictionary, PS3.10 for the File Meta Information)
-and writes src/validation/iod/tables.rs and dictionary.rs deterministically.
-Every 1C/2C condition, conditional module or functional group usage,
-conditional enumeration and Type 3 presence restriction becomes a ConditionId
-variant; the validator matches on that enum exhaustively, so a changed or new
-condition text in another edition fails to compile until a predicate is
-written for it.
+tables, PS3.4 for the Storage SOP Classes of each IOD, PS3.5 and PS3.10 for
+encoding and file format statements, PS3.6 for the data dictionary, PS3.15
+for de-identification, PS3.16 for Context Groups and Templates, PS3.18 for
+DICOMweb origin servers and the DICOM JSON Model) and writes src/validation/iod/tables.rs,
+dictionary.rs, requirements.rs and value_sets.rs deterministically. Every 1C/2C
+condition, conditional module or functional group usage, conditional
+enumeration and Type 3 presence restriction becomes a ConditionId variant, and
+every normative sentence the tables do not enforce becomes a Requirement
+variant; the validator matches on both enums exhaustively, so a changed or new
+condition or statement in another edition fails to compile until it is
+handled. A statement shared by several IODs is one variant that lists them.
 
 Sources are parsed only after their SHA-256 matches the pinned digest, so the
 XML parser never sees unpinned input.
@@ -20,25 +24,143 @@ import argparse
 import hashlib
 import re
 import sys
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
-EDITION = "2026c"
+EDITION = "2026d"
 SOURCES = {
-    "part03.xml": "7911d6ec05872a38255d12ad628c1c940e9c905bb8cc3785ee039e7f6632dd48",
-    "part06.xml": "ff1dcdfb557d57db96420614fcaf6d739bb76aa74b73eba77f367be9fab0be3e",
-    "part10.xml": "f28d8d3a8c3fc998bf0c64db5525d8744ccd0f064e6ab7e1de24b29fcc032762",
+    "part03.xml": "3ae695b956ba57c490933a49220b515aeaedb5ece86f05c4bf7e94ee0fbcc6ef",
+    "part04.xml": "25a5549ff75b37ec9f096d441ec71cff017db72721999a7b5e4eb72334b901a6",
+    "part05.xml": "05183ea889f097cba51a938bf961a62f308bc6044a12f24d71282f08469de835",
+    "part06.xml": "fa9f0f8d67eba692dcf95cfeae0a8f4e071beeb7844215a860bc4b9d5dfaad25",
+    "part10.xml": "4e08e2ef3ad0b57d79cf6903c0076c56b670ef2172afa2f6c42da0792ff645d5",
+    "part15.xml": "1eb2a9724822476b3f1f3de23d15ae655a4c7f6e9d32bf16f2d9ef76d7d8437c",
+    "part16.xml": "293912fbc2acefe5d53dffa449070db488134da29aaa452e31d610d403888899",
+    "part18.xml": "f68ef10579a9caad8ce41d5905f6418daf5ef8a353d66ad9e97c23e82a941d8f",
 }
-SOURCE_URL = "https://dicom.nema.org/medical/dicom/{edition}/source/docbook/{part}/{name}"
+# NEMA serves the newest edition only under current/ until the next one is
+# published; the pinned digests decide which download is the edition.
+SOURCE_URLS = (
+    "https://dicom.nema.org/medical/dicom/{edition}/source/docbook/{part}/{name}",
+    "https://dicom.nema.org/medical/dicom/current/source/docbook/{part}/{name}",
+)
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "src" / "validation" / "iod"
-OUTPUT_FILES = ("tables.rs", "dictionary.rs")
-IOD_MODULE_TABLE = "table_A.32.8-1"
-IOD_FUNCTIONAL_GROUP_TABLE = "table_A.32.8-2"
+OUTPUT_FILES = ("tables.rs", "dictionary.rs", "requirements.rs", "value_sets.rs", "confidentiality.rs")
+# The pathology-slide IODs: (IOD section, Module table, Functional Group Macro
+# table). VL Whole Slide Microscopy comes first so that its statements keep
+# their order. PS3.3 A.91 Height Map Segmentation is not among them: A.91.1
+# places its layer surfaces "within a 3D volume, e.g., for retinal or
+# epithelial layers", A.91.5.1.3 positions them by Plane Position (Patient),
+# and its Module table has no Specimen Module or slide coordinates.
+IODS = (
+    ("sect_A.32.8", "table_A.32.8-1", "table_A.32.8-2"),
+    ("sect_A.87", "table_A.87-1", None),
+    ("sect_A.51", "table_A.51-1", "table_A.51-2"),
+    ("sect_A.75", "table_PS3.3_A.75-1", "table_PS3.3_A.75-2"),
+    # The Key Object Selection Document, which flags images (e.g. a scan's
+    # quality or completeness), and the SR documents that report on them.
+    ("sect_A.35.4", "table_A.35.4-1", None),
+    ("sect_A.35.1", "table_A.35.1-1", None),
+    ("sect_A.35.2", "table_A.35.2-1", None),
+    ("sect_A.35.3", "table_A.35.3-1", None),
+    ("sect_A.35.13", "table_A.35.13-1", None),
+)
+# PS3.4 Table B.5-1 Standard SOP Classes names the IOD of each Storage SOP
+# Class and the PS3.4 section specializing it.
+STORAGE_SOP_CLASS_TABLE = "table_B.5-1"
+SOP_CLASS_SPECIALIZATION = re.compile(
+    r"The (?P<name>.+) SOP Class shall use the PS3\.3 Section (?P<iod>[A-Z0-9.]+) with an"
+    r" Enumerated Value of (?P<values>[A-Z_]+(?: or [A-Z_]+)*) for [^()]+ \((?P<group>[0-9A-F]{4}),(?P<element>[0-9A-F]{4})\)\.\Z"
+)
 FILE_META_TABLE = "table_7.1-1"
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
+
+# Scopes beside the IODs: the File-set of a DICOMDIR (PS3.3 Annex F and PS3.10
+# Chapter 8) and DICOMweb origin servers (PS3.18).
+FILE_SET = "file-set"
+DICOMWEB = "dicomweb"
+# PS3.18 chapters binding an origin server for the transactions the DICOMweb
+# checks cover: Conformance, the Common Aspects of the Web Services (Retrieve
+# Capabilities among them), the Studies Service (Retrieve, Store, Search), the
+# DICOM JSON Model, the Capabilities Description and the Store Instances
+# Response Module.
+DICOMWEB_CHAPTERS = ("chapter_6", "chapter_8", "chapter_10", "chapter_F", "chapter_H", "chapter_I")
+# PS3.3 Annex F Basic Directory IOD: (Annex, IOD section, Module table), and
+# the PS3.6 Table A-1 name of the SOP Class of the DICOMDIR (PS3.10 8.6).
+DIRECTORY = ("chapter_F", "sect_F.3", "table_F.3-1")
+DIRECTORY_SOP_CLASS = "Media Storage Directory Storage"
+DIRECTORY_RECORD_TABLE = "table_F.3-3"
+DIRECTORY_RECORD_TYPE = "00041430"
+DIRECTORY_RELATIONSHIPS = "table_F.4-1"
+ROOT_DIRECTORY_ENTITY = "(Root Directory Entity)"
+PRIVATE_LOWER_LEVEL = "(any of the above as privately defined)"
+# Key table rows permitting the other Attributes of the Information Entity.
+OTHER_KEYS = re.compile(r"Any (?:other )?Attribute of the .+\Z")
+# Conditions a 1C row states without a "Required if" sentence, bound to the
+# exact sentence of its description; generation fails if the sentence changes.
+BOUND_CONDITIONS = {
+    ("table_F.3-2", "00041142"): "Required to specify the expanded or replacement character set.",
+    ("table_F.3-3", "00041500"): (
+        "When the Directory Record does not reference any SOP Instance this Attribute shall not be present."
+    ),
+}
+
+# PS3.15 Annex E Attribute Confidentiality Profiles.
+CONFIDENTIALITY_CHAPTER = "chapter_E"
+CONFIDENTIALITY_TABLE = "table_E.1-1"
+ACTION_CODE_TABLE = "table_E.1-1a"
+STRUCTURED_CONTENT_TABLE = "table_E.3.4-1"
+# The Rust Variant of each Table E.1-1a De-identification Action Code.
+ACTION_VARIANTS = {
+    "D": "D", "Z": "Z", "X": "X", "K": "K", "C": "C", "U": "U",
+    "Z/D": "ZD", "X/Z": "XZ", "X/D": "XD", "X/Z/D": "XZD", "X/Z/U*": "XZUStar",
+}
+# CID 7050 De-identification Method codes of the Basic Profile (E.2) and of
+# each Option (E.3): (section, its title, CID 7050 Code Meaning, the Option's
+# column header in Tables E.1-1 and E.3.4-1 or None).
+DEIDENTIFICATION_METHODS = 7050
+BASIC_PROFILE = ("sect_E.2", "Basic Application Level Confidentiality Profile", "Basic Application Confidentiality Profile")
+CONFIDENTIALITY_OPTIONS = (
+    ("sect_E.3.1", "Clean Pixel Data Option", "Clean Pixel Data Option", None),
+    ("sect_E.3.2", "Clean Recognizable Visual Features Option", "Clean Recognizable Visual Features Option", None),
+    ("sect_E.3.3", "Clean Graphics Option", "Clean Graphics Option", "Clean Graph. Opt."),
+    ("sect_E.3.4", "Clean Structured Content Option", "Clean Structured Content Option", "Clean Struct. Cont. Opt."),
+    ("sect_E.3.5", "Clean Descriptors Option", "Clean Descriptors Option", "Clean Desc. Opt."),
+    (
+        "sect_E.3.6",
+        "Retain Longitudinal Temporal Information Options",
+        "Retain Longitudinal Temporal Information Full Dates Option",
+        "Rtn. Long. Full Dates Opt.",
+    ),
+    (
+        "sect_E.3.6",
+        "Retain Longitudinal Temporal Information Options",
+        "Retain Longitudinal Temporal Information Modified Dates Option",
+        "Rtn. Long. Modif. Dates Opt.",
+    ),
+    ("sect_E.3.7", "Retain Patient Characteristics Option", "Retain Patient Characteristics Option", "Rtn. Pat. Chars. Opt."),
+    ("sect_E.3.8", "Retain Device Identity Option", "Retain Device Identity Option", "Rtn. Dev. Id. Opt."),
+    ("sect_E.3.9", "Retain UIDs Option", "Retain UIDs Option", "Rtn. UIDs Opt."),
+    ("sect_E.3.10", "Retain Safe Private Option", "Retain Safe Private Option", "Rtn. Safe Priv. Opt."),
+    ("sect_E.3.11", "Retain Institution Identity Option", "Retain Institution Identity Option", "Rtn. Inst. Id. Opt."),
+)
+# The columns before the Option columns of Tables E.1-1 and E.3.4-1.
+CONFIDENTIALITY_COLUMNS = (
+    "Attribute Name", "Tag", "Retd. (from PS3.6 PS3.6)", "In Std. Comp. IOD (from PS3.3 PS3.3)", "Basic Prof.",
+)
+STRUCTURED_CONTENT_COLUMNS = (
+    "Code Meaning", "Code Value", "Coding Scheme Designator", "Value Type", "Retd. (from PS3.16 PS3.16)",
+    "In Std. Tpl. (from PS3.16 PS3.16)", "Basic Prof.",
+)
+CONFIDENTIALITY_TAG = re.compile(
+    r"\((?P<group>[0-9A-F]{2}(?:[0-9A-F]{2}|xx)),(?P<element>[0-9A-F]{4}|xxxx)\)\Z"
+)
+PRIVATE_ATTRIBUTES = "(gggg,eeee) where gggg is odd"
+SCHEME_VERSION = re.compile(r"(?P<scheme>\S+) \[(?P<version>[^\]]+)\]\Z")
 
 XML_ID = "{http://www.w3.org/XML/1998/namespace}id"
 TAG = re.compile(r"\(([0-9A-Fa-fx]{4}),([0-9A-Fa-fx]{4})\)\Z")
@@ -46,11 +168,17 @@ CONDITION_START = re.compile(
     r"\b(?:Required (?:if|when|for|unless)\b|Required:|Shall be present if\b)"
 )
 TYPE3_RESTRICTION = re.compile(r"\bShall not be present\b[^.]*\.")
+# "Include Table C.18.1-1 if and only if Value Type (0040,A040) is NUM.": a
+# Macro included on a condition (Tables C.17-5 and C.17-6).
+INCLUDE_CONDITION = re.compile(r">*\s*Include Table [A-Z0-9.-]+ (?P<condition>(?:if|when)\b.+)\Z")
 ITEM_PATTERNS = (
     ("Only a single Item shall be included in this Sequence.", "Exactly(1)"),
     ("Only a single Item is permitted in this Sequence.", "AtMost(1)"),
     ("Zero or one Item shall be included in this Sequence.", "AtMost(1)"),
     ("One or more Items shall be included in this Sequence.", "AtLeast(1)"),
+    ("A single Item shall be present.", "Exactly(1)"),
+    ("Exactly two Items shall be included in this Sequence.", "Exactly(2)"),
+    ("Only two Items shall be included in this Sequence.", "Exactly(2)"),
     (
         "The number of Items shall be the same as the number of Frames in the Multi-frame Image.",
         "NumberOfFrames",
@@ -65,10 +193,13 @@ ENUM_TITLE = re.compile(
     r"(?: for (?P<attribute>[^()]+) \((?P<group>[0-9A-F]{4}),(?P<element>[0-9A-F]{4})\))?"
     r"(?: (?P<condition>(?:if|when) .+))?:\Z"
 )
-PLACEMENTS = {
-    "Shall be used as a Shared Functional Group.": "Placement::SharedOnly",
-    "Shall not be used as a Shared Functional Group.": "Placement::NotShared",
-}
+# Functional Group placement sentences of a usage cell, whatever their case;
+# one may follow a condition.
+PLACEMENTS = (
+    (re.compile(r"Shall be used as a Shared Functional Group\.?\Z", re.I), "Placement::SharedOnly"),
+    (re.compile(r"(?:Shall|May) not be used as a Shared Functional Group\.?\Z", re.I), "Placement::NotShared"),
+    (re.compile(r"May not be used as a Per-Frame Functional Group\.?\Z", re.I), "Placement::SharedOnly"),
+)
 TYPES = {"1": "One", "1C": "OneC", "2": "Two", "2C": "TwoC", "3": "Three"}
 USAGES = {"M": "Usage::Mandatory", "C": "Usage::Conditional", "U": "Usage::UserOption"}
 VRS = (
@@ -80,6 +211,14 @@ VRS = (
 # bound to the exact sentence in the cited section, or in the row's own
 # description cell ("cell"); generation fails if the sentence changes so the
 # binding is reviewed against the new text.
+# Prose enumerations whose sentence states a rule beyond the Values they bind:
+# the generated tables enforce those Values, and the sentence stays a statement
+# for the rest, which a check holds.
+PARTLY_BOUND_SENTENCES = (
+    # Table C.8.32-3 Frame Type (0008,9007): "MIXED is not allowed".
+    "Enumerated Values and Defined Terms are the same as those for the four Values of"
+    " Image Type (0008,0008), except that the Value MIXED is not allowed.",
+)
 PROSE_ENUMERATIONS = (
     # (module or macro table, tag, section or "cell", exact sentence, value index, values)
     (
@@ -116,6 +255,22 @@ PROSE_ENUMERATIONS = (
         2,
         ("PRIMARY",),
     ),
+    *(
+        (
+            "table_PS3.3_C.8.32-3",
+            "(0008,9007)",
+            "cell",
+            "Enumerated Values and Defined Terms are the same as those for the four Values of"
+            " Image Type (0008,0008), except that the Value MIXED is not allowed.",
+            value,
+            values,
+        )
+        for value, values in ((1, ("DERIVED",)), (2, ("PRIMARY",)))
+    ),
+    ("table_C.8.20-2", "(0008,0008)", "cell", "Value 1 shall be DERIVED.", 1, ("DERIVED",)),
+    ("table_C.8.20-2", "(0008,0008)", "cell", "Value 2 shall be PRIMARY.", 2, ("PRIMARY",)),
+    ("table_C.9-2", "(60xx,0100)", "cell", "The Value of this Attribute shall be 1.", None, ("1",)),
+    ("table_C.9-2", "(60xx,0102)", "cell", "The Value of this Attribute shall be 0.", None, ("0",)),
 )
 # Enumerated Values lists for one Value of a multi-valued Attribute, where the
 # Value is named by the paragraph that precedes the list in the cited section.
@@ -138,6 +293,224 @@ SECTION_VALUE_ENUMERATIONS = (
 )
 
 
+# Context Group and Template references (PS3.16 Annexes A and B).
+VALUE_SET_TARGET = re.compile(r"sect_(CID|TID)_(\d+)\Z")
+# Macros whose inclusion row names the Value Set of the Sequence holding it.
+VALUE_SET_MACROS = {"table_8.8-1": "CID", "table_10-2": "TID", "table_10.2.1-1": "TID"}
+# Value Sets a table binds, in the row including a Macro, to Code Sequences the
+# Macro or a Macro it includes defines, in the order the row cites them;
+# generation fails if the row's references change.
+INCLUDE_VALUE_SETS = {
+    # (including table, Macro table): ((defining table, Code Sequence tag, strength, Context Groups), ...)
+    ("table_C.7-9", "table_10-7"): (("table_10-7", "00082218", "B", (4031, 7483)),),
+    ("table_C.7.6.22-2", "table_10-8"): (("table_10-8", "00082228", "B", (8134,)),),
+    ("table_C.7.6.16-12", "table_C.7.6.16-12b"): (("table_C.7.6.16-12b", "004008EA", "D", (82,)),),
+    ("table_C.7.6.16-9", "table_10-5"): (
+        ("table_10-5", "00082218", "D", (4030,)),
+        ("table_10-5", "00082220", "D", (2,)),
+        ("table_10-8", "00082230", "D", (2,)),
+    ),
+    ("table_C.8.20-2", "table_10-19"): (("table_10-19", "0066002F", "B", (7162,)),),
+    ("table_C.17-2", "table_C.17-3"): (("table_C.17-3a", "0040A170", "D", (7009,)),),
+}
+# Inclusions whose Value Sets depend on the IOD or on the application, as they
+# resolve for the pathology-slide IODs, none of which is one of CONDITIONAL_IODS:
+# (table, included Macro, exact description cell) to (strength, Context Groups),
+# the union of the groups that may apply, or None where only another IOD or an
+# application the object does not state names one.
+CONDITIONAL_IODS = ("sect_A.32.4", "sect_A.32.5", "sect_A.32.11")
+# Table C.8-77 VL Image Module, whose inclusions name Value Sets per IOD and
+# application, is in none of the IODs.
+CONDITIONAL_VALUE_SETS = {}
+# IOD Content Constraints sections that bind Value Sets to Code Sequences of a
+# Module or Functional Group Macro named by the section title.
+IOD_CONSTRAINT_SECTIONS = {"sect_A.32.8": ("sect_A.32.8.3.1", "sect_A.32.8.4.1")}
+# IOD Content Constraints of other IODs, each bound to the exact sentence of the
+# IOD section; generation fails if the sentence changes. A constraint is
+# ("values", table, tag, Enumerated Values), ("groups", table, tag, enclosing
+# Sequence tag or None, strength, Context Groups[, including table]), ("template", table, tag,
+# strength, Template), ("code", table, tag, enclosing Sequence tag, code),
+# ("forbidden", table, tag) for an Attribute that shall not be present, when
+# its predicate in conditions.rs says so, ("absent", Module section) for a
+# Module that shall not be present, or ("one of", Module sections).
+# A constraint replaces the Value Set of its row. Not bound: A.75.5.1 restates
+# for Quantity Definition Sequence (0040,9220) the Value Sets
+# of TID 15400, and suggests BCID 7222 and BCID 7203 where the Derivation Image
+# Macro defines DCID 7202 and DCID 7203, which a suggestion cannot relax (the
+# Measurement Units Code Sequence it binds is DCID 82 "unless otherwise defined
+# in the Macro invocation"); A.75.4 forbids the Supplemental Palette Color
+# Lookup Table Module, whose Attributes are all those of the Palette Color
+# Lookup Table Module the IOD uses.
+IOD_CONSTRAINTS = (
+    *(
+        (iod, f"The Section {section} shall not be present.", ("absent", f"sect_{section}"))
+        for iod, sections in (("sect_A.51", ("C.11.2", "C.11.1", "C.9.2")), ("sect_A.75", ("C.11.2", "C.11.1", "C.9.2")))
+        for section in sections
+    ),
+    (
+        "sect_A.51",
+        "Pixel Padding Value (0028,0120) shall not be present if Segmentation Type (0062,0001) is not LABELMAP.",
+        ("forbidden", "table_C.7-8", "00280120"),
+    ),
+    ("sect_A.51", "Pixel Padding Range Limit (0028,0121) shall not be present.", ("forbidden", "table_C.7-11a", "00280121")),
+    (
+        "sect_A.51",
+        "For Purpose of Reference Code Sequence (0040,A170) within Source Instance Sequence (0042,0013) in the"
+        " Section C.12.4 DCID 7019 shall be used.",
+        ("groups", "table_C.12-10", "0040A170", "00420013", "D", (7019,)),
+    ),
+    (
+        "sect_A.51",
+        "The Value of Purpose of Reference Code Sequence (0040,A170) in the Section C.7.6.16.2.6 shall be"
+        " (121322, DCM, \"Source Image for Image Processing Operation\").",
+        ("code", "table_C.7.6.16-7", "0040A170", "00082112", ("DCM", "121322", "Source Image for Image Processing Operation")),
+    ),
+    (
+        "sect_A.51",
+        "The Value of Derivation Code Sequence (0008,9215) shall be (113076, DCM, \"Segmentation\").",
+        ("code", "table_C.7.6.16-7", "00089215", "00089124", ("DCM", "113076", "Segmentation")),
+    ),
+    (
+        "sect_A.75",
+        "Either the Section C.7.6.3 or the Section C.7.6.24 or the Section C.7.6.25 is required, and only one"
+        " of these shall be present.",
+        ("one of", ("sect_C.7.6.3", "sect_C.7.6.24", "sect_C.7.6.25")),
+    ),
+    (
+        "sect_A.75",
+        "For Measurement Units Code Sequence (0040,08EA) BCID 7181 may be used.",
+        ("groups", "table_C.7.6.16-12b", "004008EA", None, "B", (7181,), "table_C.7.6.16-12"),
+    ),
+)
+# Context Groups that comprise a whole Coding Scheme without a table and
+# without naming the Coding Scheme Designator in a sentence (PS3.16 7.2.2).
+SCHEME_CONTEXT_GROUPS = {82: "UCUM"}
+SCHEME_SENTENCE = re.compile(
+    r"Coding Scheme Designator(?: \(0008,0102\))? (?:shall be|is specified as) \"?([A-Za-z0-9_.-]+?)\"?\."
+)
+# The Content Constraints of the Structured Reporting IODs (A.35.x.3.1): the
+# Value Types of Content Sequence (0040,A730) Items, the Relationship Content
+# Constraints table, and the Template a document is constructed from at its
+# root, where the IOD names one.
+DOCUMENT_IOD = re.compile(r"sect_A\.35\.\d+\Z")
+DOCUMENT_VALUE_TYPES = (
+    "Value Type (0040,A040) in Content Sequence (0040,A730) of the Section C.17.3 is constrained to the"
+    " following Enumerated Values (see Table C.17.3-7 for Value Type definitions):"
+)
+ROOT_TEMPLATE = re.compile(r"The document shall be constructed from TID (?P<template>\d+) invoked at the root node\.\Z")
+ANY_VALUE_TYPE = "any type"
+SEE_BELOW = " (see below)"
+# The Templates of the KOS and SR IODs, which no IOD row binds: their root
+# Templates (TID 2010 Key Object Selection, A.35.4.3.1.3) and the Measurement
+# Report (TID 1500) pathology measurements use, with every Template they
+# include.
+SR_TEMPLATES = (2010, 1500)
+TEMPLATE_PARAMETER = re.compile(r"\$\w+")
+# A Value Set Constraint cell that only names Context Groups, a DCID or BCID
+# reference rendering as "DSection CID n"; and the default a cell may state
+# beside them ("DCID 270 Defaults to (121006, DCM, \"Person\")"), up to a
+# Context Group or UNITS constraint that follows it.
+CONSTRAINT_SETS = re.compile(r"[BD](?:Section )?CID \d+(?: or [BD](?:Section )?CID \d+)*\.?")
+CONSTRAINT_DEFAULT = re.compile(r"Defaults to .*?(?=\s+(?:UNITS = )?[BD](?:Section )?CID \d|$)")
+CODED_ENTRY = re.compile(r"(EV|DT) \((.+?), (\S+?)(?: \[.*?\])?, \"(.*)\"\)\Z")
+TEMPLATE_CONDITION = (
+    (re.compile(r"(IFF?) Row (\w+) [\w ]*?value is \((.+?), (\S+?), \".*\"\)\Z", re.I), "value"),
+    (re.compile(r"(IFF?) Row (\w+) not present\Z"), "absent"),
+    (re.compile(r"(IFF?) Row (\w+) is present\Z"), "present"),
+)
+
+# Normative statements: every sentence saying "shall" or "must", or prohibiting
+# with "is not permitted", "is not allowed", "is prohibited", "is forbidden" or
+# "may not be used"
+# (each precise on the sections below; "may not" alone is mostly "may or may
+# not"), in the IOD, the Module, Macro and Attribute description sections it
+# reaches, the normative chapters and annexes of PS3.5, and the file format
+# chapters of PS3.10.
+NORMATIVE = re.compile(
+    r"\b(?:shall|must|(?:is|are) (?:not permitted|not allowed|prohibited|forbidden)|may not be used)\b",
+    re.IGNORECASE,
+)
+# Prohibitions worded "may not" that no pattern separates from the "may not" of
+# possibility: on these sections a guarded "may not <verb>" is normative in 7
+# of 14 sentences, and "may not be used", the one precise form, is in
+# NORMATIVE. Generation fails when an edition rewords one, so the change is
+# reviewed.
+NORMATIVE_SENTENCES = (
+    # PS3.3 C.7.6.16.1.1
+    "A Private Functional Group may not replicate the Attributes of a Standard Functional Group.",
+    # PS3.3 C.8.16.1.3
+    "The Attribute Value may not be MIXED as this Value needs to be a summary of the primary purpose of the images, whether the Frames have the same Value or not.",
+)
+# "is required to be" and "are required to have" bind unless negated, as in
+# "not every cell is required to be populated".
+REQUIRED_TO = re.compile(r"\b(?:is|are) required to (?:be|have)\b", re.IGNORECASE)
+NEGATED_REQUIREMENT = re.compile(r"\bnot\b[^.;]*?\brequired to\b", re.IGNORECASE)
+# Recommendations: the sentences of the same sections that say "should" or
+# "is recommended", and no normative phrase.
+RECOMMENDATION = re.compile(r"\b(?:should|(?:is|are) recommended)\b", re.IGNORECASE)
+SENTENCE_BREAK = re.compile(r"(?<=[.;])\s+(?=[A-Z(\"“])")
+# PS3.3 sections a scope section may cite: code, macro and module definitions.
+LINKED_SECTION = re.compile(r"sect_(?:C|8|10)\.")
+NORMATIVE_CHAPTERS = {
+    "PS3.5": ("chapter_6", "chapter_7", "chapter_8", "chapter_9", "chapter_10", "chapter_A", "chapter_E", "chapter_G"),
+    "PS3.10": ("chapter_7", "chapter_8"),
+}
+# Description-cell sentences the generated tables enforce besides conditions,
+# Item counts, Type 3 restrictions and bound prose enumerations.
+TABLE_SENTENCES = ("Zero or more Items shall be included in this Sequence.",)
+
+
+# Fixed constructors of the generated tables.rs, which keep each row on a line.
+TABLE_CONSTRUCTORS = """const T1: AttributeType = AttributeType::One;
+const T1C: AttributeType = AttributeType::OneC;
+const T2: AttributeType = AttributeType::Two;
+const T2C: AttributeType = AttributeType::TwoC;
+const T3: AttributeType = AttributeType::Three;
+
+const fn t(
+    part: &'static str,
+    label: &'static str,
+    section: &'static str,
+    nodes: &'static [Node],
+) -> Table {
+    Table { part, label, section, nodes }
+}
+
+const fn i(table: &'static Table) -> Node {
+    Node::Include(table)
+}
+
+#[allow(clippy::too_many_arguments)]
+const fn a(
+    tag: u32,
+    name: &'static str,
+    kind: AttributeType,
+    condition: Option<ConditionId>,
+    enumerations: &'static [Enumeration],
+    items: ItemCount,
+    value_set: Option<ValueSet>,
+    children: &'static [Node],
+) -> Node {
+    Node::Attribute(Attribute { tag, name, kind, condition, enumerations, items, value_set, children })
+}
+
+const fn ic(table: &'static Table, condition: ConditionId) -> Node {
+    Node::IncludeIf(table, condition)
+}
+
+const fn k(selection: &'static Selection) -> Node {
+    Node::Select(selection)
+}
+
+const fn e(
+    value: Option<u8>,
+    condition: Option<ConditionId>,
+    values: &'static [&'static str],
+) -> Enumeration {
+    Enumeration { value, condition, values }
+}"""
+
+
 class GenerationError(Exception):
     pass
 
@@ -148,7 +521,7 @@ def arguments():
         "--source-dir",
         type=Path,
         required=True,
-        help="directory holding the pinned part03.xml, part06.xml and part10.xml",
+        help="directory holding the pinned " + ", ".join(SOURCES),
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
@@ -164,49 +537,55 @@ def arguments():
     return parser.parse_args()
 
 
-def sha256(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def fetch_source(directory, name):
     part = name.removesuffix(".xml")
-    url = SOURCE_URL.format(edition=EDITION, part=part, name=name)
-    with urllib.request.urlopen(url, timeout=120) as response:
-        body = response.read(MAX_SOURCE_BYTES + 1)
-    if len(body) > MAX_SOURCE_BYTES:
-        raise GenerationError(f"{url} exceeds {MAX_SOURCE_BYTES} bytes")
-    if hashlib.sha256(body).hexdigest() != SOURCES[name]:
-        raise GenerationError(f"{url} does not match the pinned SHA-256 for {name}")
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / name).write_bytes(body)
+    failures = []
+    for template in SOURCE_URLS:
+        url = template.format(edition=EDITION, part=part, name=name)
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response:
+                body = response.read(MAX_SOURCE_BYTES + 1)
+        except urllib.error.URLError as error:
+            failures.append(f"{url}: {error}")
+            continue
+        if len(body) > MAX_SOURCE_BYTES:
+            failures.append(f"{url} exceeds {MAX_SOURCE_BYTES} bytes")
+        elif hashlib.sha256(body).hexdigest() != SOURCES[name]:
+            failures.append(f"{url} does not match the pinned {EDITION} SHA-256 for {name}")
+        else:
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / name).write_bytes(body)
+            return
+    raise GenerationError("; ".join(failures))
 
 
 def verified_sources(directory, fetch):
-    paths = {}
+    """The bytes of each pinned source, read once so that what is parsed is
+    what was verified."""
+    sources = {}
     for name, expected in SOURCES.items():
         path = directory / name
         if not path.is_file() and fetch:
             fetch_source(directory, name)
         if not path.is_file():
             raise GenerationError(f"missing source {path}; pass --fetch to download it")
-        actual = sha256(path)
+        if path.stat().st_size > MAX_SOURCE_BYTES:
+            raise GenerationError(f"{path} exceeds {MAX_SOURCE_BYTES} bytes")
+        body = path.read_bytes()
+        actual = hashlib.sha256(body).hexdigest()
         if actual != expected:
             raise GenerationError(
                 f"{path} has SHA-256 {actual}, expected pinned {EDITION} digest {expected}"
             )
-        paths[name] = path
-    return paths
+        sources[name] = body
+    return sources
 
 
 class Document:
     """A DocBook part with id lookup and text rendering."""
 
-    def __init__(self, path):
-        self.root = ET.parse(path).getroot()
+    def __init__(self, source):
+        self.root = ET.fromstring(source)
         self.ns = self.root.tag.split("}")[0] + "}"
         self.ids = {}
         self.parents = {}
@@ -252,7 +631,7 @@ class Document:
                 return
             if name == "olink":
                 inner = "".join(node.itertext()).strip()
-                parts.append(inner or f"{node.get('targetdoc')} {node.get('targetptr')}")
+                parts.append(inner or olink_label(node.get("targetdoc"), node.get("targetptr")))
                 return
             if node.text:
                 parts.append(node.text)
@@ -273,8 +652,20 @@ class Document:
         raise GenerationError(f"element {element.get(XML_ID)} is outside a labelled section")
 
 
+def olink_label(document, target):
+    """'CID 8101', 'TID 8001', 'PS3.5 Section 8.2' or 'PS3.5 Table 8-1' for a
+    reference into another Part."""
+    match = VALUE_SET_TARGET.match(target or "")
+    if match:
+        return f"{match.group(1)} {match.group(2)}"
+    for prefix, kind in (("sect_", "Section"), ("table_", "Table")):
+        if (target or "").startswith(prefix):
+            return f"{document} {kind} {target.removeprefix(prefix)}"
+    return f"{document} {target}"
+
+
 def normalize(text):
-    return re.sub(r"\s+", " ", text.replace("​", "")).strip()
+    return re.sub(r"\s+", " ", text.replace("\u200b", "")).strip()
 
 
 def cells(document, row):
@@ -337,6 +728,10 @@ def condition_text(document, cell, where):
             elif follow_name == "para" and re.match(
                 r"(May be present|May not be present|Shall not be present|Shall be absent)\b", follow_text
             ):
+                condition.append(follow_text)
+            elif follow_name == "para" and CONDITION_START.match(follow_text):
+                # Further cases of the condition (Table C.17-5 Concept Name
+                # Code Sequence).
                 condition.append(follow_text)
             else:
                 break
@@ -478,17 +873,565 @@ def bound_section_enumerations(document, table_id, tag, cell):
     return enumerations
 
 
+def value_set_references(document, element):
+    """(strength, kind, number) of each Context Group or Template an element
+    cites, strength "B" (Baseline), "D" (Defined) or "" from the letter before
+    the reference."""
+    found = []
+    for parent in element.iter():
+        children = list(parent)
+        for index, child in enumerate(children):
+            target = child.get("targetptr") or child.get("linkend") or ""
+            match = VALUE_SET_TARGET.match(target)
+            if not match or child.tag not in (document.q("olink"), document.q("xref")):
+                continue
+            before = parent.text if index == 0 else children[index - 1].tail
+            strength = re.search(r"([BD]?)\s*\Z", before or "").group(1)
+            found.append((strength, match.group(1), int(match.group(2))))
+    return found
+
+
+def value_set(references, kind, where):
+    strengths = {strength for strength, _, _ in references}
+    if strengths - {"B", "D"} or len(strengths) != 1 or any(found != kind for _, found, _ in references):
+        raise GenerationError(f"{where}: expected one {kind} constraint, found {references}")
+    return {"kind": kind, "strength": strengths.pop(), "ids": [number for _, _, number in references]}
+
+
+def bind_value_sets(record, used):
+    """Moves the Value Set cited by a Code Sequence or Content Item Macro
+    inclusion onto the Sequence that holds it, and records the Value Sets cited
+    by other inclusions for the Code Sequences the Macro defines."""
+    rows = record["rows"]
+    for index, row in enumerate(rows):
+        if row["kind"] != "include" or not row["references"]:
+            continue
+        where = f"{record['id']} include {row['target']}"
+        references = row["references"]
+        conditional = (record["id"], row["target"], row["text"])
+        if conditional in CONDITIONAL_VALUE_SETS:
+            used.add(("conditional", conditional))
+            resolved = CONDITIONAL_VALUE_SETS[conditional]
+            references = [] if resolved is None else [(resolved[0], "CID", number) for number in resolved[1]]
+            if not references:
+                continue
+        kind = VALUE_SET_MACROS.get(row["target"])
+        if kind is None:
+            bound = INCLUDE_VALUE_SETS.get((record["id"], row["target"]))
+            if bound is None:
+                raise GenerationError(f"{where}: unbound Value Set {references}")
+            used.add(("include", (record["id"], row["target"])))
+            expected = [(strength, "CID", number) for _, _, strength, ids in bound for number in ids]
+            if references != expected:
+                raise GenerationError(f"{where}: Value Sets changed to {references}")
+            row["bindings"] = [
+                binding(table, tag, None, value_set={"kind": "CID", "strength": strength, "ids": list(ids)})
+                for table, tag, strength, ids in bound
+            ]
+            continue
+        parent = next(
+            (candidate for candidate in reversed(rows[:index])
+             if candidate["kind"] == "attribute" and candidate["level"] < row["level"]),
+            None,
+        )
+        if parent is None or parent["level"] != row["level"] - 1:
+            raise GenerationError(f"{where}: Value Set outside a Sequence")
+        parent["value_set"] = value_set(references, kind, where)
+
+
+def binding(table, tag, parent, within=None, **change):
+    """A change to the rows defining `tag` in `table`, within the Sequence
+    `parent` and where the table is included from the table `within` when they
+    are named."""
+    return {"table": table, "tag": tag, "parent": parent, "within": within, "change": change, "used": 0}
+
+
+def apply_change(row, change):
+    if "value_set" in change:
+        row["value_set"] = change["value_set"]
+    if "enumeration" in change:
+        row["enumerations"] = row["enumerations"] + [change["enumeration"]]
+    if "condition" in change:
+        row["condition"] = change["condition"]
+
+
+def ident(section_id):
+    return re.sub(r"[^A-Za-z0-9]", "_", section_id.removeprefix("sect_").removeprefix("table_"))
+
+
+def parse_storage_sop_classes(part04):
+    """PS3.4 Table B.5-1: (SOP Class UID, name, specialization section or None)
+    of each IOD section."""
+    table = part04.element(STORAGE_SOP_CLASS_TABLE)
+    columns = header_index(part04, table)
+    found = {}
+    for row in table.find(part04.q("tbody")).iter(part04.q("tr")):
+        row_cells = cells(part04, row)
+        text = [part04.render(cell) for cell in row_cells]
+        if len(text) != len(columns):
+            raise GenerationError(f"{STORAGE_SOP_CLASS_TABLE}: unexpected row {text[:1]!r}")
+        uid = text[columns["SOP Class UID"]]
+        if not DICOM_ROOT_UID.match(uid):
+            raise GenerationError(f"{STORAGE_SOP_CLASS_TABLE}: {text[0]!r} has no SOP Class UID")
+        specification = row_cells[columns["IOD Specification (defined in PS3.3 PS3.3)"]]
+        targets = [node.get("targetptr") for node in specification.iter() if node.get("targetptr")]
+        if len(targets) != 1:
+            raise GenerationError(f"{STORAGE_SOP_CLASS_TABLE}: {text[0]!r} names {len(targets)} IOD sections")
+        specialization = [link for link in links(row_cells[columns["Specialization"]]) if link.startswith("sect_")]
+        found.setdefault(targets[0], []).append(
+            (uid, text[columns["SOP Class Name"]], specialization[0] if specialization else None)
+        )
+    return found
+
+
 class Model:
-    def __init__(self, part03, part06, part10):
+    def __init__(self, part03, part04, part06, part10):
         self.part03 = part03
+        self.part04 = part04
         self.dictionary = parse_dictionary(part06)
+        self.image_storage = parse_image_storage(part06)
+        self.registered_uids = parse_registered_uids(part06)
         self.tables = {}
         self.order = []
         self.conditions = {}
         self.condition_order = []
-        self.modules = self.parse_modules()
-        self.functional_groups = self.parse_functional_groups()
+        self.used = set()
+        self.special = {}
+        self.special_order = []
+        self.specialized = {}
+        storage = parse_storage_sop_classes(part04)
+        self.storage_sop_classes = sorted(
+            (uid, name) for classes in storage.values() for uid, name, _ in classes
+        )
+        if any(section in CONDITIONAL_IODS for section, _, _ in IODS):
+            raise GenerationError("CONDITIONAL_VALUE_SETS resolve for IODs outside CONDITIONAL_IODS only")
+        self.iods = [self.parse_iod(entry, storage) for entry in IODS]
+        self.directory = self.parse_directory(registry_uid(part06, DIRECTORY_SOP_CLASS))
         self.file_meta = self.parse_file_meta(part10)
+        finalized = set()
+        for table_id in list(self.order):
+            self.finalize(table_id, finalized)
+        for iod in self.iods:
+            self.bind_iod(iod)
+        self.check_bindings_used()
+
+    def parse_iod(self, entry, storage):
+        section_id, module_table, group_table = entry
+        document = self.part03
+        section = document.element(section_id)
+        title = document.render(section.find(document.q("title")))
+        if not title.endswith(" IOD"):
+            raise GenerationError(f"{section_id}: {title!r} is not an IOD")
+        for table_id, caption in ((module_table, "IOD Modules"), (group_table, "Functional Group Macros")):
+            if table_id is None:
+                continue
+            table = document.element(table_id)
+            if section not in self.ancestors(table) or not document.render(table.find(document.q("caption"))).endswith(caption):
+                raise GenerationError(f"{section_id}: {table_id} is not its {caption} table")
+        if section_id not in storage:
+            raise GenerationError(f"{section_id}: no Storage SOP Class in PS3.4 {STORAGE_SOP_CLASS_TABLE}")
+        modules = self.parse_modules(module_table)
+        groups = self.parse_functional_groups(group_table) if group_table else []
+        reached = set()
+        for table_id in [module["table"] for module in modules] + [group["table"] for group in groups]:
+            self.reach(table_id, reached)
+        return {
+            "id": section_id,
+            "label": section.get("label"),
+            "name": title.removesuffix(" IOD"),
+            "ident": ident(section_id),
+            "document": self.parse_document_constraints(section_id) if DOCUMENT_IOD.match(section_id) else None,
+            "module_table": module_table,
+            "group_table": group_table,
+            "modules": modules,
+            "functional_groups": groups,
+            "sop_classes": storage[section_id],
+            "order": [table_id for table_id in self.order if table_id in reached],
+            "constraint_sentences": [],
+            "forbidden": [],
+            "exclusive": [],
+        }
+
+    def parse_document_constraints(self, section_id):
+        """A.35.x.3.1 of a Structured Reporting IOD: the Value Types of its
+        Content Items (A.35.x.3.1.1), its Relationship Content Constraints
+        (A.35.x.3.1.2) and the Template at its root (A.35.x.3.1.3)."""
+        document = self.part03
+        label = document.element(section_id).get("label")
+        value_section = document.element(f"{section_id}.3.1.1")
+        paragraphs = [document.render(para) for para in own_elements(document, value_section, "para")]
+        lists = list(value_section.iter(document.q("variablelist")))
+        if DOCUMENT_VALUE_TYPES not in paragraphs or len(lists) != 1:
+            raise GenerationError(f"{label}: Value Type constraint changed")
+        value_types = [document.render(entry.find(document.q("term"))) for entry in lists[0].findall(document.q("varlistentry"))]
+        table_id = f"table_{label}-2"
+        table = document.element(table_id)
+        if section_id + ".3.1.2" != enclosing_section(document, table).get(XML_ID):
+            raise GenerationError(f"{table_id} is not in {label}.3.1.2")
+        relationships = []
+        for row in table.find(document.q("tbody")).iter(document.q("tr")):
+            text = [document.render(cell) for cell in cells(document, row)]
+            if len(text) != 3:
+                raise GenerationError(f"{table_id}: unexpected row {text!r}")
+            sources = [] if text[0] == ANY_VALUE_TYPE else split_value_types(text[0], value_types, table_id)
+            targets = split_value_types(text[2], value_types, table_id)
+            relationships.append({"sources": sources, "relationship": text[1], "targets": targets})
+        root = None
+        root_id = f"{section_id}.3.1.3"
+        if root_id in document.ids:
+            found = [ROOT_TEMPLATE.match(sentence) for para in own_elements(document, document.element(root_id), "para")
+                     for sentence in sentences(document.render(para))]
+            found = [match for match in found if match]
+            if len(found) != 1:
+                raise GenerationError(f"{root_id}: root Template sentence changed")
+            root = int(found[0].group("template"))
+        return {"value_types": value_types, "table": table.get("label"), "relationships": relationships, "root": root}
+
+    def parse_directory(self, sop_class):
+        """PS3.3 Annex F: the Basic Directory IOD of the DICOMDIR, its Directory
+        Records (Table F.4-1 and the key tables of F.5 and F.6) and the
+        Record Selection Keys each Directory Record Type selects."""
+        annex, section_id, module_table = DIRECTORY
+        document = self.part03
+        title = document.render(document.element(section_id).find(document.q("title")))
+        if title != "Basic Directory IOD":
+            raise GenerationError(f"{section_id}: {title!r} is not the Basic Directory IOD")
+        table = document.element(module_table)
+        columns = header_index(document, table)
+        modules = []
+        for row in table.find(document.q("tbody")).iter(document.q("tr")):
+            row_cells = cells(document, row)
+            references = links(row_cells[columns["Reference"]])
+            if len(row_cells) != len(columns) or len(references) != 1:
+                raise GenerationError(f"{module_table}: unexpected row")
+            name = document.render(row_cells[columns["Module"]])
+            table_id = first_table(document, references[0]).get(XML_ID)
+            self.parse_table(table_id)
+            usage, _, condition = self.usage(document.render(row_cells[columns["Usage"]]), name, "Module", False)
+            modules.append({
+                "name": name,
+                "section": document.element(references[0]).get("label"),
+                "table": table_id,
+                "usage": usage,
+                "condition": condition,
+            })
+        self.sign_modules(modules)
+        records, root = self.parse_directory_records()
+        reached = set()
+        for table_id in [module["table"] for module in modules] + [record["keys"] for record in records if record["keys"]]:
+            self.reach(table_id, reached)
+        return {
+            "id": section_id,
+            "scope_root": annex,
+            "label": document.element(section_id).get("label"),
+            "name": title.removesuffix(" IOD"),
+            "ident": ident(section_id),
+            "module_table": module_table,
+            "group_table": None,
+            "modules": modules,
+            "functional_groups": [],
+            "sop_classes": [(sop_class, DIRECTORY_SOP_CLASS, None)],
+            "order": [table_id for table_id in self.order if table_id in reached],
+            "constraint_sentences": [],
+            "forbidden": [],
+            "exclusive": [],
+            "records": records,
+            "root_records": root,
+        }
+
+    def parse_directory_records(self):
+        """Table F.4-1: each Directory Record Type with its section, key table
+        and the Types its lower-level Directory Entity may include; checked
+        against the Enumerated Values of Directory Record Type (0004,1430)."""
+        document = self.part03
+        table = document.element(DIRECTORY_RELATIONSHIPS)
+        records, root = [], None
+        for row in table.find(document.q("tbody")).iter(document.q("tr")):
+            row_cells = cells(document, row)
+            if len(row_cells) != 3:
+                raise GenerationError(f"{DIRECTORY_RELATIONSHIPS}: unexpected row")
+            record_type = document.render(row_cells[0])
+            lower = [entry.strip() for entry in document.render(row_cells[2]).split(",")]
+            if record_type == ROOT_DIRECTORY_ENTITY:
+                root = lower
+                continue
+            sections = [link for link in links(row_cells[1]) if link.startswith("sect_")]
+            if len(sections) != 1:
+                raise GenerationError(f"{DIRECTORY_RELATIONSHIPS}: {record_type} names {len(sections)} sections")
+            section = document.element(sections[0])
+            tables = [found for found in own_elements(document, section, "table") if is_attribute_table(document, found)]
+            if len(tables) > 1:
+                raise GenerationError(f"{sections[0]}: more than one key table")
+            keys = tables[0].get(XML_ID) if tables else None
+            if keys:
+                self.parse_table(keys)
+            any_private = PRIVATE_LOWER_LEVEL in lower
+            records.append({
+                "type": record_type,
+                "section": section.get("label"),
+                "keys": keys,
+                "lower": [entry for entry in lower if entry != PRIVATE_LOWER_LEVEL],
+                "any_private": any_private,
+            })
+        types = [record["type"] for record in records]
+        enumerated = [
+            value
+            for row in self.tables[DIRECTORY_RECORD_TABLE]["rows"]
+            if row["kind"] == "attribute" and row["tag"] == DIRECTORY_RECORD_TYPE
+            for enumeration in row["enumerations"]
+            for value in enumeration["values"]
+        ]
+        if root is None or sorted(types) != sorted(enumerated):
+            raise GenerationError(f"{DIRECTORY_RELATIONSHIPS} and the Directory Record Type Enumerated Values differ")
+        for record in [*records, {"type": ROOT_DIRECTORY_ENTITY, "lower": root}]:
+            unknown = [entry for entry in record["lower"] if entry not in types]
+            if unknown:
+                raise GenerationError(f"{DIRECTORY_RELATIONSHIPS}: {record['type']} includes unknown {unknown}")
+        return records, root
+
+    def ancestors(self, element):
+        node = self.part03.parents.get(element)
+        while node is not None:
+            yield node
+            node = self.part03.parents.get(node)
+
+    def reach(self, table_id, reached):
+        if table_id in reached:
+            return
+        reached.add(table_id)
+        for row in self.tables[table_id]["rows"]:
+            if row["kind"] == "include":
+                self.reach(row["base"], reached)
+
+    def finalize(self, table_id, finalized):
+        """Specializes, after the Macros it includes, the Macros a table's
+        inclusion rows bind Value Sets in."""
+        if table_id in finalized:
+            return
+        finalized.add(table_id)
+        record = self.tables[table_id]
+        for row in record["rows"]:
+            if row["kind"] != "include":
+                continue
+            self.finalize(row["base"], finalized)
+            if row["bindings"]:
+                row["target"] = self.specialize(row["target"], row["bindings"], ident(table_id))
+                for bound in row["bindings"]:
+                    if not bound["used"]:
+                        raise GenerationError(f"{table_id}: no row of {bound['table']} defines {bound['tag']}")
+
+    def specialize(self, table_id, bindings, context, outer=None, path=()):
+        """`table_id` with `bindings` applied to its rows and the Macros it
+        includes: the table itself when none applies, otherwise a copy named
+        for `context`. `outer` is the Sequence holding the table's top-level
+        rows and `path` the tables including it."""
+        record = self.special.get(table_id) or self.tables[table_id]
+        base = record.get("base", table_id)
+        within = tuple(table for table in path if any(bound["within"] == table for bound in bindings))
+        key = (table_id, context, outer, within, tuple(id(bound) for bound in bindings))
+        if key in self.specialized:
+            return self.specialized[key]
+        rows, changed, parents = [], False, []
+        for row in record["rows"]:
+            row = dict(row)
+            while parents and parents[-1][0] >= row["level"]:
+                parents.pop()
+            parent = parents[-1][1] if parents else outer
+            if row["kind"] == "attribute":
+                for bound in bindings:
+                    if (bound["table"] == base and bound["tag"] == row["tag"] and bound["parent"] in (None, parent)
+                            and bound["within"] in (None, *path)):
+                        apply_change(row, bound["change"])
+                        bound["used"] += 1
+                        changed = True
+                parents.append((row["level"], row["tag"]))
+            elif row["kind"] == "include" and row["base"] not in (*path, base):
+                target = self.specialize(row["target"], bindings, context, parent, (*path, base))
+                changed |= target != row["target"]
+                row["target"] = target
+            rows.append(row)
+        result = table_id
+        if changed:
+            result = f"{base}__{context}"
+            suffix = 1
+            while result in self.special and self.special[result]["rows"] != rows:
+                suffix += 1
+                result = f"{base}__{context}_{suffix}"
+            if result not in self.special:
+                self.special[result] = dict(self.tables[base], id=result, base=base, rows=rows)
+                self.special_order.append(result)
+        self.specialized[key] = result
+        return result
+
+    def bind_iod(self, iod):
+        """Applies the IOD's Content Constraints and its SOP Classes'
+        specializations to copies of the tables they constrain."""
+        bindings = self.title_constraints(iod) + self.sentence_constraints(iod) + self.sop_class_constraints(iod)
+        for entry in iod["modules"] + iod["functional_groups"]:
+            entry["table"] = self.specialize(entry["table"], bindings, iod["ident"])
+        for bound in bindings:
+            if not bound["used"]:
+                raise GenerationError(f"{iod['id']}: no row of {bound['table']} defines {bound['tag']}")
+            if bound["table"] not in iod["order"]:
+                raise GenerationError(f"{iod['id']}: {bound['table']} is outside the IOD")
+
+    def iod_sentences(self, iod):
+        """The section label of each paragraph and sentence of the IOD section."""
+        document = self.part03
+        found = {}
+        for para in document.element(iod["id"]).iter(document.q("para")):
+            text = document.render(para)
+            label = enclosing_section(document, para).get("label")
+            for sentence in [text, *sentences(text)]:
+                found.setdefault(sentence, label)
+        return found
+
+    def title_constraints(self, iod):
+        """Value Sets of the IOD Content Constraints sections titled with the
+        Module or Macro whose Code Sequences they bind, overriding the Macro's
+        own."""
+        document = self.part03
+        tables = {entry["name"]: entry["table"] for entry in iod["modules"] + iod["functional_groups"]}
+        bindings = []
+        for parent_id in IOD_CONSTRAINT_SECTIONS.get(iod["id"], ()):
+            for section in document.element(parent_id).findall(document.q("section")):
+                title = document.render(section.find(document.q("title"))).removesuffix(" Module")
+                if title not in tables:
+                    raise GenerationError(f"{section.get('label')}: no Module or Macro named {title!r}")
+                rows = self.tables[tables[title]]["rows"]
+                for para in own_elements(document, section, "para"):
+                    references = value_set_references(document, para)
+                    if not references:
+                        continue
+                    text = document.render(para)
+                    where = f"{section.get('label')} {text}"
+                    tags = [f"{group}{element}" for group, element in re.findall(r"\(([0-9A-F]{4}),([0-9A-F]{4})\)", text)]
+                    targets = [row for row in rows if row["kind"] == "attribute" and row["tag"] in tags]
+                    if not tags or {row["tag"] for row in targets} != set(tags):
+                        raise GenerationError(f"{where}: Code Sequences not found in {tables[title]}")
+                    bound = value_set(references, "CID", where)
+                    bindings += [binding(tables[title], tag, None, value_set=bound) for tag in tags]
+                    iod["constraint_sentences"].append(text)
+        return bindings
+
+    def sentence_constraints(self, iod):
+        """The IOD_CONSTRAINTS of the IOD."""
+        present = self.iod_sentences(iod)
+        bindings = []
+        for section_id, sentence, constraint in IOD_CONSTRAINTS:
+            if section_id != iod["id"]:
+                continue
+            if sentence not in present:
+                raise GenerationError(f"{section_id}: bound sentence {sentence!r} not found")
+            self.used.add(("constraint", (section_id, sentence)))
+            iod["constraint_sentences"].append(sentence)
+            kind, *rest = constraint
+            if kind == "values":
+                table, tag, values = rest
+                change = {"enumeration": {"value": None, "condition": None, "values": list(values)}}
+                bindings.append(binding(table, tag, None, **change))
+            elif kind == "groups":
+                table, tag, parent, strength, ids, *within = rest
+                bound = {"kind": "CID", "strength": strength, "ids": list(ids)}
+                bindings.append(binding(table, tag, parent, *within, value_set=bound))
+            elif kind == "template":
+                table, tag, strength, number = rest
+                bound = {"kind": "TID", "strength": strength, "ids": [number]}
+                bindings.append(binding(table, tag, None, value_set=bound))
+            elif kind == "code":
+                table, tag, parent, code = rest
+                bound = {"kind": "CODE", "code": code, "section": present[sentence]}
+                bindings.append(binding(table, tag, parent, value_set=bound))
+            elif kind == "forbidden":
+                table, tag = rest
+                condition = self.condition(sentence, self.keyword(tag, sentence), f"{iod['label']} {sentence}")
+                bindings.append(binding(table, tag, None, condition=condition))
+            elif kind == "absent":
+                (module_section,) = rest
+                forbidden = self.forbidden_module(iod, module_section)
+                iod["forbidden"].append(dict(forbidden, constraint=present[sentence]))
+            elif kind == "one of":
+                (sections,) = rest
+                labels = [self.part03.element(section).get("label") for section in sections]
+                names = [module["name"] for module in iod["modules"] if module["section"] in labels]
+                if len(names) != len(sections):
+                    raise GenerationError(f"{section_id}: {sections} are not all Modules of the IOD")
+                iod["exclusive"].append((names, present[sentence]))
+            else:
+                raise GenerationError(f"{section_id}: unknown constraint {kind!r}")
+        return bindings
+
+    def forbidden_module(self, iod, section_id):
+        """A Module the IOD forbids, identified by the top-level Attributes no
+        Module of the IOD defines."""
+        document = self.part03
+        table_id = first_table(document, section_id).get(XML_ID)
+        permitted = set()
+        for module in iod["modules"]:
+            permitted |= self.top_level_tags(module["table"])
+        signature = sorted(self.declared_top_level_tags(table_id) - permitted)
+        if not signature:
+            raise GenerationError(f"{iod['id']}: no Attribute identifies the forbidden {section_id}")
+        name = document.render(document.element(section_id).find(document.q("title"))).removesuffix(" Module")
+        return {"name": name, "section": document.element(section_id).get("label"), "signature": signature}
+
+    def declared_top_level_tags(self, table_id, seen=()):
+        """The top-level tags of a Module table outside the IOD, read without
+        its rows' requirements."""
+        document = self.part03
+        tags = set()
+        for row in document.element(table_id).find(document.q("tbody")).iter(document.q("tr")):
+            row_cells = cells(document, row)
+            first = document.render(row_cells[0]) if row_cells else ">"
+            if first.startswith(">"):
+                continue
+            if re.match(r"Include\b", first):
+                for target in links(row_cells[0]):
+                    if target.startswith("table_") and target not in seen:
+                        tags |= self.declared_top_level_tags(target, (*seen, table_id))
+            elif len(row_cells) == 4 and parse_tag(document.render(row_cells[1])):
+                tags.add(parse_tag(document.render(row_cells[1])))
+        return tags
+
+    def sop_class_constraints(self, iod):
+        """Enumerated Values a PS3.4 specialization requires for one SOP Class
+        of the IOD."""
+        document = self.part04
+        bindings = []
+        for uid, name, specialization in iod["sop_classes"]:
+            if specialization is None:
+                continue
+            for para in document.element(specialization).iter(document.q("para")):
+                for sentence in sentences(document.render(para)):
+                    match = SOP_CLASS_SPECIALIZATION.match(sentence)
+                    if not match and "Enumerated Value" in sentence:
+                        raise GenerationError(f"{specialization}: unrecognized specialization {sentence!r}")
+                    if not match or match.group("name") != name:
+                        continue
+                    if match.group("iod") != iod["label"]:
+                        raise GenerationError(f"{specialization}: {name} specializes {match.group('iod')}")
+                    tag = match.group("group") + match.group("element")
+                    tables = [table_id for table_id in iod["order"]
+                              if any(row["kind"] == "attribute" and row["level"] == 0 and row["tag"] == tag
+                                     for row in self.tables[table_id]["rows"])]
+                    if len(tables) != 1:
+                        raise GenerationError(f"{specialization}: {tag_display(tag)} is in {tables}")
+                    keyword = self.keyword(tag, sentence)
+                    condition = self.condition(sentence, keyword, f"PS3.4 {document.element(specialization).get('label')} {name}")
+                    values = match.group("values").split(" or ")
+                    change = {"enumeration": {"value": None, "condition": condition, "values": values}}
+                    bindings.append(binding(tables[0], tag, None, **change))
+                    iod["constraint_sentences"].append(sentence)
+        return bindings
+
+    def check_bindings_used(self):
+        expected = {("conditional", key) for key in CONDITIONAL_VALUE_SETS}
+        expected |= {("include", key) for key in INCLUDE_VALUE_SETS}
+        expected |= {("constraint", (section, sentence)) for section, sentence, _ in IOD_CONSTRAINTS}
+        expected |= {("condition", key) for key in BOUND_CONDITIONS}
+        unused = sorted(str(key) for key in expected - self.used)
+        if unused:
+            raise GenerationError(f"stale bindings: {', '.join(unused)}")
 
     def condition(self, text, keyword, where):
         text = normalize(text)
@@ -533,28 +1476,51 @@ class Model:
                 continue
             first = document.render(row_cells[0])
             include = re.match(r"(>*)\s*Include\b", first)
+            if include and table_id == DIRECTORY_RECORD_TABLE and first.endswith("Include Record Selection Keys"):
+                record["rows"].append({"kind": "selection", "level": len(include.group(1))})
+                continue
             if include:
                 targets = [link for link in links(row_cells[0]) if link.startswith("table_")]
                 if not targets:
                     # Functional Group Macro placeholders in the Multi-frame
                     # Functional Groups Module; the IOD lists the macros.
                     continue
+                references = [found for cell in row_cells for found in value_set_references(document, cell)]
+                condition = None
+                clause = INCLUDE_CONDITION.match(first)
+                if clause:
+                    if len(targets) != 1:
+                        raise GenerationError(f"{table_id}: conditional inclusion of {targets}")
+                    label = document.element(targets[0]).get("label")
+                    keyword = "Include" + re.sub(r"[^A-Za-z0-9]", "", label)
+                    condition = self.condition(clause.group("condition"), keyword, f"{table_id} {first}")
                 for target in targets:
                     record["rows"].append(
-                        {"kind": "include", "level": len(include.group(1)), "target": target}
+                        {
+                            "kind": "include",
+                            "level": len(include.group(1)),
+                            "target": target,
+                            "base": target,
+                            "references": references,
+                            "text": " ".join(document.render(cell) for cell in row_cells[1:]),
+                            "bindings": [],
+                            "condition": condition,
+                        }
                     )
                     self.parse_table(target)
                 continue
             if len(row_cells) != 4:
-                if first.startswith(">") and "Any Attribute" in first:
-                    continue  # wildcard row in Original Attributes Sequence
+                if first.startswith(">") and re.match(r">+Any\b", first):
+                    continue  # wildcard row, e.g. in Original Attributes Sequence
+                if OTHER_KEYS.match(first):
+                    continue  # the other Attributes of a Directory Record's IE, all Type 3
                 if len(row_cells) == 1:
                     continue  # section heading row inside a macro
                 raise GenerationError(f"{table_id}: unexpected row {first!r}")
             tag = parse_tag(document.render(row_cells[1]))
             if tag is None:
                 raise GenerationError(f"{table_id}: row {first!r} has no tag")
-            if "x" in tag:
+            if "x" in tag and not (tag.startswith("60xx") and "x" not in tag[4:]):
                 raise GenerationError(f"{table_id}: repeating group tag {tag} in the IOD")
             level = len(re.match(r">*", first).group(0))
             name = first[level:].strip()
@@ -566,7 +1532,7 @@ class Model:
             description = row_cells[3]
             condition = None
             if kind in ("1C", "2C"):
-                condition = self.condition(condition_text(document, description, where), keyword, where)
+                condition = self.condition(self.condition_text(table_id, tag, description, where), keyword, where)
             elif kind == "3":
                 text = " ".join(document.render(b) for _, b in description_blocks(document, description))
                 restriction = TYPE3_RESTRICTION.search(text)
@@ -593,38 +1559,85 @@ class Model:
                     "items": item_count(document, description, where)
                     if is_sequence
                     else "ANY",
+                    "value_set": None,
                 }
             )
+        self.extend_includes(record)
+        bind_value_sets(record, self.used)
+
+    def extend_includes(self, record):
+        """Rows nested under an "Include" row add to the Items of the included
+        Macro's last top-level Sequence (e.g. Referenced Frame Number under
+        the Composite Object Reference Macro of Table C.18.4-1); the row then
+        includes a copy of the Macro that holds them."""
+        rows, out, index = record["rows"], [], 0
+        while index < len(rows):
+            row = rows[index]
+            end = index + 1
+            while end < len(rows) and rows[end]["level"] > row["level"]:
+                end += 1
+            extension = rows[index + 1:end]
+            if row["kind"] != "include" or not extension:
+                out.append(row)
+                index += 1
+                continue
+            included = self.tables[row["target"]]["rows"]
+            last = max((position for position, candidate in enumerate(included) if candidate["level"] == 0), default=None)
+            if last is None or included[last]["kind"] != "attribute" or self.dictionary[included[last]["tag"]]["vrs"] != ["SQ"]:
+                raise GenerationError(f"{record['id']}: rows extend {row['target']}, whose last row is no Sequence")
+            shift = row["level"]
+            copy = included + [dict(child, level=child["level"] - shift) for child in extension]
+            name = f"{row['target']}__{ident(record['id'])}"
+            self.special[name] = dict(self.tables[row["target"]], id=name, base=row["target"], rows=copy)
+            self.special_order.append(name)
+            out.append(dict(row, target=name))
+            index = end
+        record["rows"] = out
+
+    def condition_text(self, table_id, tag, description, where):
+        """A 1C/2C row's condition: its "Required if" sentence, or the sentence
+        BOUND_CONDITIONS binds for the row."""
+        bound = BOUND_CONDITIONS.get((table_id, tag))
+        if bound is None:
+            return condition_text(self.part03, description, where)
+        if bound not in sentences(" ".join(self.part03.render(block) for _, block in description_blocks(self.part03, description))):
+            raise GenerationError(f"{where}: bound condition {bound!r} not found")
+        self.used.add(("condition", (table_id, tag)))
+        return bound
 
     def usage(self, text, name, keyword_prefix, allow_placement):
-        match = re.match(r"([MCU])(?:\s*-\s*(.*))?\Z", text)
+        match = re.match(r"([MCU])(?:\s*[-–]\s*(.*))?\Z", text)
         if not match:
             raise GenerationError(f"{name}: unrecognized usage {text!r}")
         usage, rest = match.group(1), (match.group(2) or "").strip()
         placement = "Placement::Any"
         condition = None
-        if rest in PLACEMENTS and allow_placement:
-            placement = PLACEMENTS[rest]
-        elif rest:
+        if allow_placement:
+            for sentence in sentences(rest)[-1:]:
+                found = next((rust for pattern, rust in PLACEMENTS if pattern.match(sentence)), None)
+                if found:
+                    placement = found
+                    rest = rest.removesuffix(sentence).strip()
+        if rest:
             keyword = keyword_prefix + re.sub(r"[^A-Za-z0-9]", "", name.title())
             condition = self.condition(rest, keyword, name)
         if usage == "C" and condition is None:
             raise GenerationError(f"{name}: conditional usage without condition")
         return USAGES[usage], placement, condition
 
-    def parse_modules(self):
+    def parse_modules(self, module_table):
         document = self.part03
-        table = document.element(IOD_MODULE_TABLE)
+        table = document.element(module_table)
         modules = []
         for row in table.find(document.q("tbody")).iter(document.q("tr")):
             row_cells = cells(document, row)
             references = [cell for cell in row_cells if links(cell)]
             if len(row_cells) < 3 or not references:
-                raise GenerationError(f"{IOD_MODULE_TABLE}: unexpected row")
+                raise GenerationError(f"{module_table}: unexpected row")
             name = document.render(row_cells[-3])
             section_id = links(references[0])[0]
-            module_table = first_table(document, section_id).get(XML_ID)
-            self.parse_table(module_table)
+            table_id = first_table(document, section_id).get(XML_ID)
+            self.parse_table(table_id)
             usage, placement, condition = self.usage(
                 document.render(row_cells[-1]), name, "Module", False
             )
@@ -632,22 +1645,26 @@ class Model:
                 {
                     "name": name,
                     "section": document.element(section_id).get("label"),
-                    "table": module_table,
+                    "table": table_id,
                     "usage": usage,
                     "condition": condition,
                 }
             )
+        self.sign_modules(modules)
+        return modules
+
+    def sign_modules(self, modules):
+        tags = {module["name"]: self.top_level_tags(module["table"]) for module in modules}
         top_level = {}
         for module in modules:
-            for tag in self.top_level_tags(module["table"]):
+            for tag in tags[module["name"]]:
                 top_level.setdefault(tag, set()).add(module["name"])
         for module in modules:
+            # Empty when other Modules of the IOD define all its Attributes
+            # (ICC Profile and Image Pixel); its presence is then ambiguous.
             module["signature"] = sorted(
-                tag for tag in self.top_level_tags(module["table"]) if top_level[tag] == {module["name"]}
+                tag for tag in tags[module["name"]] if top_level[tag] == {module["name"]}
             )
-            if module["usage"] != "Usage::Mandatory" and not module["signature"]:
-                raise GenerationError(f"{module['name']}: no Attribute identifies the Module")
-        return modules
 
     def top_level_tags(self, table_id, level=0, seen=None):
         seen = set() if seen is None else seen
@@ -659,18 +1676,18 @@ class Model:
             if row["kind"] == "attribute" and row["level"] + level == 0:
                 tags.add(row["tag"])
             elif row["kind"] == "include" and row["level"] + level == 0:
-                tags |= self.top_level_tags(row["target"], row["level"] + level, seen)
+                tags |= self.top_level_tags(row["base"], row["level"] + level, seen)
         return tags
 
-    def parse_functional_groups(self):
+    def parse_functional_groups(self, group_table):
         document = self.part03
-        table = document.element(IOD_FUNCTIONAL_GROUP_TABLE)
+        table = document.element(group_table)
         groups = []
         for row in table.find(document.q("tbody")).iter(document.q("tr")):
             row_cells = cells(document, row)
             references = [link for cell in row_cells for link in links(cell)]
             if len(row_cells) != 3 or not references:
-                raise GenerationError(f"{IOD_FUNCTIONAL_GROUP_TABLE}: unexpected row")
+                raise GenerationError(f"{group_table}: unexpected row")
             name = document.render(row_cells[0])
             macro_table = first_table(document, references[0]).get(XML_ID)
             self.parse_table(macro_table)
@@ -723,6 +1740,7 @@ class Model:
                     "condition": condition,
                     "enumerations": [],
                     "items": "ANY",
+                    "value_set": None,
                 }
             )
         return {
@@ -733,6 +1751,494 @@ class Model:
             "caption": part10.render(table.find(part10.q("caption"))),
             "rows": rows,
         }
+
+
+def sentences(text):
+    return [sentence for sentence in SENTENCE_BREAK.split(text) if sentence]
+
+
+def enclosing_section(document, element):
+    node = document.parents.get(element)
+    while node is not None and node.tag != document.q("section"):
+        node = document.parents.get(node)
+    if node is None:
+        raise GenerationError(f"element {element.get(XML_ID)} is outside a section")
+    return node
+
+
+def own_elements(document, section, name):
+    """Elements called `name` in a section, outside notes and its subsections."""
+    found = []
+
+    def walk(node):
+        kind = node.tag.removeprefix(document.ns)
+        if kind in ("section", "note"):
+            return
+        if kind == name:
+            found.append(node)
+            return
+        for child in node:
+            walk(child)
+
+    for child in section:
+        walk(child)
+    return found
+
+
+def is_attribute_table(document, table):
+    head = table.find(document.q("thead"))
+    if head is None:
+        return False
+    header = [document.render(cell) for row in head for cell in cells(document, row)]
+    return "Tag" in header and "Type" in header
+
+
+def statement(part, section, text, keyword=None, enforced=False, strength="shall"):
+    return {
+        "part": part,
+        "section": section,
+        "keyword": keyword,
+        "text": text,
+        "enforced": enforced,
+        "strength": strength,
+    }
+
+
+def sentence_strength(sentence):
+    """"shall" for a normative sentence, "should" for a recommendation, or
+    None for one that is neither."""
+    if (
+        sentence in NORMATIVE_SENTENCES
+        or NORMATIVE.search(sentence)
+        or (REQUIRED_TO.search(sentence) and not NEGATED_REQUIREMENT.search(sentence))
+    ):
+        return "shall"
+    if RECOMMENDATION.search(sentence):
+        return "should"
+    return None
+
+
+class Requirements:
+    """Normative statements in each scope: each IOD, the tables included, the
+    de-identified objects of every pathology-slide IOD (PS3.15 Annex E), the
+    File-set (PS3.3 Annex F and PS3.10 Chapter 8), and DICOMweb origin
+    servers (PS3.18, `DICOMWEB_CHAPTERS`). A statement several
+    scopes reach is recorded once and lists them."""
+
+    def __init__(self, model, parts):
+        self.model = model
+        self.parts = parts
+        self.statements = []
+        self.index = {}
+        for iod in model.iods:
+            self.iod, self.scopes = iod, [iod["label"]]
+            self.parse_scope()
+            self.parse_cells()
+            self.parse_specializations()
+            for part, chapters in NORMATIVE_CHAPTERS.items():
+                self.parse_chapters(part, chapters)
+        # Annex E binds a de-identified object of any of the IODs.
+        self.iod, self.scopes = None, [iod["label"] for iod in model.iods]
+        self.parse_chapters("PS3.15", (CONFIDENTIALITY_CHAPTER,))
+        self.iod, self.scopes = model.directory, [FILE_SET]
+        self.parse_scope()
+        self.parse_cells()
+        self.parse_chapters("PS3.10", ("chapter_8",))
+        self.iod, self.scopes = None, [DICOMWEB]
+        self.parse_chapters("PS3.18", DICOMWEB_CHAPTERS)
+        found = {record["text"] for record in self.statements}
+        missing = [text for text in NORMATIVE_SENTENCES if text not in found]
+        if missing:
+            raise GenerationError(f"normative sentences not found, reworded or moved: {missing}")
+        self.name_statements()
+
+    def add(self, record):
+        key = (record["part"], record["section"], record["keyword"], record["text"])
+        if key not in self.index:
+            record["iods"] = []
+            self.index[key] = record
+            self.statements.append(record)
+        iods = self.index[key]["iods"]
+        for scope in self.scopes:
+            if scope not in iods:
+                iods.append(scope)
+
+    def add_text(self, part, section, text, keyword=None, enforced=False):
+        constrained = self.iod["constraint_sentences"] if self.iod else ()
+        enforced = enforced or text in constrained
+        for sentence in sentences(text):
+            strength = sentence_strength(sentence)
+            if strength:
+                enforced_here = enforced or sentence in constrained
+                self.add(statement(part, section, sentence, keyword, enforced_here, strength))
+
+    def scope_sections(self):
+        """The IOD section, the sections holding its tables, and the PS3.3
+        sections they cite, each with its subsections. A subsection holding the
+        table of a Module or Macro outside the IOD belongs to that table."""
+        document = self.model.part03
+        iod = self.iod
+        in_scope = set(iod["order"]) | {iod["module_table"], iod["group_table"]}
+
+        def excluded(section):
+            return any(
+                is_attribute_table(document, table) and table.get(XML_ID) not in in_scope
+                for table in own_elements(document, section, "table")
+            )
+
+        pending = [document.element(iod.get("scope_root", iod["id"]))]
+        pending += [enclosing_section(document, document.element(table)) for table in iod["order"]]
+        for table_id in iod["order"]:
+            pending += [document.ids[link] for link in links(document.element(table_id))
+                        if LINKED_SECTION.match(link) and link in document.ids]
+        found, visited = [], set()
+        while pending:
+            section = pending.pop()
+            identifier = section.get(XML_ID)
+            if identifier in visited or excluded(section):
+                continue
+            visited.add(identifier)
+            found.append(section)
+            pending += [child for child in section if child.tag == document.q("section")]
+            for para in own_elements(document, section, "para"):
+                pending += [document.ids[link] for link in links(para)
+                            if LINKED_SECTION.match(link) and link in document.ids]
+        return sorted(found, key=lambda section: section.get(XML_ID))
+
+    def parse_scope(self):
+        document = self.model.part03
+        for section in self.scope_sections():
+            label = section.get("label")
+            for para in own_elements(document, section, "para"):
+                if not self.inside_attribute_table(para):
+                    self.add_text("PS3.3", label, document.render(para))
+
+    def inside_attribute_table(self, element):
+        document = self.model.part03
+        node = document.parents.get(element)
+        while node is not None and node.tag != document.q("section"):
+            if node.tag == document.q("table"):
+                return is_attribute_table(document, node)
+            node = document.parents.get(node)
+        return False
+
+    def parse_cells(self):
+        """Description-cell sentences of the in-scope tables, marking those the
+        generated tables enforce."""
+        document = self.model.part03
+        iod_tables = [table_id for table_id in (self.iod["module_table"], self.iod["group_table"]) if table_id]
+        for table_id in iod_tables + self.iod["order"]:
+            table = document.element(table_id)
+            label = table.get("label")
+            iod_table = table_id in iod_tables
+            for row in table.find(document.q("tbody")).iter(document.q("tr")):
+                row_cells = cells(document, row)
+                if iod_table:
+                    for cell in row_cells:
+                        self.add_text("PS3.3", label, document.render(cell), enforced=True)
+                    continue
+                if len(row_cells) != 4:
+                    continue
+                tag = parse_tag(document.render(row_cells[1]))
+                keyword = self.model.dictionary[tag]["keyword"] if tag in self.model.dictionary else None
+                enforced = self.enforced_text(table_id, tag, row_cells)
+                for _, block in description_blocks(document, row_cells[3]):
+                    for sentence in sentences(document.render(block)):
+                        strength = sentence_strength(sentence)
+                        if strength:
+                            self.add(statement(
+                                "PS3.3", label, sentence, keyword,
+                                any(sentence in text or text in sentence for text in enforced),
+                                strength,
+                            ))
+
+    def enforced_text(self, table_id, tag, row_cells):
+        """Text of a row the generated tables enforce."""
+        document = self.model.part03
+        description = row_cells[3]
+        kind = document.render(row_cells[2])
+        texts = [sentence for sentence, _ in ITEM_PATTERNS] + list(TABLE_SENTENCES)
+        rendered = " ".join(document.render(block) for _, block in description_blocks(document, description))
+        texts += [match.group(0) for match in ITEMS_LIKE_VALUE.finditer(rendered)]
+        if kind in ("1C", "2C"):
+            texts.append(self.model.condition_text(table_id, tag, description, table_id))
+        restriction = TYPE3_RESTRICTION.search(rendered)
+        if kind == "3" and restriction:
+            texts.append(restriction.group(0))
+        texts += [entry[3] for entry in PROSE_ENUMERATIONS
+                  if entry[0] == table_id and tag and entry[1] == tag_display(tag)
+                  and entry[3] not in PARTLY_BOUND_SENTENCES]
+        return texts
+
+    def parse_specializations(self):
+        """The PS3.4 sections specializing the IOD's SOP Classes."""
+        document = self.parts["PS3.4"]
+        for _, _, specialization in self.iod["sop_classes"]:
+            if specialization is None:
+                continue
+            section = document.element(specialization)
+            for para in own_elements(document, section, "para"):
+                self.add_text("PS3.4", section.get("label"), document.render(para))
+
+    def parse_chapters(self, part, chapters):
+        document = self.parts[part]
+        for chapter_id in chapters:
+            chapter = document.element(chapter_id)
+            for section in [chapter, *chapter.iter(document.q("section"))]:
+                label = section.get("label")
+                for para in own_elements(document, section, "para"):
+                    self.add_text(part, label, document.render(para))
+
+    def name_statements(self):
+        names = set()
+        for record in self.statements:
+            if record["enforced"]:
+                continue
+            digest = hashlib.sha256(
+                "\0".join((record["part"], record["section"], record["keyword"] or "", record["text"])).encode()
+            ).hexdigest()[:6]
+            section = re.sub(r"[^A-Za-z0-9]+", "_", record["section"])
+            keyword = f"_{record['keyword']}" if record["keyword"] else ""
+            name = f"Ps{record['part'].removeprefix('PS3.')}_{section}{keyword}_{digest}"
+            if name in names:
+                raise GenerationError(f"requirement name collision {name}")
+            names.add(name)
+            record["name"] = name
+
+
+def model_value_sets(model):
+    """Every Value Set bound by a row of a table the IODs use."""
+    for record in emitted_tables(model):
+        for row in record["rows"]:
+            if row["kind"] == "attribute" and row["value_set"]:
+                yield row["value_set"]
+
+
+def emitted_tables(model):
+    """The base and specialized tables the IODs' Modules and Functional Group
+    Macros use, base tables in parse order, then the copies."""
+    used = set()
+    pending = [entry["table"] for iod in model.iods for entry in iod["modules"] + iod["functional_groups"]]
+    pending += [module["table"] for module in model.directory["modules"]]
+    pending += [record["keys"] for record in model.directory["records"] if record["keys"]]
+    while pending:
+        table_id = pending.pop()
+        if table_id not in used:
+            used.add(table_id)
+            record = model.special.get(table_id) or model.tables[table_id]
+            pending += [row["target"] for row in record["rows"] if row["kind"] == "include"]
+    return [model.tables[table_id] for table_id in model.order if table_id in used] + [
+        model.special[table_id] for table_id in model.special_order if table_id in used
+    ]
+
+
+def properties(document, section):
+    """The 'Type:', 'Order:' ... terms of a PS3.16 Context Group or Template."""
+    found = {}
+    for variablelist in section.findall(document.q("variablelist")):
+        for entry in variablelist.findall(document.q("varlistentry")):
+            term = document.render(entry.find(document.q("term"))).rstrip(":")
+            found[term] = document.render(entry.find(document.q("listitem")))
+    return found
+
+
+def header_index(document, table):
+    head = table.find(document.q("thead"))
+    return {document.render(cell): index for index, cell in enumerate(cells(document, head.find(document.q("tr"))))}
+
+
+def coded_entry(text, where):
+    match = CODED_ENTRY.match(text)
+    if not match:
+        raise GenerationError(f"{where}: unrecognized coded entry {text!r}")
+    return {"kind": match.group(1), "code": (match.group(3), match.group(2), match.group(4))}
+
+
+class ValueSets:
+    """The PS3.16 Context Groups and Templates the IOD's Value Sets reach."""
+
+    def __init__(self, model, part16):
+        self.document = part16
+        self.groups = {}
+        self.templates = {}
+        for bound in model_value_sets(model):
+            for number in bound.get("ids", ()):
+                (self.parse_group if bound["kind"] == "CID" else self.parse_template)(number)
+        for number in SR_TEMPLATES:
+            self.parse_template(number, strict=False)
+
+    def parse_group(self, number):
+        if number in self.groups:
+            return
+        document = self.document
+        section = document.element(f"sect_CID_{number}")
+        found = properties(document, section)
+        record = {
+            "id": number,
+            "name": document.render(section.find(document.q("title"))),
+            "extensible": found.get("Type", "").lower() == "extensible",
+            "scheme": None,
+            "codes": [],
+            "includes": [],
+        }
+        self.groups[number] = record
+        tables = section.findall(document.q("table"))
+        if not tables:
+            text = " ".join(document.render(para) for para in section.findall(document.q("para")))
+            scheme = SCHEME_SENTENCE.search(text)
+            record["scheme"] = scheme.group(1) if scheme else SCHEME_CONTEXT_GROUPS.get(number)
+            if record["scheme"] is None:
+                raise GenerationError(f"CID {number} has neither codes nor a Coding Scheme")
+            return
+        if found.get("Type", "").lower() not in ("extensible", "non-extensible"):
+            raise GenerationError(f"CID {number}: unrecognized Type {found.get('Type')!r}")
+        for table in tables:
+            columns = header_index(document, table)
+            legacy = columns.get("SNOMED-RT ID")
+            for row in table.find(document.q("tbody")).iter(document.q("tr")):
+                row_cells = cells(document, row)
+                text = [document.render(cell) for cell in row_cells]
+                if text[0].startswith("Include"):
+                    references = value_set_references(document, row_cells[0])
+                    if not references:
+                        raise GenerationError(f"CID {number}: unrecognized row {text[0]!r}")
+                    for _, kind, included in references:
+                        if kind != "CID":
+                            raise GenerationError(f"CID {number} includes {kind} {included}")
+                        record["includes"].append(included)
+                        self.parse_group(included)
+                    continue
+                record["codes"].append((
+                    text[columns["Coding Scheme Designator"]],
+                    text[columns["Code Value"]],
+                    text[columns["Code Meaning"]],
+                    text[legacy] if legacy is not None and legacy < len(text) else "",
+                ))
+
+    def parse_template(self, number, strict=True):
+        """A Template and those it includes. Outside `strict`, for the SR
+        Templates no IOD row binds, a Condition, Concept Name or Value Set
+        Constraint cell written other than in the forms the IOD checks
+        evaluate is kept as its text."""
+        if number in self.templates:
+            return
+        document = self.document
+        section = document.element(f"sect_TID_{number}")
+        found = properties(document, section)
+        record = {
+            "id": number,
+            "name": document.render(section.find(document.q("title"))),
+            "extensible": found.get("Type") == "Extensible",
+            "ordered": found.get("Order") == "Significant",
+            "rows": [],
+        }
+        self.templates[number] = record
+        table = template_table(document, section, number)
+        columns = header_index(document, table)
+        for row in table.find(document.q("tbody")).iter(document.q("tr")):
+            row_cells = cells(document, row)
+            text = [document.render(cell) for cell in row_cells]
+            where = f"TID {number} Row {text[0]}"
+            value_type = text[columns["VT"]]
+            concept = self.template_concept(row_cells[columns["Concept Name"]], value_type, strict, where)
+            constraint_text = text[columns["Value Set Constraint"]]
+            constraint = None
+            constraint_references = value_set_references(document, row_cells[columns["Value Set Constraint"]])
+            if constraint_references and (strict or names_context_groups(constraint_text)):
+                constraint = value_set(constraint_references, "CID", where)
+                for group in constraint["ids"]:
+                    self.parse_group(group)
+            condition_text = text[columns["Condition"]]
+            condition = (
+                template_condition(condition_text, where) if strict else parsed_condition(condition_text, where)
+            )
+            record["rows"].append({
+                "row": text[0],
+                "level": text[columns["NL"]].count(">") if "NL" in columns else 0,
+                "relationship": text[columns["Rel with Parent"]] if "Rel with Parent" in columns else "",
+                "value_type": value_type,
+                "concept": concept,
+                "vm": parse_vm(text[columns["VM"]], where),
+                "requirement": text[columns["Req Type"]],
+                "condition": condition,
+                "condition_text": condition_text,
+                "constraint": constraint,
+                "constraint_text": constraint_text,
+            })
+
+    def template_concept(self, cell, value_type, strict, where):
+        """The Concept Name constraint of a row: the included Template of an
+        INCLUDE row, a Context Group, a code, or outside `strict` a Template
+        parameter ("$Measurement") or none."""
+        document = self.document
+        text = document.render(cell)
+        references = value_set_references(document, cell)
+        if value_type == "INCLUDE":
+            included = value_set(references, "TID", where)
+            for template in included["ids"]:
+                self.parse_template(template, strict)
+            return {"kind": "TID", "strength": included["strength"], "ids": included["ids"]}
+        if references:
+            concept = value_set(references, "CID", where)
+            for group in concept["ids"]:
+                self.parse_group(group)
+            return concept
+        if not text:
+            return None if strict else {"kind": "ANY"}
+        if not strict and TEMPLATE_PARAMETER.fullmatch(text):
+            return {"kind": "PARAMETER", "text": text}
+        return coded_entry(text, where)
+
+
+def split_value_types(text, value_types, where):
+    """"TEXT, CODE, CONTAINER (see below)": the Value Types of a Relationship
+    Content Constraints cell, each one the IOD permits; the note "(see
+    below)" refers to the section's sentences, which are statements."""
+    found = [entry.strip().removesuffix(SEE_BELOW) for entry in text.split(",")]
+    unknown = [entry for entry in found if entry not in value_types]
+    if unknown:
+        raise GenerationError(f"{where}: {unknown} are not Value Types of the IOD")
+    return found
+
+
+def template_table(document, section, number):
+    """The Template's table; one DocBook id differs from table_TID_<number>
+    (TID 1607), so the section's table labelled with the Template is taken."""
+    table = document.ids.get(f"table_TID_{number}")
+    if table is not None:
+        return table
+    found = [table for table in section.findall(document.q("table")) if table.get("label") == f"TID {number}"]
+    if len(found) != 1:
+        raise GenerationError(f"TID {number}: no table labelled with the Template")
+    return found[0]
+
+
+def names_context_groups(text):
+    """Whether a Value Set Constraint cell names Context Groups alone, beside
+    any default it states."""
+    return CONSTRAINT_SETS.fullmatch(CONSTRAINT_DEFAULT.sub("", text).strip()) is not None
+
+
+def parsed_condition(text, where):
+    """A Template condition in one of the forms `template_condition` reads,
+    or None for one kept as text."""
+    try:
+        return template_condition(text, where)
+    except GenerationError:
+        return None
+
+
+def template_condition(text, where):
+    if not text:
+        return None
+    for pattern, kind in TEMPLATE_CONDITION:
+        match = pattern.match(text)
+        if match:
+            condition = {"kind": kind, "iff": match.group(1).upper() == "IFF", "row": match.group(2)}
+            if kind == "value":
+                condition["code"] = (match.group(4), match.group(3))
+            return condition
+    raise GenerationError(f"{where}: unrecognized Template condition {text!r}")
 
 
 def dedupe(enumerations):
@@ -774,7 +2280,7 @@ def parse_vm(text, where):
 
 def parse_dictionary(part06):
     entries = {}
-    for table_id in ("table_6-1", "table_7-1"):
+    for table_id in ("table_6-1", "table_7-1", "table_8-1"):
         table = part06.element(table_id)
         for row in table.find(part06.q("tbody")).iter(part06.q("tr")):
             row_cells = cells(part06, row)
@@ -799,12 +2305,210 @@ def parse_dictionary(part06):
     return entries
 
 
+def parse_image_storage(part06):
+    """PS3.6 Table A-1 SOP Classes that store images, retired ones included."""
+    table = part06.element("table_A-1")
+    found = []
+    for row in table.find(part06.q("tbody")).iter(part06.q("tr")):
+        text = [part06.render(cell) for cell in cells(part06, row)]
+        if len(text) >= 4 and text[3] == "SOP Class" and "Image Storage" in text[1]:
+            found.append(text[0])
+    if not found:
+        raise GenerationError("table_A-1 lists no Image Storage SOP Class")
+    return sorted(found)
+
+
+def registry_uid(part06, name):
+    """The PS3.6 Table A-1 UID of the SOP Class named `name`."""
+    table = part06.element("table_A-1")
+    found = [
+        text[0]
+        for row in table.find(part06.q("tbody")).iter(part06.q("tr"))
+        for text in [[part06.render(cell) for cell in cells(part06, row)]]
+        if len(text) >= 4 and text[1] == name and text[3] == "SOP Class"
+    ]
+    if len(found) != 1:
+        raise GenerationError(f"table_A-1 names {len(found)} SOP Classes {name!r}")
+    return found[0]
+
+
+DICOM_ROOT_UID = re.compile(r"1\.2\.840\.10008(?:\.(?:0|[1-9][0-9]*))+\Z")
+REGISTRY_TABLES = ("table_A-1", "table_A-2", "table_A-3", "table_A-4")
+
+
+def parse_registered_uids(part06):
+    """PS3.6 Annex A UIDs (Tables A-1 to A-4: UID Values, Well-known Frames of
+    Reference, Context Group and Template UIDs), retired ones included."""
+    found = set()
+    for table_id in REGISTRY_TABLES:
+        table = part06.element(table_id)
+        for row in table.find(part06.q("tbody")).iter(part06.q("tr")):
+            text = [part06.render(cell) for cell in cells(part06, row)]
+            if not text or not DICOM_ROOT_UID.match(text[0]):
+                raise GenerationError(f"{table_id}: row does not begin with a DICOM UID: {text[:1]!r}")
+            found.add(text[0])
+    return sorted(found)
+
+
+def option_variant(meaning):
+    """'RetainSafePrivate' for the Code Meaning 'Retain Safe Private Option'."""
+    words = re.sub(r"[^A-Za-z0-9 ]", "", meaning.removesuffix(" Option")).split()
+    return "".join(word[:1].upper() + word[1:] for word in words)
+
+
+def concept_key(row):
+    """Table E.3.4-1 rows are distinct by code and Value Type."""
+    scheme, value, _ = row["code"]
+    return (scheme, value, row["value_type"])
+
+
+def yes_no(text, where):
+    if text not in ("Y", "N"):
+        raise GenerationError(f"{where}: expected Y or N, found {text!r}")
+    return text == "Y"
+
+
+class Confidentiality:
+    """PS3.15 Annex E: the Table E.1-1a action codes, the Basic Profile and the
+    Options with their CID 7050 De-identification Method codes, and Tables
+    E.1-1 and E.3.4-1."""
+
+    def __init__(self, part15, value_sets):
+        self.document = part15
+        value_sets.parse_group(DEIDENTIFICATION_METHODS)
+        codes = {
+            meaning: (scheme, value)
+            for scheme, value, meaning, _ in value_sets.groups[DEIDENTIFICATION_METHODS]["codes"]
+        }
+        self.actions = self.parse_actions()
+        section, title, meaning = BASIC_PROFILE
+        self.basic = {"meaning": meaning, "code": self.method(codes, meaning), "section": self.section(section, title)}
+        self.options = [
+            {
+                "variant": option_variant(meaning),
+                "meaning": meaning,
+                "code": self.method(codes, meaning),
+                "section": self.section(section, title),
+                "column": column,
+            }
+            for section, title, meaning, column in CONFIDENTIALITY_OPTIONS
+        ]
+        named = {BASIC_PROFILE[2]} | {option["meaning"] for option in self.options}
+        if set(codes) != named:
+            raise GenerationError(f"CID {DEIDENTIFICATION_METHODS} codes changed: {sorted(set(codes) ^ named)}")
+        self.attributes = self.parse_rows(CONFIDENTIALITY_TABLE, CONFIDENTIALITY_COLUMNS, self.attribute)
+        self.concepts = self.parse_rows(STRUCTURED_CONTENT_TABLE, STRUCTURED_CONTENT_COLUMNS, self.concept)
+        tags = [row["tag"] for row in self.attributes if row["tag"][0] == "tag"]
+        if len(tags) != len(set(tags)):
+            raise GenerationError(f"{CONFIDENTIALITY_TABLE}: a tag has more than one row")
+        keys = [concept_key(row) for row in self.concepts]
+        if len(keys) != len(set(keys)):
+            raise GenerationError(f"{STRUCTURED_CONTENT_TABLE}: a code and Value Type have more than one row")
+
+    def section(self, section_id, title):
+        section = self.document.element(section_id)
+        found = self.document.render(section.find(self.document.q("title")))
+        if found != title:
+            raise GenerationError(f"{section_id} is titled {found!r}, expected {title!r}")
+        return section.get("label")
+
+    @staticmethod
+    def method(codes, meaning):
+        if meaning not in codes:
+            raise GenerationError(f"CID {DEIDENTIFICATION_METHODS} has no code {meaning!r}")
+        return codes[meaning]
+
+    def parse_actions(self):
+        document = self.document
+        table = document.element(ACTION_CODE_TABLE)
+        actions = {}
+        for row in table.find(document.q("tbody")).iter(document.q("tr")):
+            text = [document.render(cell) for cell in cells(document, row)]
+            if len(text) != 2 or text[0] not in ACTION_VARIANTS:
+                raise GenerationError(f"{ACTION_CODE_TABLE}: unrecognized action code row {text!r}")
+            actions[text[0]] = text[1]
+        if set(actions) != set(ACTION_VARIANTS):
+            raise GenerationError(f"{ACTION_CODE_TABLE}: action codes changed to {sorted(actions)}")
+        return actions
+
+    def parse_rows(self, table_id, columns, parse):
+        """Each row of an Annex E table, its Option columns mapped to the
+        Options."""
+        document = self.document
+        table = document.element(table_id)
+        header = [document.render(cell) for cell in cells(document, table.find(document.q("thead")).find(document.q("tr")))]
+        by_column = {option["column"]: option["variant"] for option in self.options if option["column"]}
+        if tuple(header[:len(columns)]) != columns or any(column not in by_column for column in header[len(columns):]):
+            raise GenerationError(f"{table_id}: unrecognized columns {header!r}")
+        rows = []
+        for row in table.find(document.q("tbody")).iter(document.q("tr")):
+            text = [document.render(cell) for cell in cells(document, row)]
+            where = f"PS3.15 {table_id} {text[:1]!r}"
+            if len(text) != len(header):
+                raise GenerationError(f"{where}: expected {len(header)} cells")
+            record = parse(text[:len(columns)], where)
+            record["basic"] = self.action(text[len(columns) - 1], where)
+            record["options"] = [
+                (by_column[column], self.action(value, where))
+                for column, value in zip(header[len(columns):], text[len(columns):])
+                if value
+            ]
+            rows.append(record)
+        return rows
+
+    def action(self, text, where):
+        if text not in self.actions:
+            raise GenerationError(f"{where}: unrecognized action {text!r}")
+        return ACTION_VARIANTS[text]
+
+    @staticmethod
+    def attribute(text, where):
+        name, tag, retired, in_iod, _ = text
+        if tag == PRIVATE_ATTRIBUTES:
+            pattern = ("private",)
+        else:
+            match = CONFIDENTIALITY_TAG.match(tag)
+            if not match:
+                raise GenerationError(f"{where}: unrecognized tag {tag!r}")
+            digits = match.group("group") + match.group("element")
+            value = int(digits.replace("x", "0"), 16)
+            mask = int("".join("0" if digit == "x" else "F" for digit in digits), 16)
+            pattern = ("tag", value) if mask == 0xFFFFFFFF else ("repeating", value, mask)
+        return {
+            "name": name,
+            "tag": pattern,
+            "retired": yes_no(retired, where),
+            "in_standard": yes_no(in_iod, where),
+        }
+
+    @staticmethod
+    def concept(text, where):
+        meaning, value, scheme, value_type, retired, in_template, _ = text
+        version = ""
+        match = SCHEME_VERSION.match(scheme)
+        if match:
+            scheme, version = match.group("scheme"), match.group("version")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", scheme) or not value or not value_type.isupper():
+            raise GenerationError(f"{where}: unrecognized code {text[:4]!r}")
+        return {
+            "code": (scheme, value, meaning),
+            "version": version,
+            "value_type": value_type,
+            "retired": yes_no(retired, where),
+            "in_standard": yes_no(in_template, where),
+        }
+
+
 def rust_string(text):
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def rust_ident(table_id):
     return "T_" + re.sub(r"[^A-Za-z0-9]", "_", table_id.removeprefix("table_")).upper()
+
+
+def iod_ident(iod):
+    return "IOD_" + iod["ident"]
 
 
 def vm_ident(vm):
@@ -819,7 +2523,14 @@ def vr_ident(vrs):
 
 
 def tag_hex(tag):
+    """The tag as a u32 literal; the xx nibbles of a repeating group are zero."""
+    tag = tag.replace("x", "0")
     return f"0x{tag[:4]}_{tag[4:]}"
+
+
+def hex_value(value):
+    """A 32-bit value as a u32 literal grouped like a tag."""
+    return f"0x{value >> 16:04X}_{value & 0xFFFF:04X}"
 
 
 def optional_condition(name):
@@ -862,13 +2573,20 @@ class Emitter:
             if row["kind"] == "include":
                 if children:
                     raise GenerationError(f"include of {row['target']} has nested rows")
-                out.append(f"{pad}i(&{rust_ident(row['target'])}),")
+                if row.get("condition"):
+                    out.append(f"{pad}ic(&{rust_ident(row['target'])}, C::{row['condition']}),")
+                else:
+                    out.append(f"{pad}i(&{rust_ident(row['target'])}),")
+                index = end
+                continue
+            if row["kind"] == "selection":
+                out.append(f"{pad}k(&RECORD_SELECTION_KEYS),")
                 index = end
                 continue
             head = (
                 f"{pad}a({tag_hex(row['tag'])}, {rust_string(row['name'])}, "
                 f"T{row['type']}, {optional_condition(row['condition'])}, "
-                f"{self.enumerations(row)}, {row['items']}, "
+                f"{self.enumerations(row)}, {row['items']}, {self.value_set_value(row['value_set'])}, "
             )
             if not children:
                 out.append(head + "&[]),")
@@ -911,14 +2629,22 @@ class Emitter:
         model = self.model
         emit = self.emit
         self.header(digests)
+        emit("use super::file_set::DirectoryRecord;")
+        emit("use super::structured_report::{DocumentConstraints, RelationshipConstraint};")
         emit("use super::model::{")
-        emit("    Attribute, AttributeType, Enumeration, FunctionalGroupMacro, ItemCount, Module, Node,")
-        emit("    Placement, Table, Usage,")
+        emit("    Attribute, AttributeType, Code, Enumeration, ExclusiveModules, ForbiddenModule,")
+        emit("    FunctionalGroupMacro, Iod, ItemCount, Module, Node, Placement, Selection, SopClass, Strength,")
+        emit("    Table, Usage, ValueSet,")
         emit("};")
         emit("use ConditionId as C;")
         emit("use ItemCount::{AtLeast, AtMost, Exactly, NumberOfFrames, Unconstrained as ANY, ValueOf};")
         emit()
-        emit(f"pub(super) const EDITION: &str = {rust_string(EDITION)};")
+        emit("/// The pinned edition as a literal, for `concat!` in constant citations.")
+        emit("macro_rules! dicom_edition {")
+        emit(f"    () => {{ {rust_string(EDITION)} }};")
+        emit("}")
+        emit("pub(crate) use dicom_edition;")
+        emit("pub(super) const EDITION: &str = dicom_edition!();")
         emit("#[cfg(test)]")
         emit("pub(super) const SOURCE_SHA256: &[(&str, &str)] = &[")
         for name, digest in digests.items():
@@ -952,78 +2678,524 @@ class Emitter:
         emit("    }")
         emit("}")
         emit()
-        emit("const T1: AttributeType = AttributeType::One;")
-        emit("const T1C: AttributeType = AttributeType::OneC;")
-        emit("const T2: AttributeType = AttributeType::Two;")
-        emit("const T2C: AttributeType = AttributeType::TwoC;")
-        emit("const T3: AttributeType = AttributeType::Three;")
+        self.lines.extend(TABLE_CONSTRUCTORS.splitlines())
         emit()
-        emit("const fn t(")
-        emit("    part: &'static str,")
-        emit("    label: &'static str,")
-        emit("    section: &'static str,")
-        emit("    nodes: &'static [Node],")
-        emit(") -> Table {")
-        emit("    Table { part, label, section, nodes }")
-        emit("}")
-        emit()
-        emit("const fn i(table: &'static Table) -> Node {")
-        emit("    Node::Include(table)")
-        emit("}")
-        emit()
-        emit("const fn a(")
-        emit("    tag: u32,")
-        emit("    name: &'static str,")
-        emit("    kind: AttributeType,")
-        emit("    condition: Option<ConditionId>,")
-        emit("    enumerations: &'static [Enumeration],")
-        emit("    items: ItemCount,")
-        emit("    children: &'static [Node],")
-        emit(") -> Node {")
-        emit("    Node::Attribute(Attribute { tag, name, kind, condition, enumerations, items, children })")
-        emit("}")
-        emit()
-        emit("const fn e(")
-        emit("    value: Option<u8>,")
-        emit("    condition: Option<ConditionId>,")
-        emit("    values: &'static [&'static str],")
-        emit(") -> Enumeration {")
-        emit("    Enumeration { value, condition, values }")
-        emit("}")
-        emit()
-        emit("pub(super) static MODULES: &[Module] = &[")
-        for module in model.modules:
-            signature = ", ".join(tag_hex(tag) for tag in module["signature"])
-            emit("    Module {")
-            emit(f"        name: {rust_string(module['name'])},")
-            emit(f"        section: {rust_string(module['section'])},")
-            emit(f"        table: &{rust_ident(module['table'])},")
-            emit(f"        usage: {module['usage']},")
-            emit(f"        condition: {optional_condition(module['condition'])},")
-            emit(f"        signature: &[{signature}],")
-            emit("    },")
+        emit("/// The pathology-slide IODs (PS3.3 Annex A), with the Storage SOP Classes of each")
+        emit("/// (PS3.4 Table B.5-1).")
+        emit("pub(super) static IODS: &[Iod] = &[")
+        for iod in model.iods:
+            self.iod(iod, "    Iod {", "    },")
         emit("];")
         emit()
-        emit("pub(super) static FUNCTIONAL_GROUPS: &[FunctionalGroupMacro] = &[")
-        for group in model.functional_groups:
-            emit("    FunctionalGroupMacro {")
-            emit(f"        name: {rust_string(group['name'])},")
-            emit(f"        section: {rust_string(group['section'])},")
-            emit(f"        table: &{rust_ident(group['table'])},")
-            emit(f"        usage: {group['usage']},")
-            emit(f"        placement: {group['placement']},")
-            emit(f"        condition: {optional_condition(group['condition'])},")
-            emit(f"        sequences: &[{', '.join(tag_hex(tag) for tag in group['sequences'])}],")
-            emit("    },")
+        self.documents(model)
+        self.directory(model.directory)
+        emit("/// PS3.4 Table B.5-1 Standard Storage SOP Classes, sorted by UID.")
+        emit("pub(super) static STORAGE_SOP_CLASSES: &[SopClass] = &[")
+        for uid, name in model.storage_sop_classes:
+            emit(f"    SopClass {{ uid: {rust_string(uid)}, name: {rust_string(name)} }},")
         emit("];")
         emit()
         emit("/// PS3.10 File Meta Information.")
         emit(f"pub(super) static FILE_META: &Table = &{rust_ident(model.file_meta['id'])};")
         emit()
-        for table_id in model.order:
-            self.table(model.tables[table_id])
+        for record in emitted_tables(model):
+            self.table(record)
         self.table(model.file_meta)
         return "\n".join(self.lines) + "\n"
+
+    def documents(self, model):
+        emit = self.emit
+        emit("/// PS3.3 A.35 Content Constraints of the Structured Reporting IODs.")
+        emit("pub(super) static DOCUMENT_CONSTRAINTS: &[DocumentConstraints] = &[")
+        for iod in model.iods:
+            document = iod["document"]
+            if document is None:
+                continue
+            values = lambda entries: ", ".join(rust_string(entry) for entry in entries)
+            emit("    DocumentConstraints {")
+            emit(f"        iod: {rust_string(iod['label'])},")
+            emit(f"        value_types: &[{values(document['value_types'])}],")
+            emit(f"        table: {rust_string(document['table'])},")
+            emit("        relationships: &[")
+            for row in document["relationships"]:
+                emit(
+                    f"            RelationshipConstraint {{ sources: &[{values(row['sources'])}], "
+                    f"relationship: {rust_string(row['relationship'])}, targets: &[{values(row['targets'])}] }},"
+                )
+            emit("        ],")
+            root = document["root"]
+            emit(f"        root_template: {f'Some({root})' if root else 'None'},")
+            emit("    },")
+        emit("];")
+        emit()
+
+    def directory(self, directory):
+        emit = self.emit
+        emit("/// PS3.3 F.3 Basic Directory IOD, the IOD of the DICOMDIR File (PS3.10 8.6).")
+        self.iod(directory, "pub(super) static BASIC_DIRECTORY: Iod = Iod {", "};", "")
+        emit()
+        emit("/// PS3.3 Table F.4-1: the Directory Record Types the Root Directory Entity may include.")
+        emit("pub(super) static ROOT_DIRECTORY_RECORDS: &[&str] = &[")
+        for record_type in directory["root_records"]:
+            emit(f"    {rust_string(record_type)},")
+        emit("];")
+        emit()
+        emit("/// PS3.3 Table F.4-1 Directory Record Types, in its order, each with the section")
+        emit("/// defining it and its Record Selection Keys.")
+        emit("pub(super) static DIRECTORY_RECORDS: &[DirectoryRecord] = &[")
+        for record in directory["records"]:
+            keys = f"Some(&{rust_ident(record['keys'])})" if record["keys"] else "None"
+            lower = ", ".join(rust_string(entry) for entry in record["lower"])
+            emit("    DirectoryRecord {")
+            emit(f"        record_type: {rust_string(record['type'])},")
+            emit(f"        section: {rust_string(record['section'])},")
+            emit(f"        keys: {keys},")
+            emit(f"        lower_level: &[{lower}],")
+            emit(f"        any_private_lower_level: {str(record['any_private']).lower()},")
+            emit("    },")
+        emit("];")
+        emit()
+        emit("/// PS3.3 Table F.3-3 \"Include Record Selection Keys\": the key table of each")
+        emit("/// Directory Record Type (F.5).")
+        emit("pub(super) static RECORD_SELECTION_KEYS: Selection = Selection {")
+        emit(f"    key: {tag_hex(DIRECTORY_RECORD_TYPE)},")
+        emit("    tables: &[")
+        for record in directory["records"]:
+            if record["keys"]:
+                emit(f"        ({rust_string(record['type'])}, &{rust_ident(record['keys'])}),")
+        emit("    ],")
+        emit("};")
+        emit()
+
+    def iod(self, iod, opening, closing, pad="    "):
+        emit = lambda line: self.emit(pad + line[4:] if line.startswith("    ") else line)
+        self.emit(opening)
+        emit(f"        section: {rust_string(iod['label'])},")
+        emit(f"        name: {rust_string(iod['name'])},")
+        emit(f"        module_table: {rust_string(self.model.part03.element(iod['module_table']).get('label'))},")
+        group_table = iod["group_table"]
+        group_label = rust_string(self.model.part03.element(group_table).get("label")) if group_table else None
+        emit(f"        functional_group_table: {f'Some({group_label})' if group_label else 'None'},")
+        emit("        sop_classes: &[")
+        for uid, name, _ in iod["sop_classes"]:
+            emit(f"            SopClass {{ uid: {rust_string(uid)}, name: {rust_string(name)} }},")
+        emit("        ],")
+        emit("        modules: &[")
+        for module in iod["modules"]:
+            signature = ", ".join(tag_hex(tag) for tag in module["signature"])
+            emit("            Module {")
+            emit(f"                name: {rust_string(module['name'])},")
+            emit(f"                section: {rust_string(module['section'])},")
+            emit(f"                table: &{rust_ident(module['table'])},")
+            emit(f"                usage: {module['usage']},")
+            emit(f"                condition: {optional_condition(module['condition'])},")
+            emit(f"                signature: &[{signature}],")
+            emit("            },")
+        emit("        ],")
+        emit("        functional_groups: &[")
+        for group in iod["functional_groups"]:
+            emit("            FunctionalGroupMacro {")
+            emit(f"                name: {rust_string(group['name'])},")
+            emit(f"                section: {rust_string(group['section'])},")
+            emit(f"                table: &{rust_ident(group['table'])},")
+            emit(f"                usage: {group['usage']},")
+            emit(f"                placement: {group['placement']},")
+            emit(f"                condition: {optional_condition(group['condition'])},")
+            emit(f"                sequences: &[{', '.join(tag_hex(tag) for tag in group['sequences'])}],")
+            emit("            },")
+        emit("        ],")
+        emit("        forbidden_modules: &[")
+        for module in iod["forbidden"]:
+            emit(
+                f"            ForbiddenModule {{ name: {rust_string(module['name'])}, section: {rust_string(module['section'])},"
+                f" constraint: {rust_string(module['constraint'])}, signature: &[{', '.join(tag_hex(tag) for tag in module['signature'])}] }},"
+            )
+        emit("        ],")
+        emit("        exclusive_modules: &[")
+        for names, constraint in iod["exclusive"]:
+            emit(
+                f"            ExclusiveModules {{ constraint: {rust_string(constraint)},"
+                f" modules: &[{', '.join(rust_string(name) for name in names)}] }},"
+            )
+        emit("        ],")
+        self.emit(closing)
+
+    def requirements(self, requirements, digests):
+        emit = self.emit
+        self.header(digests)
+        emit("use super::model::Statement;")
+        emit("use crate::validation::RequirementStrength;")
+        emit("use Requirement as R;")
+        emit()
+        emit("/// A normative statement (\"shall\").")
+        emit("const fn s(")
+        emit("    part: &'static str,")
+        emit("    section: &'static str,")
+        emit("    keyword: Option<&'static str>,")
+        emit("    text: &'static str,")
+        emit("    iods: &'static [&'static str],")
+        emit(") -> Statement {")
+        emit("    Statement { part, section, keyword, text, iods, strength: RequirementStrength::Shall }")
+        emit("}")
+        emit()
+        emit("/// A recommendation (\"should\").")
+        emit("const fn r(")
+        emit("    part: &'static str,")
+        emit("    section: &'static str,")
+        emit("    keyword: Option<&'static str>,")
+        emit("    text: &'static str,")
+        emit("    iods: &'static [&'static str],")
+        emit(") -> Statement {")
+        emit("    Statement { part, section, keyword, text, iods, strength: RequirementStrength::Should }")
+        emit("}")
+        emit()
+        labels = self.scopes()
+        masks = sorted({self.iod_mask(record["iods"]) for record in requirements.statements})
+        emit("// The scopes a statement applies to, named by a bit mask over the IODS, then")
+        emit(f"// \"{FILE_SET}\" and \"{DICOMWEB}\".")
+        for mask in masks:
+            members = ", ".join(rust_string(label) for index, label in enumerate(labels) if mask & (1 << index))
+            emit(f"const I{mask:02X}: &[&str] = &[{members}];")
+        emit()
+        classified = [record for record in requirements.statements if not record["enforced"]]
+        emit("/// One Variant per normative statement the generated tables do not enforce.")
+        emit("/// `dispositions.rs` classifies each, so a changed or new statement in another")
+        emit("/// edition fails to compile until it is classified.")
+        emit("#[allow(non_camel_case_types)]")
+        emit("#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]")
+        emit("pub(super) enum Requirement {")
+        for record in classified:
+            emit(f"    /// {record['part']} {record['section']}: {record['text']}")
+            emit(f"    {record['name']},")
+        emit("}")
+        emit()
+        emit("impl Requirement {")
+        emit("    pub(super) const ALL: &'static [Requirement] = &[")
+        for record in classified:
+            emit(f"        R::{record['name']},")
+        emit("    ];")
+        emit()
+        emit("    pub(super) const fn statement(self) -> Statement {")
+        emit("        match self {")
+        for record in classified:
+            emit(f"            R::{record['name']} => {self.statement(record)},")
+        emit("        }")
+        emit("    }")
+        emit()
+        emit("    /// The stable identifier `wsi-dicom requirements --json` reports.")
+        emit("    pub(super) const fn id(self) -> &'static str {")
+        emit("        match self {")
+        for record in classified:
+            emit(f"            R::{record['name']} => \"{record['name']}\",")
+        emit("        }")
+        emit("    }")
+        emit("}")
+        emit()
+        emit("/// Normative statements in description cells that the generated tables enforce.")
+        emit("pub(super) static TABLE_ENFORCED: &[Statement] = &[")
+        for record in requirements.statements:
+            if record["enforced"]:
+                emit(f"    {self.statement(record)},")
+        emit("];")
+        return "\n".join(self.lines) + "\n"
+
+    def value_sets(self, value_sets, digests):
+        emit = self.emit
+        self.header(digests)
+        emit("use super::model::{")
+        emit("    Code, Concept, ContextGroup, RowRequirement as Q, Strength, Template, TemplateCondition,")
+        emit("    TemplateRow, ValueSet,")
+        emit("};")
+        emit()
+        emit("const fn c(scheme: &'static str, value: &'static str, meaning: &'static str, legacy: &'static str) -> Code {")
+        emit("    Code { scheme, value, meaning, legacy }")
+        emit("}")
+        emit()
+        emit("/// PS3.16 Context Groups the IOD's Value Sets reach, sorted by Context ID; each")
+        emit("/// lists its own and its included groups' codes sorted by Coding Scheme and Value,")
+        emit("/// and the Coding Schemes it or an included group comprises whole.")
+        emit("pub(super) static CONTEXT_GROUPS: &[ContextGroup] = &[")
+        for number in sorted(value_sets.groups):
+            group = value_sets.groups[number]
+            codes, schemes = {}, set()
+            for included in self.included_groups(value_sets, number):
+                if value_sets.groups[included]["scheme"]:
+                    schemes.add(value_sets.groups[included]["scheme"])
+                for scheme, value, meaning, legacy in value_sets.groups[included]["codes"]:
+                    codes.setdefault((scheme, value), (meaning, legacy))
+            scheme_list = ", ".join(rust_string(scheme) for scheme in sorted(schemes))
+            emit(
+                f"    ContextGroup {{ id: {number}, name: {rust_string(group['name'])}, "
+                f"extensible: {str(group['extensible']).lower()}, schemes: &[{scheme_list}], codes: &["
+            )
+            for (scheme, value), (meaning, legacy) in sorted(codes.items()):
+                emit(f"        c({rust_string(scheme)}, {rust_string(value)}, {rust_string(meaning)}, {rust_string(legacy)}),")
+            emit("    ] },")
+        emit("];")
+        emit()
+        emit("/// PS3.16 Templates the IOD's Value Sets reach, sorted by Template ID.")
+        emit("pub(super) static TEMPLATES: &[Template] = &[")
+        for number in sorted(value_sets.templates):
+            template = value_sets.templates[number]
+            emit(
+                f"    Template {{ id: {number}, name: {rust_string(template['name'])}, "
+                f"extensible: {str(template['extensible']).lower()}, "
+                f"ordered: {str(template['ordered']).lower()}, rows: &["
+            )
+            for row in template["rows"]:
+                low, high, step = row["vm"]
+                if step != 1:
+                    raise GenerationError(f"TID {number} Row {row['row']}: stepped VM")
+                emit(
+                    f"        TemplateRow {{ row: {rust_string(row['row'])}, level: {row['level']}, "
+                    f"relationship: {rust_string(row['relationship'])}, "
+                    f"value_type: {rust_string(row['value_type'])}, concept: {self.concept(row['concept'])}, "
+                    f"min: {low}, max: {'None' if high is None else f'Some({high})'}, "
+                    f"requirement: Q::{row['requirement'].title()}, "
+                    f"condition: {self.template_condition(row['condition'])}, "
+                    f"condition_text: {rust_string(row['condition_text'])}, "
+                    f"constraint: {self.value_set_value(row['constraint'])}, "
+                    f"constraint_text: {rust_string(row['constraint_text'])} }},"
+                )
+            emit("    ] },")
+        emit("];")
+        return "\n".join(self.lines) + "\n"
+
+    def confidentiality(self, confidentiality, digests):
+        emit = self.emit
+        self.header(digests)
+        emit("use super::deidentification::{ConfidentialityAttribute, StructuredContentConcept, TagPattern};")
+        emit("use super::model::Code;")
+        emit("use ConfidentialityOption as O;")
+        emit("use DeidentificationAction as A;")
+        emit()
+        emit("/// PS3.15 Table E.1-1a De-identification Action Codes.")
+        emit("// Each Variant is the action code Tables E.1-1 and E.3.4-1 name, its \"/\" and")
+        emit("// \"*\" left out (X/Z/D is XZD).")
+        emit("#[allow(clippy::upper_case_acronyms)]")
+        emit("#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]")
+        emit("pub(in crate::validation) enum DeidentificationAction {")
+        for code, meaning in confidentiality.actions.items():
+            emit(f"    /// {code}: {meaning}")
+            emit(f"    {ACTION_VARIANTS[code]},")
+        emit("}")
+        emit()
+        emit("impl DeidentificationAction {")
+        emit("    pub(in crate::validation) const ALL: &'static [DeidentificationAction] = &[")
+        for code in confidentiality.actions:
+            emit(f"        A::{ACTION_VARIANTS[code]},")
+        emit("    ];")
+        emit()
+        emit("    /// The action code as Table E.1-1a writes it, e.g. \"X/Z/U*\".")
+        emit("    pub(in crate::validation) const fn code(self) -> &'static str {")
+        emit("        match self {")
+        for code in confidentiality.actions:
+            emit(f"            A::{ACTION_VARIANTS[code]} => {rust_string(code)},")
+        emit("        }")
+        emit("    }")
+        emit()
+        emit("    /// What Table E.1-1a says the action does.")
+        emit("    pub(in crate::validation) const fn meaning(self) -> &'static str {")
+        emit("        match self {")
+        for code, meaning in confidentiality.actions.items():
+            emit(f"            A::{ACTION_VARIANTS[code]} => {rust_string(meaning)},")
+        emit("        }")
+        emit("    }")
+        emit("}")
+        emit()
+        emit("/// The PS3.15 E.3 Basic Application Level Confidentiality Options.")
+        emit("#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]")
+        emit("pub(in crate::validation) enum ConfidentialityOption {")
+        for option in confidentiality.options:
+            emit(f"    /// PS3.15 {option['section']}: {option['meaning']}")
+            emit(f"    {option['variant']},")
+        emit("}")
+        emit()
+        emit("impl ConfidentialityOption {")
+        emit("    pub(in crate::validation) const ALL: &'static [ConfidentialityOption] = &[")
+        for option in confidentiality.options:
+            emit(f"        O::{option['variant']},")
+        emit("    ];")
+        emit()
+        emit("    /// Its CID 7050 De-identification Method code.")
+        emit("    pub(in crate::validation) const fn code(self) -> Code {")
+        emit("        match self {")
+        for option in confidentiality.options:
+            emit(f"            O::{option['variant']} => {self.code_value(option['code'], option['meaning'])},")
+        emit("        }")
+        emit("    }")
+        emit()
+        emit("    /// The PS3.15 section that specifies it.")
+        emit("    pub(in crate::validation) const fn section(self) -> &'static str {")
+        emit("        match self {")
+        for option in confidentiality.options:
+            emit(f"            O::{option['variant']} => {rust_string(option['section'])},")
+        emit("        }")
+        emit("    }")
+        emit("}")
+        emit()
+        basic = confidentiality.basic
+        emit(f"/// The CID 7050 code of the PS3.15 {basic['section']} Basic Application Level Confidentiality Profile.")
+        emit(f"pub(in crate::validation) const BASIC_PROFILE: Code = {self.code_value(basic['code'], basic['meaning'])};")
+        emit(f"pub(in crate::validation) const BASIC_PROFILE_SECTION: &str = {rust_string(basic['section'])};")
+        emit()
+        emit("const fn r(")
+        emit("    name: &'static str,")
+        emit("    tag: TagPattern,")
+        emit("    retired: bool,")
+        emit("    in_standard_iod: bool,")
+        emit("    basic: A,")
+        emit("    options: &'static [(O, A)],")
+        emit(") -> ConfidentialityAttribute {")
+        emit("    ConfidentialityAttribute { name, tag, retired, in_standard_iod, basic, options }")
+        emit("}")
+        emit()
+        emit("#[allow(clippy::too_many_arguments)]")
+        emit("const fn s(")
+        emit("    scheme: &'static str,")
+        emit("    value: &'static str,")
+        emit("    meaning: &'static str,")
+        emit("    scheme_version: &'static str,")
+        emit("    value_type: &'static str,")
+        emit("    retired: bool,")
+        emit("    in_standard_template: bool,")
+        emit("    basic: A,")
+        emit("    options: &'static [(O, A)],")
+        emit(") -> StructuredContentConcept {")
+        emit("    StructuredContentConcept {")
+        emit("        code: Code { scheme, value, meaning, legacy: \"\" },")
+        emit("        scheme_version,")
+        emit("        value_type,")
+        emit("        retired,")
+        emit("        in_standard_template,")
+        emit("        basic,")
+        emit("        options,")
+        emit("    }")
+        emit("}")
+        emit()
+        exact = sorted((row for row in confidentiality.attributes if row["tag"][0] == "tag"), key=lambda row: row["tag"][1])
+        patterns = sorted(
+            (row for row in confidentiality.attributes if row["tag"][0] != "tag"),
+            key=lambda row: (row["tag"][0] == "private", row["tag"][1:]),
+        )
+        emit(f"/// PS3.15 Table E.1-1 rows that name one tag, sorted by tag.")
+        emit("pub(super) static CONFIDENTIALITY_ATTRIBUTES: &[ConfidentialityAttribute] = &[")
+        for row in exact:
+            emit(f"    {self.confidentiality_row(row)},")
+        emit("];")
+        emit()
+        emit("/// PS3.15 Table E.1-1 rows that name a repeating group or every Private Attribute.")
+        emit("pub(super) static CONFIDENTIALITY_PATTERNS: &[ConfidentialityAttribute] = &[")
+        for row in patterns:
+            emit(f"    {self.confidentiality_row(row)},")
+        emit("];")
+        emit()
+        emit("/// PS3.15 Table E.3.4-1, sorted by Coding Scheme Designator, Code Value and Value Type.")
+        emit("pub(super) static STRUCTURED_CONTENT_CONCEPTS: &[StructuredContentConcept] = &[")
+        for row in sorted(confidentiality.concepts, key=concept_key):
+            scheme, value, meaning = row["code"]
+            emit(
+                f"    s({rust_string(scheme)}, {rust_string(value)}, {rust_string(meaning)}, "
+                f"{rust_string(row['version'])}, {rust_string(row['value_type'])}, "
+                f"{str(row['retired']).lower()}, {str(row['in_standard']).lower()}, "
+                f"A::{row['basic']}, {self.option_actions(row['options'])}),"
+            )
+        emit("];")
+        return "\n".join(self.lines) + "\n"
+
+    @staticmethod
+    def code_value(code, meaning):
+        scheme, value = code
+        return (
+            f"Code {{ scheme: {rust_string(scheme)}, value: {rust_string(value)}, "
+            f"meaning: {rust_string(meaning)}, legacy: \"\" }}"
+        )
+
+    @staticmethod
+    def option_actions(options):
+        return "&[" + ", ".join(f"(O::{option}, A::{action})" for option, action in options) + "]"
+
+    def confidentiality_row(self, row):
+        kind, *rest = row["tag"]
+        if kind == "tag":
+            tag = f"TagPattern::Tag({hex_value(rest[0])})"
+        elif kind == "repeating":
+            tag = f"TagPattern::Repeating {{ tag: {hex_value(rest[0])}, mask: {hex_value(rest[1])} }}"
+        else:
+            tag = "TagPattern::Private"
+        return (
+            f"r({rust_string(row['name'])}, {tag}, {str(row['retired']).lower()}, "
+            f"{str(row['in_standard']).lower()}, A::{row['basic']}, {self.option_actions(row['options'])})"
+        )
+
+    @staticmethod
+    def included_groups(value_sets, number):
+        found, pending = [], [number]
+        while pending:
+            current = pending.pop()
+            if current not in found:
+                found.append(current)
+                pending += value_sets.groups[current]["includes"]
+        return found
+
+    @staticmethod
+    def value_set_value(bound):
+        if bound is None:
+            return "None"
+        if bound["kind"] == "CODE":
+            scheme, value, meaning = bound["code"]
+            return (
+                f"Some(ValueSet::Code(Code {{ scheme: {rust_string(scheme)}, value: {rust_string(value)},"
+                f" meaning: {rust_string(meaning)}, legacy: \"\" }}, {rust_string(bound['section'])}))"
+            )
+        strength = "Strength::Baseline" if bound["strength"] == "B" else "Strength::Defined"
+        if bound["kind"] == "TID":
+            (template,) = bound["ids"]
+            return f"Some(ValueSet::Template({strength}, {template}))"
+        return f"Some(ValueSet::ContextGroups({strength}, &[{', '.join(map(str, bound['ids']))}]))"
+
+    def concept(self, concept):
+        if concept is None:
+            raise GenerationError("a Template row without a Concept Name constraint")
+        if concept["kind"] in ("CID", "TID"):
+            return f"Concept::Set({self.value_set_value(concept).removeprefix('Some(').removesuffix(')')})"
+        if concept["kind"] == "ANY":
+            return "Concept::Any"
+        if concept["kind"] == "PARAMETER":
+            return f"Concept::Parameter({rust_string(concept['text'])})"
+        scheme, value, meaning = concept["code"]
+        kind = "Enumerated" if concept["kind"] == "EV" else "Defined"
+        return f"Concept::{kind}(c({rust_string(scheme)}, {rust_string(value)}, {rust_string(meaning)}, \"\"))"
+
+    @staticmethod
+    def template_condition(condition):
+        if condition is None:
+            return "None"
+        iff = str(condition["iff"]).lower()
+        if condition["kind"] == "absent":
+            return f"Some(TemplateCondition::Absent {{ iff: {iff}, row: {rust_string(condition['row'])} }})"
+        if condition["kind"] == "present":
+            return f"Some(TemplateCondition::Present {{ iff: {iff}, row: {rust_string(condition['row'])} }})"
+        scheme, value = condition["code"]
+        return (
+            f"Some(TemplateCondition::HasCode {{ iff: {iff}, row: {rust_string(condition['row'])}, "
+            f"scheme: {rust_string(scheme)}, value: {rust_string(value)} }})"
+        )
+
+    def scopes(self):
+        return [iod["label"] for iod in self.model.iods] + [FILE_SET, DICOMWEB]
+
+    def iod_mask(self, iods):
+        labels = self.scopes()
+        return sum(1 << labels.index(label) for label in iods)
+
+    def statement(self, record):
+        keyword = f"Some({rust_string(record['keyword'])})" if record["keyword"] else "None"
+        constructor = "s" if record["strength"] == "shall" else "r"
+        return (
+            f"{constructor}({rust_string(record['part'])}, {rust_string(record['section'])}, {keyword}, "
+            f"{rust_string(record['text'])}, I{self.iod_mask(record['iods']):02X})"
+        )
 
     def dictionary(self, digests):
         self.header(digests)
@@ -1056,7 +3228,7 @@ class Emitter:
         self.emit("    DictionaryEntry { tag, mask: u32::MAX, vr, vm, retired: true }")
         self.emit("}")
         self.emit()
-        self.emit("/// PS3.6 Tables 6-1 and 7-1 without repeating groups, sorted by tag; r() is retired.")
+        self.emit("/// PS3.6 Tables 6-1, 7-1 and 8-1 without repeating groups, sorted by tag; r() is retired.")
         self.emit("pub(super) static DICTIONARY: &[DictionaryEntry] = &[")
         repeating = []
         for entry in entries:
@@ -1067,6 +3239,18 @@ class Emitter:
                 continue
             constructor = "r" if entry["retired"] else "d"
             self.emit(f"    {constructor}(0x{tag}, {vr_ident(entry['vrs'])}, {vm}),")
+        self.emit("];")
+        self.emit()
+        self.emit("/// PS3.6 Table A-1 Image Storage SOP Class UIDs, sorted.")
+        self.emit("pub(super) static IMAGE_STORAGE_SOP_CLASSES: &[&str] = &[")
+        for uid in self.model.image_storage:
+            self.emit(f"    {rust_string(uid)},")
+        self.emit("];")
+        self.emit()
+        self.emit("/// PS3.6 Annex A registered UIDs (Tables A-1 to A-4), sorted.")
+        self.emit("pub(super) static REGISTERED_UIDS: &[&str] = &[")
+        for uid in self.model.registered_uids:
+            self.emit(f"    {rust_string(uid)},")
         self.emit("];")
         self.emit()
         self.emit("/// PS3.6 repeating-group entries; x nibbles are zero in tag and mask.")
@@ -1085,15 +3269,30 @@ class Emitter:
 
 
 def generate(source_dir, fetch):
-    paths = verified_sources(source_dir, fetch)
-    part03 = Document(paths["part03.xml"])
-    part06 = Document(paths["part06.xml"])
-    part10 = Document(paths["part10.xml"])
-    model = Model(part03, part06, part10)
+    sources = verified_sources(source_dir, fetch)
+    part04 = Document(sources["part04.xml"])
+    part10 = Document(sources["part10.xml"])
+    part15 = Document(sources["part15.xml"])
+    model = Model(Document(sources["part03.xml"]), part04, Document(sources["part06.xml"]), part10)
+    requirements = Requirements(
+        model,
+        {
+            "PS3.4": part04,
+            "PS3.5": Document(sources["part05.xml"]),
+            "PS3.10": part10,
+            "PS3.15": part15,
+            "PS3.18": Document(sources["part18.xml"]),
+        },
+    )
     digests = {name: SOURCES[name] for name in sorted(SOURCES)}
+    value_sets = ValueSets(model, Document(sources["part16.xml"]))
+    confidentiality = Confidentiality(part15, value_sets)
     return {
         "tables.rs": Emitter(model).render(digests),
         "dictionary.rs": Emitter(model).dictionary(digests),
+        "requirements.rs": Emitter(model).requirements(requirements, digests),
+        "value_sets.rs": Emitter(model).value_sets(value_sets, digests),
+        "confidentiality.rs": Emitter(model).confidentiality(confidentiality, digests),
     }
 
 

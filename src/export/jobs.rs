@@ -8,9 +8,8 @@ use super::frame_region::{FrameRectGrid, FrameRectOverflowReasons, OutputFrameRe
 use super::jpeg_baseline::jpeg_baseline_route_frame_geometry;
 use super::jpeg_baseline_instance::export_jpeg_passthrough_instance;
 use super::jpeg_lossless_instance::prepare_jpeg_lossless_instance;
-use super::lossless_j2k_instance::{
-    export_instance, prepare_lossless_j2k_instance, PendingLosslessInstance,
-};
+use super::lossless_j2k_instance::{export_instance, prepare_lossless_j2k_instance};
+use super::pending_instance::PendingLosslessInstance;
 use super::tile_grid::{checked_frame_count_u32, TileGrid};
 use super::{level_pixel_spacing_mm, require_pixel_spacing_mm, InstanceExportContext};
 use crate::coordinate::InstanceCoordinate;
@@ -193,16 +192,16 @@ pub(super) fn preflight_metadata_budgets(
             row_spacing_mm,
             column_spacing_mm,
         )?;
-        // TILED_SPARSE is an optional encoding; Required pads absent frames.
-        let sparse = match options.semantics.conformance {
+        // TILED_SPARSE and explicit frame positions are optional encodings;
+        // Required pads absent frames and leaves positions implicit.
+        let plan = match options.semantics.conformance {
             ConformanceLevel::Optional => {
-                sparse_frame_indices(slide, job, frame_count, frame_grid)?
+                match sparse_frame_indices(slide, job, frame_count, frame_grid)? {
+                    Some(indices) => plan.with_frame_indices(indices)?,
+                    None => plan,
+                }
             }
-            ConformanceLevel::Required => None,
-        };
-        let plan = match sparse {
-            Some(indices) => plan.with_frame_indices(indices)?,
-            None => plan,
+            ConformanceLevel::Required => plan.without_items(),
         };
         let frame_count = plan.frame_count();
         let offset_table_bytes = extended_offset_table_metadata_bytes(frame_count)?;
@@ -278,8 +277,9 @@ pub(super) fn preflight_metadata_budgets(
 }
 
 /// Grid indices of the frames that cover a present source tile, or `None`
-/// when every frame does. An instance whose tiles are all absent also stays
-/// TILED_FULL, because a TILED_SPARSE instance needs at least one frame.
+/// when every frame does or the reader does not report tile presence. An
+/// instance whose tiles are all absent also stays TILED_FULL, because a
+/// TILED_SPARSE instance needs at least one frame.
 fn sparse_frame_indices(
     slide: &Slide,
     job: &DicomExportInstanceJob<'_>,
@@ -293,12 +293,8 @@ fn sparse_frame_indices(
         frame_rows: grid.frame_rows,
     };
     let across = grid.frames_across();
-    let mut present = Vec::new();
-    present
-        .try_reserve_exact(frame_count as usize)
-        .map_err(|_| Error::Unsupported {
-            reason: "sparse frame positions exceed available memory".into(),
-        })?;
+    // Present frames, recorded once the first absent frame is found.
+    let mut present: Option<Vec<u32>> = None;
     for index in 0..frame_count {
         let rect = OutputFrameRect::clamped(
             u64::from(index) % across,
@@ -309,18 +305,33 @@ fn sparse_frame_indices(
                 y: "source frame row position overflow",
             },
         )?;
-        if frame_has_source_tile(slide, job, rect)? {
-            present.push(index);
+        match (frame_has_source_tile(slide, job, rect)?, present.as_mut()) {
+            (None, _) => return Ok(None),
+            (Some(true), Some(present)) => present.push(index),
+            (Some(true), None) => {}
+            (Some(false), Some(_)) => {}
+            (Some(false), None) => {
+                let mut found = Vec::new();
+                found
+                    .try_reserve_exact(frame_count as usize)
+                    .map_err(|_| Error::Unsupported {
+                        reason: "sparse frame positions exceed available memory".into(),
+                    })?;
+                found.extend(0..index);
+                present = Some(found);
+            }
         }
     }
-    Ok((!present.is_empty() && present.len() != frame_count as usize).then_some(present))
+    Ok(present.filter(|present| !present.is_empty()))
 }
 
+/// Whether a source tile covers the frame, or `None` when the reader does
+/// not report tile presence.
 fn frame_has_source_tile(
     slide: &Slide,
     job: &DicomExportInstanceJob<'_>,
     rect: OutputFrameRect,
-) -> Result<bool, Error> {
+) -> Result<Option<bool>, Error> {
     let (Ok(x), Ok(y)) = (i64::try_from(rect.x), i64::try_from(rect.y)) else {
         return Err(Error::Unsupported {
             reason: "source frame position exceeds i64".into(),
@@ -336,11 +347,13 @@ fn frame_has_source_tile(
             .map_err(|source| Error::SlideRead {
                 message: source.to_string(),
             })?;
-        if present != Some(false) {
-            return Ok(true);
+        match present {
+            Some(false) => {}
+            Some(true) => return Ok(Some(true)),
+            None => return Ok(None),
         }
     }
-    Ok(false)
+    Ok(Some(false))
 }
 
 pub(super) fn metadata_frame_plan(

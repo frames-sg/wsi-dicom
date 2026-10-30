@@ -1,161 +1,405 @@
+use std::borrow::Cow;
 use std::path::PathBuf;
 
 use dicom_core::value::{PixelFragmentSequence, Value};
-use dicom_dictionary_std::tags;
-use dicom_object::DefaultDicomObject;
+use dicom_core::{Tag, VR};
+use dicom_dictionary_std::{tags, uids};
+use dicom_object::mem::InMemElement;
+use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
-use super::{failed_check, ValidationCheck, ValidationStatus};
+use super::iod::EDITION;
+use super::transfer_syntaxes::{pixel_encoding, smpte_st2110, Fragments, PixelEncoding};
+use super::{failed_check, intrinsic_check, ValidationCheck, ValidationStatus};
 
 pub(super) fn run_intrinsic_pixel_structure_check(
     file: &PathBuf,
     object: &DefaultDicomObject,
     max_frame_bytes: usize,
 ) -> ValidationCheck {
-    let result = (|| -> Result<(), String> {
-        let transfer_syntax = object.meta().transfer_syntax.trim_end_matches('\0');
-        let frame_count = dicom_frame_count(object)?;
-        let pixel_data = object
-            .element(tags::PIXEL_DATA)
-            .map_err(|err| format!("failed to read Pixel Data: {err}"))?;
-        let compressed = pixel_data_transfer_syntax_is_compressed(transfer_syntax);
-
-        match (compressed, pixel_data.value()) {
-            (true, Value::PixelSequence(sequence)) => {
-                if sequence.fragments().is_empty() {
-                    return Err("compressed Pixel Data has no fragments".into());
-                }
-                let extended_offsets = optional_u64_values(object, tags::EXTENDED_OFFSET_TABLE)?;
-                let extended_lengths =
-                    optional_u64_values(object, tags::EXTENDED_OFFSET_TABLE_LENGTHS)?;
-                assemble_encapsulated_frames(
-                    sequence,
-                    frame_count,
-                    extended_offsets.as_deref(),
-                    extended_lengths.as_deref(),
-                    0,
-                    max_frame_bytes,
-                )?;
-            }
-            (true, _) => {
-                return Err(format!(
-                    "compressed transfer syntax {transfer_syntax} requires encapsulated Pixel Data"
-                ));
-            }
-            (false, Value::Primitive(_)) => {
-                let bytes = pixel_data
-                    .to_bytes()
-                    .map_err(|err| format!("failed to inspect primitive Pixel Data: {err}"))?;
-                if bytes.is_empty() {
-                    return Err("primitive Pixel Data is empty".into());
-                }
-                if primitive_pixel_data_contains_encapsulated_item_stream(&bytes)
-                    && !native_pixel_data_length_matches(object, frame_count, bytes.len())
-                {
-                    return Err(format!(
-                        "native transfer syntax {transfer_syntax} cannot contain an encapsulated item stream in Pixel Data"
-                    ));
-                }
-            }
-            (false, Value::PixelSequence(_)) => {
-                return Err(format!(
-                    "native transfer syntax {transfer_syntax} cannot contain encapsulated Pixel Data"
-                ));
-            }
-            (false, _) => return Err("Pixel Data has an unusable value representation".into()),
-        }
-        Ok(())
-    })();
-
-    match result {
-        Ok(()) => ValidationCheck {
-            execution: None,
-            name: "intrinsic-pixel-structure".into(),
-            path: Some(file.clone()),
-            status: ValidationStatus::Passed,
-            command: Vec::new(),
-            message: "intrinsic Pixel Data structure is valid".into(),
-            stdout: String::new(),
-            stderr: String::new(),
-        },
+    match check_pixel_structure(object, max_frame_bytes) {
+        Ok(()) => intrinsic_check(
+            "intrinsic-pixel-structure",
+            Some(file.clone()),
+            ValidationStatus::Passed,
+            "intrinsic Pixel Data structure is valid".into(),
+        ),
         Err(message) => failed_check("intrinsic-pixel-structure", Some(file), message),
     }
 }
 
-fn native_pixel_data_length_matches(
+/// The Pixel Data encoding PS3.5 requires of the declared Transfer Syntax:
+/// which pixel element is present, and the Native length or encapsulated
+/// Fragment structure. Framing that only the encoded bytes show (the
+/// encapsulated VR, Item Lengths and delimiters) is the encoding check's.
+fn check_pixel_structure(
     object: &DefaultDicomObject,
-    frame_count: usize,
-    actual_bytes: usize,
-) -> bool {
-    let Some(rows) = positive_usize(object, tags::ROWS) else {
-        return false;
+    max_frame_bytes: usize,
+) -> Result<(), String> {
+    let transfer_syntax = object.meta().transfer_syntax.trim_end_matches('\0');
+    if let Some((name, sections)) = smpte_st2110(transfer_syntax) {
+        return Err(format!(
+            "Transfer Syntax {transfer_syntax} ({name}) describes a DICOM-RTV Flow, carried outside any file, and defines no encoding of a Data Set (PS3.5 {EDITION} {sections}); a file's Transfer Syntax UID identifies the Transfer Syntax that encodes its Data Set (PS3.10 {EDITION} 7.1 and 7.2), so no file uses it"
+        ));
+    }
+    let encoding = pixel_encoding(transfer_syntax);
+    let Some(pixel_data) = check_pixel_elements(object, transfer_syntax, encoding)? else {
+        return Ok(());
     };
-    let Some(columns) = positive_usize(object, tags::COLUMNS) else {
-        return false;
-    };
-    let Some(samples_per_pixel) = positive_usize(object, tags::SAMPLES_PER_PIXEL) else {
-        return false;
-    };
-    let Some(bits_allocated) = positive_usize(object, tags::BITS_ALLOCATED) else {
-        return false;
-    };
-    let photometric = object
-        .element(tags::PHOTOMETRIC_INTERPRETATION)
-        .ok()
-        .and_then(|element| element.to_str().ok());
-    let samples_per_frame = if photometric
-        .as_deref()
-        .is_some_and(|value| value.trim() == "YBR_FULL_422")
-    {
-        columns
-            .checked_add(1)
-            .map(|value| value / 2)
-            .and_then(|pairs| pairs.checked_mul(4))
-            .and_then(|samples| samples.checked_mul(rows))
-    } else {
-        rows.checked_mul(columns)
-            .and_then(|value| value.checked_mul(samples_per_pixel))
-    };
-    let Some(sample_count) = samples_per_frame.and_then(|value| value.checked_mul(frame_count))
-    else {
-        return false;
-    };
-    let Some(total_bits) = sample_count.checked_mul(bits_allocated) else {
-        return false;
-    };
-    let Some(rounded_bits) = total_bits.checked_add(7) else {
-        return false;
-    };
-    let expected_bytes = rounded_bits / 8;
-    let Some(padded_bytes) = expected_bytes.checked_add(expected_bytes % 2) else {
-        return false;
-    };
-    actual_bytes == expected_bytes || actual_bytes == padded_bytes
-}
-
-fn positive_usize(object: &DefaultDicomObject, tag: dicom_core::Tag) -> Option<usize> {
-    object
-        .element(tag)
-        .ok()?
-        .to_int::<usize>()
-        .ok()
-        .filter(|value| *value > 0)
-}
-
-pub(super) fn dicom_frame_count(
-    object: &dicom_object::DefaultDicomObject,
-) -> Result<usize, String> {
-    match object.element(tags::NUMBER_OF_FRAMES) {
-        Ok(element) => match element.to_int::<usize>() {
-            Ok(frame_count) if frame_count > 0 => Ok(frame_count),
-            Ok(_) => Err("DICOM Number of Frames must be greater than zero".into()),
-            Err(err) => Err(format!("failed to read DICOM Number of Frames: {err}")),
-        },
-        Err(err) => Err(format!("DICOM Number of Frames is missing: {err}")),
+    let frame_count = dicom_frame_count(object)?;
+    match (encoding, pixel_data.value()) {
+        (PixelEncoding::Encapsulated(fragments), Value::PixelSequence(sequence)) => {
+            check_encapsulated(
+                object,
+                sequence,
+                fragments,
+                frame_count,
+                max_frame_bytes,
+            )
+        }
+        (PixelEncoding::Encapsulated(_), _) => Err(format!(
+            "Encapsulated Transfer Syntax {transfer_syntax} requires Pixel Data (7FE0,0010) in Encapsulated Format in the top-level Data Set (PS3.5 {EDITION} A.4)"
+        )),
+        (_, Value::Primitive(_)) => {
+            check_native(object, pixel_data, transfer_syntax, frame_count)
+        }
+        (_, Value::PixelSequence(_)) => Err(format!(
+            "native transfer syntax {transfer_syntax} cannot contain encapsulated Pixel Data; Native Format has an Explicit Value Length (PS3.5 {EDITION} A.1 and A.2)"
+        )),
+        (_, _) => Err("Pixel Data has an unusable value representation".into()),
     }
 }
 
-fn pixel_data_transfer_syntax_is_compressed(transfer_syntax: &str) -> bool {
-    transfer_syntax.starts_with("1.2.840.10008.1.2.4.") || transfer_syntax == "1.2.840.10008.1.2.5"
+/// Which of the mutually exclusive pixel elements the top-level Data Set
+/// holds (PS3.5 8.2, A.4, A.6, A.11), and the Pixel Data element to check
+/// further, if any.
+fn check_pixel_elements<'a>(
+    object: &'a DefaultDicomObject,
+    transfer_syntax: &str,
+    encoding: PixelEncoding,
+) -> Result<Option<&'a InMemElement>, String> {
+    const URL: (Tag, &str) = (
+        tags::PIXEL_DATA_PROVIDER_URL,
+        "Pixel Data Provider URL (0028,7FE0)",
+    );
+    const PIXELS: [(Tag, &str); 3] = [
+        (tags::PIXEL_DATA, "Pixel Data (7FE0,0010)"),
+        (tags::FLOAT_PIXEL_DATA, "Float Pixel Data (7FE0,0008)"),
+        (
+            tags::DOUBLE_FLOAT_PIXEL_DATA,
+            "Double Float Pixel Data (7FE0,0009)",
+        ),
+    ];
+    let present = |elements: &[(Tag, &'static str)]| -> Vec<&'static str> {
+        elements
+            .iter()
+            .filter(|(tag, _)| object.get(*tag).is_some())
+            .map(|(_, name)| *name)
+            .collect()
+    };
+    let pixels = present(&PIXELS);
+    let all = present(&[URL])
+        .into_iter()
+        .chain(pixels.iter().copied())
+        .collect::<Vec<_>>();
+    if all.len() > 1 {
+        return Err(format!(
+            "{} are present together; the top-level Data Set shall hold only one of Pixel Data Provider URL, Pixel Data, Float Pixel Data and Double Float Pixel Data (PS3.5 {EDITION} 8.2)",
+            all.join(" and ")
+        ));
+    }
+    let float = pixels.first().is_some_and(|name| *name != PIXELS[0].1);
+    match encoding {
+        PixelEncoding::Referenced => {
+            if let Some(name) = pixels.first() {
+                return Err(format!(
+                    "{name} is present, but JPIP Referenced Transfer Syntax {transfer_syntax} references integer Pixel Data through Pixel Data Provider URL (0028,7FE0) instead (PS3.5 {EDITION} A.6 and A.11)"
+                ));
+            }
+            check_provider_url(object, transfer_syntax)?;
+            Ok(None)
+        }
+        PixelEncoding::Encapsulated(_) if float => Err(format!(
+            "{} is present, but Encapsulated Transfer Syntax {transfer_syntax} is used only with integer Pixel Data (7FE0,0010) in the top-level Data Set (PS3.5 {EDITION} A.4)",
+            pixels[0]
+        )),
+        // Floating point Pixel Data is always in Native Format (PS3.5 8.2).
+        PixelEncoding::Native if float => Ok(None),
+        // A Data Set without the Image Pixel Module, such as an SR or RT
+        // object, has no Pixel Data to check.
+        _ if pixels.is_empty() && object.get(tags::ROWS).is_none() => Ok(None),
+        _ => object.element(tags::PIXEL_DATA).map(Some).map_err(|_| {
+            format!(
+                "Pixel Data (7FE0,0010) is missing; a Data Set with the Image Pixel Module holds Pixel Data, Float Pixel Data or Double Float Pixel Data (PS3.3 {EDITION} C.7.6.3)"
+            )
+        }),
+    }
+}
+
+/// PS3.5 A.6 and A.11 replace Pixel Data with a Pixel Data Provider URL,
+/// whose transport is HTTP or HTTPS (PS3.5 8.4.1).
+fn check_provider_url(object: &DefaultDicomObject, transfer_syntax: &str) -> Result<(), String> {
+    let url = object
+        .element(tags::PIXEL_DATA_PROVIDER_URL)
+        .map_err(|_| {
+            format!(
+                "Pixel Data Provider URL (0028,7FE0) is missing; JPIP Referenced Transfer Syntax {transfer_syntax} references the Pixel Data through it (PS3.5 {EDITION} A.6 and A.11)"
+            )
+        })?
+        .to_str()
+        .map_err(|err| format!("Pixel Data Provider URL (0028,7FE0) is not text: {err}"))?;
+    let url = url.trim_matches([' ', '\0']);
+    let scheme = url.split_once(':').map(|(scheme, _)| scheme);
+    if !scheme.is_some_and(|scheme| {
+        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+    }) {
+        return Err(format!(
+            "Pixel Data Provider URL (0028,7FE0) {} does not use HTTP or HTTPS; the JPIP transport protocol shall be HTTP or HTTPS (PS3.5 {EDITION} 8.4.1)",
+            crate::validation::disclosure::shown(tags::PIXEL_DATA_PROVIDER_URL, url)
+        ));
+    }
+    Ok(())
+}
+
+/// PS3.5 A.4 and the Fragment rule of the syntax (A.4.x, 8.2.5-8.2.11),
+/// with the offset tables of PS3.3 C.7.6.3.1.8.
+fn check_encapsulated(
+    object: &DefaultDicomObject,
+    sequence: &PixelFragmentSequence<Vec<u8>>,
+    fragments: Fragments,
+    frame_count: usize,
+    max_frame_bytes: usize,
+) -> Result<(), String> {
+    let items = sequence.fragments();
+    if items.is_empty() {
+        return Err(format!(
+            "encapsulated Pixel Data has no Fragment; at least one Frame, and so one Fragment, shall be present (PS3.5 {EDITION} 8.2)"
+        ));
+    }
+    let extended_offsets = optional_u64_values(object, tags::EXTENDED_OFFSET_TABLE)?;
+    let extended_lengths = optional_u64_values(object, tags::EXTENDED_OFFSET_TABLE_LENGTHS)?;
+    let extended = extended_offsets
+        .as_deref()
+        .is_some_and(|offsets| !offsets.is_empty());
+    if extended && !sequence.offset_table().is_empty() {
+        return Err(format!(
+            "the Basic Offset Table holds {} offsets although Extended Offset Table (7FE0,0001) is present; the Basic Offset Table Item shall then be empty (PS3.5 {EDITION} A.4, PS3.3 {EDITION} C.7.6.3.1.8)",
+            sequence.offset_table().len()
+        ));
+    }
+    if let Fragments::Video {
+        section,
+        single_fragment,
+        empty_offset_table,
+    } = fragments
+    {
+        if empty_offset_table && !sequence.offset_table().is_empty() {
+            return Err(format!(
+                "the Basic Offset Table holds {} offsets; it shall be empty (present but zero length) for this MPEG2 Transfer Syntax (PS3.5 {EDITION} {section})",
+                sequence.offset_table().len()
+            ));
+        }
+        if single_fragment && items.len() != 1 {
+            return Err(format!(
+                "Pixel Data holds {} Fragments; for a Non-Fragmentable Transfer Syntax one Fragment shall contain the whole bit stream (PS3.5 {EDITION} {section})",
+                items.len()
+            ));
+        }
+        // One stream carries every Frame, so Frames map to Fragments only
+        // through an Extended Offset Table.
+        if !extended {
+            return Ok(());
+        }
+    }
+    assemble_encapsulated_frames(
+        sequence,
+        frame_count,
+        extended_offsets.as_deref(),
+        extended_lengths.as_deref(),
+        0,
+        max_frame_bytes,
+    )?;
+    if extended && items.len() != frame_count {
+        return Err(format!(
+            "Extended Offset Table (7FE0,0001) is present, but {} Fragments encode {frame_count} Frames; it addresses the one and only Fragment of every Frame (PS3.3 {EDITION} C.7.6.3.1.8)",
+            items.len()
+        ));
+    }
+    if let Fragments::OnePerFrame {
+        section,
+        native_payload,
+    } = fragments
+    {
+        if items.len() != frame_count {
+            return Err(format!(
+                "{} Fragments encode {frame_count} Frames; each Frame shall be encoded in one and only one Fragment (PS3.5 {EDITION} {section})",
+                items.len()
+            ));
+        }
+        if native_payload {
+            let frame = NativeFrame::of(object)?;
+            let expected = frame.bytes(1)?;
+            if let Some((index, item)) = items
+                .iter()
+                .enumerate()
+                .find(|(_, item)| !is_padded_length(item.len() as u64, expected))
+            {
+                return Err(format!(
+                    "Fragment {} holds {} bytes; each Fragment holds one Frame encoded as in Native Format, {expected} bytes for {} padded to even length (PS3.5 {EDITION} {section})",
+                    index + 1,
+                    item.len(),
+                    frame.describe(1)
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// PS3.5 8.1.1 Native length and A.1/A.2 Value Representation.
+fn check_native(
+    object: &DefaultDicomObject,
+    pixel_data: &InMemElement,
+    transfer_syntax: &str,
+    frame_count: usize,
+) -> Result<(), String> {
+    let bytes = pixel_data
+        .to_bytes()
+        .map_err(|err| format!("failed to inspect primitive Pixel Data: {err}"))?;
+    if bytes.is_empty() {
+        return Err("primitive Pixel Data is empty".into());
+    }
+    let frame = NativeFrame::of(object)?;
+    let frames = frame_count as u64;
+    let expected = frame.bytes(frames)?;
+    if !is_padded_length(bytes.len() as u64, expected) {
+        if primitive_pixel_data_contains_encapsulated_item_stream(&bytes) {
+            return Err(format!(
+                "native transfer syntax {transfer_syntax} cannot contain an encapsulated item stream in Pixel Data"
+            ));
+        }
+        return Err(format!(
+            "Pixel Data (7FE0,0010) holds {} bytes; Native Format requires {expected} bytes for {}, padded only to the next even length (PS3.5 {EDITION} 8.1.1)",
+            bytes.len(),
+            frame.describe(frames)
+        ));
+    }
+    // Implicit VR conveys no VR; there Pixel Data is OW (PS3.5 A.1).
+    if transfer_syntax != uids::IMPLICIT_VR_LITTLE_ENDIAN {
+        let vr = pixel_data.vr();
+        if frame.bits_allocated > 8 && vr != VR::OW {
+            return Err(format!(
+                "Native Pixel Data (7FE0,0010) has VR {vr:?} with Bits Allocated {}; Bits Allocated greater than 8 requires OW (PS3.5 {EDITION} A.2)",
+                frame.bits_allocated
+            ));
+        }
+        if !matches!(vr, VR::OB | VR::OW) {
+            return Err(format!(
+                "Native Pixel Data (7FE0,0010) has VR {vr:?}; it shall be OB or OW (PS3.5 {EDITION} A.2)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The size of one Frame in Native Format (PS3.5 8.1.1): Rows x Columns
+/// Pixels of Samples per Pixel cells, each Bits Allocated bits. YBR_FULL_422
+/// stores two samples per Pixel (PS3.3 C.7.6.3.1.2).
+#[derive(Clone, Copy, Debug)]
+pub(in crate::validation) struct NativeFrame {
+    rows: u64,
+    columns: u64,
+    samples: u64,
+    bits_allocated: u64,
+    stored_samples: u64,
+}
+
+impl NativeFrame {
+    pub(in crate::validation) fn of(item: &InMemDicomObject) -> Result<Self, String> {
+        let attribute = |tag, name: &str| {
+            item.get(tag)
+                .and_then(|element| element.to_int::<u64>().ok())
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    format!(
+                        "{name} is missing or zero, so the Native Pixel Data length cannot be determined (PS3.5 {EDITION} 8.1.1)"
+                    )
+                })
+        };
+        let rows = attribute(tags::ROWS, "Rows (0028,0010)")?;
+        let columns = attribute(tags::COLUMNS, "Columns (0028,0011)")?;
+        let samples = attribute(tags::SAMPLES_PER_PIXEL, "Samples per Pixel (0028,0002)")?;
+        let bits_allocated = attribute(tags::BITS_ALLOCATED, "Bits Allocated (0028,0100)")?;
+        let ybr_full_422 = item
+            .get(tags::PHOTOMETRIC_INTERPRETATION)
+            .and_then(|element| element.to_str().ok())
+            .is_some_and(|value| value.trim_matches([' ', '\0']) == "YBR_FULL_422");
+        Self::new(rows, columns, samples, bits_allocated, ybr_full_422)
+            .ok_or_else(|| "Native Pixel Data size overflows 64 bits".to_string())
+    }
+
+    /// The Frame of these Image Pixel Attribute Values; `None` when its sample
+    /// count overflows.
+    pub(in crate::validation) fn new(
+        rows: u64,
+        columns: u64,
+        samples: u64,
+        bits_allocated: u64,
+        ybr_full_422: bool,
+    ) -> Option<Self> {
+        let stored_samples = if ybr_full_422 {
+            columns.div_ceil(2).checked_mul(4)
+        } else {
+            columns.checked_mul(samples)
+        }?
+        .checked_mul(rows)?;
+        Some(Self {
+            rows,
+            columns,
+            samples,
+            bits_allocated,
+            stored_samples,
+        })
+    }
+
+    /// Bytes of `frames` concatenated Frames, before even-length padding.
+    pub(in crate::validation) fn bytes(self, frames: u64) -> Result<u64, String> {
+        self.stored_samples
+            .checked_mul(self.bits_allocated)
+            .and_then(|bits| bits.checked_mul(frames))
+            .map(|bits| bits.div_ceil(8))
+            .ok_or_else(|| "Native Pixel Data size overflows 64 bits".to_string())
+    }
+
+    pub(in crate::validation) fn describe(self, frames: u64) -> String {
+        format!(
+            "{} Rows x {} Columns x {} Samples per Pixel x {frames} Frame(s) at {} Bits Allocated",
+            self.rows, self.columns, self.samples, self.bits_allocated
+        )
+    }
+}
+
+/// Whether a Value of `actual` bytes is `expected` bytes padded to the next
+/// even length, as PS3.5 8.1.1 allows and requires.
+pub(in crate::validation) fn is_padded_length(actual: u64, expected: u64) -> bool {
+    expected
+        .checked_add(expected % 2)
+        .is_some_and(|padded| actual == padded)
+}
+
+/// The Frames of the Pixel Data. Without the Multi-frame Module the image has
+/// one Frame; an IOD that requires Number of Frames is the presence check's to
+/// judge.
+pub(super) fn dicom_frame_count(
+    object: &dicom_object::DefaultDicomObject,
+) -> Result<usize, String> {
+    let Some(element) = object.get(tags::NUMBER_OF_FRAMES) else {
+        return Ok(1);
+    };
+    match element.to_int::<usize>() {
+        Ok(frame_count) if frame_count > 0 => Ok(frame_count),
+        Ok(_) => Err("DICOM Number of Frames must be greater than zero".into()),
+        Err(err) => Err(format!("failed to read DICOM Number of Frames: {err}")),
+    }
 }
 
 fn primitive_pixel_data_contains_encapsulated_item_stream(bytes: &[u8]) -> bool {
@@ -246,28 +490,8 @@ pub(super) fn assemble_encapsulated_frames(
     max_frame_bytes: usize,
 ) -> Result<Vec<Vec<u8>>, String> {
     let fragments = sequence.fragments();
-    if fragments.is_empty() {
-        return Err("Pixel Data has no fragments".to_string());
-    }
-
-    let basic_offsets = sequence.offset_table();
-    let offsets = match extended_offsets {
-        Some(offsets) if !offsets.is_empty() => EncapsulatedFrameOffsets::Extended(offsets),
-        _ if !basic_offsets.is_empty() => EncapsulatedFrameOffsets::Basic(basic_offsets),
-        _ => EncapsulatedFrameOffsets::None,
-    };
-    let lengths = extended_lengths.filter(|lengths| !lengths.is_empty());
-    if lengths.is_some() && extended_offsets.is_none_or(<[u64]>::is_empty) {
-        return Err("Extended Offset Table Lengths requires an Extended Offset Table".to_string());
-    }
-    if let Some(lengths) = lengths {
-        if lengths.len() != frame_count {
-            return Err(format!(
-                "Extended Offset Table Lengths has {} entries for {frame_count} frames",
-                lengths.len()
-            ));
-        }
-    }
+    let (offsets, lengths) =
+        frame_offsets_and_lengths(sequence, frame_count, extended_offsets, extended_lengths)?;
 
     visit_encapsulated_frame_spans(
         fragments,
@@ -308,6 +532,112 @@ pub(super) fn assemble_encapsulated_frames(
         },
     )?;
     Ok(frames)
+}
+
+/// One Frame of encapsulated Pixel Data: the Fragments it spans and the
+/// length of its payload within them.
+pub(super) struct EncapsulatedFrame<'a> {
+    pub(super) index: usize,
+    pub(super) fragments: &'a [Vec<u8>],
+    len: usize,
+}
+
+impl<'a> EncapsulatedFrame<'a> {
+    /// The Frame payload, borrowed when it lies in one Fragment.
+    pub(super) fn bytes(&self) -> Result<Cow<'a, [u8]>, String> {
+        if let [fragment] = self.fragments {
+            return Ok(Cow::Borrowed(&fragment[..self.len.min(fragment.len())]));
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(self.len)
+            .map_err(|_| format!("Pixel Data frame {} exceeds available memory", self.index))?;
+        for fragment in self.fragments {
+            let remaining = self.len - bytes.len();
+            bytes.extend_from_slice(&fragment[..fragment.len().min(remaining)]);
+        }
+        Ok(Cow::Owned(bytes))
+    }
+
+    /// The Frame payload as slices of its Fragments, in order, without
+    /// copying them.
+    pub(super) fn parts(&self) -> impl Iterator<Item = &'a [u8]> {
+        let mut remaining = self.len;
+        self.fragments.iter().map(move |fragment| {
+            let part = &fragment[..fragment.len().min(remaining)];
+            remaining -= part.len();
+            part
+        })
+    }
+}
+
+/// Calls `visit` with every Frame in order, once the whole Fragment-to-Frame
+/// mapping is known to be valid, without copying Fragments.
+pub(super) fn visit_encapsulated_frames(
+    sequence: &PixelFragmentSequence<Vec<u8>>,
+    frame_count: usize,
+    extended_offsets: Option<&[u64]>,
+    extended_lengths: Option<&[u64]>,
+    max_frame_bytes: usize,
+    mut visit: impl FnMut(EncapsulatedFrame<'_>),
+) -> Result<(), String> {
+    let fragments = sequence.fragments();
+    let (offsets, lengths) =
+        frame_offsets_and_lengths(sequence, frame_count, extended_offsets, extended_lengths)?;
+    visit_encapsulated_frame_spans(
+        fragments,
+        frame_count,
+        offsets,
+        lengths,
+        max_frame_bytes,
+        |_, _, _, _| Ok(()),
+    )?;
+    visit_encapsulated_frame_spans(
+        fragments,
+        frame_count,
+        offsets,
+        lengths,
+        max_frame_bytes,
+        |index, start, end, len| {
+            visit(EncapsulatedFrame {
+                index,
+                fragments: &fragments[start..end],
+                len,
+            });
+            Ok(())
+        },
+    )
+}
+
+fn frame_offsets_and_lengths<'a>(
+    sequence: &'a PixelFragmentSequence<Vec<u8>>,
+    frame_count: usize,
+    extended_offsets: Option<&'a [u64]>,
+    extended_lengths: Option<&'a [u64]>,
+) -> Result<(EncapsulatedFrameOffsets<'a>, Option<&'a [u64]>), String> {
+    if sequence.fragments().is_empty() {
+        return Err("Pixel Data has no fragments".to_string());
+    }
+
+    let basic_offsets = sequence.offset_table();
+    let offsets = match extended_offsets {
+        Some(offsets) if !offsets.is_empty() => EncapsulatedFrameOffsets::Extended(offsets),
+        _ if !basic_offsets.is_empty() => EncapsulatedFrameOffsets::Basic(basic_offsets),
+        _ => EncapsulatedFrameOffsets::None,
+    };
+    let lengths = extended_lengths.filter(|lengths| !lengths.is_empty());
+    if lengths.is_some() && extended_offsets.is_none_or(<[u64]>::is_empty) {
+        return Err("Extended Offset Table Lengths requires an Extended Offset Table".to_string());
+    }
+    if let Some(lengths) = lengths {
+        if lengths.len() != frame_count {
+            return Err(format!(
+                "Extended Offset Table Lengths has {} entries for {frame_count} frames",
+                lengths.len()
+            ));
+        }
+    }
+    Ok((offsets, lengths))
 }
 
 #[derive(Clone, Copy)]

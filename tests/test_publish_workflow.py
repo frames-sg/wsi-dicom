@@ -181,7 +181,15 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("--no-default-features", build)
         self.assertIn(".tar.gz", build)
         self.assertIn(".zip", build)
-        for required_file in ("README.md", "LICENSE-MIT", "LICENSE-APACHE", "VERSION.json"):
+        for required_file in (
+            "README.md",
+            "LICENSE",
+            "LICENSE-AGPL",
+            "COMMERCIAL-LICENSE.md",
+            "LICENSE-MIT",
+            "LICENSE-APACHE",
+            "VERSION.json",
+        ):
             self.assertIn(required_file, build)
 
     def test_dependency_lock_digest_is_portable_across_release_runners(self):
@@ -210,7 +218,7 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         self.assertIn(install, crate)
         self.assertIn('pydicom==3.0.2', crate)
         self.assertLess(crate.index(install), crate.index('doctor --strict'))
-        prepare = 'validate_iods" --edition 2026c'
+        prepare = 'validate_iods" --edition 2026d'
         self.assertIn(prepare, crate)
         self.assertLess(crate.index(prepare), crate.index('cargo package --locked'))
         self.assertIn('"validate_iods"', crate)

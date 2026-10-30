@@ -18,24 +18,19 @@ use super::lossless_j2k_plan::{
     plan_lossless_j2k_frames_with_preflight, LosslessJ2kPlanRequest, LosslessJ2kPlannedFrame,
     WholeLevelJpegPreflight,
 };
+use super::pending_instance::PendingLosslessInstance;
 use super::route_plan::RouteExecutionContext;
 use super::tile_grid::TileGrid;
 use super::InstanceExportContext;
 use crate::error::Error;
-use crate::instance_context::{DicomInstanceContext, InstanceDicomObjectParams};
 use crate::lossy::{uncompressed_pixel_bytes, LossyCompressionAccumulator, HTJ2K_METHOD};
-use crate::metadata::DicomMetadata;
 use crate::options::TransferSyntax;
-use crate::report::{ExportMetrics, IccProfileReport, InstanceReport};
+use crate::report::InstanceReport;
 use crate::request::ExportRequest;
 use crate::routing::{
     j2k_family_passthrough_probe_allowed, j2k_route_tile_size, unsupported_j2k_route_error,
 };
-use crate::tile::PixelProfile;
-use crate::writer::{
-    unique_spool_path, write_dicom_object_with_streamed_pixel_data, BufferedPixelDataSink,
-    FrameGrid, LossyCompressionHistory, PixelDataSink, StreamedDicomWritePlan,
-};
+use crate::writer::{unique_spool_path, BufferedPixelDataSink, PixelDataSink};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use super::lossless_j2k_pipeline::route_lossless_j2k_metal_input_runs;
@@ -48,81 +43,6 @@ pub(super) fn export_instance(
     export: InstanceExportContext<'_>,
 ) -> Result<InstanceReport, Error> {
     prepare_lossless_j2k_instance(slide, request, export)?.finish()
-}
-
-/// An encoded lossless instance waiting to be written. Shared by the JPEG 2000
-/// family and JPEG Lossless exporters.
-pub(super) struct PendingLosslessInstance {
-    pub(super) context: DicomInstanceContext,
-    pub(super) metadata: DicomMetadata,
-    pub(super) study_uid: String,
-    pub(super) specimen_uid: String,
-    pub(super) instance_number: u32,
-    pub(super) tile_size: u32,
-    pub(super) matrix_columns: u64,
-    pub(super) matrix_rows: u64,
-    pub(super) frame_count: u32,
-    pub(super) profile: PixelProfile,
-    pub(super) pixel_data: BufferedPixelDataSink,
-    pub(super) icc_profile: Option<Vec<u8>>,
-    pub(super) icc_profile_report: IccProfileReport,
-    pub(super) lossy_compression: LossyCompressionHistory,
-    pub(super) metrics: ExportMetrics,
-    pub(super) transfer_syntax: TransferSyntax,
-    pub(super) overwrite: bool,
-    pub(super) max_instance_metadata_bytes: u64,
-    pub(super) per_frame_plan: Option<crate::writer::PerFrameFunctionalGroupsPlan>,
-}
-
-impl PendingLosslessInstance {
-    pub(super) fn finish(mut self) -> Result<InstanceReport, Error> {
-        let frame_grid = FrameGrid {
-            frame_columns: self.tile_size,
-            frame_rows: self.tile_size,
-            matrix_columns: self.matrix_columns,
-            matrix_rows: self.matrix_rows,
-        };
-        let object = self.context.build_dicom_object(InstanceDicomObjectParams {
-            metadata: &self.metadata,
-            study_uid: &self.study_uid,
-            specimen_uid: &self.specimen_uid,
-            instance_number: self.instance_number,
-            frame_grid,
-            frame_count: self.frame_count,
-            profile: self.profile,
-            icc_profile: self.icc_profile.as_deref(),
-            lossy_compression: self.lossy_compression,
-        })?;
-        let per_frame_plan =
-            self.context
-                .per_frame_plan(self.frame_count, frame_grid, self.per_frame_plan)?;
-        let write_started = Instant::now();
-        let streamed = write_dicom_object_with_streamed_pixel_data(
-            &self.context.path,
-            StreamedDicomWritePlan {
-                object,
-                meta: self.context.file_meta(self.transfer_syntax.uid()),
-                overwrite: self.overwrite,
-                per_frame_plan,
-                max_instance_metadata_bytes: self.max_instance_metadata_bytes,
-                frame_count: self.frame_count as usize,
-                deferred_lossy_compression: None,
-            },
-            |writer| self.pixel_data.stream_frames_to(writer),
-        )?;
-        self.metrics
-            .record_streaming_write_duration(streamed.streaming_write_duration);
-        self.metrics
-            .record_pixel_data_patch_duration(streamed.pixel_data_patch_duration);
-        self.metrics.record_write_duration(write_started.elapsed());
-
-        Ok(self.context.report(
-            self.transfer_syntax.uid(),
-            self.frame_count,
-            self.icc_profile_report,
-            self.metrics,
-        ))
-    }
 }
 
 /// A row batch planned on a scoped thread ahead of its use.
@@ -167,14 +87,14 @@ pub(super) fn prepare_lossless_j2k_instance(
     request: &ExportRequest,
     export: InstanceExportContext<'_>,
 ) -> Result<PendingLosslessInstance, Error> {
+    let pending_export = export;
     let InstanceExportContext {
         options,
         metadata,
-        identity,
-        instance_number,
         coordinate,
         level,
         per_frame_plan,
+        ..
     } = export;
     let tile_size = j2k_route_tile_size(
         options.semantics.tile_size,
@@ -463,25 +383,17 @@ pub(super) fn prepare_lossless_j2k_instance(
     };
     lossy_compression.append(target_lossy_compression.into_history()?);
 
-    Ok(PendingLosslessInstance {
+    Ok(PendingLosslessInstance::new(
+        pending_export,
         context,
-        metadata: metadata.clone(),
-        study_uid: identity.study_uid().to_string(),
-        specimen_uid: identity.specimen_uid().to_string(),
-        instance_number,
         tile_size,
         matrix_columns,
         matrix_rows,
         frame_count,
         profile,
         pixel_data,
-        icc_profile: icc_profile.bytes,
-        icc_profile_report: icc_profile.report,
+        icc_profile,
         lossy_compression,
         metrics,
-        transfer_syntax: options.semantics.transfer_syntax,
-        overwrite: options.semantics.overwrite,
-        max_instance_metadata_bytes: options.resources.max_instance_metadata_bytes,
-        per_frame_plan: per_frame_plan.cloned(),
-    })
+    ))
 }

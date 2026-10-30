@@ -4,33 +4,50 @@ use std::path::{Path, PathBuf};
 use dicom_dictionary_std::tags;
 use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
-use super::super::ValidationCheck;
+use super::super::{ValidationCheck, ValidationStatus};
+pub(in crate::validation) use super::copies::Origin;
+use super::copies::{Copies, CopyFacts, FirstCopy};
 use super::fields::{required_positive_u64, required_string, PixelSpacingMm};
 use super::geometry::{slide_coordinate_identity, SlideCoordinateIdentity};
 use super::identity::{
     clinical_identity, specimen_identities, ClinicalIdentity, IssuerIdentity, SpecimenIdentity,
 };
-use super::rule_check;
+use super::series_set::{self, SeriesFacts};
+use super::{iod_of, rule_check, VL_WSI};
 use crate::uid::is_valid_dicom_uid;
-use crate::validation::iod::declares_vl_wsi;
+use crate::validation::disclosure::shown;
+use crate::validation::iod::dicom_edition;
+use crate::validation::{intrinsic_check, ValidationProfile};
 
-const SPECIMEN_SET_RULE: &str = "intrinsic-wsi-dicom-2026c-specimen-uid-set";
-const IDENTITY_SET_RULE: &str = "intrinsic-wsi-dicom-2026c-identity-set";
-const PYRAMID_GEOMETRY_RULE: &str = "intrinsic-wsi-dicom-2026c-pyramid-geometry";
-const SOURCE_RELATIONSHIP_RULE: &str = "intrinsic-wsi-dicom-2026c-source-relationship";
-const CLINICAL_IDENTITY_SET_RULE: &str = "intrinsic-wsi-dicom-2026c-clinical-identity-set";
+pub(super) const SPECIMEN_SET_RULE: &str = "intrinsic-wsi-dicom-specimen-uid-set";
+const IDENTITY_SET_RULE: &str = "intrinsic-wsi-dicom-identity-set";
+const PYRAMID_GEOMETRY_RULE: &str = "intrinsic-wsi-dicom-pyramid-geometry";
+const SOURCE_RELATIONSHIP_RULE: &str = "intrinsic-wsi-dicom-source-relationship";
+const CLINICAL_IDENTITY_SET_RULE: &str = "intrinsic-wsi-dicom-clinical-identity-set";
 
+/// What the set checks compare, gathered from each object of a
+/// pathology-slide IOD as it is read.
 #[derive(Debug, Default)]
 pub(in crate::validation) struct WsiConformanceCorpus {
-    instances: Vec<WsiInstanceFacts>,
+    instances: Vec<InstanceFacts>,
+    series: Vec<SeriesFacts>,
 }
 
 #[derive(Debug)]
-struct WsiInstanceFacts {
+struct InstanceFacts {
     path: PathBuf,
     sop_instance_uid: Result<String, String>,
-    sop_class_uid: Result<String, String>,
+    copy: CopyFacts,
+    /// Every IOD's specimens; an object of another IOD than VL WSI without
+    /// the Specimen Module has none.
     specimens: Result<Vec<SpecimenIdentity>, String>,
+    /// The facts only VL WSI objects are compared by.
+    wsi: Option<WsiFacts>,
+}
+
+#[derive(Debug)]
+struct WsiFacts {
+    sop_class_uid: Result<String, String>,
     clinical_identity: Result<ClinicalIdentity, String>,
     slide_coordinate: Result<SlideCoordinateIdentity, String>,
     pyramid: Option<PyramidFact>,
@@ -38,39 +55,128 @@ struct WsiInstanceFacts {
 }
 
 impl WsiConformanceCorpus {
-    pub(in crate::validation) fn observe(&mut self, path: &Path, object: &DefaultDicomObject) {
-        if !declares_vl_wsi(object) {
+    /// Records what the set checks need of `object`, read from `path` as
+    /// `origin` says; an object of no pathology-slide IOD adds nothing.
+    pub(in crate::validation) fn observe(
+        &mut self,
+        path: &Path,
+        object: &DefaultDicomObject,
+        origin: Origin,
+    ) {
+        // A DICOMDIR names no SOP Instance of its own in its Data Set; the
+        // File-set check compares it with the files it references.
+        let Some(iod) = iod_of(object).filter(|iod| *iod != super::FILE_SET) else {
             return;
-        }
-        let sop_instance_uid = required_string(object, tags::SOP_INSTANCE_UID, "SOP Instance UID");
-        let sop_class_uid = required_string(object, tags::SOP_CLASS_UID, "SOP Class UID");
-        self.instances.push(WsiInstanceFacts {
-            path: path.to_path_buf(),
-            sop_instance_uid: sop_instance_uid.clone(),
-            sop_class_uid,
-            specimens: specimen_identities(object),
+        };
+        let wsi = (iod == VL_WSI).then(|| WsiFacts {
+            sop_class_uid: required_string(object, tags::SOP_CLASS_UID, "SOP Class UID"),
             clinical_identity: clinical_identity(object),
             slide_coordinate: slide_coordinate_identity(object),
             pyramid: pyramid_fact(object, path),
             sources: source_facts(object, path),
         });
+        // C.7.6.22 is Mandatory in VL WSI and optional or conditional in
+        // the other IODs, whose objects without it describe no specimen.
+        let specimens =
+            if wsi.is_none() && object.element(tags::SPECIMEN_DESCRIPTION_SEQUENCE).is_err() {
+                Ok(Vec::new())
+            } else {
+                specimen_identities(object)
+            };
+        self.instances.push(InstanceFacts {
+            path: path.to_path_buf(),
+            sop_instance_uid: required_string(object, tags::SOP_INSTANCE_UID, "SOP Instance UID"),
+            copy: CopyFacts::of(path, object, origin),
+            specimens,
+            wsi,
+        });
+        self.series.push(SeriesFacts::of(object, path, iod));
+    }
+
+    /// The VL WSI objects with their WSI facts.
+    fn wsi(&self) -> impl Iterator<Item = (&InstanceFacts, &WsiFacts)> {
+        self.instances
+            .iter()
+            .filter_map(|facts| facts.wsi.as_ref().map(|wsi| (facts, wsi)))
     }
 }
 
-pub(in crate::validation) fn run_slide_coordinate_set_check(
+/// The results of the set checks: their checks, and their advisories by the
+/// file each concerns, which are departures from the standard's advice or
+/// readings of ambiguous text rather than failures.
+#[derive(Debug, Default)]
+pub(in crate::validation) struct SetResults {
+    pub(in crate::validation) checks: Vec<ValidationCheck>,
+    pub(in crate::validation) advisories: Vec<(PathBuf, String)>,
+}
+
+/// Every set check of `corpus` in `profile`, in report order: one list for
+/// every validator that reads a set of objects.
+pub(in crate::validation) fn set_checks(
     corpus: &WsiConformanceCorpus,
-) -> Option<ValidationCheck> {
-    let mut pyramids = BTreeMap::<String, (&SlideCoordinateIdentity, &Path)>::new();
+    profile: ValidationProfile,
+) -> SetResults {
+    let mut results = SetResults::default();
+    results.checks.extend(run_specimen_uid_set_check(corpus));
+    if let Some((check, advisories)) = run_identity_set_check(corpus) {
+        results.checks.push(check);
+        results.advisories.extend(advisories);
+    }
+    if let Some((check, advisories)) = series_set::run_series_set_check(&corpus.series) {
+        results.checks.push(check);
+        results.advisories.extend(advisories);
+    }
+    if profile == ValidationProfile::Core {
+        results
+            .checks
+            .extend(run_clinical_identity_set_check(corpus));
+    }
+    results
+        .checks
+        .extend(run_pyramid_geometry_set_check(corpus));
+    results
+        .checks
+        .extend(run_slide_coordinate_set_check(corpus));
+    results
+        .checks
+        .extend(run_source_relationship_set_check(corpus));
+    results
+}
+
+/// A set check that passes, naming its `advisories` if any, so a report
+/// without optional conformance notes still shows them.
+pub(super) fn advised_check(
+    name: &str,
+    citation: &str,
+    advisories: &[(PathBuf, String)],
+) -> ValidationCheck {
+    if advisories.is_empty() {
+        return rule_check(Path::new(""), name, citation, Ok(()));
+    }
+    let shown: Vec<String> = advisories
+        .iter()
+        .map(|(path, advisory)| format!("{}: {advisory}", path.display()))
+        .collect();
+    intrinsic_check(
+        name,
+        None,
+        ValidationStatus::Passed,
+        format!("{citation}: conformant; advisory: {}", shown.join("; ")),
+    )
+}
+
+fn run_slide_coordinate_set_check(corpus: &WsiConformanceCorpus) -> Option<ValidationCheck> {
+    let mut pyramids = BTreeMap::<String, (&SlideCoordinateIdentity, f64, &Path)>::new();
     let mut compared = false;
     let mut failure = None;
-    for facts in &corpus.instances {
-        let Some(pyramid) = &facts.pyramid else {
+    for (facts, wsi) in corpus.wsi() {
+        let Some(pyramid) = &wsi.pyramid else {
             continue;
         };
         let Ok(uid) = &pyramid.uid else {
             continue;
         };
-        let coordinate = match &facts.slide_coordinate {
+        let coordinate = match &wsi.slide_coordinate {
             Ok(coordinate) => coordinate,
             Err(reason) => {
                 failure = Some(format!(
@@ -80,49 +186,65 @@ pub(in crate::validation) fn run_slide_coordinate_set_check(
                 break;
             }
         };
-        if let Some((existing, existing_path)) = pyramids.get(uid) {
+        // Levels place the same image data (PS3.3 C.7.11); their pixel 1\1
+        // locations agree within a pixel of the coarser level.
+        let pixel = pyramid.extent.as_ref().map_or(0.0, |extent| {
+            extent.spacing.row().max(extent.spacing.column())
+        });
+        if let Some((existing, existing_pixel, existing_path)) = pyramids.get(uid) {
             compared = true;
-            if !coordinates_equal(existing, coordinate) {
+            if !coordinates_equal(existing, coordinate, pixel.max(*existing_pixel)) {
                 failure = Some(format!(
-                    "Pyramid UID {uid} has conflicting total-matrix origin or orientation in {} and {}",
+                    "Pyramid UID {} has conflicting total-matrix origin or orientation in {} and {}",
+                    shown(tags::PYRAMID_UID, uid),
                     existing_path.display(),
                     facts.path.display()
                 ));
                 break;
             }
         } else {
-            pyramids.insert(uid.clone(), (coordinate, facts.path.as_path()));
+            pyramids.insert(uid.clone(), (coordinate, pixel, facts.path.as_path()));
         }
     }
     compared.then(|| {
         rule_check(
             Path::new(""),
-            "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
-            "DICOM PS3.3 2026c C.8.12.14",
+            "intrinsic-wsi-dicom-slide-coordinate-system",
+            concat!("DICOM PS3.3 ", dicom_edition!(), " C.8.12.14"),
             failure.map_or(Ok(()), Err),
         )
     })
 }
 
-fn coordinates_equal(left: &SlideCoordinateIdentity, right: &SlideCoordinateIdentity) -> bool {
-    left.origin
+/// Origins agree within `pixel` mm in X and Y, Z offsets and direction
+/// cosines to 1e-6.
+fn coordinates_equal(
+    left: &SlideCoordinateIdentity,
+    right: &SlideCoordinateIdentity,
+    pixel: f64,
+) -> bool {
+    let planar = pixel.max(1e-6);
+    let origin = left.origin[..2]
         .iter()
-        .chain(left.orientation.iter())
-        .zip(right.origin.iter().chain(right.orientation.iter()))
-        .all(|(left, right)| (left - right).abs() <= 1e-6)
+        .zip(&right.origin[..2])
+        .all(|(left, right)| (left - right).abs() <= planar);
+    origin
+        && left.origin[2..]
+            .iter()
+            .chain(left.orientation.iter())
+            .zip(right.origin[2..].iter().chain(right.orientation.iter()))
+            .all(|(left, right)| (left - right).abs() <= 1e-6)
 }
 
-pub(in crate::validation) fn run_clinical_identity_set_check(
-    corpus: &WsiConformanceCorpus,
-) -> Option<ValidationCheck> {
+fn run_clinical_identity_set_check(corpus: &WsiConformanceCorpus) -> Option<ValidationCheck> {
     let mut studies = BTreeMap::<String, (String, String, PathBuf)>::new();
-    let mut series = BTreeMap::<String, (String, String, PathBuf)>::new();
+    let mut series = BTreeMap::<String, (String, Option<String>, PathBuf)>::new();
     let mut frames =
         BTreeMap::<String, (String, String, String, Option<IssuerIdentity>, PathBuf)>::new();
     let mut failure = None;
 
-    for facts in &corpus.instances {
-        let identity = match &facts.clinical_identity {
+    for (facts, wsi) in corpus.wsi() {
+        let identity = match &wsi.clinical_identity {
             Ok(identity) => identity,
             Err(reason) => {
                 failure = Some(format!(
@@ -137,7 +259,7 @@ pub(in crate::validation) fn run_clinical_identity_set_check(
             if (name, id) != (&patient.0, &patient.1) {
                 failure = Some(format!(
                     "Study Instance UID {} maps to conflicting patient identities in {} and {}",
-                    identity.study_uid,
+                    shown(tags::STUDY_INSTANCE_UID, &identity.study_uid),
                     path.display(),
                     facts.path.display()
                 ));
@@ -151,10 +273,15 @@ pub(in crate::validation) fn run_clinical_identity_set_check(
         }
 
         if let Some((study_uid, frame_uid, path)) = series.get(&identity.series_uid) {
-            if study_uid != &identity.study_uid || frame_uid != &identity.frame_of_reference_uid {
+            // A LABEL or OVERVIEW image without a Frame of Reference may share
+            // the Series of registered images (PS3.3 A.32.8).
+            let frames_differ = frame_uid.is_some()
+                && identity.frame_of_reference_uid.is_some()
+                && frame_uid != &identity.frame_of_reference_uid;
+            if study_uid != &identity.study_uid || frames_differ {
                 failure = Some(format!(
                     "Series Instance UID {} maps to conflicting Study or Frame of Reference UIDs in {} and {}",
-                    identity.series_uid,
+                    shown(tags::SERIES_INSTANCE_UID, &identity.series_uid),
                     path.display(),
                     facts.path.display()
                 ));
@@ -171,8 +298,11 @@ pub(in crate::validation) fn run_clinical_identity_set_check(
             );
         }
 
+        let Some(frame_of_reference_uid) = &identity.frame_of_reference_uid else {
+            continue;
+        };
         if let Some((study_uid, patient_name, container, issuer, path)) =
-            frames.get(&identity.frame_of_reference_uid)
+            frames.get(frame_of_reference_uid)
         {
             if study_uid != &identity.study_uid
                 || patient_name != &identity.patient_name
@@ -181,7 +311,7 @@ pub(in crate::validation) fn run_clinical_identity_set_check(
             {
                 failure = Some(format!(
                     "Frame of Reference UID {} maps to conflicting study, patient, or container identity in {} and {}",
-                    identity.frame_of_reference_uid,
+                    shown(tags::FRAME_OF_REFERENCE_UID, frame_of_reference_uid),
                     path.display(),
                     facts.path.display()
                 ));
@@ -189,7 +319,7 @@ pub(in crate::validation) fn run_clinical_identity_set_check(
             }
         } else {
             frames.insert(
-                identity.frame_of_reference_uid.clone(),
+                frame_of_reference_uid.clone(),
                 (
                     identity.study_uid.clone(),
                     identity.patient_name.clone(),
@@ -201,11 +331,15 @@ pub(in crate::validation) fn run_clinical_identity_set_check(
         }
     }
 
-    (!corpus.instances.is_empty()).then(|| {
+    corpus.wsi().next().is_some().then(|| {
         rule_check(
             Path::new(""),
             CLINICAL_IDENTITY_SET_RULE,
-            "DICOM PS3.3 2026c A.32.8, C.7.1, C.7.2, C.7.3, C.7.4.1, and C.7.6.22",
+            concat!(
+                "DICOM PS3.3 ",
+                dicom_edition!(),
+                " A.32.8, C.7.1, C.7.2, C.7.3, C.7.4.1, and C.7.6.22"
+            ),
             failure.map_or(Ok(()), Err),
         )
     })
@@ -254,51 +388,99 @@ fn source_facts(
     })())
 }
 
-pub(in crate::validation) fn run_identity_set_check(
+/// C.12.1 and PS3.5 9: each SOP Instance UID is a valid UID naming one
+/// object. Files sharing one are copies of it: byte-identical copies, and
+/// copies encoding the same Attributes and Frames differently, pass with a
+/// note, copies whose Attributes differ while their SOP Class and
+/// Pixel Data agree are an advisory, since a Storage SCP may coerce
+/// Attributes and keep the UID (PS3.4 B.4.1.3), and a different SOP Class or
+/// different Pixel Data under one UID fails.
+fn run_identity_set_check(
     corpus: &WsiConformanceCorpus,
-) -> Option<ValidationCheck> {
-    let mut instances = BTreeMap::<String, PathBuf>::new();
-    let mut failure = None;
+) -> Option<(ValidationCheck, Vec<(PathBuf, String)>)> {
+    const CITATION: &str = concat!(
+        "DICOM PS3.3 ",
+        dicom_edition!(),
+        " C.12.1 and PS3.5 ",
+        dicom_edition!(),
+        " 9"
+    );
+    if corpus.instances.is_empty() {
+        return None;
+    }
+    // The first file of each SOP Instance, digested once for all its copies.
+    let mut first_copy = BTreeMap::<&str, (&InstanceFacts, FirstCopy)>::new();
+    let mut violations = Vec::new();
+    let mut notes = Vec::new();
+    let mut advisories = Vec::new();
     for facts in &corpus.instances {
         let uid = match &facts.sop_instance_uid {
-            Ok(uid) if is_valid_dicom_uid(uid) => uid.clone(),
+            Ok(uid) if is_valid_dicom_uid(uid) => uid.as_str(),
             Ok(uid) => {
-                failure = Some(format!(
-                    "invalid SOP Instance UID {uid:?} in {}",
+                violations.push(format!(
+                    "invalid SOP Instance UID {} in {}",
+                    shown(tags::SOP_INSTANCE_UID, uid),
                     facts.path.display()
                 ));
-                break;
+                continue;
             }
             Err(reason) => {
-                failure = Some(format!(
+                violations.push(format!(
                     "cannot identify {}: {reason}",
                     facts.path.display()
                 ));
-                break;
+                continue;
             }
         };
-        if let Some(existing) = instances.insert(uid.clone(), facts.path.clone()) {
-            failure = Some(format!(
-                "SOP Instance UID {uid} occurs in both {} and {}",
-                existing.display(),
-                facts.path.display()
-            ));
-            break;
+        let Some((original, first)) = first_copy.get_mut(uid) else {
+            first_copy.insert(uid, (facts, FirstCopy::new(&facts.copy)));
+            continue;
+        };
+        let pair = format!(
+            "SOP Instance UID {} occurs in both {} and {}",
+            shown(tags::SOP_INSTANCE_UID, uid),
+            original.path.display(),
+            facts.path.display()
+        );
+        match first.compare(&facts.copy) {
+            Ok(Copies::Identical) => notes.push(format!("{pair}, identical copies")),
+            Ok(Copies::Reencoded) => notes.push(format!(
+                "{pair}, copies of the same Attributes and Pixel Data Frames, encoded differently (preamble, lengths, padding, offset tables or Fragments)"
+            )),
+            Ok(Copies::Different(why)) => violations.push(format!(
+                "{pair}, but {why}; a UID identifies one object, and different objects take different UIDs (PS3.5 {} 9)",
+                crate::validation::iod::EDITION
+            )),
+            Ok(Copies::Coerced(attributes)) => advisories.push((
+                facts.path.clone(),
+                format!(
+                    "{pair}, with the same SOP Class and Pixel Data but different {}; a Storage SCP may coerce Attributes and keep the SOP Instance UID (PS3.4 {} B.4.1.3), so this is a copy of one object, not a reuse of its UID",
+                    attributes.join(", "),
+                    crate::validation::iod::EDITION
+                ),
+            )),
+            Err(reason) => violations.push(format!("{pair}, and they cannot be compared: {reason}")),
         }
     }
-    (!corpus.instances.is_empty()).then(|| {
+    let mut check = if violations.is_empty() {
+        advised_check(IDENTITY_SET_RULE, CITATION, &advisories)
+    } else {
         rule_check(
             Path::new(""),
             IDENTITY_SET_RULE,
-            "DICOM PS3.3 2026c C.12.1",
-            failure.map_or(Ok(()), Err),
+            CITATION,
+            super::violation_result(violations),
         )
-    })
+    };
+    if !notes.is_empty() {
+        check
+            .message
+            .push_str(&format!("; note: {}", notes.join("; ")));
+    }
+    Some((check, advisories))
 }
 
-pub(in crate::validation) fn run_specimen_uid_set_check(
-    corpus: &WsiConformanceCorpus,
-) -> Option<ValidationCheck> {
+fn run_specimen_uid_set_check(corpus: &WsiConformanceCorpus) -> Option<ValidationCheck> {
     let mut identities = BTreeMap::<String, (SpecimenIdentity, PathBuf)>::new();
     let mut failure = None;
     for facts in &corpus.instances {
@@ -309,7 +491,7 @@ pub(in crate::validation) fn run_specimen_uid_set_check(
                         if existing != specimen {
                             failure = Some(format!(
                                 "Specimen UID {} maps to conflicting identifiers or issuers in {} and {}",
-                                specimen.uid,
+                                shown(tags::SPECIMEN_UID, &specimen.uid),
                                 existing_path.display(),
                                 facts.path.display()
                             ));
@@ -338,7 +520,7 @@ pub(in crate::validation) fn run_specimen_uid_set_check(
     Some(rule_check(
         Path::new(""),
         SPECIMEN_SET_RULE,
-        "DICOM PS3.3 2026c C.7.6.22",
+        concat!("DICOM PS3.3 ", dicom_edition!(), " C.7.6.22"),
         failure.map_or(Ok(()), Err),
     ))
 }
@@ -351,13 +533,11 @@ struct PyramidExtent {
     spacing: PixelSpacingMm,
 }
 
-pub(in crate::validation) fn run_pyramid_geometry_set_check(
-    corpus: &WsiConformanceCorpus,
-) -> Option<ValidationCheck> {
+fn run_pyramid_geometry_set_check(corpus: &WsiConformanceCorpus) -> Option<ValidationCheck> {
     let mut pyramids = BTreeMap::<String, Vec<&PyramidFact>>::new();
     let mut failure = None;
-    for facts in &corpus.instances {
-        let Some(pyramid) = &facts.pyramid else {
+    for (_, wsi) in corpus.wsi() {
+        let Some(pyramid) = &wsi.pyramid else {
             continue;
         };
         let pyramid_uid = match &pyramid.uid {
@@ -377,7 +557,8 @@ pub(in crate::validation) fn run_pyramid_geometry_set_check(
     'pyramids: for (uid, levels) in &pyramids {
         if !is_valid_dicom_uid(uid) {
             failure = Some(format!(
-                "invalid Pyramid UID {uid:?} in {}",
+                "invalid Pyramid UID {} in {}",
+                shown(tags::PYRAMID_UID, uid),
                 levels[0].path.display()
             ));
             break;
@@ -410,7 +591,8 @@ pub(in crate::validation) fn run_pyramid_geometry_set_check(
                 || (reference.height_mm - level.height_mm).abs() > height_tolerance
             {
                 failure = Some(format!(
-                        "Pyramid UID {uid} has inconsistent physical extents: {} is {}x{} mm and {} is {}x{} mm",
+                        "Pyramid UID {} has inconsistent physical extents: {} is {}x{} mm and {} is {}x{} mm",
+                        shown(tags::PYRAMID_UID, uid),
                         reference.path.display(),
                         reference.width_mm,
                         reference.height_mm,
@@ -426,7 +608,7 @@ pub(in crate::validation) fn run_pyramid_geometry_set_check(
     Some(rule_check(
         Path::new(""),
         PYRAMID_GEOMETRY_RULE,
-        "DICOM PS3.3 2026c C.8.12.6",
+        concat!("DICOM PS3.3 ", dicom_edition!(), " C.8.12.6"),
         failure.map_or(Ok(()), Err),
     ))
 }
@@ -457,16 +639,14 @@ struct SourceReference {
     instance_uid: String,
 }
 
-pub(in crate::validation) fn run_source_relationship_set_check(
-    corpus: &WsiConformanceCorpus,
-) -> Option<ValidationCheck> {
-    if !corpus.instances.iter().any(|facts| facts.sources.is_some()) {
+fn run_source_relationship_set_check(corpus: &WsiConformanceCorpus) -> Option<ValidationCheck> {
+    if !corpus.wsi().any(|(_, wsi)| wsi.sources.is_some()) {
         return None;
     }
     let mut instances = BTreeMap::<String, (String, PathBuf)>::new();
     let mut references = Vec::<(String, PathBuf, SourceReference)>::new();
     let mut failure = None;
-    for facts in &corpus.instances {
+    for (facts, wsi) in corpus.wsi() {
         let instance_uid = match &facts.sop_instance_uid {
             Ok(value) => value.clone(),
             Err(reason) => {
@@ -474,7 +654,7 @@ pub(in crate::validation) fn run_source_relationship_set_check(
                 break;
             }
         };
-        let source_references = match &facts.sources {
+        let source_references = match &wsi.sources {
             None => &[][..],
             Some(Ok(value)) => value,
             Some(Err(reason)) => {
@@ -482,7 +662,7 @@ pub(in crate::validation) fn run_source_relationship_set_check(
                 break;
             }
         };
-        let class_uid = match &facts.sop_class_uid {
+        let class_uid = match &wsi.sop_class_uid {
             Ok(value) => value.clone(),
             Err(reason) => {
                 failure = Some(format!("{}: {reason}", facts.path.display()));
@@ -512,7 +692,7 @@ pub(in crate::validation) fn run_source_relationship_set_check(
                     failure = Some(format!(
                         "{} references {} with SOP Class UID {}, but {} declares {}",
                         owner_path.display(),
-                        reference.instance_uid,
+                        shown(tags::REFERENCED_SOP_INSTANCE_UID, &reference.instance_uid),
                         reference.class_uid,
                         target_path.display(),
                         actual_class
@@ -526,7 +706,7 @@ pub(in crate::validation) fn run_source_relationship_set_check(
     Some(rule_check(
         Path::new(""),
         SOURCE_RELATIONSHIP_RULE,
-        "DICOM PS3.3 2026c C.7.6.1 and Table 10-11",
+        concat!("DICOM PS3.3 ", dicom_edition!(), " C.7.6.1 and Table 10-11"),
         failure.map_or(Ok(()), Err),
     ))
 }

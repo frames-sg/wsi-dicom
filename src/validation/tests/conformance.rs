@@ -29,7 +29,7 @@ fn intrinsic_wsi_icc_rule_fails_even_when_external_validators_pass() {
     let report = validate_dicom_path_with_runner(
         &path,
         &ValidationOptions {
-            profile: ValidationProfile::Core2026c,
+            profile: ValidationProfile::Core,
             ..ValidationOptions::default()
         },
         &runner,
@@ -41,8 +41,7 @@ fn intrinsic_wsi_icc_rule_fails_even_when_external_validators_pass() {
         .iter()
         .any(|check| { check.name == "dciodvfy" && check.status == ValidationStatus::Passed }));
     assert!(report.checks.iter().any(|check| {
-        check.name == "intrinsic-wsi-dicom-2026c-icc-profile"
-            && check.status == ValidationStatus::Failed
+        check.name == "intrinsic-wsi-dicom-icc-profile" && check.status == ValidationStatus::Failed
     }));
     assert!(report.has_failures());
 }
@@ -55,7 +54,7 @@ fn corrected_producer_output_passes_all_versioned_intrinsic_wsi_rules() {
     let report = validate_dicom_path_with_runner(
         &path,
         &ValidationOptions {
-            profile: ValidationProfile::Core2026c,
+            profile: ValidationProfile::Core,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -63,20 +62,23 @@ fn corrected_producer_output_passes_all_versioned_intrinsic_wsi_rules() {
     .unwrap();
 
     for name in [
-        "intrinsic-wsi-dicom-2026c-icc-profile",
-        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
-        "intrinsic-wsi-dicom-2026c-lossy-history",
-        "intrinsic-wsi-dicom-2026c-specimen-identity",
-        "intrinsic-wsi-dicom-2026c-specimen-container",
-        "intrinsic-wsi-dicom-2026c-dimension-order",
-        "intrinsic-wsi-dicom-2026c-slide-coordinate-system",
-        "intrinsic-wsi-dicom-2026c-optical-path-structure",
-        "intrinsic-wsi-dicom-2026c-core-image-profile",
-        "intrinsic-wsi-dicom-2026c-specimen-uid-set",
-        "intrinsic-wsi-dicom-2026c-tile-geometry",
-        "intrinsic-wsi-dicom-2026c-identity-set",
-        "intrinsic-wsi-dicom-2026c-clinical-identity-set",
-        "intrinsic-wsi-dicom-2026c-image-metadata",
+        "intrinsic-wsi-dicom-icc-profile",
+        "intrinsic-wsi-dicom-monochrome-presentation",
+        "intrinsic-wsi-dicom-lossy-history",
+        "intrinsic-wsi-dicom-specimen-identity",
+        "intrinsic-wsi-dicom-specimen-container",
+        "intrinsic-wsi-dicom-dimension-order",
+        "intrinsic-wsi-dicom-slide-coordinate-system",
+        "intrinsic-wsi-dicom-optical-path-structure",
+        "intrinsic-wsi-dicom-core-image-profile",
+        "intrinsic-wsi-dicom-specimen-uid-set",
+        "intrinsic-wsi-dicom-tile-geometry",
+        "intrinsic-wsi-dicom-identity-set",
+        "intrinsic-wsi-dicom-clinical-identity-set",
+        "intrinsic-wsi-dicom-image-metadata",
+        "intrinsic-wsi-dicom-pixel-attributes",
+        "intrinsic-wsi-dicom-codestream",
+        "intrinsic-wsi-dicom-digital-signatures",
     ] {
         assert!(
             report
@@ -87,8 +89,8 @@ fn corrected_producer_output_passes_all_versioned_intrinsic_wsi_rules() {
         );
     }
     for name in [
-        "intrinsic-wsi-dicom-2026c-pyramid-geometry",
-        "intrinsic-wsi-dicom-2026c-source-relationship",
+        "intrinsic-wsi-dicom-pyramid-geometry",
+        "intrinsic-wsi-dicom-source-relationship",
     ] {
         assert!(
             report.checks.iter().all(|check| check.name != name),
@@ -106,7 +108,7 @@ fn core_image_profile_rule_rejects_missing_acquisition_datetime() {
     object.take(tags::ACQUISITION_DATE_TIME).unwrap();
     object.write_to_file(&path).unwrap();
 
-    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-2026c-core-image-profile");
+    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-core-image-profile");
 }
 
 #[test]
@@ -117,7 +119,7 @@ fn core_image_profile_rule_rejects_missing_type_two_acquisition_context() {
     object.take(tags::ACQUISITION_CONTEXT_SEQUENCE).unwrap();
     object.write_to_file(&path).unwrap();
 
-    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-2026c-core-image-profile");
+    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-core-image-profile");
 }
 
 #[test]
@@ -128,7 +130,7 @@ fn core_image_profile_rule_rejects_missing_enhanced_equipment_identity() {
     object.take(tags::MANUFACTURER).unwrap();
     object.write_to_file(&path).unwrap();
 
-    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-2026c-core-image-profile");
+    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-core-image-profile");
 }
 
 #[test]
@@ -141,7 +143,7 @@ fn slide_coordinate_system_rule_rejects_missing_origin() {
         .unwrap();
     object.write_to_file(&path).unwrap();
 
-    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-2026c-slide-coordinate-system");
+    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-slide-coordinate-system");
 }
 
 #[test]
@@ -156,7 +158,7 @@ fn optical_path_structure_rule_rejects_count_mismatch() {
     ));
     object.write_to_file(&path).unwrap();
 
-    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-2026c-optical-path-structure");
+    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-optical-path-structure");
 }
 
 #[test]
@@ -171,7 +173,7 @@ fn specimen_container_rule_rejects_missing_type_two_preparation_sequence() {
     object.put(descriptions);
     object.write_to_file(&path).unwrap();
 
-    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-2026c-specimen-container");
+    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-specimen-container");
 }
 
 #[test]
@@ -209,7 +211,7 @@ fn clinical_identity_set_rule_rejects_patient_conflict_within_study() {
     let report = validate_dicom_path_with_runner(
         &set_dir,
         &ValidationOptions {
-            profile: ValidationProfile::Core2026c,
+            profile: ValidationProfile::Core,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -217,7 +219,7 @@ fn clinical_identity_set_rule_rejects_patient_conflict_within_study() {
     .unwrap();
 
     assert!(report.checks.iter().any(|check| {
-        check.name == "intrinsic-wsi-dicom-2026c-clinical-identity-set"
+        check.name == "intrinsic-wsi-dicom-clinical-identity-set"
             && check.status == ValidationStatus::Failed
     }));
 }
@@ -230,7 +232,7 @@ fn clinical_identity_set_rule_rejects_missing_patient_type_two_attribute() {
     object.take(tags::PATIENT_BIRTH_DATE).unwrap();
     object.write_to_file(&path).unwrap();
 
-    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-2026c-clinical-identity-set");
+    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-clinical-identity-set");
 }
 
 #[test]
@@ -255,7 +257,7 @@ fn tile_geometry_rule_rejects_duplicate_tiled_full_position() {
     object.put(per_frame);
     object.write_to_file(&path).unwrap();
 
-    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-2026c-tile-geometry");
+    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-tile-geometry");
 }
 
 #[test]
@@ -265,7 +267,7 @@ fn tile_geometry_rule_requires_imaged_volume_only_for_volume_images() {
     let mut object = dicom_object::open_file(&path).unwrap();
     object.take(tags::IMAGED_VOLUME_WIDTH).unwrap();
     object.write_to_file(&path).unwrap();
-    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-2026c-tile-geometry");
+    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-tile-geometry");
 
     // PS3.3 C.8.12.4 requires Imaged Volume Width only for VOLUME images.
     object.put(DataElement::new(
@@ -283,7 +285,7 @@ fn tile_geometry_rule_requires_imaged_volume_only_for_volume_images() {
     let tile_geometry = report
         .checks
         .iter()
-        .find(|check| check.name == "intrinsic-wsi-dicom-2026c-tile-geometry")
+        .find(|check| check.name == "intrinsic-wsi-dicom-tile-geometry")
         .unwrap();
     assert_eq!(
         tile_geometry.status,
@@ -305,7 +307,7 @@ fn identity_set_rule_rejects_file_meta_and_dataset_sop_mismatch() {
     ));
     object.write_to_file(&path).unwrap();
 
-    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-2026c-identity-set");
+    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-identity-set");
 }
 
 #[test]
@@ -320,7 +322,7 @@ fn image_metadata_rule_rejects_samples_and_photometric_contradiction() {
     ));
     object.write_to_file(&path).unwrap();
 
-    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-2026c-image-metadata");
+    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-image-metadata");
 }
 
 #[test]
@@ -335,10 +337,7 @@ fn versioned_intrinsic_wsi_rules_reject_targeted_metadata_mutations() {
         "MONOCHROME2",
     ));
     object.write_to_file(&monochrome).unwrap();
-    assert_intrinsic_rule_fails(
-        &monochrome,
-        "intrinsic-wsi-dicom-2026c-monochrome-presentation",
-    );
+    assert_intrinsic_rule_fails(&monochrome, "intrinsic-wsi-dicom-monochrome-presentation");
 
     let lossy = export_valid_color_wsi_for_validation(tmp.path(), "lossy");
     let mut object = dicom_object::open_file(&lossy).unwrap();
@@ -348,7 +347,7 @@ fn versioned_intrinsic_wsi_rules_reject_targeted_metadata_mutations() {
         "01",
     ));
     object.write_to_file(&lossy).unwrap();
-    assert_intrinsic_rule_fails(&lossy, "intrinsic-wsi-dicom-2026c-lossy-history");
+    assert_intrinsic_rule_fails(&lossy, "intrinsic-wsi-dicom-lossy-history");
 
     let specimen = export_valid_color_wsi_for_validation(tmp.path(), "specimen");
     let mut object = dicom_object::open_file(&specimen).unwrap();
@@ -360,15 +359,16 @@ fn versioned_intrinsic_wsi_rules_reject_targeted_metadata_mutations() {
     ));
     object.put(sequence);
     object.write_to_file(&specimen).unwrap();
-    assert_intrinsic_rule_fails(&specimen, "intrinsic-wsi-dicom-2026c-specimen-identity");
+    assert_intrinsic_rule_fails(&specimen, "intrinsic-wsi-dicom-specimen-identity");
 
     let dimension = export_valid_color_wsi_for_validation(tmp.path(), "dimension");
     let mut object = dicom_object::open_file(&dimension).unwrap();
+    // Each Frame keeps two Dimension Index Values for what is now one Item.
     let mut sequence = object.take(tags::DIMENSION_INDEX_SEQUENCE).unwrap();
-    sequence.items_mut().unwrap().swap(0, 1);
+    sequence.items_mut().unwrap().pop();
     object.put(sequence);
     object.write_to_file(&dimension).unwrap();
-    assert_intrinsic_rule_fails(&dimension, "intrinsic-wsi-dicom-2026c-dimension-order");
+    assert_intrinsic_rule_fails(&dimension, "intrinsic-wsi-dicom-dimension-order");
 }
 
 #[test]
@@ -395,7 +395,7 @@ fn specimen_uid_set_rule_rejects_conflicting_identifier_scope() {
     let report = validate_dicom_path_with_runner(
         &set_dir,
         &ValidationOptions {
-            profile: ValidationProfile::Core2026c,
+            profile: ValidationProfile::Core,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -403,7 +403,7 @@ fn specimen_uid_set_rule_rejects_conflicting_identifier_scope() {
     .unwrap();
 
     assert!(report.checks.iter().any(|check| {
-        check.name == "intrinsic-wsi-dicom-2026c-specimen-uid-set"
+        check.name == "intrinsic-wsi-dicom-specimen-uid-set"
             && check.status == ValidationStatus::Failed
     }));
 }
@@ -437,7 +437,7 @@ fn pyramid_geometry_rule_rejects_inconsistent_physical_extent() {
     let report = validate_dicom_path_with_runner(
         &set_dir,
         &ValidationOptions {
-            profile: ValidationProfile::Core2026c,
+            profile: ValidationProfile::Core,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -445,7 +445,7 @@ fn pyramid_geometry_rule_rejects_inconsistent_physical_extent() {
     .unwrap();
 
     assert!(report.checks.iter().any(|check| {
-        check.name == "intrinsic-wsi-dicom-2026c-pyramid-geometry"
+        check.name == "intrinsic-wsi-dicom-pyramid-geometry"
             && check.status == ValidationStatus::Failed
     }));
 }
@@ -485,7 +485,7 @@ fn source_relationship_rule_rejects_self_reference() {
     ));
     object.write_to_file(&path).unwrap();
 
-    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-2026c-source-relationship");
+    assert_intrinsic_rule_fails(&path, "intrinsic-wsi-dicom-source-relationship");
 }
 
 #[test]
@@ -529,14 +529,14 @@ fn source_relationship_rule_rejects_present_target_with_wrong_class() {
     let report = validate_dicom_path_with_runner(
         &set_dir,
         &ValidationOptions {
-            profile: ValidationProfile::Core2026c,
+            profile: ValidationProfile::Core,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
     )
     .unwrap();
     assert!(report.checks.iter().any(|check| {
-        check.name == "intrinsic-wsi-dicom-2026c-source-relationship"
+        check.name == "intrinsic-wsi-dicom-source-relationship"
             && check.status == ValidationStatus::Failed
     }));
 }
@@ -588,7 +588,7 @@ fn applicable_source_relationship_is_reported_after_other_corpus_checks() {
     let report = validate_dicom_path_with_runner(
         &set_dir,
         &ValidationOptions {
-            profile: ValidationProfile::Core2026c,
+            profile: ValidationProfile::Core,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -597,12 +597,12 @@ fn applicable_source_relationship_is_reported_after_other_corpus_checks() {
     let identity_index = report
         .checks
         .iter()
-        .position(|check| check.name == "intrinsic-wsi-dicom-2026c-identity-set")
+        .position(|check| check.name == "intrinsic-wsi-dicom-identity-set")
         .unwrap();
     let source_index = report
         .checks
         .iter()
-        .position(|check| check.name == "intrinsic-wsi-dicom-2026c-source-relationship")
+        .position(|check| check.name == "intrinsic-wsi-dicom-source-relationship")
         .unwrap();
 
     assert_eq!(report.checks[source_index].status, ValidationStatus::Passed);
@@ -643,7 +643,7 @@ fn native_transfer_syntax_with_defined_length_encapsulated_bytes_is_intrinsicall
     let report = validate_dicom_path_with_runner(
         &file,
         &ValidationOptions {
-            profile: ValidationProfile::Core2026c,
+            profile: ValidationProfile::Core,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -679,7 +679,7 @@ fn valid_native_pixels_may_match_an_encapsulated_item_stream_byte_pattern() {
     let report = validate_dicom_path_with_runner(
         &file,
         &ValidationOptions {
-            profile: ValidationProfile::Core2026c,
+            profile: ValidationProfile::Core,
             ..ValidationOptions::default()
         },
         &FakeRunner::default(),
@@ -707,7 +707,7 @@ fn compressed_primitive_and_empty_encapsulated_pixel_data_fail_without_decoding(
         let report = validate_dicom_path_with_runner(
             &file,
             &ValidationOptions {
-                profile: ValidationProfile::Core2026c,
+                profile: ValidationProfile::Core,
                 ..ValidationOptions::default()
             },
             &FakeRunner::default(),

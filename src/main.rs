@@ -128,6 +128,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             json,
         )?),
         Command::Validate(arguments) => Ok(cli_validation::handle_validate(arguments)?),
+        Command::ValidateJson(arguments) => Ok(cli_validation::handle_validate_json(arguments)?),
+        Command::Dicomweb(arguments) => Ok(cli_validation::handle_dicomweb(arguments)?),
         Command::Doctor {
             strict,
             dcmvalidate_iod,
@@ -138,6 +140,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             json,
         )?),
         Command::SelfTest(arguments) => Ok(cli_validation::handle_self_test(arguments)?),
+        Command::Requirements { json } => Ok(cli_validation::handle_requirements(json)?),
     }
 }
 

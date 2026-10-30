@@ -6,6 +6,8 @@ use dicom_core::{PrimitiveValue, Tag};
 use dicom_dictionary_std::tags;
 use dicom_object::InMemDicomObject;
 
+use crate::validation::disclosure::Nesting;
+
 /// Kleene logic: conditions that depend on facts absent from the object are `Unknown`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Tri {
@@ -115,6 +117,8 @@ pub(super) struct Scope<'a> {
     pub(super) parent: Option<&'a Scope<'a>>,
     pub(super) frame: Option<Frame<'a>>,
     pub(super) transfer_syntax: &'a str,
+    /// What messages withhold of the Values of `item`.
+    pub(super) nesting: Nesting,
 }
 
 impl<'a> Scope<'a> {
@@ -125,6 +129,7 @@ impl<'a> Scope<'a> {
             parent: None,
             frame: None,
             transfer_syntax,
+            nesting: Nesting::default(),
         }
     }
 
@@ -135,6 +140,7 @@ impl<'a> Scope<'a> {
             parent: Some(self),
             frame: self.frame,
             transfer_syntax: self.transfer_syntax,
+            nesting: self.nesting,
         }
     }
 
@@ -194,7 +200,7 @@ pub(super) fn tag_of(value: u32) -> Tag {
     Tag((value >> 16) as u16, (value & 0xFFFF) as u16)
 }
 
-pub(super) fn raw_tag(tag: Tag) -> u32 {
+pub(in crate::validation) fn raw_tag(tag: Tag) -> u32 {
     u32::from(tag.group()) << 16 | u32::from(tag.element())
 }
 
@@ -240,7 +246,7 @@ fn text_has_value(text: &str) -> bool {
         .any(|character| !matches!(character, ' ' | '\0' | '^' | '='))
 }
 
-pub(super) fn items(object: &InMemDicomObject, tag: Tag) -> &[InMemDicomObject] {
+pub(in crate::validation) fn items(object: &InMemDicomObject, tag: Tag) -> &[InMemDicomObject] {
     object
         .get(tag)
         .and_then(|element| element.items())
@@ -248,12 +254,29 @@ pub(super) fn items(object: &InMemDicomObject, tag: Tag) -> &[InMemDicomObject] 
 }
 
 /// Value `index` (1-based) of a string Attribute, without padding.
-pub(super) fn string_value(object: &InMemDicomObject, tag: Tag, index: usize) -> Option<String> {
+pub(in crate::validation) fn string_value(
+    object: &InMemDicomObject,
+    tag: Tag,
+    index: usize,
+) -> Option<String> {
     let element = object.get(tag)?;
-    let values = element.to_multi_str().ok()?;
-    let value = values.get(index.checked_sub(1)?)?;
-    let trimmed = value.trim_matches(|character| character == ' ' || character == '\0');
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
+    let position = index.checked_sub(1)?;
+    let trimmed = |value: &str| {
+        let value = value.trim_matches(|character| character == ' ' || character == '\0');
+        (!value.is_empty()).then(|| value.to_string())
+    };
+    // Text Values are read in place; other VRs go through their string form.
+    match element.value() {
+        Value::Primitive(PrimitiveValue::Str(value)) => {
+            (position == 0).then_some(value.as_str()).and_then(trimmed)
+        }
+        Value::Primitive(PrimitiveValue::Strs(values)) => values
+            .iter()
+            .flat_map(|value| value.split('\\'))
+            .nth(position)
+            .and_then(trimmed),
+        _ => trimmed(element.to_multi_str().ok()?.get(position)?),
+    }
 }
 
 /// Whether Value `index` (1-based) is one of `values`; absent counts as not.
@@ -263,19 +286,19 @@ pub(super) fn value_in(object: &InMemDicomObject, tag: Tag, index: usize, values
     )
 }
 
-pub(super) fn integer_value(object: &InMemDicomObject, tag: Tag) -> Option<i64> {
+pub(in crate::validation) fn integer_value(object: &InMemDicomObject, tag: Tag) -> Option<i64> {
     object.get(tag)?.to_int::<i64>().ok()
 }
 
 /// Data Element Tag Values of an AT Attribute.
-pub(super) fn tag_values(object: &InMemDicomObject, tag: Tag) -> Vec<Tag> {
+pub(in crate::validation) fn tag_values(object: &InMemDicomObject, tag: Tag) -> Vec<Tag> {
     match object.get(tag).map(|element| element.value()) {
         Some(Value::Primitive(PrimitiveValue::Tags(values))) => values.to_vec(),
         _ => Vec::new(),
     }
 }
 
-pub(super) fn is_private(tag: Tag) -> bool {
+pub(in crate::validation) fn is_private(tag: Tag) -> bool {
     tag.group() % 2 == 1
 }
 

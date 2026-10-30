@@ -15,6 +15,7 @@ use super::scope::{
     present, required_if, string_value, tag_values, value_in, Otherwise, Requirement, Scope, Tri,
 };
 use super::tables::ConditionId as C;
+use crate::validation::transfer_syntaxes::is_jpip_referenced;
 use crate::VL_WSI_SOP_CLASS_UID;
 
 use Otherwise::{MayBePresent, NotPresent};
@@ -24,14 +25,6 @@ const LEGACY_CONVERTED: [&str; 3] = [
     uids::LEGACY_CONVERTED_ENHANCED_MR_IMAGE_STORAGE,
     uids::LEGACY_CONVERTED_ENHANCED_PET_IMAGE_STORAGE,
 ];
-/// Excluded from the Frame Reference and Frame Acquisition DateTime conditions.
-const LEGACY_CONVERTED_AND_VL_WSI: [&str; 4] = [
-    uids::LEGACY_CONVERTED_ENHANCED_CT_IMAGE_STORAGE,
-    uids::LEGACY_CONVERTED_ENHANCED_MR_IMAGE_STORAGE,
-    uids::LEGACY_CONVERTED_ENHANCED_PET_IMAGE_STORAGE,
-    VL_WSI_SOP_CLASS_UID,
-];
-const JPIP_REFERENCED: [&str; 2] = [uids::JPIP_REFERENCED, uids::JPIP_REFERENCED_DEFLATE];
 const PATIENT_POSITION_SOP_CLASSES: [&str; 6] = [
     uids::CT_IMAGE_STORAGE,
     uids::MR_IMAGE_STORAGE,
@@ -70,7 +63,7 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         C::CodeValue_c75d2f => required_if(code_value_fits_short_form(item), NotPresent),
         // "Shall be present if Code Value or Long Code Value is present. May be present otherwise."
         C::CodingSchemeDesignator_117155 => required_if(
-            (has(item, tags::CODE_VALUE) || has(item, tags::LONG_CODE_VALUE)).into(),
+            present(item, tags::CODE_VALUE).or(present(item, tags::LONG_CODE_VALUE)),
             MayBePresent,
         ),
         // "Required if the Value of Coding Scheme Designator is present and is not sufficient to
@@ -88,12 +81,12 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         }
         // "Shall be present if Code Value is not present and the Code Value is not a URN or URL."
         C::LongCodeValue_318ae8 => required_if(
-            Tri::from(!has(item, tags::CODE_VALUE)).and(code_value_is_urn(item).not()),
+            absent(item, tags::CODE_VALUE).and(code_value_is_urn(item).not()),
             NotPresent,
         ),
         // "Shall be present if Code Value is not present and the Code Value is a URN or URL."
         C::URNCodeValue_3efa2e => required_if(
-            Tri::from(!has(item, tags::CODE_VALUE)).and(code_value_is_urn(item)),
+            absent(item, tags::CODE_VALUE).and(code_value_is_urn(item)),
             NotPresent,
         ),
 
@@ -120,19 +113,19 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         // "Required if the Patient is a non-human organism and if Patient Species Code Sequence
         // is not present. May be present otherwise."
         C::PatientSpeciesDescription_6364e6 => required_if(
-            non_human().and(absent(item, tags::PATIENT_SPECIES_CODE_SEQUENCE)),
+            non_human(root).and(absent(item, tags::PATIENT_SPECIES_CODE_SEQUENCE)),
             MayBePresent,
         ),
         // "Required if the Patient is a non-human organism and if Patient Species Description
         // is not present. May be present otherwise."
         C::PatientSpeciesCodeSequence_3133a2 => required_if(
-            non_human().and(absent(item, tags::PATIENT_SPECIES_DESCRIPTION)),
+            non_human(root).and(absent(item, tags::PATIENT_SPECIES_DESCRIPTION)),
             MayBePresent,
         ),
         // "Required if the Patient is a non-human organism and if Patient Breed Code Sequence
         // is empty. May be present otherwise."
         C::PatientBreedDescription_2b9079 => required_if(
-            non_human().and(
+            non_human(root).and(
                 items(item, tags::PATIENT_BREED_CODE_SEQUENCE)
                     .is_empty()
                     .into(),
@@ -140,15 +133,15 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
             MayBePresent,
         ),
         // "Required if the Patient is a non-human organism." (Type 2C)
-        C::PatientBreedCodeSequence_878016 => required_if(non_human(), NotPresent),
+        C::PatientBreedCodeSequence_878016 => required_if(non_human(root), NotPresent),
         // "Required if the Patient is a non-human organism. May be present otherwise."
-        C::ResponsiblePerson_26bd73 => required_if(non_human(), MayBePresent),
+        C::ResponsiblePerson_26bd73 => required_if(non_human(root), MayBePresent),
         // "Required if Responsible Person is present and has a Value."
         C::ResponsiblePersonRole_45e655 => {
             required_if(has_value(item, tags::RESPONSIBLE_PERSON).into(), NotPresent)
         }
         // "Required if Patient is a non-human organism. May be present otherwise."
-        C::ResponsibleOrganization_a81ee5 => required_if(non_human(), MayBePresent),
+        C::ResponsibleOrganization_a81ee5 => required_if(non_human(root), MayBePresent),
         // "Required if Patient Identity Removed is present and has a Value of YES and
         // De-identification Method Code Sequence is not present. May be present otherwise."
         C::DeidentificationMethod_1b21e1 => required_if(
@@ -291,7 +284,7 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         }
         // "Required if the Patient is a non-human organism and the anatomical Frame of Reference
         // is not bipedal. May be present otherwise."
-        C::AnatomicalOrientationType_a42424 => required_if(non_human(), MayBePresent),
+        C::AnatomicalOrientationType_a42424 => required_if(non_human(root), MayBePresent),
 
         // ---- Table 10-9 Request Attributes Macro ----
         // "Required if procedure was scheduled. May be present otherwise."
@@ -364,12 +357,14 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         // otherwise." Read as two independent alternatives, every image without Image
         // Orientation (Slide) (CT, MR, ...) would need Patient Orientation, which the Type 2C
         // design excludes; the text names the two orientation mechanisms either of which makes
-        // Patient Orientation unnecessary. Table A.32.8-1 includes no Module defining Image
-        // Orientation (Patient), so the condition reduces to Image Orientation (Slide) being
-        // not required.
-        C::PatientOrientation_964c1d => {
-            required_if(image_orientation_slide_required(scope).not(), MayBePresent)
-        }
+        // Patient Orientation unnecessary. The pathology-slide IODs carry Image Orientation
+        // (Patient) only in Plane Orientation (Patient) Functional Groups.
+        C::PatientOrientation_964c1d => required_if(
+            image_orientation_slide_required(scope)
+                .not()
+                .and(Tri::from(!patient_oriented(scope))),
+            MayBePresent,
+        ),
         // "Required if image is part of a Series in which the images are temporally related.
         // May be present otherwise."
         C::ContentDate_b7911d => required_if(Tri::Unknown, MayBePresent),
@@ -481,11 +476,12 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         C::PixelData_f3a5dd => required_if(absent(item, tags::PIXEL_DATA_PROVIDER_URL), NotPresent),
         // "Required if the image is to be transferred in one of the following presentation
         // contexts identified by Transfer Syntax UID: JPIP Referenced, JPIP Referenced Deflate".
-        // A stored file is encoded in the Transfer Syntax of its File Meta Information.
-        C::PixelDataProviderURL_83d79f => required_if(
-            JPIP_REFERENCED.contains(&scope.transfer_syntax).into(),
-            NotPresent,
-        ),
+        // A stored file is encoded in the Transfer Syntax of its File Meta Information. The list
+        // predates the JPIP HTJ2K Referenced syntaxes, which PS3.5 A.11 and A.12 encode the same
+        // way (Pixel Data replaced by this URL); PS3.5 defines the encoding, so they are included.
+        C::PixelDataProviderURL_83d79f => {
+            required_if(is_jpip_referenced(scope.transfer_syntax).into(), NotPresent)
+        }
         // "Required if pixel padding is to be defined as a range rather than a single Value."
         C::PixelPaddingRangeLimit_0bc79e => required_if(Tri::Unknown, NotPresent),
         // "Required if Extended Offset Table (7FE0,0001) is present."
@@ -526,13 +522,9 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         ),
         // "Required if the Dimension Index Pointer Value is the Data Element Tag of a Private
         // Attribute."
-        C::DimensionIndexPrivateCreator_252bb2 => required_if(
-            tag_values(item, tags::DIMENSION_INDEX_POINTER)
-                .into_iter()
-                .any(is_private)
-                .into(),
-            NotPresent,
-        ),
+        C::DimensionIndexPrivateCreator_252bb2 => {
+            private_creator_required(item, tags::DIMENSION_INDEX_POINTER)
+        }
         // "Required if the Value of Dimension Index Pointer is the Data Element Tag of an
         // Attribute that is contained within a Functional Group Sequence."
         C::FunctionalGroupPointer_59f16f => {
@@ -540,13 +532,9 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         }
         // "Required if the Functional Group Pointer Value is the Data Element Tag of a Private
         // Attribute."
-        C::FunctionalGroupPrivateCreator_d93a4b => required_if(
-            tag_values(item, tags::FUNCTIONAL_GROUP_POINTER)
-                .into_iter()
-                .any(is_private)
-                .into(),
-            NotPresent,
-        ),
+        C::FunctionalGroupPrivateCreator_d93a4b => {
+            private_creator_required(item, tags::FUNCTIONAL_GROUP_POINTER)
+        }
 
         // ---- Table C.7.6.22-2 Specimen Description Items ----
         // "Required if multiple specimens present in the image. May be present otherwise." The
@@ -714,26 +702,18 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
         }
         // "Required if Selector Sequence Pointer is present and one or more of its Values is the
         // Data Element Tag of a Private Attribute."
-        C::SelectorSequencePointerPrivateCreator_4cb02f => required_if(
-            tag_values(item, tags::SELECTOR_SEQUENCE_POINTER)
-                .into_iter()
-                .any(is_private)
-                .into(),
-            NotPresent,
-        ),
+        C::SelectorSequencePointerPrivateCreator_4cb02f => {
+            private_creator_required(item, tags::SELECTOR_SEQUENCE_POINTER)
+        }
         // "Required if Selector Sequence Pointer is present."
         C::SelectorSequencePointerItems_60e4ce => {
             required_if(present(item, tags::SELECTOR_SEQUENCE_POINTER), NotPresent)
         }
         // "Required if the Selector Attribute Value is the Data Element Tag of a Private
         // Attribute."
-        C::SelectorAttributePrivateCreator_83625b => required_if(
-            tag_values(item, tags::SELECTOR_ATTRIBUTE)
-                .into_iter()
-                .any(is_private)
-                .into(),
-            NotPresent,
-        ),
+        C::SelectorAttributePrivateCreator_83625b => {
+            private_creator_required(item, tags::SELECTOR_ATTRIBUTE)
+        }
 
         // ---- Table 10.41-1 Protocol Context Macro ----
         // "Required if this instance is a Performed Procedure Protocol that resulted from a
@@ -878,12 +858,919 @@ pub(super) fn evaluate(id: C, scope: &Scope<'_>) -> Requirement {
             MayBePresent,
         ),
 
+        // ---- Table C.7-18 Device Module ----
+        // "Required if Device Diameter (0050,0016) is present."
+        C::DeviceDiameterUnits_3c1081 => {
+            required_if(present(item, tags::DEVICE_DIAMETER), NotPresent)
+        }
+
+        // ---- Table C.11-2b VOI LUT Macro ----
+        // "Required if Window Center (0028,1050) is present."
+        C::WindowWidth_65ee92 => required_if(present(item, tags::WINDOW_CENTER), NotPresent),
+
+        // ---- Table C.7-7 Synchronization Module ----
+        // "Required if synchronization channel or trigger is encoded in a waveform in this SOP
+        // Instance." Only a Waveform Sequence (5400,0100) encodes a waveform.
+        C::SynchronizationChannel_e1ebdb => {
+            required_if(present(root, tags::WAVEFORM_SEQUENCE), NotPresent)
+        }
+
+        // ---- Table C.8.20-4 Segment Description Macro (also Table C.8.35.3-1) ----
+        // "Required if Tracking UID (0062,0021) is present." and the converse.
+        C::TrackingID_aba688 => required_if(present(item, tags::TRACKING_UID), NotPresent),
+        C::TrackingUID_f608d8 => required_if(present(item, tags::TRACKING_ID), NotPresent),
+        // "Required if Referenced SOP Class UID (0008,1150) is "1.2.840.10008.5.1.4.1.1.481.3"
+        // (RT Structure Set Storage)."
+        C::ReferencedROINumber_14d038 => required_if(
+            value_in(
+                item,
+                tags::REFERENCED_SOP_CLASS_UID,
+                1,
+                &[uids::RT_STRUCTURE_SET_STORAGE],
+            ),
+            NotPresent,
+        ),
+
+        // ---- Tables A.51-2 and A.75-2 Functional Group usage ----
+        // "C - Required if Derivation Image Functional Group is not present and the Frame of
+        // Reference is defined in the patient-relative Reference Coordinate System. May be
+        // present otherwise if the Frame of Reference is defined in the patient-relative
+        // Reference Coordinate System." (Pixel Measures, Plane Position (Patient), Plane
+        // Orientation (Patient)). A.51.5.1 specifies a Slide Coordinate System segment "using
+        // the Pixel Measures and ... the Plane Position (Slide)", which the usage text forbids;
+        // with that conflict a Slide Frame of Reference leaves the three undetermined.
+        C::FgPixelMeasures_3dce04 => {
+            match (
+                patient_frame_of_reference(scope),
+                slide_frame_of_reference(scope),
+            ) {
+                (Tri::True, _) if !groups_have(scope, tags::DERIVATION_IMAGE_SEQUENCE) => {
+                    Requirement::Required
+                }
+                (Tri::True, _) => Requirement::Optional,
+                (Tri::False, Tri::False) => Requirement::Forbidden,
+                _ => Requirement::Undeterminable,
+            }
+        }
+        // "C - Required if Derivation Image Functional Group is not present and the Frame of
+        // Reference is defined in the Slide Coordinate System and Dimension Organization Type
+        // (0020,9311) is not TILED_FULL. May be present otherwise if the Frame of Reference is
+        // defined in the Slide Coordinate System."
+        C::FgPlanePositionSlide_c41baf => slide_positions(
+            scope,
+            Tri::from(!groups_have(scope, tags::DERIVATION_IMAGE_SEQUENCE)),
+        ),
+        // "C - Required if the Frame of Reference is defined in the Slide Coordinate System and
+        // Dimension Organization Type (0020,9311) is not TILED_FULL. May be present otherwise if
+        // the Frame of Reference is defined in the Slide Coordinate System."
+        C::FgPlanePositionSlide_c1ecaa => slide_positions(scope, Tri::True),
+        // "C - Required if Pixel Measures or either Plane Position (Patient) or Plane Orientation
+        // (Patient) (if the Frame of Reference is defined in the patient-relative Reference
+        // Coordinate System), or Plane Position (Slide) (if the Frame of Reference is defined in
+        // the Slide Coordinate System) Functional Groups are not present. May be present
+        // otherwise."
+        C::FgDerivationImage_a322fc => {
+            let positioned = match (
+                patient_frame_of_reference(scope),
+                slide_frame_of_reference(scope),
+            ) {
+                (Tri::True, _) => Tri::from(
+                    groups_have(scope, tags::PLANE_POSITION_SEQUENCE)
+                        && groups_have(scope, tags::PLANE_ORIENTATION_SEQUENCE),
+                ),
+                (_, Tri::True) => {
+                    Tri::from(groups_have(scope, tags::PLANE_POSITION_SLIDE_SEQUENCE))
+                }
+                (Tri::False, Tri::False) => Tri::False,
+                _ => Tri::Unknown,
+            };
+            let measured = Tri::from(groups_have(scope, tags::PIXEL_MEASURES_SEQUENCE));
+            required_if(measured.and(positioned).not(), MayBePresent)
+        }
+        // "C - Required if not empty." The Frame Content Macro is not empty when Dimension Index
+        // Values (0020,9157) is required in it, which a Dimension Index Sequence makes it; its
+        // Type 3 Attributes may fill it otherwise.
+        C::FgFrameContent_506a28 => required_if(
+            Tri::from(!items(root, tags::DIMENSION_INDEX_SEQUENCE).is_empty()),
+            MayBePresent,
+        ),
+        // "C - Required if Dimension Organization Type (0020,9311) is not TILED_FULL and
+        // Segmentation Type (0062,0001) is not LABELMAP."
+        C::FgSegmentation_99fd82 => required_if(
+            scope
+                .dimension_organization_type_is("TILED_FULL")
+                .not()
+                .and(value_in(root, tags::SEGMENTATION_TYPE, 1, &["LABELMAP"]).not()),
+            NotPresent,
+        ),
+        // "C - Required if the Frame of Reference is defined in the patient-relative Reference
+        // Coordinate System." (Plane Position (Patient), Plane Orientation (Patient))
+        C::FgPlanePositionPatient_183b05 => {
+            required_if(patient_frame_of_reference(scope), NotPresent)
+        }
+        // "C - Required if Pixel Presentation (0008,9205) in the Parametric Map Image Module
+        // equals COLOR_RANGE."
+        C::FgStoredValueColorRange_fd7048 => required_if(color_range(root), NotPresent),
+
+        // ---- Table C.37.1-2 Microscopy Bulk Simple Annotations Module (and Table A.87-1) ----
+        // "C - Required if Annotation Coordinate Type (006A,0001) is 3D"
+        C::ModuleFrameOfReference_9c03a6 => required_if(coordinates_3d(root), NotPresent),
+        // "Required if Annotation Coordinate Type (006A,0001) is 2D[. May be present otherwise.]"
+        C::PixelOriginInterpretation_577198 => required_if(coordinates_2d(root), NotPresent),
+        C::ReferencedImageSequence_89465a => required_if(coordinates_2d(root), MayBePresent),
+        // "Required if Annotation Coordinate Type (006A,0001) is 3D."
+        C::AnnotationAppliesToAllZPlanes_867724 => required_if(coordinates_3d(root), NotPresent),
+        // "Required if Annotation Generation Type (006A,0007) is AUTOMATIC or SEMIAUTOMATIC."
+        C::AnnotationGroupAlgorithmIdentificationSequence_671dca => required_if(
+            value_in(
+                item,
+                tags::ANNOTATION_GROUP_GENERATION_TYPE,
+                1,
+                &["AUTOMATIC", "SEMIAUTOMATIC"],
+            ),
+            NotPresent,
+        ),
+        // "Required if Annotation Applies to All Optical Paths (006A,000D) is NO."
+        C::ReferencedOpticalPathIdentifier_12a10b => required_if(
+            value_in(
+                item,
+                tags::ANNOTATION_APPLIES_TO_ALL_OPTICAL_PATHS,
+                1,
+                &["NO"],
+            ),
+            NotPresent,
+        ),
+        // "Required if Annotation Coordinate Type (006A,0001) is 3D, and all points in Point
+        // Coordinates Data (0066,0016) or Double Point Coordinates Data (0066,0022) are in the
+        // same Z plane(s)."
+        C::CommonZCoordinateValue_a8e676 => {
+            required_if(coordinates_3d(root).and(common_z(item)), NotPresent)
+        }
+        // "Required if Double Point Coordinates Data (0066,0022) is not present." and the converse.
+        C::PointCoordinatesData_58d08c => required_if(
+            absent(item, tags::DOUBLE_POINT_COORDINATES_DATA),
+            NotPresent,
+        ),
+        C::DoublePointCoordinatesData_aabd15 => {
+            required_if(absent(item, tags::POINT_COORDINATES_DATA), NotPresent)
+        }
+        // "Required if Graphic Type (0070,0023) is POLYLINE or POLYGON."
+        C::LongPrimitivePointIndexList_bb9fb2 => required_if(
+            value_in(item, tags::GRAPHIC_TYPE, 1, &["POLYLINE", "POLYGON"]),
+            NotPresent,
+        ),
+        // "Required if Measurement Values stored in Floating Point Values (0066,0125) are
+        // associated with only a subset of Annotations." Fewer Values than the Annotation Group's
+        // Number of Annotations (006A,000C) are a subset.
+        C::AnnotationIndexList_0474f0 => required_if(measured_subset(scope), NotPresent),
+
+        // ---- Table A.51-1 Module usage ----
+        // "C - Required if Derivation Image Functional Group is not present. May be present
+        // otherwise."
+        C::ModuleFrameOfReference_e53396 => required_if(
+            Tri::from(!groups_have(scope, tags::DERIVATION_IMAGE_SEQUENCE)),
+            MayBePresent,
+        ),
+        // "C - Required if Derivation Image Functional Group is present."
+        C::ModuleCommonInstanceReference_ef2f7b => required_if(
+            Tri::from(groups_have(scope, tags::DERIVATION_IMAGE_SEQUENCE)),
+            NotPresent,
+        ),
+        // "C - Required if Photometric Interpretation (0028,0004) has a Value of PALETTE COLOR."
+        // (Palette Color Lookup Table, ICC Profile)
+        C::ModulePaletteColorLookupTable_42e847 => {
+            required_if(scope.photometric_is("PALETTE COLOR"), NotPresent)
+        }
+
+        // ---- Table C.8.20-2 Segmentation Image Module ----
+        // "Enumerated Values if Segmentation Type (0062,0001) is BINARY or FRACTIONAL", "...is
+        // LABELMAP", "...is BINARY", "...is FRACTIONAL"
+        C::PhotometricInterpretation_48f82a => {
+            applies(segmentation_type(root, &["BINARY", "FRACTIONAL"]))
+        }
+        C::PhotometricInterpretation_94f3f9 => applies(segmentation_type(root, &["LABELMAP"])),
+        C::BitsAllocated_c43232 => applies(segmentation_type(root, &["BINARY"])),
+        C::BitsAllocated_8408ab => applies(segmentation_type(root, &["FRACTIONAL"])),
+        // "Enumerated Values if Segmentation Type (0062,0001) is LABELMAP and Bits Allocated
+        // (0028,0100) is 8 [16]"
+        C::BitsStored_ded854 => {
+            applies(segmentation_type(root, &["LABELMAP"]).and(bits_allocated(root, 8)))
+        }
+        C::BitsStored_a7abfb => {
+            applies(segmentation_type(root, &["LABELMAP"]).and(bits_allocated(root, 16)))
+        }
+        // "Required if present in the source images or this IOD [SOP] Instance has been
+        // compressed." Lossy Image Compression "01" shows lossy compression; the source images
+        // are not in the object. (Also Table C.8.32-2.)
+        C::LossyImageCompressionRatio_611047
+        | C::LossyImageCompressionMethod_090992
+        | C::LossyImageCompressionRatio_0b9ecd
+        | C::LossyImageCompressionMethod_e4e641 => {
+            let compressed = value_in(root, tags::LOSSY_IMAGE_COMPRESSION, 1, &["01"]);
+            required_if(compressed.or(Tri::Unknown), NotPresent)
+        }
+        // "Required if Segmentation Type (0062,0001) is FRACTIONAL." (Segmentation Fractional
+        // Type, Maximum Fractional Value)
+        C::SegmentationFractionalType_63bbc3 => {
+            required_if(segmentation_type(root, &["FRACTIONAL"]), NotPresent)
+        }
+        // "Required if Segment Algorithm Type (0062,0008) is not MANUAL."
+        C::SegmentAlgorithmName_01435f => required_if(
+            value_other_than(item, tags::SEGMENT_ALGORITHM_TYPE, &["MANUAL"]),
+            NotPresent,
+        ),
+        // Type 3: "Shall not be present if Segmentation Type (0062,0001) is LABELMAP and
+        // Photometric Interpretation (0028,0004) is PALETTE COLOR."
+        C::RecommendedDisplayCIELabValue_79ebd0 => forbidden_if(
+            segmentation_type(root, &["LABELMAP"]).and(scope.photometric_is("PALETTE COLOR")),
+        ),
+
+        // ---- Table A.51 Content Constraints (A.51.4) on shared Modules ----
+        // "Pixel Padding Value (0028,0120) shall not be present if Segmentation Type (0062,0001)
+        // is not LABELMAP." Otherwise the General Equipment Module condition applies.
+        C::PixelPaddingValue_d4f36e => match segmentation_type(root, &["LABELMAP"]) {
+            Tri::True => evaluate(C::PixelPaddingValue_894c69, scope),
+            Tri::False | Tri::Unknown => Requirement::Forbidden,
+        },
+        // "Pixel Padding Range Limit (0028,0121) shall not be present."
+        C::PixelPaddingRangeLimit_ae4d69 => Requirement::Forbidden,
+
+        // ---- PS3.4 B.5.1.25 Segmentation Storage SOP Classes ----
+        // "The [Label Map] Segmentation Storage SOP Class shall use the PS3.3 Section A.51 with an
+        // Enumerated Value of BINARY or FRACTIONAL [LABELMAP] for Segmentation Type (0062,0001)."
+        C::SegmentationType_c84858 => applies(sop_class_in(scope, &[uids::SEGMENTATION_STORAGE])),
+        C::SegmentationType_fd2ec6 => {
+            applies(sop_class_in(scope, &[uids::LABEL_MAP_SEGMENTATION_STORAGE]))
+        }
+
+        // ---- Tables C.7.6.16-4 and C.7.6.16-5 Plane Position and Orientation (Patient) ----
+        // "Required if: Frame Type (0008,9007) Value 1 of this Frame is ORIGINAL and Volumetric
+        // Properties (0008,9206) of this Frame is other than DISTORTED, or <Segmentation with
+        // Frame of Reference UID>, or <Ophthalmic Tomography with volumetric flag YES>, or <OCT
+        // B-scan Volume Analysis>[, or <Enhanced RT Image>, or <Enhanced Continuous RT Image>].
+        // May be present otherwise."
+        C::ImagePositionPatient_fcc660 => required_if(
+            original_undistorted_frame(scope).or(other_sop_class_spacing(scope)),
+            MayBePresent,
+        ),
+        C::ImageOrientationPatient_13af2f => required_if(
+            original_undistorted_frame(scope)
+                .or(other_sop_class_spacing(scope))
+                .or(sop_class_in(scope, &ENHANCED_RT_IMAGE)),
+            MayBePresent,
+        ),
+
+        // ---- Tables C.7.6.24-1 and C.7.6.25-1 Floating Point Image Pixel Modules ----
+        // "Required if [Double] Float Pixel Padding Value (0028,0122 [0123]) is present."
+        C::FloatPixelPaddingRangeLimit_fa212b => {
+            required_if(present(item, tags::FLOAT_PIXEL_PADDING_VALUE), NotPresent)
+        }
+        C::DoubleFloatPixelPaddingRangeLimit_0e89d4 => required_if(
+            present(item, tags::DOUBLE_FLOAT_PIXEL_PADDING_VALUE),
+            NotPresent,
+        ),
+
+        // ---- Table A.75-1 Module usage ----
+        // "C - Required if integer pixels" / "32 bit floating point pixels" / "64 bit floating
+        // point pixels": the Pixel Data Attribute that holds them (A.75.4).
+        C::ModuleImagePixel_f11529 => required_if(integer_pixels(root), NotPresent),
+        C::ModuleFloatingPointImagePixel_202cb1 => {
+            required_if(present(root, tags::FLOAT_PIXEL_DATA), NotPresent)
+        }
+        C::ModuleDoubleFloatingPointImagePixel_0a0896 => {
+            required_if(present(root, tags::DOUBLE_FLOAT_PIXEL_DATA), NotPresent)
+        }
+        // "C - Required if Pixel Presentation (0008,9205) in the Parametric Map image Module equals
+        // COLOR_RANGE and Palette Color Lookup Table UID (0028,1199) is not present."
+        C::ModulePaletteColorLookupTable_501a20 => required_if(
+            color_range(root).and(absent(root, tags::PALETTE_COLOR_LOOKUP_TABLE_UID)),
+            NotPresent,
+        ),
+        // "C - Required if Referenced Image Functional Group or Derivation Image Functional Group
+        // is present."
+        C::ModuleCommonInstanceReference_a6c5de => required_if(
+            Tri::from(
+                groups_have(scope, tags::REFERENCED_IMAGE_SEQUENCE)
+                    || groups_have(scope, tags::DERIVATION_IMAGE_SEQUENCE),
+            ),
+            NotPresent,
+        ),
+
+        // ---- Table C.8.32-2 Parametric Map Image Module ----
+        // "Enumerated Values if Pixel Data (7FE0,0010) or Pixel Data Provider URL (0028,7FE0) is
+        // present", "...if Float Pixel Data (7FE0,0008) is present", "...if Double Float Pixel
+        // Data (7FE0,0009) is present"
+        C::BitsAllocated_38792c => applies(integer_pixels(root)),
+        C::BitsAllocated_2af7e7 => applies(present(root, tags::FLOAT_PIXEL_DATA)),
+        C::BitsAllocated_c03b30 => applies(present(root, tags::DOUBLE_FLOAT_PIXEL_DATA)),
+        // "Required if Pixel Data (7FE0,0010) or Pixel Data Provider URL (0028,7FE0) is present."
+        // (Bits Stored, High Bit)
+        C::BitsStored_44fd83 => required_if(integer_pixels(root), NotPresent),
+        // "Required if Pixel Presentation (0008,9205) equals COLOR_RANGE and the Section C.7.9 is
+        // not present."
+        C::PaletteColorLookupTableUID_c285e7 => required_if(
+            color_range(root).and(Tri::from(!palette_tables_present(root))),
+            NotPresent,
+        ),
+        // "Required if Pixel Presentation (0008,9205) has a Value of COLOR_RANGE."
+        C::ICCProfile_875087 => required_if(color_range(root), NotPresent),
+
+        // ---- Tables C.7.6.18-1 to -3 Cardiac, Respiratory and Bulk Motion Synchronization ----
+        // "Required if Image Type (0008,0008) Value 1 is ORIGINAL or MIXED. May be present
+        // otherwise."
+        C::CardiacSynchronizationTechnique_aff23f => {
+            required_if(original_or_mixed(scope), MayBePresent)
+        }
+        // "Required if Image Type Value 1 is ORIGINAL or MIXED and Cardiac Synchronization
+        // Technique (0018,9037) equals other than NONE."
+        C::CardiacSignalSource_ac9a6c => required_if(
+            original_or_mixed(scope).and(value_other_than(
+                item,
+                tags::CARDIAC_SYNCHRONIZATION_TECHNIQUE,
+                &["NONE"],
+            )),
+            NotPresent,
+        ),
+        // "... and Cardiac Synchronization Technique (0018,9037) equals PROSPECTIVE or
+        // RETROSPECTIVE."
+        C::CardiacBeatRejectionTechnique_a4dce8 => required_if(
+            original_or_mixed(scope).and(value_in(
+                item,
+                tags::CARDIAC_SYNCHRONIZATION_TECHNIQUE,
+                1,
+                &["PROSPECTIVE", "RETROSPECTIVE"],
+            )),
+            NotPresent,
+        ),
+        // "Required if type of framing is not time forward from trigger, may be present
+        // otherwise." The framing is described by this Attribute alone.
+        C::CardiacFramingType_634767 => required_if(Tri::Unknown, MayBePresent),
+        // "Required if Image Type Value 1 is ORIGINAL or MIXED and Respiratory Motion
+        // Compensation Technique (0018,9170) equals other than NONE."
+        C::RespiratorySignalSource_c4318c => required_if(
+            original_or_mixed(scope).and(value_other_than(
+                item,
+                tags::RESPIRATORY_MOTION_COMPENSATION_TECHNIQUE,
+                &["NONE"],
+            )),
+            NotPresent,
+        ),
+        // "Required if Respiratory Motion Compensation Technique (0018,9170) equals other than
+        // NONE, REALTIME or BREATH_HOLD and if Image Type Value 1 is ORIGINAL or MIXED. May be
+        // present otherwise."
+        C::RespiratoryTriggerDelayThreshold_f11c4b => required_if(
+            value_other_than(
+                item,
+                tags::RESPIRATORY_MOTION_COMPENSATION_TECHNIQUE,
+                &["NONE", "REALTIME", "BREATH_HOLD"],
+            )
+            .and(original_or_mixed(scope)),
+            MayBePresent,
+        ),
+        // "Required if the Value is not TIME, may be present otherwise." Its absence states TIME.
+        C::RespiratoryTriggerType_58178c => required_if(Tri::False, MayBePresent),
+        // "Required if Image Type Value 1 is ORIGINAL or MIXED and Bulk Motion Compensation
+        // Technique (0018,9172) equals other than NONE."
+        C::BulkMotionSignalSource_bb311d => required_if(
+            original_or_mixed(scope).and(value_other_than(
+                item,
+                tags::BULK_MOTION_COMPENSATION_TECHNIQUE,
+                &["NONE"],
+            )),
+            NotPresent,
+        ),
+
+        // ---- Tables C.7.6.16-8 and C.7.6.16-18 Cardiac and Respiratory Synchronization Macros ----
+        // "Required if used as a dimension index, may be present otherwise." (Nominal Percentage
+        // of Cardiac Phase, Nominal Percentage of Respiratory Phase). The text is shared, so a
+        // Dimension Index Pointer to either leaves which one is meant undetermined.
+        C::NominalPercentageOfCardiacPhase_88e8a2 => {
+            let indexed = dimension_pointers(root).into_iter().any(|pointer| {
+                pointer == tags::NOMINAL_PERCENTAGE_OF_CARDIAC_PHASE
+                    || pointer == tags::NOMINAL_PERCENTAGE_OF_RESPIRATORY_PHASE
+            });
+            required_if(
+                if indexed { Tri::Unknown } else { Tri::False },
+                MayBePresent,
+            )
+        }
+        // "Required if Intervals Acquired (0018,1083) is present and has a Value of 1. May be
+        // present otherwise."
+        C::ActualCardiacTriggerDelayTime_4f4dea => required_if(
+            Tri::from(integer_value(root, tags::INTERVALS_ACQUIRED) == Some(1)),
+            MayBePresent,
+        ),
+        // "Required if Cardiac Synchronization Technique (0018,9037) equals other than NONE or
+        // REALTIME. May be present otherwise."
+        C::RRIntervalTimeNominal_0c4d07 => required_if(
+            value_other_than(
+                root,
+                tags::CARDIAC_SYNCHRONIZATION_TECHNIQUE,
+                &["NONE", "REALTIME"],
+            ),
+            MayBePresent,
+        ),
+        // "Required if Respiratory Motion Compensation Technique (0018,9170) equals other than
+        // NONE or REALTIME and Respiratory Trigger Type (0020,9250) is absent or has a Value of
+        // TIME or BOTH."
+        C::RespiratoryIntervalTime_909e53 => required_if(
+            value_other_than(
+                root,
+                tags::RESPIRATORY_MOTION_COMPENSATION_TECHNIQUE,
+                &["NONE", "REALTIME"],
+            )
+            .and(absent(root, tags::RESPIRATORY_TRIGGER_TYPE).or(value_in(
+                root,
+                tags::RESPIRATORY_TRIGGER_TYPE,
+                1,
+                &["TIME", "BOTH"],
+            ))),
+            NotPresent,
+        ),
+        // "Required if Respiratory Trigger Type (0020,9250) is TIME or BOTH."
+        C::ActualRespiratoryTriggerDelayTime_3944c9 => required_if(
+            value_in(root, tags::RESPIRATORY_TRIGGER_TYPE, 1, &["TIME", "BOTH"]),
+            NotPresent,
+        ),
+        // "Required if Respiratory Trigger Type (0020,9250) is AMPLITUDE or BOTH." (Starting and
+        // Ending Respiratory Amplitude)
+        C::StartingRespiratoryAmplitude_b10e33 => required_if(
+            value_in(
+                root,
+                tags::RESPIRATORY_TRIGGER_TYPE,
+                1,
+                &["AMPLITUDE", "BOTH"],
+            ),
+            NotPresent,
+        ),
+        // "Required if Starting [Ending] Respiratory Amplitude (0020,9246 [9248]) is present."
+        C::StartingRespiratoryPhase_4d0ba5 => required_if(
+            present(item, tags::STARTING_RESPIRATORY_AMPLITUDE),
+            NotPresent,
+        ),
+        C::EndingRespiratoryPhase_9adda6 => required_if(
+            present(item, tags::ENDING_RESPIRATORY_AMPLITUDE),
+            NotPresent,
+        ),
+
+        // ---- Table C.11-2b VOI LUT Macro ----
+        // "Required if Window Center (0028,1050) is not present. May be present otherwise." and
+        // the converse for Window Center.
+        C::VOILUTSequence_ddfce9 => required_if(absent(item, tags::WINDOW_CENTER), MayBePresent),
+        C::WindowCenter_f9b098 => required_if(absent(item, tags::VOILUT_SEQUENCE), MayBePresent),
+
+        // ---- Table C.7.16-13 Contrast/Bolus Usage Macro ----
+        // "Required if Contrast/Bolus Administration Route Sequence (0018,0014) for the
+        // Contrast/Bolus Agent Number (0018,9337) defined in the Contrast/Bolus Agent Sequence
+        // (0018,0012) is (47625008, SCT, "Intravenous route") ...; may be present otherwise."
+        C::ContrastBolusAgentPhase_52f965 => required_if(intravenous_agent(scope), MayBePresent),
+
+        // ---- Tables C.7.6.16.2.25.1-1 and -2.1 Unassigned Converted Attributes Macros ----
+        // "Required if any unassigned shared [per-frame] Attributes are present [for this Frame]."
+        // Which Attributes a conversion left unassigned is not encoded apart from these Sequences.
+        C::UnassignedSharedConvertedAttributesSequence_1df2d1
+        | C::UnassignedPerFrameConvertedAttributesSequence_30ffda => {
+            required_if(Tri::Unknown, NotPresent)
+        }
+
         // ---- PS3.10 Table 7.1-1 File Meta Information ----
         // "Required if Private Information Creator UID (0002,0100) is present."
         C::PrivateInformation_5c0ac1 => required_if(
             present(item, tags::PRIVATE_INFORMATION_CREATOR_UID),
             NotPresent,
         ),
+
+        // ---- Table F.3-2 File-set Identification Module ----
+        // "Required to specify the expanded or replacement character set." Which
+        // characters the File-set Descriptor File holds is not encoded; without that
+        // File the Attribute describes nothing.
+        C::SpecificCharacterSetOfFileSetDescriptorFile_793b31 => required_if(
+            present(item, tags::FILE_SET_DESCRIPTOR_FILE_ID).and(Tri::Unknown),
+            NotPresent,
+        ),
+
+        // ---- Table F.3-3 Directory Information Module ----
+        // "Required if the Directory Record Type (0004,1430) is of Value PRIVATE."
+        C::PrivateRecordUID_399277 => required_if(
+            value_in(item, tags::DIRECTORY_RECORD_TYPE, 1, &["PRIVATE"]),
+            NotPresent,
+        ),
+        // "When the Directory Record does not reference any SOP Instance this Attribute
+        // shall not be present." (Type 1C: required when it does.)
+        C::ReferencedFileID_3760d0 => required_if(references_sop_instance(item), NotPresent),
+        // "Required if the Directory Record references a SOP Instance."
+        C::ReferencedSOPClassUIDInFile_b5b28b => {
+            required_if(references_sop_instance(item), NotPresent)
+        }
+        // "Required if the Directory Record references a SOP Instance that encodes the
+        // Related General SOP Class UID (0008,001A)." The referenced File is not read.
+        C::ReferencedRelatedGeneralSOPClassUIDInFile_f4b354 => {
+            required_if(references_sop_instance(item).and(Tri::Unknown), NotPresent)
+        }
+
+        // ---- Tables F.5-x Record Selection Keys ----
+        // "Required if an extended or replacement character set is used in one of the
+        // Keys." As for the SOP Common Module, a present Value is not judged.
+        C::SpecificCharacterSet_ebd0ce => item_character_set(item),
+        // "Required if Verification Flag (0040,A493) is VERIFIED." (Also Verifying
+        // Observer Sequence of Table C.17-2.)
+        C::VerifyingObserverSequence_bea66d => required_if(
+            value_in(item, tags::VERIFICATION_FLAG, 1, &["VERIFIED"]),
+            NotPresent,
+        ),
+        // "Required if Anatomic Region Sequence (0008,2218) is not present. May be
+        // present otherwise."
+        C::Modality_12e144 => {
+            required_if(absent(item, tags::ANATOMIC_REGION_SEQUENCE), MayBePresent)
+        }
+        // "Required if Modality (0008,0060) is not present. May be present otherwise."
+        C::AnatomicRegionSequence_e8c3b8 => required_if(absent(item, tags::MODALITY), MayBePresent),
+        // "Required if Anatomic Region Sequence (0008,2218) is present." (Type 2C)
+        C::Laterality_463eac => {
+            required_if(present(item, tags::ANATOMIC_REGION_SEQUENCE), NotPresent)
+        }
+        // "Required if Referenced Instance Sequence (0008,114A) is not present."
+        C::ReferencedWaveformSequence_f42349 => {
+            required_if(absent(item, tags::REFERENCED_INSTANCE_SEQUENCE), NotPresent)
+        }
+        // Key conditions on the content of the referenced Instance, which a
+        // DICOMDIR does not hold: "the IOD of the Presentation State SOP Instance
+        // referenced by this Directory Record includes the Section C.11.11", "the
+        // SOP Instance referenced by this Directory Record includes Blending Sequence",
+        // "the root Content Item is the Source Content Item of HAS CONCEPT MOD
+        // relationships", "present in the Spectroscopy Instance", "encapsulated
+        // document is an HL7 Structured Document", "present in the referenced
+        // Instance", "User Content [Long] Label (3010,0033/0034) is present", "the IOD
+        // of the Waveform Presentation State SOP Instance ... includes the Waveform
+        // Presentation State Relationship Module", "Structured Waveform Annotation
+        // Sequence (0040,B030) is present".
+        C::ReferencedSeriesSequence_5fba33
+        | C::BlendingSequence_942c1d
+        | C::ContentSequence_fd3381
+        | C::ReferencedImageEvidenceSequence_52b821
+        | C::HL7InstanceIdentifier_bf2ac9
+        | C::ImplantSize_62ba2f
+        | C::UserContentLabel_c9e668
+        | C::UserContentLongLabel_22bf5d
+        | C::ReferencedSeriesSequence_8c3b36
+        | C::ReferencedInstanceSequence_e2c71a => required_if(Tri::Unknown, NotPresent),
+
+        // ---- Table C.38.2-1 Inventory Scope (Inventory Directory Record keys) ----
+        // "Required if extended matching mechanisms were applied."; "Required if Range
+        // Matching / List of UID Matching / Single Value, Multiple Value, or Wild Card
+        // matching is applied to any Key Attribute." How the scope was matched is
+        // not encoded apart from these Attributes.
+        C::ExtendedMatchingMechanisms_af2f2b
+        | C::RangeMatchingSequence_ce4c8a
+        | C::ListOfUIDMatchingSequence_e8cd11
+        | C::GeneralMatchingSequence_e9665b => required_if(Tri::Unknown, NotPresent),
+        // "Required if Attributes within the Sequence Item use an expanded or
+        // replacement character set."
+        C::SpecificCharacterSet_00ceec => item_character_set(item),
+        // "Required if Extended Matching Mechanisms (0008,040F) includes Value
+        // TIMEZONE_ADJUST."
+        C::TimezoneOffsetFromUTC_68b8ba => required_if(
+            includes_value(item, tags::EXTENDED_MATCHING_MECHANISMS, "TIMEZONE_ADJUST"),
+            NotPresent,
+        ),
+        // "Required if Extended Matching Mechanisms (0008,040F) includes Value RELATIONAL."
+        C::QueryRetrieveLevel_29856c => required_if(
+            includes_value(item, tags::EXTENDED_MATCHING_MECHANISMS, "RELATIONAL"),
+            NotPresent,
+        ),
+        // "Required if Extended Matching Mechanisms (0008,040F) includes Value
+        // EMPTY_VALUE and Empty Value Matching is applied to any Key Attribute."
+        C::EmptyValueMatchingSequence_714fca => required_if(
+            includes_value(item, tags::EXTENDED_MATCHING_MECHANISMS, "EMPTY_VALUE")
+                .and(Tri::Unknown),
+            NotPresent,
+        ),
+
+        // ---- Table C.17-6 Document Relationship Macro ----
+        // "Required if the date and time are different from Content Date (0008,0023) and
+        // Content Time (0008,0033) or Observation DateTime (0040,A032) defined in higher
+        // Items. May be present otherwise." When the observation took place is not encoded
+        // apart from this Attribute.
+        C::ObservationDateTime_51faf7 => required_if(Tri::Unknown, MayBePresent),
+        // "Required if the enclosing Content Item has relationships." Its relationships are
+        // the Items of this Sequence.
+        C::ContentSequence_2857ac => required_if(present(item, tags::CONTENT_SEQUENCE), NotPresent),
+        // "Include Table C.17-6 / C.17-5 if the Target Content Item is included by-value in
+        // the Source Content Item. The Macro shall not be present if the relationship is
+        // by-reference." A by-reference Item is the one with a Referenced Content Item
+        // Identifier.
+        C::IncludeC176_aad59d => required_if(
+            absent(item, tags::REFERENCED_CONTENT_ITEM_IDENTIFIER),
+            NotPresent,
+        ),
+        // "Required if the Target Content Item is denoted by-reference, i.e., the Section
+        // C.17.3.4 and Section C.17.3.3 are not included." The Document Content Macro
+        // (C.17.3.3) begins with the Type 1 Value Type.
+        C::ReferencedContentItemIdentifier_74d9aa => {
+            required_if(absent(item, tags::VALUE_TYPE), NotPresent)
+        }
+
+        // ---- Table C.17-2 SR Document General Module ----
+        // "Required if this document includes content from other documents."; "Required if
+        // this document is stored with different SOP Instance UIDs in one or more other
+        // Studies."; "Required if pertinent evidence from other Requested Procedures needs to
+        // be recorded." What else exists is not encoded in the document.
+        C::PredecessorDocumentsSequence_e99aef
+        | C::IdenticalDocumentsSequence_ad93a0
+        | C::PertinentOtherEvidenceSequence_68205a => required_if(Tri::Unknown, NotPresent),
+        // "Required if this Document fulfills at least one Requested Procedure. May be present
+        // otherwise."; "Required if the identity of a CDA Document equivalent to the current
+        // SOP Instance is known at the time of creation ... May be present otherwise."
+        C::ReferencedRequestSequence_c43dd8 | C::ReferencedInstanceSequence_fa9b97 => {
+            required_if(Tri::Unknown, MayBePresent)
+        }
+        // "Required if the creator is aware of Composite Objects acquired in order to satisfy
+        // the Requested Procedure(s) for which the SR Document is or if Instances are
+        // referenced in the Content Tree. May be present otherwise." The Content Tree shows
+        // the second; the creator's awareness is not encoded.
+        C::CurrentRequestedProcedureEvidenceSequence_0cdfc8 => required_if(
+            Tri::from(content_tree_references(root)).or(Tri::Unknown),
+            MayBePresent,
+        ),
+        // ---- Table C.17-3b Identified Person or Device Macro ----
+        // "Required if Observer Type value is PSN."
+        C::PersonName_5a02d8 => {
+            required_if(value_in(item, tags::OBSERVER_TYPE, 1, &["PSN"]), NotPresent)
+        }
+        // "Required if Observer Type value is DEV."
+        C::StationName_c7d092 => {
+            required_if(value_in(item, tags::OBSERVER_TYPE, 1, &["DEV"]), NotPresent)
+        }
+
+        // ---- Table C.17.6-2 Key Object Document Module ----
+        // "Required if this Document pertains to at least one Requested Procedure." Which
+        // Requested Procedures it pertains to is not encoded apart from this Sequence.
+        C::ReferencedRequestSequence_d87c48 => required_if(Tri::Unknown, NotPresent),
+        // "Required if this Key Object Selection document references Instances in more than
+        // one Study." Current Requested Procedure Evidence Sequence (0040,A375) lists every
+        // Instance the document references, by Study.
+        C::IdenticalDocumentsSequence_9954fb => {
+            required_if(evidence_studies(root).into(), NotPresent)
+        }
+
+        // ---- Table C.17-5 Document Content Macro ----
+        // "Required if Value Type (0040,A040) is TEXT, NUM, CODE, DATETIME, DATE, TIME,
+        // UIDREF, TABLE or PNAME. Required if Value Type (0040,A040) is CONTAINER and a
+        // heading is present, or this is the Root Content Item. Required if Value Type
+        // (0040,A040) is COMPOSITE, IMAGE, WAVEFORM, SCOORD, SCOORD3D or TCOORD, and the
+        // Purpose of Reference is conveyed in the Concept Name." A heading and a
+        // Purpose of Reference are conveyed only by the Concept Name itself, which
+        // these Value Types may then omit.
+        C::ConceptNameCodeSequence_abde30 => {
+            match string_value(item, tags::VALUE_TYPE, 1).as_deref() {
+                Some(
+                    "TEXT" | "NUM" | "CODE" | "DATETIME" | "DATE" | "TIME" | "UIDREF" | "TABLE"
+                    | "PNAME",
+                ) => Requirement::Required,
+                Some("CONTAINER") if scope.is_top_level() => Requirement::Required,
+                Some(
+                    "CONTAINER" | "COMPOSITE" | "IMAGE" | "WAVEFORM" | "SCOORD" | "SCOORD3D"
+                    | "TCOORD",
+                ) => Requirement::Optional,
+                // The Value Type itself is checked as a Type 1 Enumerated Value.
+                _ => Requirement::Undeterminable,
+            }
+        }
+        // "Include Table C.18.n-1 if and only if Value Type (0040,A040) is ..."
+        C::IncludeC1811_b4d406 => value_type(item, &["NUM"]),
+        C::IncludeC1821_a2ce9a => value_type(item, &["CODE"]),
+        C::IncludeC1831_61f144 => value_type(item, &["COMPOSITE"]),
+        C::IncludeC1841_08c4c7 => value_type(item, &["IMAGE"]),
+        C::IncludeC1851_08552e => value_type(item, &["WAVEFORM"]),
+        C::IncludeC1861_80daf7 => value_type(item, &["SCOORD"]),
+        C::IncludeC1891_3cfefc => value_type(item, &["SCOORD3D"]),
+        C::IncludeC1871_2dd22d => value_type(item, &["TCOORD"]),
+        C::IncludeC1881_0f7a08 => value_type(item, &["CONTAINER"]),
+        C::IncludeC18101_0ab121 => value_type(item, &["TABLE"]),
+
+        // ---- Table C.18.1-1 Numeric Measurement Macro ----
+        // "Required if Measured Value Sequence (0040,A300) is empty." The description
+        // also makes it the "Qualification of Numeric Value (0040,A30A) in Measured
+        // Value Sequence", so it may be present otherwise.
+        C::NumericValueQualifierCodeSequence_2d34c8 => required_if(
+            items(item, tags::MEASURED_VALUE_SEQUENCE).is_empty().into(),
+            MayBePresent,
+        ),
+        // ---- Table C.18.6-1 Spatial Coordinates Macro ----
+        // "Required if the instance referenced by Referenced Image Sequence (0008,1140) is
+        // tiled ... May be present otherwise." The referenced Instance is not read.
+        C::PixelOriginInterpretation_2ad28a => required_if(Tri::Unknown, MayBePresent),
+        // ---- Table C.18.7-1 Temporal Coordinates Macro ----
+        // "Required if the Referenced SOP Instance is a Waveform and Referenced Time
+        // Offsets (0040,A138) and Referenced DateTime (0040,A13A) are not present."
+        C::ReferencedSamplePositions_0a7da3 => required_if(
+            Tri::Unknown
+                .and(absent(item, tags::REFERENCED_TIME_OFFSETS))
+                .and(absent(item, tags::REFERENCED_DATE_TIME)),
+            NotPresent,
+        ),
+        // "Required if Referenced Sample Positions (0040,A132) and Referenced DateTime
+        // (0040,A13A) are not present."
+        C::ReferencedTimeOffsets_263fb1 => required_if(
+            absent(item, tags::REFERENCED_SAMPLE_POSITIONS)
+                .and(absent(item, tags::REFERENCED_DATE_TIME)),
+            NotPresent,
+        ),
+        // "Required if Referenced Sample Positions (0040,A132) and Referenced Time
+        // Offsets (0040,A138) are not present."
+        C::ReferencedDateTime_b68814 => required_if(
+            absent(item, tags::REFERENCED_SAMPLE_POSITIONS)
+                .and(absent(item, tags::REFERENCED_TIME_OFFSETS)),
+            NotPresent,
+        ),
+        // ---- Table C.18.8-1 Container Macro ----
+        // "Required if a template defined and known to the implementation at the time of
+        // encoding was used to define the content of this Item, ..." Which Template the
+        // encoder used is not encoded apart from this Sequence.
+        C::ContentTemplateSequence_613106 => required_if(Tri::Unknown, NotPresent),
+
+        // ---- Table C.18.10-1 Table Content Macro ----
+        // "Required if the concept does not apply to all rows/columns." A single Item
+        // applies to all of them (C.18.10-1).
+        C::TableRowNumber_c720fb => required_if(
+            sibling_items(scope, tags::TABLE_ROW_DEFINITION_SEQUENCE),
+            NotPresent,
+        ),
+        C::TableColumnNumber_a0b28f => required_if(
+            sibling_items(scope, tags::TABLE_COLUMN_DEFINITION_SEQUENCE),
+            NotPresent,
+        ),
+        // "Required if all the columns in this row (rows in this column) are numeric
+        // values ..., have units (are not dimensionless), and have the same units."
+        // Whether a value is dimensionless is not encoded apart from its units.
+        C::MeasurementUnitsCodeSequence_95167c | C::MeasurementUnitsCodeSequence_641853 => {
+            required_if(Tri::Unknown, NotPresent)
+        }
+        // "Required if Table Column Number is absent, or all the rows for the column
+        // specified in Table Column Number are not encoded in a single Attribute ...";
+        // which rows a multi-valued cell Attribute spans is not encoded.
+        C::TableRowNumber_0a17c3 => required_if(
+            absent(item, tags::TABLE_COLUMN_NUMBER).or(Tri::Unknown),
+            NotPresent,
+        ),
+        C::TableColumnNumber_325185 => required_if(
+            absent(item, tags::TABLE_ROW_NUMBER).or(Tri::Unknown),
+            NotPresent,
+        ),
+        // "Required if Selector Attribute VR (0072,0050) is not present."
+        C::ReferencedContentItemIdentifier_64a61e => {
+            required_if(absent(item, tags::SELECTOR_ATTRIBUTE_VR), NotPresent)
+        }
+        // "Required if Referenced Content Item Identifier (0040,DB73) is not present."
+        C::SelectorAttributeVR_b521fa => required_if(
+            absent(item, tags::REFERENCED_CONTENT_ITEM_IDENTIFIER),
+            NotPresent,
+        ),
+        // "Required if Selector Attribute VR (0072,0050) is present and the value is VR,
+        // and Numeric Value Qualifier Code Sequence (0040,A301) is not present."
+        C::SelectorDSValue_e13c3c => numeric_cell(item, "DS"),
+        C::SelectorFDValue_3dcd6f => numeric_cell(item, "FD"),
+        C::SelectorFLValue_99138e => numeric_cell(item, "FL"),
+        C::SelectorISValue_eb854f => numeric_cell(item, "IS"),
+        C::SelectorSLValue_ee2837 => numeric_cell(item, "SL"),
+        C::SelectorSSValue_43d1ea => numeric_cell(item, "SS"),
+        C::SelectorSVValue_88fa3d => numeric_cell(item, "SV"),
+        C::SelectorULValue_6707ef => numeric_cell(item, "UL"),
+        C::SelectorUSValue_e61eaf => numeric_cell(item, "US"),
+        C::SelectorUVValue_0bfd57 => numeric_cell(item, "UV"),
+        // "Required if Selector Attribute VR (0072,0050) is present and the value is DT
+        // (UC, SQ)."
+        C::SelectorDTValue_01484a => required_if(
+            value_in(item, tags::SELECTOR_ATTRIBUTE_VR, 1, &["DT"]),
+            NotPresent,
+        ),
+        C::SelectorUCValue_7e35c8 => required_if(
+            value_in(item, tags::SELECTOR_ATTRIBUTE_VR, 1, &["UC"]),
+            NotPresent,
+        ),
+        C::ConceptCodeSequence_9c9892 => required_if(
+            value_in(item, tags::SELECTOR_ATTRIBUTE_VR, 1, &["SQ"]),
+            NotPresent,
+        ),
+        // "Required if this cell is a numeric value (Selector Attribute VR is DS, ...) has
+        // a unit (is not dimensionless), and the unit is not specified within the Table
+        // Row Definition Sequence for this row or Table Column Definition Sequence for
+        // this column." Whether it has a unit is not encoded apart from its units.
+        C::MeasurementUnitsCodeSequence_685e98 => required_if(
+            value_in(item, tags::SELECTOR_ATTRIBUTE_VR, 1, &NUMERIC_CELL_VRS).and(Tri::Unknown),
+            NotPresent,
+        ),
+        // "Required if this cell is a numeric value (...), and the numeric value cannot
+        // be provided": a numeric cell without its Selector Value.
+        C::NumericValueQualifierCodeSequence_21892a => {
+            let missing = string_value(item, tags::SELECTOR_ATTRIBUTE_VR, 1)
+                .and_then(|vr| selector_value_tag(&vr))
+                .map(|tag| Tri::from(!has(item, tag)));
+            required_if(missing.unwrap_or(Tri::False), NotPresent)
+        }
+    }
+}
+
+/// The VRs of the numeric cells of a Table Content Item (Table C.18.10-1).
+const NUMERIC_CELL_VRS: [&str; 10] = ["DS", "FD", "FL", "IS", "SL", "SS", "SV", "UL", "US", "UV"];
+
+/// The Selector Value Attribute of a cell of `vr`.
+fn selector_value_tag(vr: &str) -> Option<Tag> {
+    Some(match vr {
+        "DS" => tags::SELECTOR_DS_VALUE,
+        "FD" => tags::SELECTOR_FD_VALUE,
+        "FL" => tags::SELECTOR_FL_VALUE,
+        "IS" => tags::SELECTOR_IS_VALUE,
+        "SL" => tags::SELECTOR_SL_VALUE,
+        "SS" => tags::SELECTOR_SS_VALUE,
+        "SV" => tags::SELECTOR_SV_VALUE,
+        "UL" => tags::SELECTOR_UL_VALUE,
+        "US" => tags::SELECTOR_US_VALUE,
+        "UV" => tags::SELECTOR_UV_VALUE,
+        _ => return None,
+    })
+}
+
+/// A numeric cell's Selector Value: required for its VR unless Numeric Value
+/// Qualifier Code Sequence gives why the value is absent.
+fn numeric_cell(item: &InMemDicomObject, vr: &str) -> Requirement {
+    required_if(
+        value_in(item, tags::SELECTOR_ATTRIBUTE_VR, 1, &[vr])
+            .and(absent(item, tags::NUMERIC_VALUE_QUALIFIER_CODE_SEQUENCE)),
+        NotPresent,
+    )
+}
+
+/// Whether the Sequence holding the Item in `scope` has more than one Item.
+fn sibling_items(scope: &Scope<'_>, sequence: Tag) -> Tri {
+    scope.parent_item().map_or(Tri::Unknown, |parent| {
+        (items(parent, sequence).len() > 1).into()
+    })
+}
+
+/// Whether Value `value` is among the Values of `tag`.
+fn includes_value(item: &InMemDicomObject, tag: Tag, value: &str) -> Tri {
+    Tri::from(
+        item.get(tag)
+            .and_then(|element| element.to_multi_str().ok())
+            .is_some_and(|values| values.iter().any(|own| own.trim() == value)),
+    )
+}
+
+/// Specific Character Set of an Item that holds its own Keys: required when
+/// a text Value uses a character outside the default repertoire; a present
+/// Value is not judged, as for the SOP Common Module.
+fn item_character_set(item: &InMemDicomObject) -> Requirement {
+    if has(item, tags::SPECIFIC_CHARACTER_SET) {
+        Requirement::Undeterminable
+    } else {
+        required_if(non_default_characters(item).into(), NotPresent)
+    }
+}
+
+/// Whether a Content Item of the SR Document Content references an Instance.
+fn content_tree_references(root: &InMemDicomObject) -> bool {
+    items(root, tags::CONTENT_SEQUENCE)
+        .iter()
+        .any(|item| contains_tag(item, tags::REFERENCED_SOP_INSTANCE_UID, 0))
+}
+
+/// Whether Current Requested Procedure Evidence Sequence (0040,A375) names
+/// Instances of more than one Study.
+fn evidence_studies(root: &InMemDicomObject) -> bool {
+    let mut studies = items(root, tags::CURRENT_REQUESTED_PROCEDURE_EVIDENCE_SEQUENCE)
+        .iter()
+        .filter_map(|study| string_value(study, tags::STUDY_INSTANCE_UID, 1))
+        .collect::<Vec<_>>();
+    studies.sort();
+    studies.dedup();
+    studies.len() > 1
+}
+
+/// Whether a Directory Record references a SOP Instance: a record that names
+/// one does; PATIENT, STUDY and SERIES records do not; every other Standard
+/// Directory Record "shall be used to reference" a SOP Instance (PS3.3 F.5.4
+/// to F.5.49); a PRIVATE record may or may not.
+fn references_sop_instance(item: &InMemDicomObject) -> Tri {
+    let record_type = string_value(item, tags::DIRECTORY_RECORD_TYPE, 1);
+    match record_type.as_deref() {
+        Some("PATIENT" | "STUDY" | "SERIES") => Tri::False,
+        Some("PRIVATE") | None => {
+            let names = [
+                tags::REFERENCED_FILE_ID,
+                tags::REFERENCED_SOP_CLASS_UID_IN_FILE,
+                tags::REFERENCED_SOP_INSTANCE_UID_IN_FILE,
+                tags::REFERENCED_TRANSFER_SYNTAX_UID_IN_FILE,
+            ]
+            .into_iter()
+            .any(|tag| has(item, tag));
+            if names {
+                Tri::True
+            } else {
+                Tri::Unknown
+            }
+        }
+        Some(_) => Tri::True,
     }
 }
 
@@ -902,10 +1789,33 @@ fn applies(condition: Tri) -> Requirement {
     required_if(condition, MayBePresent)
 }
 
-/// Whether the Patient is a non-human organism: PS3.3 encodes no Attribute that
-/// states this (species Attributes may also describe humans).
-fn non_human() -> Tri {
-    Tri::Unknown
+/// Homo sapiens in Patient Species Code Sequence (CID 7454), with its legacy
+/// SNOMED-RT and NCBI Taxonomy identifiers.
+const HOMO_SAPIENS: [(&str, &str); 3] = [
+    ("SCT", "337915000"),
+    ("SRT", "L-85B00"),
+    ("NCBITaxon", "9606"),
+];
+
+/// Whether the Patient is a non-human organism, as its Patient Species Code
+/// Sequence states: Homo sapiens is human and any other species is not.
+/// Without a coded species nothing encoded states it, since a Patient Species
+/// Description is free text.
+fn non_human(root: &InMemDicomObject) -> Tri {
+    let Some(species) = items(root, tags::PATIENT_SPECIES_CODE_SEQUENCE).first() else {
+        return Tri::Unknown;
+    };
+    match (
+        string_value(species, tags::CODING_SCHEME_DESIGNATOR, 1),
+        code_identifier(species),
+    ) {
+        (Some(scheme), Some(value)) => {
+            Tri::from(!HOMO_SAPIENS.iter().any(|(human_scheme, human_value)| {
+                *human_scheme == scheme && *human_value == value
+            }))
+        }
+        _ => Tri::Unknown,
+    }
 }
 
 fn value_type(item: &InMemDicomObject, values: &[&str]) -> Requirement {
@@ -937,7 +1847,7 @@ fn code_identifier(item: &InMemDicomObject) -> Option<String> {
     .find_map(|tag| string_value(item, tag, 1))
 }
 
-fn is_urn_or_url(value: &str) -> bool {
+pub(super) fn is_urn_or_url(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
     lower.starts_with("urn:") || lower.contains("://")
 }
@@ -1068,6 +1978,15 @@ fn contains_tag(object: &InMemDicomObject, target: Tag, depth: usize) -> bool {
     })
 }
 
+/// A Private Creator is required when a pointer Attribute names a Private
+/// Data Element.
+fn private_creator_required(item: &InMemDicomObject, pointer: Tag) -> Requirement {
+    required_if(
+        tag_values(item, pointer).into_iter().any(is_private).into(),
+        NotPresent,
+    )
+}
+
 fn sop_class_in(scope: &Scope<'_>, classes: &[&str]) -> Tri {
     Tri::from(
         scope
@@ -1109,7 +2028,11 @@ fn original_frame_not_tiled_full(scope: &Scope<'_>) -> Tri {
     original
         .unwrap_or(Tri::Unknown)
         .and(scope.dimension_organization_type_is("TILED_FULL").not())
-        .and(sop_class_in(scope, &LEGACY_CONVERTED_AND_VL_WSI).not())
+        .and(
+            sop_class_in(scope, &LEGACY_CONVERTED)
+                .or(sop_class_in(scope, &[VL_WSI_SOP_CLASS_UID]))
+                .not(),
+        )
 }
 
 fn functional_mr(scope: &Scope<'_>) -> bool {
@@ -1117,4 +2040,231 @@ fn functional_mr(scope: &Scope<'_>) -> bool {
         || scope
             .frame_groups()
             .any(|group| has(group, tags::FUNCTIONAL_MR_SEQUENCE))
+}
+
+/// Whether Image Orientation (Patient) orients the image, at the top level or in
+/// a Plane Orientation (Patient) Functional Group.
+fn patient_oriented(scope: &Scope<'_>) -> bool {
+    has(scope.root, tags::IMAGE_ORIENTATION_PATIENT)
+        || groups_have(scope, tags::PLANE_ORIENTATION_SEQUENCE)
+}
+
+/// Whether any Shared or Per-Frame Functional Groups Sequence Item holds `tag`.
+fn groups_have(scope: &Scope<'_>, tag: Tag) -> bool {
+    scope
+        .all_functional_group_items()
+        .any(|group| has(group, tag))
+}
+
+/// Whether the object locates its Frames in the Slide Coordinate System (PS3.3
+/// C.8.12.2.1): Position Reference Indicator SLIDE_CORNER (C.7.4.1.1.2), Image
+/// Orientation (Slide), Total Pixel Matrix Origin Sequence or Plane Position (Slide).
+fn slide_positioned(scope: &Scope<'_>) -> bool {
+    let root = scope.root;
+    has(root, tags::IMAGE_ORIENTATION_SLIDE)
+        || has(root, tags::TOTAL_PIXEL_MATRIX_ORIGIN_SEQUENCE)
+        || groups_have(scope, tags::PLANE_POSITION_SLIDE_SEQUENCE)
+        || value_in(
+            root,
+            tags::POSITION_REFERENCE_INDICATOR,
+            1,
+            &["SLIDE_CORNER"],
+        ) == Tri::True
+}
+
+/// Whether the object locates its Frames in the patient-relative Reference
+/// Coordinate System: Plane Position or Orientation (Patient), or Image Position
+/// or Orientation (Patient).
+fn patient_positioned(scope: &Scope<'_>) -> bool {
+    let root = scope.root;
+    groups_have(scope, tags::PLANE_POSITION_SEQUENCE)
+        || groups_have(scope, tags::PLANE_ORIENTATION_SEQUENCE)
+        || has(root, tags::IMAGE_POSITION_PATIENT)
+        || has(root, tags::IMAGE_ORIENTATION_PATIENT)
+}
+
+/// "the Frame of Reference is defined in the Slide Coordinate System": false
+/// without a Frame of Reference UID, and unknown when no position, or positions
+/// in both systems, are encoded.
+fn slide_frame_of_reference(scope: &Scope<'_>) -> Tri {
+    if !has(scope.root, tags::FRAME_OF_REFERENCE_UID) {
+        return Tri::False;
+    }
+    match (slide_positioned(scope), patient_positioned(scope)) {
+        (true, false) => Tri::True,
+        (false, true) => Tri::False,
+        _ => Tri::Unknown,
+    }
+}
+
+/// "the Frame of Reference is defined in the patient-relative Reference
+/// Coordinate System", read as `slide_frame_of_reference` is.
+fn patient_frame_of_reference(scope: &Scope<'_>) -> Tri {
+    if !has(scope.root, tags::FRAME_OF_REFERENCE_UID) {
+        return Tri::False;
+    }
+    match (patient_positioned(scope), slide_positioned(scope)) {
+        (true, false) => Tri::True,
+        (false, true) => Tri::False,
+        _ => Tri::Unknown,
+    }
+}
+
+/// Plane Position (Slide) usage of Tables A.51-2 and A.75-2: required when
+/// `gate` holds in a Slide Frame of Reference that is not TILED_FULL, permitted
+/// otherwise in a Slide Frame of Reference, and forbidden outside one.
+fn slide_positions(scope: &Scope<'_>, gate: Tri) -> Requirement {
+    match slide_frame_of_reference(scope) {
+        Tri::True => required_if(
+            gate.and(scope.dimension_organization_type_is("TILED_FULL").not()),
+            MayBePresent,
+        ),
+        Tri::False => Requirement::Forbidden,
+        Tri::Unknown => Requirement::Undeterminable,
+    }
+}
+
+/// Pixel Presentation (0008,9205) COLOR_RANGE of the Parametric Map Image Module.
+fn color_range(root: &InMemDicomObject) -> Tri {
+    value_in(root, tags::PIXEL_PRESENTATION, 1, &["COLOR_RANGE"])
+}
+
+/// Integer pixels: Pixel Data (7FE0,0010) or Pixel Data Provider URL (0028,7FE0).
+fn integer_pixels(root: &InMemDicomObject) -> Tri {
+    Tri::from(has(root, tags::PIXEL_DATA) || has(root, tags::PIXEL_DATA_PROVIDER_URL))
+}
+
+/// Whether the Palette Color Lookup Table Module's tables are encoded.
+fn palette_tables_present(root: &InMemDicomObject) -> bool {
+    [
+        tags::RED_PALETTE_COLOR_LOOKUP_TABLE_DESCRIPTOR,
+        tags::RED_PALETTE_COLOR_LOOKUP_TABLE_DATA,
+        tags::SEGMENTED_RED_PALETTE_COLOR_LOOKUP_TABLE_DATA,
+    ]
+    .into_iter()
+    .any(|tag| has(root, tag))
+}
+
+fn segmentation_type(root: &InMemDicomObject, values: &[&str]) -> Tri {
+    value_in(root, tags::SEGMENTATION_TYPE, 1, values)
+}
+
+fn bits_allocated(root: &InMemDicomObject, bits: i64) -> Tri {
+    Tri::from(integer_value(root, tags::BITS_ALLOCATED) == Some(bits))
+}
+
+/// "equals other than ...": present with Value 1 outside `values`.
+fn value_other_than(object: &InMemDicomObject, tag: Tag, values: &[&str]) -> Tri {
+    Tri::from(string_value(object, tag, 1).is_some_and(|value| !values.contains(&value.as_str())))
+}
+
+/// Image Type (0008,0008) Value 1 is ORIGINAL or MIXED.
+fn original_or_mixed(scope: &Scope<'_>) -> Tri {
+    scope.image_type_is(1, &["ORIGINAL", "MIXED"])
+}
+
+/// Annotation Coordinate Type (006A,0001) of the Microscopy Bulk Simple Annotations.
+fn coordinates_3d(root: &InMemDicomObject) -> Tri {
+    value_in(root, tags::ANNOTATION_COORDINATE_TYPE, 1, &["3D"])
+}
+
+fn coordinates_2d(root: &InMemDicomObject) -> Tri {
+    value_in(root, tags::ANNOTATION_COORDINATE_TYPE, 1, &["2D"])
+}
+
+/// Whether all points of an Annotation Group lie in one Z plane: Common Z
+/// Coordinate Value (006A,0010) says so, otherwise the (X, Y, Z) triplets of
+/// Point Coordinates Data or Double Point Coordinates Data show it.
+fn common_z(group: &InMemDicomObject) -> Tri {
+    if has(group, tags::COMMON_Z_COORDINATE_VALUE) {
+        return Tri::True;
+    }
+    let Some(element) = [
+        tags::POINT_COORDINATES_DATA,
+        tags::DOUBLE_POINT_COORDINATES_DATA,
+    ]
+    .into_iter()
+    .find_map(|tag| group.get(tag)) else {
+        return Tri::Unknown;
+    };
+    let Ok(values) = element.to_multi_float64() else {
+        return Tri::Unknown;
+    };
+    if values.len() < 3 || !values.len().is_multiple_of(3) {
+        return Tri::Unknown;
+    }
+    let first = values[2].to_bits();
+    Tri::from(
+        values
+            .iter()
+            .skip(2)
+            .step_by(3)
+            .all(|z| z.to_bits() == first),
+    )
+}
+
+/// Whether a Measurement Values Sequence Item holds fewer Floating Point Values
+/// (0066,0125) than its Annotation Group has Annotations (006A,000C).
+fn measured_subset(scope: &Scope<'_>) -> Tri {
+    let values = scope
+        .item
+        .get(tags::FLOATING_POINT_VALUES)
+        .map(|element| element.value().multiplicity());
+    let annotations = scope
+        .parent
+        .and_then(|measurements| measurements.parent_item())
+        .and_then(|group| integer_value(group, tags::NUMBER_OF_ANNOTATIONS));
+    match (values, annotations) {
+        (Some(values), Some(annotations)) => Tri::from(i64::from(values) < annotations),
+        _ => Tri::Unknown,
+    }
+}
+
+/// The Item of this Frame's Functional Groups that holds its Frame Type (0008,9007).
+fn frame_type_item<'a>(scope: &Scope<'a>) -> Option<&'a InMemDicomObject> {
+    scope.frame_groups().find_map(|group| {
+        group
+            .iter()
+            .filter_map(|element| element.items())
+            .flatten()
+            .find(|item| has(item, tags::FRAME_TYPE))
+    })
+}
+
+/// "Frame Type (0008,9007) Value 1 of this Frame is ORIGINAL and Volumetric
+/// Properties (0008,9206) of this Frame is other than DISTORTED"; unknown when
+/// no Frame Type of this Frame is encoded.
+fn original_undistorted_frame(scope: &Scope<'_>) -> Tri {
+    frame_type_item(scope).map_or(Tri::Unknown, |frame_type| {
+        value_in(frame_type, tags::FRAME_TYPE, 1, &["ORIGINAL"])
+            .and(value_in(frame_type, tags::VOLUMETRIC_PROPERTIES, 1, &["DISTORTED"]).not())
+    })
+}
+
+/// The Dimension Index Pointer (0020,9165) Values of the Dimension Index Sequence.
+fn dimension_pointers(root: &InMemDicomObject) -> Vec<Tag> {
+    items(root, tags::DIMENSION_INDEX_SEQUENCE)
+        .iter()
+        .flat_map(|index| tag_values(index, tags::DIMENSION_INDEX_POINTER))
+        .collect()
+}
+
+/// Whether the Contrast/Bolus Agent that this Item's Contrast/Bolus Agent Number
+/// (0018,9337) names is administered by the intravenous route (47625008, SCT);
+/// unknown when the Contrast/Bolus Agent Sequence (0018,0012) does not list it.
+fn intravenous_agent(scope: &Scope<'_>) -> Tri {
+    let Some(number) = integer_value(scope.item, tags::CONTRAST_BOLUS_AGENT_NUMBER) else {
+        return Tri::Unknown;
+    };
+    items(scope.root, tags::CONTRAST_BOLUS_AGENT_SEQUENCE)
+        .iter()
+        .find(|agent| integer_value(agent, tags::CONTRAST_BOLUS_AGENT_NUMBER) == Some(number))
+        .map_or(Tri::Unknown, |agent| {
+            code_is(
+                agent,
+                tags::CONTRAST_BOLUS_ADMINISTRATION_ROUTE_SEQUENCE,
+                "47625008",
+                "SCT",
+            )
+        })
 }

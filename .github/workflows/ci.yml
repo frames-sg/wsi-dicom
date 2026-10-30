@@ -93,6 +93,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
         if: runner.os == 'Linux'
       - run: cargo clippy --workspace --no-default-features --all-targets --locked -- -D warnings
+      - run: cargo clippy --workspace --no-default-features --features dicomweb --all-targets --locked -- -D warnings
 
   test:
     strategy:
@@ -111,9 +112,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: ${{ matrix.rust }}
-      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
+      # The file-set tests build their DICOMDIR fixtures with DCMTK dcmmkdir.
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev dcmtk
         if: runner.os == 'Linux'
+      - run: brew install dcmtk
+        if: runner.os == 'macOS'
       - run: cargo test --workspace --no-default-features --all-targets --locked
+      - name: Test the DICOMweb checks against the in-process origin server
+        run: "cargo test --no-default-features --features dicomweb --lib --locked -- dicomweb:: validation::dicom_json::"
 
   external-conformance:
     runs-on: ubuntu-latest
@@ -127,31 +133,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           toolchain: "1.99.0"
-      - name: Install dicom3tools build dependencies
-        run: >-
-          sudo apt-get update &&
-          sudo apt-get install -y
-          xutils-dev libx11-dev libxext-dev
-      - name: Build pinned dicom3tools with HTJ2K support
-        # Ubuntu's 2024 snapshot does not recognize the HTJ2K transfer syntaxes.
-        env:
-          DICOM3TOOLS_VERSION: 1.00.snapshot.20260320044638
-          DICOM3TOOLS_SHA256: 669b0c5e28535327ed0c0375491901bc553c2493923cc55e71a09eba07e7bdd2
-        run: |
-          source_dir="${RUNNER_TEMP}/dicom3tools_${DICOM3TOOLS_VERSION}"
-          archive_path="${source_dir}.tar.bz2"
-          curl -sSfL --retry 3 \
-            "https://dclunie.com/dicom3tools/workinprogress/dicom3tools_${DICOM3TOOLS_VERSION}.tar.bz2" \
-            --output "${archive_path}"
-          printf '%s  %s\n' "${DICOM3TOOLS_SHA256}" "${archive_path}" | sha256sum --check --strict
-          tar -xjf "${archive_path}" -C "${RUNNER_TEMP}"
-          cd "${source_dir}"
-          ./Configure
-          imake -I./config -DInstallInTopDir
-          make -j2 World
-          "${source_dir}/appsrc/dcfile/dciodvfy" -version
-          "${source_dir}/appsrc/dcfile/dcentvfy" -version
-          printf '%s\n' "${source_dir}/appsrc/dcfile" >> "${GITHUB_PATH}"
+      - name: Pinned dicom3tools with HTJ2K support
+        uses: ./wsi-dicom/.github/actions/dicom3tools
+      - name: Install DCMTK for the File-set fixtures
+        run: sudo apt-get update && sudo apt-get install -y dcmtk
       - name: Install the required Python IOD validator
         timeout-minutes: 5
         run: |
@@ -160,28 +145,15 @@ jobs:
           echo "${RUNNER_TEMP}/dicom-validator/bin" >> "$GITHUB_PATH"
           # Prepare the standard cache before per-file validation's 15s limit.
           mkdir -p "${RUNNER_TEMP}/empty-dicom"
-          "${RUNNER_TEMP}/dicom-validator/bin/validate_iods" --edition 2026c "${RUNNER_TEMP}/empty-dicom"
+          "${RUNNER_TEMP}/dicom-validator/bin/validate_iods" --edition 2026d "${RUNNER_TEMP}/empty-dicom"
       - name: Prove every required validator is present
         shell: bash
         run: |
-          for tool in dciodvfy dcentvfy validate_iods; do
+          for tool in dciodvfy dcentvfy validate_iods dcmmkdir; do
             command -v "$tool"
           done
       - name: Run external conformance integration tests
-        run: cargo test --package wsi-dicom --locked external_
-
-  gui:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: wsi-dicom
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
-        with:
-          toolchain: "1.99.0"
-      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
-      - run: cargo check -p wsi-dicom-gui --locked
+        run: "cargo test --package wsi-dicom --locked -- external_ validation::file_set::"
 
   docs:
     runs-on: ubuntu-latest
@@ -218,6 +190,7 @@ jobs:
         with:
           toolchain: "1.99.0"
       - uses: taiki-e/install-action@91534edaf9fd796a162759d80d49cdff574bff2c
+      - run: sudo apt-get update && sudo apt-get install -y dcmtk
       - run: cargo llvm-cov --package wsi-dicom --lib --bins --tests --no-default-features --locked --summary-only --fail-under-lines 80
 
   fuzz-smoke:
@@ -290,6 +263,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           toolchain: "1.99.0"
+      - run: brew install dcmtk
       - run: cargo test --workspace --features metal --all-targets --locked
 
   bench-internals:
@@ -331,12 +305,29 @@ jobs:
           toolchain: "1.99.0"
       - name: Fetch locked dependencies for offline package inspection
         run: cargo fetch --locked
+      - uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ${{ runner.temp }}/dicom-docbook
+          key: dicom-docbook-${{ hashFiles('wsi-dicom/scripts/generate-iod-tables.py') }}
       - name: Check generated IOD tables against the pinned DICOM sources
         run: python scripts/generate-iod-tables.py --source-dir "${RUNNER_TEMP}/dicom-docbook" --fetch --check
       - run: python -m unittest discover -s tests -v
         env:
           WSI_DICOM_DOCBOOK_DIR: ${{ runner.temp }}/dicom-docbook
-          WSI_DICOM_IOD_TABLES_CHECKED: "1"
+
+  dicom-edition:
+    # Fails when NEMA publishes an edition newer than the generated tables.
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: wsi-dicom
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: python scripts/check-dicom-edition.py
 
   controlled-failure-benchmark:
     if: github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -349,7 +340,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: frames-sg/wsi-dicom-bench
-          ref: 6f40ad621d3f0775b0fda6d738e9e4e7cce5a9d0
+          ref: 08f848d217849dbf5013eb429e7a6a129fc14eda
           path: wsi-dicom-bench
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -363,27 +354,8 @@ jobs:
           sudo apt-get update &&
           sudo apt-get install -y
           grokj2k-tools libjpeg-turbo-progs libopenjp2-tools
-          xutils-dev libx11-dev libxext-dev
-      - name: Build pinned dicom3tools with HTJ2K support
-        # Ubuntu's 2024 snapshot does not recognize the HTJ2K transfer syntaxes.
-        env:
-          DICOM3TOOLS_VERSION: 1.00.snapshot.20260320044638
-          DICOM3TOOLS_SHA256: 669b0c5e28535327ed0c0375491901bc553c2493923cc55e71a09eba07e7bdd2
-        run: |
-          source_dir="${RUNNER_TEMP}/dicom3tools_${DICOM3TOOLS_VERSION}"
-          archive_path="${source_dir}.tar.bz2"
-          curl -sSfL --retry 3 \
-            "https://dclunie.com/dicom3tools/workinprogress/dicom3tools_${DICOM3TOOLS_VERSION}.tar.bz2" \
-            --output "${archive_path}"
-          printf '%s  %s\n' "${DICOM3TOOLS_SHA256}" "${archive_path}" | sha256sum --check --strict
-          tar -xjf "${archive_path}" -C "${RUNNER_TEMP}"
-          cd "${source_dir}"
-          ./Configure
-          imake -I./config -DInstallInTopDir
-          make -j2 World
-          "${source_dir}/appsrc/dcfile/dciodvfy" -version
-          "${source_dir}/appsrc/dcfile/dcentvfy" -version
-          printf '%s\n' "${source_dir}/appsrc/dcfile" >> "${GITHUB_PATH}"
+      - name: Pinned dicom3tools with HTJ2K support
+        uses: ./wsi-dicom/.github/actions/dicom3tools
       - name: Install the pinned benchmark and Python IOD validator
         run: |
           python -m venv "${RUNNER_TEMP}/wsi-dicom-bench"
@@ -392,16 +364,18 @@ jobs:
           "${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -m pip install "${RUNNER_TEMP}"/benchmark-wheel/wsi_dicom_bench-*.whl "dicom-validator==0.8.3"
           echo "${RUNNER_TEMP}/wsi-dicom-bench/bin" >> "${GITHUB_PATH}"
           mkdir -p "${RUNNER_TEMP}/empty-dicom"
-          "${RUNNER_TEMP}/wsi-dicom-bench/bin/validate_iods" --edition 2026c "${RUNNER_TEMP}/empty-dicom"
+          "${RUNNER_TEMP}/wsi-dicom-bench/bin/validate_iods" --edition 2026d "${RUNNER_TEMP}/empty-dicom"
       - name: Run the complete locked challenge against this source revision
         env:
           WSI_DICOM_BENCH: ${{ runner.temp }}/wsi-dicom-bench/bin/wsi-dicom-bench
         run: |
-          suite="$("${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("negative_bench/manifest-v5.json"))')"
-          cargo xtask benchmark --suite "${suite}" --output "${RUNNER_TEMP}/controlled-failure-evidence"
+          suite="$("${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("negative_bench/manifest-v7.json"))')"
+          benchmark_status=0
+          cargo xtask benchmark --suite "${suite}" --output "${RUNNER_TEMP}/controlled-failure-evidence" || benchmark_status=$?
           candidate_sha256="$(sha256sum target/release/wsi-dicom | cut -d ' ' -f 1)"
-          recorded_sha256="$("${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -c 'import json, os; from pathlib import Path; report=json.loads((Path(os.environ["RUNNER_TEMP"]) / "controlled-failure-evidence/observed-results/run-summary.json").read_text()); print(report["environment"]["wsi_dicom_sha256"])')"
+          recorded_sha256="$("${RUNNER_TEMP}/wsi-dicom-bench/bin/python" -c 'import json, os; from pathlib import Path; report=json.loads((Path(os.environ["RUNNER_TEMP"]) / "controlled-failure-evidence/observed-results/run-summary.json").read_text()); assert report["candidate_sha256_before"] == report["candidate_sha256_after"]; print(report["candidate_sha256_after"])')"
           test "${recorded_sha256}" = "${candidate_sha256}"
+          exit "${benchmark_status}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -440,6 +414,9 @@ jobs:
           command-arguments: advisories bans licenses sources
           manifest-path: ./wsi-dicom/Cargo.toml
       - run: cargo install cargo-audit --locked --version 0.22.1
-      - run: cargo audit --file Cargo.lock --ignore RUSTSEC-2021-0153 --ignore RUSTSEC-2024-0436
+      # RUSTSEC-2023-0071 (rsa Marvin timing side channel) leaks private-key
+      # operations only; Digital Signature validation verifies with public
+      # keys. See deny.toml.
+      - run: cargo audit --file Cargo.lock --ignore RUSTSEC-2021-0153 --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2023-0071
       - run: cargo install cargo-vet --locked --version 0.10.2
       - run: cargo vet --locked

@@ -2,11 +2,19 @@ use dicom_dictionary_std::tags;
 use dicom_object::DefaultDicomObject;
 
 use super::fields::{
-    require_numeric_value, required_finite_float64, required_positive_u64, required_string,
-    required_type_two_string, sequence_items,
+    optional_string, require_numeric_value, required_finite_float64, required_positive_u64,
+    required_string, required_type_two_string, sequence_items,
 };
+use super::lossy_encoding::{lossiness, Lossiness};
+use super::nested::Nested;
+use super::pixel_syntax::{
+    is_motion_syntax, is_native, motion_departures, planar_configuration_section,
+    standard_photometric, validate_motion_syntax, validate_photometric_for_syntax, NOT_NATIVE,
+};
+use super::VL_WSI;
 use crate::icc::validate_dicom_icc_profile;
-use crate::lossy::method_for_lossy_transfer_syntax;
+use crate::validation::disclosure::shown;
+use crate::validation::iod::EDITION;
 
 pub(super) fn validate_core_image_profile_rule(object: &DefaultDicomObject) -> Result<(), String> {
     let image_type = object
@@ -20,14 +28,19 @@ pub(super) fn validate_core_image_profile_rule(object: &DefaultDicomObject) -> R
             image_type.len()
         ));
     }
+    if image_type[2].trim() != "VOLUME" {
+        return Err(format!(
+            "Image Type Value 3 is {}; the core profile accepts VOLUME images only, not LABEL, OVERVIEW or THUMBNAIL images",
+            image_type[2].trim()
+        ));
+    }
     if !matches!(image_type[0].trim(), "ORIGINAL" | "DERIVED")
         || image_type[1].trim() != "PRIMARY"
-        || image_type[2].trim() != "VOLUME"
         || !matches!(image_type[3].trim(), "NONE" | "RESAMPLED")
     {
         return Err(format!(
-            "Image Type {:?} is outside the core VOLUME profile",
-            image_type
+            "Image Type is {}; the core profile accepts ORIGINAL or DERIVED\\PRIMARY\\VOLUME\\NONE or RESAMPLED only",
+            image_type.join("\\")
         ));
     }
     super::functional_groups::validate_functional_groups(object)?;
@@ -47,7 +60,10 @@ pub(super) fn validate_core_image_profile_rule(object: &DefaultDicomObject) -> R
         return Err("Imaged Volume Depth must be positive".into());
     }
     if object.element(tags::CONCATENATION_UID).is_ok() {
-        return Err("concatenations are outside the core profile".into());
+        return Err(
+            "Concatenation UID (0020,9161) is present; the core profile excludes Concatenations, so each image is one SOP Instance"
+                .into(),
+        );
     }
     required_string(object, tags::ACQUISITION_DATE_TIME, "Acquisition DateTime")?;
     sequence_items(
@@ -74,38 +90,50 @@ pub(super) fn validate_core_image_profile_rule(object: &DefaultDicomObject) -> R
     )?;
     if dimension_type != "TILED_FULL" {
         return Err(format!(
-            "Dimension Organization Type is {dimension_type}, expected TILED_FULL"
+            "Dimension Organization Type is {dimension_type}; the core profile accepts TILED_FULL only, not TILED_SPARSE or 3D"
         ));
     }
-    if required_positive_u64(
+    let planes = required_positive_u64(
         object,
         tags::TOTAL_PIXEL_MATRIX_FOCAL_PLANES,
         "Total Pixel Matrix Focal Planes",
-    )? != 1
-    {
-        return Err("Total Pixel Matrix Focal Planes must be one in the core profile".into());
+    )?;
+    if planes != 1 {
+        return Err(format!(
+            "Total Pixel Matrix Focal Planes is {planes}; the core profile accepts a single focal plane only"
+        ));
     }
-    for (tag, name, expected) in [
+    for (tag, name, expected, configuration) in [
         (
             tags::VOLUMETRIC_PROPERTIES,
             "Volumetric Properties",
             "VOLUME",
+            "images whose pixels represent the imaged volume",
         ),
         (
             tags::SPECIMEN_LABEL_IN_IMAGE,
             "Specimen Label in Image",
             "NO",
+            "images without the slide label",
         ),
-        (tags::BURNED_IN_ANNOTATION, "Burned In Annotation", "NO"),
+        (
+            tags::BURNED_IN_ANNOTATION,
+            "Burned In Annotation",
+            "NO",
+            "images without burned in annotation",
+        ),
         (
             tags::EXTENDED_DEPTH_OF_FIELD,
             "Extended Depth of Field",
             "NO",
+            "images without extended depth of field (focus stacking)",
         ),
     ] {
         let value = required_string(object, tag, name)?;
         if value != expected {
-            return Err(format!("{name} is {value}, expected {expected}"));
+            return Err(format!(
+                "{name} is {value}; the core profile accepts {configuration} only ({name} {expected})"
+            ));
         }
     }
     let focus_method = required_string(object, tags::FOCUS_METHOD, "Focus Method")?;
@@ -129,7 +157,7 @@ pub(super) fn validate_optical_path_structure_rule(
         sequence_items(object, tags::OPTICAL_PATH_SEQUENCE, "Optical Path Sequence")?;
     if declared != 1 || optical_paths.len() != 1 {
         return Err(format!(
-            "core profile requires one optical path; declared {declared}, found {}",
+            "Number of Optical Paths is {declared} and the Optical Path Sequence has {} Items; the core profile accepts a single optical path only",
             optical_paths.len()
         ));
     }
@@ -202,14 +230,51 @@ pub(super) fn validate_optical_path_structure_rule(
         )?;
         if referenced != identifier {
             return Err(format!(
-                "referenced Optical Path Identifier {referenced:?} does not match {identifier:?}"
+                "referenced Optical Path Identifier {} does not match {}",
+                shown(tags::OPTICAL_PATH_IDENTIFIER, &referenced),
+                shown(tags::OPTICAL_PATH_IDENTIFIER, &identifier)
             ));
         }
     }
     Ok(())
 }
 
-pub(super) fn validate_icc_rule(object: &DefaultDicomObject) -> Result<(), String> {
+/// C.11.15.1.1 constrains every ICC Profile (0028,2000), wherever an IOD's
+/// Modules place one: the ICC Profile Module, Optical Path Items, an Icon
+/// Image or a Parametric Map. A VL WSI color Optical Path also needs one
+/// (C.8.12.5.1.4).
+pub(super) fn validate_icc_rule(
+    object: &DefaultDicomObject,
+    iod: &str,
+    nested: &Nested<'_>,
+) -> Result<(), String> {
+    if iod == VL_WSI {
+        optical_path_profiles(object)?;
+    }
+    let mut violations = Vec::new();
+    for found in &nested.profiles {
+        let Ok(element) = found.item.element(tags::ICC_PROFILE) else {
+            continue;
+        };
+        match element.to_bytes() {
+            Ok(bytes) => {
+                if let Err(err) = validate_dicom_icc_profile(bytes.as_ref()) {
+                    violations.push(format!(
+                        "{} has an invalid ICC Profile: {err}",
+                        found.profile_label()
+                    ));
+                }
+            }
+            Err(err) => violations.push(format!(
+                "{} ICC Profile is not binary: {err}",
+                found.profile_label()
+            )),
+        }
+    }
+    super::violation_result(violations)
+}
+
+fn optical_path_profiles(object: &DefaultDicomObject) -> Result<(), String> {
     let photometric = required_string(
         object,
         tags::PHOTOMETRIC_INTERPRETATION,
@@ -221,21 +286,10 @@ pub(super) fn validate_icc_rule(object: &DefaultDicomObject) -> Result<(), Strin
         return Err("Optical Path Sequence is empty".into());
     }
     for (index, optical_path) in optical_paths.iter().enumerate() {
-        match optical_path.element(tags::ICC_PROFILE) {
-            Ok(element) => {
-                let bytes = element.to_bytes().map_err(|err| {
-                    format!("Optical Path item {index} ICC Profile is not binary: {err}")
-                })?;
-                validate_dicom_icc_profile(bytes.as_ref()).map_err(|err| {
-                    format!("Optical Path item {index} has an invalid ICC Profile: {err}")
-                })?;
-            }
-            Err(_) if photometric != "MONOCHROME2" => {
-                return Err(format!(
-                    "color Optical Path item {index} is missing ICC Profile"
-                ));
-            }
-            Err(_) => {}
+        if optical_path.element(tags::ICC_PROFILE).is_err() && photometric != "MONOCHROME2" {
+            return Err(format!(
+                "color Optical Path item {index} is missing ICC Profile"
+            ));
         }
     }
     Ok(())
@@ -257,7 +311,8 @@ pub(super) fn validate_monochrome_rule(object: &DefaultDicomObject) -> Result<()
     )?;
     if shape != "IDENTITY" {
         return Err(format!(
-            "Presentation LUT Shape is {shape:?}, expected IDENTITY"
+            "Presentation LUT Shape is {}, expected IDENTITY",
+            shown(tags::PRESENTATION_LUT_SHAPE, &shape)
         ));
     }
     require_numeric_value(object, tags::RESCALE_INTERCEPT, "Rescale Intercept", 0.0)?;
@@ -265,71 +320,157 @@ pub(super) fn validate_monochrome_rule(object: &DefaultDicomObject) -> Result<()
     Ok(())
 }
 
-pub(super) fn validate_lossy_rule(object: &DefaultDicomObject) -> Result<(), String> {
-    let flag = required_string(
-        object,
-        tags::LOSSY_IMAGE_COMPRESSION,
-        "Lossy Image Compression",
-    )?;
-    match flag.as_str() {
-        "00" => {
-            if method_for_lossy_transfer_syntax(&object.meta().transfer_syntax).is_some() {
-                return Err(
-                    "lossy transfer syntax is paired with Lossy Image Compression = 00".into(),
-                );
+/// C.7.6.1.1.5: Frames that underwent lossy compression make Lossy Image
+/// Compression "01", and the Method and Ratio histories correspond Value by
+/// Value. VL WSI requires the flag, and with "01" both histories (Table
+/// C.8.12.4-1); in another IOD the Module tables decide their presence.
+pub(super) fn validate_lossy_rule(object: &DefaultDicomObject, iod: &str) -> Result<(), String> {
+    let flag = if iod == VL_WSI {
+        Some(required_string(
+            object,
+            tags::LOSSY_IMAGE_COMPRESSION,
+            "Lossy Image Compression",
+        )?)
+    } else {
+        optional_string(object, tags::LOSSY_IMAGE_COMPRESSION)
+            .map_err(|_| "Lossy Image Compression is empty".to_string())?
+    };
+    let encoding = lossiness(object);
+    match flag.as_deref() {
+        Some("00") => {
+            if let Lossiness::Lossy { evidence, .. } = encoding {
+                return Err(format!(
+                    "Lossy Image Compression is 00, but the Frames are {evidence}; an image that has undergone lossy compression is 01"
+                ));
             }
+            lossy_history(object, iod, encoding, false)
         }
-        "01" => {
-            let methods = object
-                .element(tags::LOSSY_IMAGE_COMPRESSION_METHOD)
-                .map_err(|_| "Lossy Image Compression Method is missing".to_string())?
+        Some("01") => lossy_history(object, iod, encoding, iod == VL_WSI),
+        None => {
+            if let Lossiness::Lossy { evidence, .. } = encoding {
+                return Err(format!(
+                    "Lossy Image Compression (0028,2110) is absent, but the Frames are {evidence}; the Value of an image that has undergone lossy compression is 01"
+                ));
+            }
+            lossy_history(object, iod, encoding, false)
+        }
+        Some(flag) => Err(format!(
+            "Lossy Image Compression is {}, expected 00 or 01",
+            shown(tags::LOSSY_IMAGE_COMPRESSION, flag)
+        )),
+    }
+}
+
+/// C.7.6.1.1.5.1 and C.7.6.1.1.5.2: the Method and Ratio Values of
+/// successive steps correspond in order, so they are as many; the last
+/// Method names the coding the Frames show. `required` asks for both.
+fn lossy_history(
+    object: &DefaultDicomObject,
+    iod: &str,
+    encoding: Lossiness,
+    required: bool,
+) -> Result<(), String> {
+    let methods = match object.element(tags::LOSSY_IMAGE_COMPRESSION_METHOD) {
+        Ok(element) => Some(
+            element
                 .to_multi_str()
-                .map_err(|err| format!("Lossy Image Compression Method is invalid: {err}"))?;
-            let ratios = object
-                .element(tags::LOSSY_IMAGE_COMPRESSION_RATIO)
-                .map_err(|_| "Lossy Image Compression Ratio is missing".to_string())?
+                .map_err(|err| format!("Lossy Image Compression Method is invalid: {err}"))?
+                .to_vec(),
+        ),
+        Err(_) if required => return Err("Lossy Image Compression Method is missing".to_string()),
+        Err(_) => None,
+    };
+    let ratios = match object.element(tags::LOSSY_IMAGE_COMPRESSION_RATIO) {
+        Ok(element) => Some(
+            element
                 .to_multi_float64()
-                .map_err(|err| format!("Lossy Image Compression Ratio is invalid: {err}"))?;
-            if methods.is_empty() || methods.len() != ratios.len() {
-                return Err(
-                    "lossy method and ratio histories have different value multiplicities".into(),
-                );
-            }
-            if methods.iter().any(|method| method.trim().is_empty()) {
-                return Err("Lossy Image Compression Method contains an empty value".into());
-            }
-            if ratios
-                .iter()
-                .any(|ratio| !ratio.is_finite() || *ratio <= 0.0)
-            {
-                return Err(
-                    "Lossy Image Compression Ratio must contain positive finite values".into(),
-                );
-            }
-            if let Some(expected_method) =
-                method_for_lossy_transfer_syntax(&object.meta().transfer_syntax)
-            {
-                let actual_method = methods
-                    .last()
-                    .map(|method| method.trim())
-                    .unwrap_or_default();
-                if actual_method != expected_method {
-                    return Err(format!(
-                        "lossy transfer syntax requires final compression method {expected_method}, found {actual_method:?}"
-                    ));
-                }
-            }
+                .map_err(|err| format!("Lossy Image Compression Ratio is invalid: {err}"))?,
+        ),
+        Err(_) if required => return Err("Lossy Image Compression Ratio is missing".to_string()),
+        Err(_) => None,
+    };
+    if let (Some(methods), Some(ratios)) = (&methods, &ratios) {
+        if methods.is_empty() || methods.len() != ratios.len() {
+            return Err(
+                "lossy method and ratio histories have different value multiplicities".into(),
+            );
         }
-        _ => {
-            return Err(format!(
-                "Lossy Image Compression is {flag:?}, expected 00 or 01"
-            ));
+    }
+    if let Some(methods) = &methods {
+        if methods.iter().any(|method| method.trim().is_empty()) {
+            return Err("Lossy Image Compression Method contains an empty value".into());
         }
+    }
+    if let Some(ratios) = &ratios {
+        if ratios
+            .iter()
+            .any(|ratio| !ratio.is_finite() || *ratio <= 0.0)
+        {
+            return Err("Lossy Image Compression Ratio must contain positive finite values".into());
+        }
+    }
+    let (
+        Some(methods),
+        Lossiness::Lossy {
+            method: Some(expected_method),
+            evidence,
+        },
+    ) = (methods, encoding)
+    else {
+        return Ok(());
+    };
+    let actual_method = methods
+        .last()
+        .map(|method| method.trim().to_string())
+        .unwrap_or_default();
+    if actual_method != expected_method {
+        let _ = iod;
+        return Err(format!(
+            "the Frames are {evidence}, so the last Lossy Image Compression Method is {expected_method}, but it is {}",
+            shown(tags::LOSSY_IMAGE_COMPRESSION_METHOD, &actual_method)
+        ));
     }
     Ok(())
 }
 
-pub(super) fn validate_image_metadata_rule(object: &DefaultDicomObject) -> Result<(), String> {
+/// The advisory for an image in a video Transfer Syntax: its compressed
+/// stream is not validated. PS3.3 also advises against lossy compression
+/// of Segmentations and Parametric Maps.
+pub(super) fn video_syntax_advisory(object: &DefaultDicomObject, iod: &str) -> Option<String> {
+    let syntax = object.meta().transfer_syntax.trim_end_matches(['\0', ' ']);
+    if !is_motion_syntax(syntax) {
+        return None;
+    }
+    let advice = match iod {
+        VL_WSI => format!(
+            "PS3.3 {EDITION} C.8.12.4.1.5 permits the MONOCHROME2 pixel format of single-component MPEG2"
+        ),
+        "A.51" => format!(
+            "it is not advisable to lossy compress a Segmentation Instance, and in particular BINARY or LABELMAP Segmentation Instances should not be lossy compressed (PS3.3 {EDITION} C.8.20.2.2)"
+        ),
+        "A.75" => format!(
+            "it is not advisable to lossy compress a Parametric Map SOP Instance, since that will alter the quantitative values that are the intent of the object (PS3.3 {EDITION} C.8.32.2.1)"
+        ),
+        _ => return None,
+    };
+    Some(format!(
+        "Transfer Syntax {syntax} encodes the Pixel Data as a lossy video bit stream; the compressed video stream is not validated; {advice}"
+    ))
+}
+
+/// The image's sample format and Transfer Syntax (PS3.5 8.1.1 and 8.2),
+/// held to the stricter VL WSI values where that IOD applies.
+pub(super) fn validate_image_metadata_rule(
+    object: &DefaultDicomObject,
+    iod: &str,
+) -> Result<(), String> {
+    let syntax = object.meta().transfer_syntax.trim_end_matches('\0');
+    if iod != VL_WSI {
+        let mut violations = Vec::new();
+        general_image_metadata(object, syntax, &mut violations);
+        return super::violation_result(violations);
+    }
+    validate_motion_syntax(object, syntax)?;
     let samples = required_positive_u64(object, tags::SAMPLES_PER_PIXEL, "Samples per Pixel")?;
     let photometric = required_string(
         object,
@@ -389,24 +530,131 @@ pub(super) fn validate_image_metadata_rule(object: &DefaultDicomObject) -> Resul
             0.0,
         )?;
     }
-    let syntax = object.meta().transfer_syntax.trim_end_matches('\0');
-    let compatible = if photometric == "MONOCHROME2" || photometric == "RGB" {
-        true
-    } else {
-        match syntax {
-            "1.2.840.10008.1.2.4.50" => photometric == "YBR_FULL_422",
-            "1.2.840.10008.1.2.4.90" | "1.2.840.10008.1.2.4.201" | "1.2.840.10008.1.2.4.202" => {
-                photometric == "YBR_RCT"
-            }
-            // These syntaxes permit reversible and irreversible codestreams.
-            "1.2.840.10008.1.2.4.91" | "1.2.840.10008.1.2.4.203" => {
-                matches!(photometric.as_str(), "YBR_RCT" | "YBR_ICT")
-            }
-            _ => false,
-        }
+    validate_photometric_for_syntax(syntax, &photometric, allocated)
+}
+
+/// Photometric Interpretations of three samples (PS3.3 C.7.6.3.1.2).
+const THREE_SAMPLES: [&str; 7] = [
+    "RGB",
+    "YBR_FULL",
+    "YBR_FULL_422",
+    "YBR_PARTIAL_420",
+    "YBR_ICT",
+    "YBR_RCT",
+    "XYB",
+];
+/// Photometric Interpretations whose Planar Configuration shall be 0 (PS3.3
+/// C.7.6.3.1.2).
+const COLOR_BY_PIXEL: [&str; 4] = ["YBR_FULL_422", "YBR_PARTIAL_420", "YBR_ICT", "YBR_RCT"];
+
+/// PS3.5 8.1.1, 8.2 and its subsections, and PS3.3 C.7.6.3.1.2, for an image
+/// of any IOD. Absent attributes are presence violations the IOD checks
+/// report.
+fn general_image_metadata(object: &DefaultDicomObject, syntax: &str, violations: &mut Vec<String>) {
+    let integer = |tag| {
+        object
+            .get(tag)
+            .and_then(|element| element.to_int::<u64>().ok())
     };
-    if !compatible || (syntax == "1.2.840.10008.1.2.4.50" && allocated != 8) {
-        return Err(format!("Photometric Interpretation {photometric} and {allocated}-bit samples are incompatible with transfer syntax {syntax}"));
+    if let Some((section, departures)) = motion_departures(object, syntax) {
+        if !departures.is_empty() {
+            violations.push(format!(
+                "Transfer Syntax {syntax} fixes the Pixel Data attributes it encodes, and the image departs from them: {} (PS3.5 {EDITION} {section})",
+                departures.join(", ")
+            ));
+        }
     }
-    Ok(())
+    let samples = integer(tags::SAMPLES_PER_PIXEL);
+    let photometric = optional_string(object, tags::PHOTOMETRIC_INTERPRETATION)
+        .ok()
+        .flatten();
+    if let (Some(samples), Some(photometric)) = (samples, photometric.as_deref()) {
+        let expected = if THREE_SAMPLES.contains(&photometric) {
+            Some(3)
+        } else if matches!(photometric, "MONOCHROME1" | "MONOCHROME2" | "PALETTE COLOR") {
+            Some(1)
+        } else {
+            None
+        };
+        if expected.is_some_and(|expected| expected != samples) {
+            violations.push(format!(
+                "Photometric Interpretation {photometric} is used with Samples per Pixel {samples}; it may be used only with {} (PS3.3 {EDITION} C.7.6.3.1.2)",
+                expected.unwrap_or_default()
+            ));
+        }
+        if COLOR_BY_PIXEL.contains(&photometric) && integer(tags::PLANAR_CONFIGURATION) != Some(0) {
+            violations.push(format!(
+                "Planar Configuration (0028,0006) is {} with Photometric Interpretation {photometric}; it shall be 0 (PS3.3 {EDITION} C.7.6.3.1.2)",
+                integer(tags::PLANAR_CONFIGURATION).map_or_else(|| "absent".to_string(), |value| value.to_string())
+            ));
+        }
+        photometric_for_syntax(syntax, photometric, violations);
+    }
+    if let (Some(section), Some(3)) = (planar_configuration_section(syntax), samples) {
+        if let Some(planar) = integer(tags::PLANAR_CONFIGURATION).filter(|planar| *planar != 0) {
+            violations.push(format!(
+                "Planar Configuration (0028,0006) is {planar}; Transfer Syntax {syntax} encodes the manner of interleaving components itself, so it shall be 0 (PS3.5 {EDITION} {section})"
+            ));
+        }
+    }
+    sample_bits(object, violations);
+}
+
+/// PS3.5 8.2 and the table of each syntax: the Standard Photometric
+/// Interpretations it admits.
+fn photometric_for_syntax(syntax: &str, photometric: &str, violations: &mut Vec<String>) {
+    if is_native(syntax) && NOT_NATIVE.contains(&photometric) {
+        violations.push(format!(
+            "Photometric Interpretation {photometric} is used with Native Format Transfer Syntax {syntax}; it is not encodable uncompressed and shall only be used for Pixel Data in an Encapsulated format (PS3.5 {EDITION} 8.2 and PS3.3 {EDITION} C.7.6.3.1.2)"
+        ));
+        return;
+    }
+    let Some((permitted, citation)) = standard_photometric(syntax) else {
+        return;
+    };
+    if !permitted.contains(&photometric) {
+        violations.push(format!(
+            "Photometric Interpretation {photometric} is not permitted with Transfer Syntax {syntax}, which admits {}; no other Standard Photometric Interpretation shall be used (PS3.5 {EDITION} {citation})",
+            permitted.join(", ")
+        ));
+    }
+}
+
+/// PS3.5 8.1.1: Bits Allocated is 1 or a multiple of 8, Bits Stored at most
+/// Bits Allocated, High Bit one less than Bits Stored, and samples unsigned
+/// or 2's complement as Pixel Representation says; so the sign bit of a 2's
+/// complement sample is the High Bit. Floating point Pixel Data has no Bits
+/// Stored, High Bit or Pixel Representation (PS3.5 8.2).
+fn sample_bits(object: &DefaultDicomObject, violations: &mut Vec<String>) {
+    let integer = |tag| {
+        object
+            .get(tag)
+            .and_then(|element| element.to_int::<u64>().ok())
+    };
+    let allocated = integer(tags::BITS_ALLOCATED);
+    if let Some(allocated) = allocated.filter(|bits| *bits != 1 && bits % 8 != 0) {
+        violations.push(format!(
+            "Bits Allocated (0028,0100) is {allocated}; it shall be either 1 or a multiple of 8 (PS3.5 {EDITION} 8.1.1)"
+        ));
+    }
+    let stored = integer(tags::BITS_STORED);
+    if let (Some(allocated), Some(stored)) = (allocated, stored) {
+        if stored > allocated {
+            violations.push(format!(
+                "Bits Stored (0028,0101) {stored} is larger than Bits Allocated (0028,0100) {allocated}; it shall never be (PS3.5 {EDITION} 8.1.1)"
+            ));
+        }
+    }
+    if let (Some(high_bit), Some(stored)) = (integer(tags::HIGH_BIT), stored) {
+        if high_bit.checked_add(1) != Some(stored) {
+            violations.push(format!(
+                "High Bit (0028,0102) is {high_bit}; it shall be one less than Bits Stored (0028,0101) {stored}, so the High Bit is the sign bit of a 2's complement sample (PS3.5 {EDITION} 8.1.1)"
+            ));
+        }
+    }
+    if let Some(representation) = integer(tags::PIXEL_REPRESENTATION).filter(|value| *value > 1) {
+        violations.push(format!(
+            "Pixel Representation (0028,0103) is {representation}; a Pixel Sample is an unsigned integer (0) or a binary 2's complement integer (1) (PS3.5 {EDITION} 8.1.1)"
+        ));
+    }
 }

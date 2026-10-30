@@ -41,6 +41,42 @@ pub(crate) fn validate_dicom_icc_profile(bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
+/// Whether a matrix/TRC profile has the primaries of the space a Color Space
+/// (0028,2002) Defined Term names (PS3.3 C.11.15.1.2). `None` when that cannot
+/// be decided: an unreadable or table-based profile, or another term.
+pub(crate) fn defines_color_space(bytes: &[u8], term: &str) -> Option<bool> {
+    let reference = match term {
+        "SRGB" => ColorProfile::new_srgb(),
+        "ADOBERGB" => ColorProfile::new_adobe_rgb(),
+        "ROMMRGB" => ColorProfile::new_pro_photo_rgb(),
+        "DISPLAYP3" => ColorProfile::new_display_p3(),
+        _ => return None,
+    };
+    let profile = encoded_profile_bytes(bytes).ok()?;
+    let parsed =
+        ColorProfile::new_from_slice_with_options(profile, parsing_options(profile)).ok()?;
+    // An AToB table, when present, is the transform; the colorants are not.
+    let tables = [
+        &parsed.lut_a_to_b_perceptual,
+        &parsed.lut_a_to_b_colorimetric,
+        &parsed.lut_a_to_b_saturation,
+    ];
+    if tables.iter().any(|table| table.is_some()) || parsed.red_trc.is_none() {
+        return None;
+    }
+    // PCS-relative (D50) colorants of profiles of one space agree to the
+    // s15Fixed16 rounding and chromatic adaptation differences between
+    // vendors; distinct spaces differ by more than 0.05.
+    let close = |a: moxcms::Xyzd, b: moxcms::Xyzd| {
+        (a.x - b.x).abs() < 0.01 && (a.y - b.y).abs() < 0.01 && (a.z - b.z).abs() < 0.01
+    };
+    Some(
+        close(parsed.red_colorant, reference.red_colorant)
+            && close(parsed.green_colorant, reference.green_colorant)
+            && close(parsed.blue_colorant, reference.blue_colorant),
+    )
+}
+
 pub(crate) fn synthetic_srgb_icc_profile() -> Result<Vec<u8>, Error> {
     encode_synthetic_input_profile("sRGB", ColorProfile::new_srgb())
 }
@@ -148,6 +184,30 @@ mod tests {
                 b"XYZ " | b"Lab "
             ));
         }
+    }
+
+    #[test]
+    fn color_space_terms_match_only_their_own_primaries() {
+        let srgb = synthetic_srgb_icc_profile().unwrap();
+        let display_p3 = synthetic_display_p3_icc_profile().unwrap();
+        let adobe = ColorProfile::new_adobe_rgb().encode().unwrap();
+        let romm = ColorProfile::new_pro_photo_rgb().encode().unwrap();
+        for (profile, term) in [
+            (&srgb, "SRGB"),
+            (&display_p3, "DISPLAYP3"),
+            (&adobe, "ADOBERGB"),
+            (&romm, "ROMMRGB"),
+        ] {
+            for other in ["SRGB", "DISPLAYP3", "ADOBERGB", "ROMMRGB"] {
+                assert_eq!(
+                    defines_color_space(profile, other),
+                    Some(other == term),
+                    "{term} profile against {other}"
+                );
+            }
+        }
+        assert_eq!(defines_color_space(&srgb, "SCANNER"), None);
+        assert_eq!(defines_color_space(&srgb[..64], "SRGB"), None);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 
 # wsi-dicom
 
@@ -8,8 +8,7 @@
 [API documentation](https://docs.rs/wsi-dicom)
 
 `wsi-dicom` converts whole-slide imaging files that `wsi-rs` can open into
-DICOM VL Whole Slide Microscopy instances. It provides a Rust API, a CLI, and an
-optional native GUI.
+DICOM VL Whole Slide Microscopy instances. It provides a Rust API and a CLI.
 
 [J2K, the pure-Rust JPEG 2000 codec](https://frames-sg.com/j2k/rust-jpeg2000-codec/),
 supplies JPEG, JPEG 2000, and HTJ2K codec primitives. `wsi-rs`
@@ -26,10 +25,13 @@ decoding, public RGB/RGBA display buffers, and image saving.
 
 ## Validation benchmark
 
-The current WSI validation challenge is maintained in
-[`wsi-dicom-bench`](https://github.com/frames-sg/wsi-dicom-bench): 69 authored
-defects and 14 controls covering 18 selected rule families. Earlier sealed
-studies remain historical evidence; this challenge does not claim exhaustive
+The validation challenge is maintained in
+[`wsi-dicom-bench`](https://github.com/frames-sg/wsi-dicom-bench). Its v7 suite
+contains 66 controls and 861 file, JSON, HTTP and advisory cases, with witnesses
+for all 886 cataloged checked statements. Seven requirements remain unimplemented
+across 16 IOD scope pairs, so the full-coverage acceptance policy fails even when
+the implemented checks satisfy every case. Earlier sealed studies remain
+historical evidence; this challenge does not claim certification or exhaustive
 normative DICOM coverage.
 
 ## Install
@@ -57,7 +59,7 @@ wsi-dicom = { version = "0.8.0", features = ["cuda"] } # CUDA-capable Linux
 ```
 
 This source tree requires Rust 1.99.0 and targets J2K 0.12.0, `wsi-rs` 0.8.0,
-and `wsi-dicom-annotations` 0.1.4. Release builds resolve these dependencies
+and `wsi-dicom-annotations` 0.2.1. Release builds resolve these dependencies
 from crates.io:
 
 ```sh
@@ -100,12 +102,6 @@ For local maximum CPU throughput:
 
 ```sh
 RUSTFLAGS="-C target-cpu=native" cargo build --release
-```
-
-The optional GUI lives in `apps/wsi-dicom-gui`:
-
-```sh
-cargo run -p wsi-dicom-gui
 ```
 
 ## Quickstart
@@ -273,8 +269,8 @@ wsi-dicom calibration create --icc vendor-profile.icc \
 
 `calibration create` validates and packages an existing vendor- or
 target-generated profile. It does not derive scanner calibration from an
-ordinary tissue slide. Calibration selection is CLI/API-only in 0.7.5; the GUI
-offers source-required, sRGB fallback, and Display P3 fallback choices.
+ordinary tissue slide. Calibration selection is available through the CLI and
+Rust API.
 
 The default conversion preset is `lossless-review`, which emits HTJ2K Lossless
 RPCL. For explicit JPEG Baseline output:
@@ -291,51 +287,241 @@ wsi-dicom doctor --strict --json
 wsi-dicom self-test --json --out self-test-evidence --keep-output
 wsi-dicom validate dicom-out --strict --json
 wsi-dicom coverage slide.ndpi --json
+wsi-dicom requirements --json
 ```
 
-For the complete cataloged DICOM-side evaluation and one unified per-slide evidence bundle, install
+For the cataloged DICOM checks and one per-slide evidence bundle, install
 the independently versioned [WSI-DICOM Bench](https://github.com/frames-sg/wsi-dicom-bench) package:
 
 ```sh
 python -m pip wheel \
-  "git+https://github.com/frames-sg/wsi-dicom-bench@56fd99fafccac7dfbf2a320022abb0c2ccaa8f62" \
+  "git+https://github.com/frames-sg/wsi-dicom-bench@08f848d217849dbf5013eb429e7a6a129fc14eda" \
   --wheel-dir .benchmark-wheel
 python -m pip install .benchmark-wheel/wsi_dicom_bench-*.whl
-profile="$(python -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("rules/wsi-dicom-core-profile-2026c-v2.json"))')"
+catalog="$(python -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("rules/wsi-dicom-bench-rules-v7.json"))')"
 wsi-dicom-bench-workbench dicom-out \
   --output evidence/slide-id \
   --wsi-dicom target/release/wsi-dicom \
-  --profile "${profile}"
+  --catalog "${catalog}"
 ```
+
+To run the locked v7 challenge from this checkout, select its manifest explicitly:
+
+```sh
+suite="$(python -c 'from importlib.resources import files; print(files("wsi_dicom_bench").joinpath("negative_bench/manifest-v7.json"))')"
+cargo xtask benchmark --suite "${suite}" --output evidence/challenge-v7
+```
+
+The command builds the candidate with DICOMweb support.
 
 Validation never runs an external codec. Every validation run performs
 intrinsic checks before the optional external DICOM conformance validators
 (dicom3tools `dciodvfy`/`dcentvfy`, `validate_iods`, and `dcmvalidate` when an
 IOD file is given). The Pixel Data structure check verifies Number of Frames,
-native versus encapsulated representation, nonempty data, and bounded frame
-mapping through Basic or Extended Offset Tables. VL Whole Slide Microscopy Image objects additionally
-run stable `intrinsic-wsi-dicom-2026c-*` checks for ICC profiles, monochrome
-presentation attributes, lossy declarations, specimen identity, and dimension
-ordering, plus a set-level Specimen UID consistency check.
+native versus encapsulated representation as each Transfer Syntax requires,
+nonempty data, the Native length, and bounded frame mapping through Basic or
+Extended Offset Tables. The `encoding` check re-reads every file's Data Set
+from its bytes: element order and uniqueness, VR and reserved bytes, Value
+Lengths and trailing bytes, the encapsulated Pixel Data VR, Fragment Item
+lengths and delimiters, Group Lengths, private blocks and Private Creators,
+Specific Character Set and the repertoire of text Values, Person Name
+component groups and deflated Data Sets. The `digital-signatures` check
+recomputes each Digital Signature's MAC and verifies its RSA signature and
+Certified Timestamp; whether its certificate is trusted is not checked. VL
+Whole Slide Microscopy Image objects additionally run stable
+`intrinsic-wsi-dicom-*` checks for ICC profiles, monochrome
+presentation attributes, lossy declarations, specimen identity, dimension
+indices and ordering, the WSI image constraints the tables cannot express
+(`wsi-image`: four-valued Image and Frame Type, Specimen Label in Image, Tiles
+Overlap, Imaged Volume Depth, slide-corner Frame of Reference, optical path
+identifiers, lossy derivation, pixel spacing and the regular tiling), pixel
+description content (`pixel-attributes`: Pixel Padding, Pixel Aspect Ratio,
+Icon Images and palette tables), the codestream headers of each encapsulated
+Frame against the Image Pixel attributes and the Transfer Syntax (`codestream`:
+JPEG, JPEG-LS, JPEG 2000, HTJ2K, JPEG XL and RLE; headers are read, nothing is
+decoded) and the constraints between Attributes in every Data Set and Item
+(`attribute-relations`: Selector Attribute macro, Context Identifiers,
+Referenced Frame Numbers, identification Items against names, calibration
+dates, patient orientation and laterality, specimen preparation order, Color
+Space against the ICC Profile primaries, signed element lists, Original
+Attributes, measured values and reference SOP Classes). A validated directory
+also runs set-level checks: Specimen UID consistency and `series-set` (one
+Frame of Reference per Series and per slide, UID roles, Instance Numbers,
+Concatenation agreement and numbering, Dimension Organization UIDs, localizer
+Frames of Reference, Specimen Identifiers within a Study, Frame Extraction
+history and patient group arrangements).
 
 They also run the VL WSI IOD requirements generated from the pinned DICOM
-2026c tables (PS3.3 A.32.8 and the module and macro tables it includes, PS3.6
+edition's tables (PS3.3 A.32.8 and the module and macro tables it includes, PS3.6
 data dictionary, PS3.10 file meta): `iod-modules` (module and functional group
 usage, Per-Frame item count), `iod-attribute-presence` (Type 1, 1C, 2 and 2C,
 recursively in Sequence Items, with each condition evaluated), `iod-enumerated-values`,
-`iod-vr-vm`, `iod-value-format` (PS3.5 6.2), `iod-sequence-items` and
-`file-meta`. Conditions that depend on facts an object cannot carry are counted
-as undeterminable rather than failed. With `--optional` (the default),
-validation also lists the optional modules, functional groups and attributes
-each object lacks, in `optional_absent` of the JSON report; they are not
-failures. Most need facts a slide file does not hold (clinical trial, physician
-or procedure details). `--required` skips the list. Context Group (CID) code constraints are
-not checked. `scripts/generate-iod-tables.py --check` verifies the generated
-tables against the pinned DocBook sources. These checks do not decode pixel
+`iod-vr-vm`, `iod-value-format` (PS3.5 6.2), `iod-sequence-items` (including
+Type 3 Sequences present with zero Items), `iod-value-sets` and `file-meta`
+(including Presentation Addresses). `iod-value-sets` checks coded entries
+against the PS3.16 Context Groups and Templates bound in the tables: a code
+outside a Defined non-extensible group, or a Content Item tree that departs
+from a Defined Template, fails; codes outside a Defined extensible group (Context
+Group Extension Flag not `Y`) or a Baseline group, and departures from a
+Baseline Template, are advisories. Conditions that depend on facts an object
+cannot carry are counted as undeterminable rather than failed. With
+`--optional` (the default), the JSON report's `optional` lists, for each
+object, the optional modules, functional groups and attributes it encodes
+(`present`) and lacks (`absent`), and the suggested codes and templates it
+does not follow (`advisories`); none of them are failures. Most absent ones
+need facts a slide file does not hold (clinical trial, physician or procedure
+details). `--required` skips the list.
+
+The IOD requirements apply to the pathology objects, chosen by SOP Class UID
+as PS3.4 Table B.5-1 assigns it: VL Whole Slide Microscopy Image,
+Segmentation (including Label Map Segmentation), Parametric Map, Microscopy
+Bulk Simple Annotations, the Key Object Selection Document, and Basic Text,
+Enhanced, Comprehensive and Comprehensive 3D SR; a DICOMDIR is held to the
+Basic Directory IOD. An object of another SOP Class is reported as one to
+which no IOD rules apply.
+
+`wsi-dicom requirements` prints the catalog of the normative statements of
+PS3.3, PS3.5, PS3.10, PS3.15 Annex E and PS3.18 for those objects, the
+File-set and DICOMweb, each with its strength (`shall`, or `should` for a
+recommendation, which is only ever an advisory), the IODs it applies to and its
+disposition for each: enforced by the generated tables, the intrinsic check
+that enforces it, the check family it awaits, or why an encoded object cannot
+be held to it (another IOD or encoding, application behavior, or a fact the
+bytes cannot show). `--json`
+emits the `wsi-dicom-requirements-v1` schema;
+`wsi_dicom::requirement_catalog()` returns the same entries.
+wsi-dicom validates pathology slides, not video. The catalog marks the MPEG2
+bit-stream requirements and the JPIP Data Set byte order outside its scope: an
+MPEG2 object is held only to its declared pixel attributes and encapsulation,
+and JPIP cannot be stored in a Part 10 file, while JSON metadata carries no
+Data Set byte encoding.
+`scripts/generate-iod-tables.py --check` verifies the generated tables,
+dictionary, requirement catalog and value sets against the pinned DocBook
+sources. These checks do not decode pixel
 values or infer unknowable compression history predating the object. Missing
 external tools are reported as skipped unless `--strict` is set. Directory
 validation is bounded by file count, depth, timeout, and child
 output capture limits; symlink traversal is refused.
+
+Diagnostics withhold identifying Attribute Values, including Study, Series
+and Instance UIDs, using PS3.15 Table E.1-1. SOP Class and Transfer Syntax
+UIDs remain visible. External-validator lines that name an identifying
+Attribute and their continuations are withheld; DICOMweb reports also
+withhold server-provided URI references and Warning text. This filtering
+does not de-identify input paths, command arguments or unrecognized external
+text.
+
+`wsi-dicom validate-json metadata.json` holds a DICOM JSON document (PS3.18
+Annex F), such as a saved Retrieve Metadata response, to the JSON Model and
+each Data Set to the same checks as a file; checks that need Pixel Data, the
+PS3.5 encoding or the File Meta Information report that they cannot run, a
+check that depends on the Transfer Syntax the Metadata does not name runs with
+each one of PS3.18 Table 8.7.3-2 and is undecidable when they disagree
+(`--transfer-syntax` names it), and `--fetch-bulkdata` retrieves BulkDataURI
+Values. With a JPIP Referenced Transfer Syntax, the Provider URL and exclusion
+of inline Pixel Data are checked directly from the metadata.
+
+`wsi-dicom dicomweb https://host/dicomweb [--study UID]` checks a
+DICOMweb origin server for the transactions a slide viewer uses: Retrieve
+Capabilities, Study, Series and Instance Search with matching, includefield
+and paging, Series and Instance Metadata (JSON and XML), Frames in their own
+and in uncompressed media types, Bulk Data, Rendered Frames, Thumbnails and
+Instance retrieval, with content negotiation, character sets, Transfer Syntax
+defaults, the Rendering Query Parameters, the matching parameters and
+attributes, the Mandatory Search resources, Range, and the response message
+and header fields of every response; each check cites PS3.18, missing optional
+capabilities are `unsupported`, a recommendation not followed is an advisory,
+never a failure, and the Metadata, Frames and Instance retrieved are validated
+as files are. Store runs only with `--allow-store <FILE>`, and the stored copy
+fails only checks the file stored passes. The two requests that ask for a 401
+and a 405, one with an invalid bearer token and a TRACE, run only with
+`--probe-error-responses`, since either can raise alerts on a server. Requests have
+per-request timeouts, response-size limits and a request budget, follow
+redirects only to the same origin, and send the bearer token held by the
+environment variable `--bearer-token-env` names to the base URL's origin only.
+`dicomweb` and `--fetch-bulkdata` need the network stack of the `dicomweb`
+feature (`cargo install wsi-dicom --features dicomweb`), which the release
+archives include; without it they report that the build has no DICOMweb
+transport.
+
+## Convention profiles
+
+DICOM conformance is one question. Whether objects meet the conventions a
+partner requires, and whether common viewers and archives will read them, are
+two more. `validate --conventions` answers them separately. Select profiles
+comma-separated or by repeating the flag:
+
+```sh
+wsi-dicom validate slide-dir --conventions wg26,ihe-dpia --conventions interop --json
+```
+
+| Profile | What it checks | Source |
+|---|---|---|
+| `wg26` | the nine checks `dciodvfy -profile WG26SP2025` adds (TILED_FULL, one focal plane, no Concatenation UID, Specimen Type, Specimen Preparation and Primary Anatomic Structure present, 2D annotations; missing Acquisition UID and Pyramid UID are warnings, as in dciodvfy), and the connectathon requirements: one Series per scan, a LABEL or OVERVIEW image with Barcode Value, true color brightfield, baseline JPEG or JPEG 2000 (the top layer, LABEL and OVERVIEW may be uncompressed), a pyramid, TILED_FULL without Per-Frame Functional Groups, one Z-plane, no Concatenations and one instance per layer, the ICC Profile in the single Optical Path Item, coded fixation, embedding and staining, SNOMED CT Specimen Type, and annotations sharing the images' patient | DICOM WG-26 Digital Pathology Connectathon Technical Requirements 2026 (2026/07/31); dicom3tools 1.00.snapshot.20260927113651 `libsrc/standard/module/vl.tpl:700-719, 1614-1616` |
+| `ihe-dpia` | Appendix B: Request Attributes Accession Number, Issuer and Study Instance UID equal the top level; collection, fixation, embedding and staining steps with their codes, the Specimen Identifier and Issuer in every step, in chronological order; a coded Specimen Type; Patient's Sex from PID-8; one Accession Number per Study | IHE PaLM DPIA Rev. 1.4 (Trial Implementation, 2026-03-06) |
+| `ihe-dpia-draft` | True Color Tiled Full Single Z Plane Pyramid Option (true color, pyramid, TILED_FULL, one pyramid and Z-plane, one Acquisition UID per Series, shared Frame of Reference and Pyramid UID, no Concatenations, a Basic or Extended Offset Table) and the Acquisition Complete Option's KOS (new Series, whole images, the images' identity, every image of the scan) | IHE PaLM CP-LAB-279 and CP-LAB-281, draft (CP under ballot) |
+| `ihe-dpia-draft-jpeg` | JPEG Storage Option: baseline JPEG pyramid layers | IHE PaLM CP-LAB-279, draft (CP under ballot) |
+| `interop` | advisories only: what dicom-microscopy-viewer 0.49.5, OpenSlide 4.0.1, Slim 0.46.10, the Orthanc WSI plugin 4.0, wsidicom 0.36.1, highdicom 0.28.2, the IDC index, the Google Cloud Healthcare API and dciodvfy's base checks reject or warn about | each advisory names the tool, version and source lines |
+
+Convention results never enter `checks` and do not make validation fail
+unless `--fail-on-conventions` asks them to. The JSON report adds a
+`conventions` object (absent when no profile is selected) with the selected
+`profiles`, one `checks` entry per check and object or Series it applies to
+(`passed`, `failed`, or `skipped` with the reason when the object lacks what
+the check reads), and `advisories`, listed only where they apply. Each entry
+is named `convention-<profile>-<topic>` and carries its `source`; messages of
+the draft profiles say "draft (CP under ballot)". The text summary prints the
+counts, each check that did not pass and each advisory. `wsi-dicom
+requirements --json` lists every convention, with its kind, source and what
+it requires, under `conventions`, apart from the DICOM `requirements`;
+`wsi_dicom::convention_catalog()` returns the same entries, and
+`ValidationOptions::conventions` selects profiles from the Rust API.
+`validate-json` and `dicomweb` (on the Series Metadata) take `--conventions`
+and `--fail-on-conventions` too, and report skipped the checks that need the
+Transfer Syntax or encoded Pixel Data the Metadata lacks;
+`--fail-on-conventions` (`ValidationOptions::fail_on_conventions`) makes a
+failed convention check, never an advisory, fail validation. The
+connectathon's
+Patient's Name scheme (`26CN^...`) is event logistics and is not checked; its
+DIMSE, DICOMweb and HL7 requirements need a transaction, not an object.
+
+### Conflicts between sources
+
+DICOM normative text is followed over informative text and conventions, and
+each conflict is reported as an advisory of the profile it affects:
+
+| Conflict | Position | Advisory |
+|---|---|---|
+| DPIA maps order numbers into the Request Attributes Sequence, which the Request Attributes Macro does not define | the DICOM checks decide conformance; `ihe-dpia` does not require the order numbers | `convention-ihe-dpia-order-numbers-standard-extended` |
+| CP-LAB-281 wants Specimen information in the completion KOS; the KOS IOD has no Specimen Module until CP-2656 | Patient and Study identity are required; Specimen Attributes are compared only where present | `convention-ihe-dpia-draft-completion-specimen-standard-extended` |
+| DPIA's SPM-4 uses HL7 Table 0487; the Specimen Type Code Sequence's Baseline CID 8103 and the connectathon use SNOMED CT | `wg26` requires SCT; `ihe-dpia` accepts any coded type and notes other schemes | `convention-ihe-dpia-specimen-type-coding` |
+| PS3.17 NN.6.2 describes preparation steps newest first; PS3.3 C.7.6.22.1.3 requires ascending chronological order | PS3.3: steps out of order fail `convention-ihe-dpia-step-order` | `convention-ihe-dpia-preparation-order-conflict` |
+| The PS3.3 A.1.2.30 Note puts LABEL and OVERVIEW images in a pyramid's Series only if they share its Frame of Reference; Table A.32.8-1 (CP-2406) does not require one for them | Table A.32.8-1: no DICOM or convention failure | `convention-interop-associated-frame-of-reference` |
+| PS3.15 Table E.3.4-1 (Clean Structured Content) removes the step Specimen Identifier and Issuer that TID 8001 and DPIA put in every step | for an object declaring Patient Identity Removed YES with (113104, DCM), the step identifier check is skipped | `convention-ihe-dpia-deidentified-step-identifiers` |
+| Philips writes Photometric Interpretation XYB for JPEG XL; C.8.12.4.1.5 does not list it for VL WSI | the Enumerated Values: DICOM validation fails it | `convention-interop-xyb-photometric` |
+
+### Changes after the pinned edition
+
+These are known and not yet normative, so validation of the pinned edition
+(2026d) does not apply them:
+
+- Letter Ballot (2026-09-06): CP-2540 (Total Number of Frames in
+  Concatenation, In-concatenation Total Number above one), CP-2541 (EFO coding
+  scheme, "single cell identifier" in CID 8136), CP-2542 (Image Region
+  concept), CP-2588 (Image Storage SOP Class UID types), CP-2610 (Institution
+  Code Sequence in the General Equipment Module), CP-2620 and CP-2621 (STOW-RS,
+  Storage Commitment and C-MOVE/C-GET response contents), CP-2559 (VM
+  corrections).
+- November 2026 voting packet: CP-2628 (WSI scan quality KOS titles), CP-2633
+  (more WSI QC segmentation properties), CP-2625 (de-identification of overlay
+  attributes), CP-2632 (de-identification of retrieval URIs).
+- Assigned: CP-2656 (Specimen Module in SR and KOS IODs).
+- Public Comment: Supplement 255 (Microscopy Bulk Enhanced Annotations) and
+  Supplement 248 (DICOMweb Send).
+- IHE PaLM: CP-LAB-279 and CP-LAB-281 (selectable as `ihe-dpia-draft` and
+  `ihe-dpia-draft-jpeg`) and CP-LAB-283, under ballot.
+
+The weekly edition check fails when a newer edition is published.
 
 ## Rust API
 
@@ -353,7 +539,7 @@ let report = Export::from_slide("slide.ndpi")
     .run()?;
 ```
 
-CLI and GUI-style integrations that also need metadata selection, annotation
+Applications that also need metadata selection, annotation
 preparation, optional validation, report persistence, and progress events can
 use `run_export_workflow` with `ExportWorkflowRequest`. Route-analysis callers
 can use the target-specific `SlideRouteCoverageRequest` and
@@ -460,12 +646,14 @@ let frame = encode_dicom_j2k_frame(J2kFrameEncodeRequest::new(
   levels and thumbnails, a black Recommended Absent Pixel CIELab Value for
   `TILED_SPARSE`). `--required`
   (`Export::conformance(ConformanceLevel::Required)`) writes only the pyramid
-  levels, `TILED_FULL` with absent frames padded, and leaves out the optional
-  descriptive attributes (Multi-Resolution Pyramid module, Acquisition Date and
-  Time, Representative Frame Number, specimen and optical path descriptions,
-  General Reference links). It keeps what the encoding depends on: Dimension
-  Organization Type, offset tables, per-frame positions and the Derivation
-  Image functional group of resampled levels.
+  levels, `TILED_FULL` with absent frames padded and without a Per-Frame
+  Functional Groups Sequence, and leaves out the optional descriptive
+  attributes (Multi-Resolution Pyramid module, Acquisition Date and Time,
+  Representative Frame Number, Dimension Index Sequence, shared Optical Path
+  Identification, Illumination Wave Length, specimen and optical path
+  descriptions, General Reference links). It keeps what the encoding depends
+  on: Dimension Organization Type, offset tables and the Derivation Image
+  functional group of resampled levels.
 - Associated images are written by default as single-frame instances in the
   Series of the first plane: the label (`associated-label.dcm`,
   ORIGINAL\PRIMARY\LABEL\NONE, with an empty Slide Label module), the overview
@@ -549,7 +737,6 @@ Core checks:
 cargo fmt --all -- --check
 cargo clippy --workspace --no-default-features --all-targets --locked -- -D warnings
 cargo test --workspace --no-default-features --all-targets --locked
-cargo check -p wsi-dicom-gui --locked
 ```
 
 The ignored fixture checks are explicit real-slide runs. Set
@@ -640,5 +827,12 @@ color-management API: `IccProfilePolicy` is removed, `ExportRequest::new` requir
 
 ## License
 
-Dual-licensed under either [MIT](LICENSE-MIT) or
-[Apache-2.0](LICENSE-APACHE), at your option.
+The 0.9.0 development release is available under the
+[GNU Affero General Public License version 3 only](LICENSE-AGPL)
+(`AGPL-3.0-only`), or under a separate [commercial license](COMMERCIAL-LICENSE.md)
+from Frames. Commercial use is permitted under the AGPL without purchasing a
+commercial license when its terms are followed.
+
+Published releases through 0.8.0 retain their original MIT/Apache-2.0 licenses.
+Existing permissive grants and separately licensed material are preserved; see
+[LICENSE](LICENSE). J2K and wsi-rs retain their own licenses.

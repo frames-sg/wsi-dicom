@@ -9,9 +9,11 @@ use wsi_rs::Slide;
 
 use super::icc_profile::{resolve_icc_profile, resolve_label_camera_icc_profile};
 use super::jobs::refuse_existing_output;
-use super::jpeg_baseline::{encode_jpeg_baseline_cpu_fragment, jpeg_baseline_cpu_restart_interval};
-use super::jpeg_baseline_pipeline::{jpeg_baseline_output_profile, jpeg_baseline_samples};
-use super::jpeg_lossless_instance::encode_jpeg_lossless_frame;
+use super::jpeg_baseline::{
+    encode_jpeg_baseline_cpu_fragment, jpeg_baseline_cpu_restart_interval,
+    jpeg_baseline_output_profile, jpeg_baseline_samples,
+};
+use super::jpeg_lossless::encode_jpeg_lossless_frame;
 use super::lossless_j2k_cpu::lossless_j2k_samples;
 use super::lossy_provenance::associated_source_lossy_history;
 use super::{level_pixel_spacing_mm, require_pixel_spacing_mm};
@@ -287,6 +289,7 @@ fn export_associated_image(
         objective_lens_power: slide.dataset().properties.objective_power(),
         lossy_compression,
         conformance: options.semantics.conformance,
+        sparse: false,
     })?;
     let write_started = Instant::now();
     write_single_frame_dicom_object(

@@ -11,11 +11,13 @@ use dicom_core::{DataElement, PrimitiveValue, Tag, VR};
 use dicom_dictionary_std::{tags, uids};
 use dicom_object::{DefaultDicomObject, InMemDicomObject};
 
-use super::engine::{by_tag, flatten, Presence, Walk};
+use super::engine::{by_tag, flatten, Level, Presence, Walk};
 use super::report::{tag_text, Family, Findings};
 use super::scope::{raw_tag, string_value, Scope};
 use super::tables::FILE_META;
 use super::values::{Encoding, ValueChecks};
+use crate::validation::disclosure::shown;
+use crate::validation::transfer_syntaxes::is_jpip_referenced;
 
 const PREAMBLE: usize = 128;
 const PREFIX: &[u8; 4] = b"DICM";
@@ -36,12 +38,21 @@ struct RawGroup {
     next_group: Option<u16>,
 }
 
-/// Checks the File Meta Information of `path` against Table 7.1-1.
-pub(super) fn check_file_meta(path: &Path, object: &DefaultDicomObject, findings: &mut Findings) {
+/// Checks the File Meta Information of `path` against Table 7.1-1. The SOP
+/// Class and Instance it names are those of the Data Set's SOP Common Module,
+/// unless `directory`: a DICOMDIR's Basic Directory IOD has none, and PS3.10
+/// 8.6 gives its Media Storage SOP Instance UID the File-set UID.
+pub(super) fn check_file_meta(
+    path: &Path,
+    object: &DefaultDicomObject,
+    directory: bool,
+    findings: &mut Findings,
+) {
     let family = &mut findings.file_meta;
     let Some(meta) = check_encoded_group(path, family) else {
         return;
     };
+    let identifies = if directory { 0 } else { 2 };
     for (meta_tag, meta_name, data_set_tag, name) in [
         (
             tags::MEDIA_STORAGE_SOP_CLASS_UID,
@@ -55,15 +66,19 @@ pub(super) fn check_file_meta(path: &Path, object: &DefaultDicomObject, findings
             tags::SOP_INSTANCE_UID,
             "SOP Instance UID (0008,0018)",
         ),
-    ] {
+    ]
+    .into_iter()
+    .take(identifies)
+    {
         let declared = string_value(&meta, meta_tag, 1);
         let actual = string_value(object, data_set_tag, 1);
         if declared.is_some() && declared != actual {
+            let (declared, actual) = (declared.unwrap_or_default(), actual.unwrap_or_default());
             family.push(|| {
                 format!(
-                    "{meta_name} {:?} does not match {name} {:?} of the Data Set ({CITATION})",
-                    declared.unwrap_or_default(),
-                    actual.unwrap_or_default()
+                    "{meta_name} {} does not match {name} {} of the Data Set ({CITATION})",
+                    shown(meta_tag, &declared),
+                    shown(data_set_tag, &actual)
                 )
             });
         }
@@ -90,9 +105,30 @@ pub(super) fn check_unparsed_file_meta(path: &Path, findings: &mut Findings) -> 
         .and_then(|meta| string_value(&meta, tags::MEDIA_STORAGE_SOP_CLASS_UID, 1))
 }
 
+/// Where the Data Set of `path` starts, after the preamble, prefix and group
+/// 0002 as its Group Length frames them, and the declared Transfer Syntax UID
+/// (without padding). Framing defects of the group itself are the File Meta
+/// check's findings, not repeated here.
+pub(in crate::validation) fn data_set_start(path: &Path) -> Result<(u64, String), String> {
+    let group = read_group(path, &mut Family::default())?;
+    let transfer_syntax = group
+        .elements
+        .iter()
+        .find(|element| element.tag == tags::TRANSFER_SYNTAX_UID)
+        .map(|element| {
+            String::from_utf8_lossy(&element.value)
+                .trim_end_matches(['\0', ' '])
+                .to_string()
+        })
+        .ok_or("the File Meta Information has no Transfer Syntax UID (0002,0010)")?;
+    let offset = (PREAMBLE + 4 + 12) as u64 + u64::from(group.length);
+    Ok((offset, transfer_syntax))
+}
+
 /// Checks the encoded group 0002 of `path` on its own: framing, Table 7.1-1
-/// presence, VR, VM and value format, and the version. Returns the group as
-/// a data set, or `None` (after recording why) when it cannot be read.
+/// presence, VR, VM and value format, and the version. Returns the group's
+/// Table 7.1-1 elements as a data set, or `None` (after recording why) when
+/// it cannot be read.
 fn check_encoded_group(path: &Path, family: &mut Family) -> Option<InMemDicomObject> {
     let group = match read_group(path, family) {
         Ok(group) => group,
@@ -102,7 +138,24 @@ fn check_encoded_group(path: &Path, family: &mut Family) -> Option<InMemDicomObj
         }
     };
     let elements = &group.elements;
-    let meta = meta_object(elements);
+    for element in elements.iter().filter(|element| element.vr == VR::UN) {
+        family.push(|| {
+            format!(
+                "{}: VR UN, which shall not be used for File Meta Information Data Elements (PS3.5 {} 6.2.2, {CITATION})",
+                tag_text(raw_tag(element.tag)),
+                super::tables::EDITION
+            )
+        });
+    }
+    let mut definitions = Vec::new();
+    flatten(FILE_META.nodes, FILE_META, &mut definitions);
+    let definitions = by_tag(&definitions);
+    // "any Tag (0002,xxxx) not defined in Table 7.1-1 shall be ignored" (PS3.10 7.1).
+    let meta = meta_object(
+        elements
+            .iter()
+            .filter(|element| definitions.contains_key(&raw_tag(element.tag))),
+    );
     let transfer_syntax = string_value(&meta, tags::TRANSFER_SYNTAX_UID, 1).unwrap_or_default();
     // A Deflated Data Set is compressed, so the bytes after group 0002 are not a tag.
     if group.next_group == Some(0x0002)
@@ -113,17 +166,31 @@ fn check_encoded_group(path: &Path, family: &mut Family) -> Option<InMemDicomObj
             group.length
         ));
     }
+    if is_jpip_referenced(&transfer_syntax) {
+        family.push(|| format!(
+            "Transfer Syntax UID (0002,0010) {transfer_syntax:?} is a JPIP Referenced Transfer Syntax, which shall not be used for PS3.10 media storage (PS3.5 {} 10.8, {CITATION})",
+            super::tables::EDITION
+        ));
+    }
     let scope = Scope::top(&meta, &transfer_syntax);
     let mut table_findings = Findings::default();
-    let mut definitions = Vec::new();
-    flatten(FILE_META.nodes, FILE_META, &mut definitions);
     Walk {
         findings: &mut table_findings,
     }
-    .data_set(&scope, "", &by_tag(&definitions), Presence::Evaluate, 0);
+    .data_set(
+        &scope,
+        "",
+        &Level {
+            rows: definitions,
+            dynamic: Vec::new(),
+        },
+        Presence::Evaluate,
+        0,
+    );
     ValueChecks {
         vr_vm: &mut table_findings.vr_vm,
         format: &mut table_findings.value_format,
+        advisories: &mut table_findings.advisories,
         encoding: Encoding {
             explicit_vr: true,
             extended_characters: false,
@@ -149,7 +216,57 @@ fn check_encoded_group(path: &Path, family: &mut Family) -> Option<InMemDicomObj
             ));
         }
     }
+    for (tag, name) in [
+        (
+            tags::SOURCE_PRESENTATION_ADDRESS,
+            "Source Presentation Address (0002,0026)",
+        ),
+        (
+            tags::SENDING_PRESENTATION_ADDRESS,
+            "Sending Presentation Address (0002,0027)",
+        ),
+        (
+            tags::RECEIVING_PRESENTATION_ADDRESS,
+            "Receiving Presentation Address (0002,0028)",
+        ),
+    ] {
+        let Some(address) = string_value(&meta, tag, 1) else {
+            continue;
+        };
+        if let Err(reason) = presentation_address(&address) {
+            family.push(|| format!("{name} {} {reason} (PS3.10 7.1.1.1)", shown(tag, &address)));
+        }
+    }
     Some(meta)
+}
+
+/// PS3.10 7.1.1.1: `dicom:<host>:<port>` for the DICOM Upper Layer Protocol,
+/// or the absolute `http` URL of a Web Services endpoint whatever transport
+/// security was used.
+fn presentation_address(address: &str) -> Result<(), &'static str> {
+    if let Some(rest) = address.strip_prefix("dicom:") {
+        let (host, port) = rest.rsplit_once(':').unwrap_or((rest, ""));
+        let valid_port = !port.is_empty()
+            && port.bytes().all(|byte| byte.is_ascii_digit())
+            && port.parse::<u16>().is_ok();
+        return if !host.is_empty() && !host.contains('/') && valid_port {
+            Ok(())
+        } else {
+            Err("is not \"dicom:\" followed by a host name or IP address, a colon and a port number")
+        };
+    }
+    if let Some(rest) = address.strip_prefix("http://") {
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        return if authority.is_empty() {
+            Err("is not an absolute URL; it does not name the host of the endpoint")
+        } else {
+            Ok(())
+        };
+    }
+    if address.starts_with("https:") {
+        return Err("uses the scheme \"https\"; a Web Services presentation address uses \"http\" whether or not secure transport was used");
+    }
+    Err("is neither a DICOM Upper Layer address \"dicom:<host>:<port>\" nor an \"http\" Web Services URL")
 }
 
 /// Reads the preamble, prefix and group 0002 as Explicit VR Little Endian.
@@ -268,7 +385,7 @@ fn parse_element(
 }
 
 /// PS3.5 Table 7.1-1: VRs with a 4-byte Value Length in Explicit VR.
-fn long_length(vr: VR) -> bool {
+pub(in crate::validation) fn long_length(vr: VR) -> bool {
     matches!(
         vr,
         VR::OB
@@ -291,8 +408,8 @@ fn u16_at(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
 }
 
-/// The group as an in-memory Data Set, so the generic checks apply to it.
-fn meta_object(elements: &[RawElement]) -> InMemDicomObject {
+/// The elements as an in-memory Data Set, so the generic checks apply to them.
+fn meta_object<'a>(elements: impl Iterator<Item = &'a RawElement>) -> InMemDicomObject {
     let mut object = InMemDicomObject::new_empty();
     for element in elements {
         let value = match element.vr {

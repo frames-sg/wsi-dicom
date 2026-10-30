@@ -61,63 +61,6 @@ impl PixelSpacingMm {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct PlanePosition {
-    row: u64,
-    column: u64,
-}
-
-impl PlanePosition {
-    pub(super) fn new(row: u64, column: u64) -> Self {
-        Self { row, column }
-    }
-
-    pub(super) fn from_frame_functional_group(
-        item: &InMemDicomObject,
-        frame: usize,
-    ) -> Result<Self, String> {
-        let position = item
-            .element(tags::PLANE_POSITION_SLIDE_SEQUENCE)
-            .ok()
-            .and_then(|element| element.items())
-            .and_then(|items| items.first())
-            .ok_or_else(|| format!("frame {frame} is missing Plane Position Slide Sequence"))?;
-        Ok(Self {
-            row: required_positive_u64(
-                position,
-                tags::ROW_POSITION_IN_TOTAL_IMAGE_PIXEL_MATRIX,
-                "Row Position in Total Image Pixel Matrix",
-            )?,
-            column: required_positive_u64(
-                position,
-                tags::COLUMN_POSITION_IN_TOTAL_IMAGE_PIXEL_MATRIX,
-                "Column Position in Total Image Pixel Matrix",
-            )?,
-        })
-    }
-
-    pub(super) fn row(self) -> u64 {
-        self.row
-    }
-
-    pub(super) fn column(self) -> u64 {
-        self.column
-    }
-
-    pub(super) fn dimension_indices(
-        self,
-        frame: usize,
-        frame_rows: u64,
-        frame_columns: u64,
-    ) -> Result<(u32, u32), String> {
-        let row = u32::try_from((self.row - 1) / frame_rows + 1)
-            .map_err(|_| format!("frame {frame} row dimension index exceeds UL"))?;
-        let column = u32::try_from((self.column - 1) / frame_columns + 1)
-            .map_err(|_| format!("frame {frame} column dimension index exceeds UL"))?;
-        Ok((row, column))
-    }
-}
-
 pub(super) fn sequence_items<'a>(
     object: &'a InMemDicomObject,
     tag: Tag,
@@ -197,23 +140,6 @@ pub(super) fn required_positive_u64(
         Err(format!("{name} must be positive"))
     } else {
         Ok(value)
-    }
-}
-
-pub(super) fn required_float64(
-    object: &InMemDicomObject,
-    tag: Tag,
-    name: &str,
-) -> Result<f64, String> {
-    let value = object
-        .element(tag)
-        .map_err(|_| format!("{name} is missing"))?
-        .to_float64()
-        .map_err(|err| format!("{name} is invalid: {err}"))?;
-    if value.is_finite() && value > 0.0 {
-        Ok(value)
-    } else {
-        Err(format!("{name} must be positive and finite"))
     }
 }
 

@@ -128,6 +128,7 @@ impl DicomInstanceContext {
             objective_lens_power: self.objective_lens_power,
             lossy_compression: params.lossy_compression,
             conformance: self.conformance,
+            sparse: params.sparse,
         })
     }
 
@@ -143,6 +144,11 @@ impl DicomInstanceContext {
             self.pixel_spacing_mm.0,
             self.pixel_spacing_mm.1,
         )?;
+        let plan = if self.conformance.is_optional() {
+            plan
+        } else {
+            plan.without_items()
+        };
         match preflighted {
             Some(preflighted) if preflighted.matches_layout(&plan) => Ok(preflighted),
             Some(_) => Err(Error::InvalidOptions {
@@ -274,6 +280,7 @@ pub(crate) struct InstanceDicomObjectParams<'a> {
     pub(crate) profile: PixelProfile,
     pub(crate) icc_profile: Option<&'a [u8]>,
     pub(crate) lossy_compression: LossyCompressionHistory,
+    pub(crate) sparse: bool,
 }
 
 #[cfg(test)]

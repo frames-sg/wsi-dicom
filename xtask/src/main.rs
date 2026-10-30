@@ -219,6 +219,8 @@ fn build_release_candidate() -> Result<OsString, String> {
             "--locked",
             "--package",
             "wsi-dicom",
+            "--features",
+            "dicomweb",
             "--bin",
             "wsi-dicom",
             "--message-format=json",

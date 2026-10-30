@@ -13,9 +13,10 @@ use super::super::jpeg_baseline::{
 };
 use super::super::jpeg_baseline_pipeline::{
     jpeg_backend_uses_device, jpeg_baseline_fallback_run, plan_jpeg_baseline_row,
-    prepare_jpeg_baseline_fallback_batch, record_jpeg_retile_rejections,
-    take_consistent_jpeg_baseline_fallback_frame, EncodedJpegBaselineFrame,
-    JpegBaselineCpuEncodeSettings, JpegBaselineFallbackBatchRequest, JpegBaselineRowPlanRequest,
+    prepare_jpeg_baseline_fallback_batch, record_compressed_source_reencodes,
+    record_jpeg_retile_rejections, take_consistent_jpeg_baseline_fallback_frame,
+    EncodedJpegBaselineFrame, JpegBaselineCpuEncodeSettings, JpegBaselineFallbackBatchRequest,
+    JpegBaselineRowPlanRequest,
 };
 use super::super::lossless_j2k_direct_routes::{
     encode_direct_lossless_j2k_routes, try_profile_existing_lossless_j2k_frame,
@@ -336,7 +337,12 @@ pub(super) fn profile_jpeg_baseline_routes(
                             planned[index].route_decision(route_context).route,
                         ));
                     }
+                    let start_index = index;
                     let (next_index, fallback_frames) = jpeg_baseline_fallback_run(&planned, index);
+                    record_compressed_source_reencodes(
+                        &mut metrics,
+                        &planned[start_index..next_index],
+                    );
                     index = next_index;
 
                     let mut fallback_batch = prepare_jpeg_baseline_fallback_batch(
@@ -507,7 +513,13 @@ pub(super) fn coverage_jpeg_baseline_routes(
                 (
                     PlannedFrameRoute::JpegCpuEncode | PlannedFrameRoute::JpegDeviceEncodeCandidate,
                     JpegBaselinePlannedFrame::Fallback { .. },
-                ) => metrics.record_jpeg_cpu_fallback_route_classification(),
+                ) => {
+                    record_compressed_source_reencodes(
+                        &mut metrics,
+                        std::slice::from_ref(planned_frame),
+                    );
+                    metrics.record_jpeg_cpu_fallback_route_classification();
+                }
                 (route, _) => return Err(incompatible_frame_route("JPEG", route)),
             }
             remaining = remaining.saturating_sub(1);

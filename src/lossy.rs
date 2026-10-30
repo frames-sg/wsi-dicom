@@ -24,13 +24,7 @@ pub(crate) fn lossy_method_for_compression(
         Compression::JpegXr => Ok(Some(JPEG_XR_METHOD)),
         Compression::Jp2kRgb | Compression::Jp2kYcbcr => Ok(Some(JPEG_2000_METHOD)),
         Compression::JpegLs => Ok(Some(JPEG_LS_METHOD)),
-        Compression::None
-        | Compression::Lzw
-        | Compression::Deflate
-        | Compression::Zstd
-        | Compression::Rle
-        | Compression::Png
-        | Compression::Bmp => Ok(None),
+        lossless if is_general_purpose_lossless(lossless) => Ok(None),
         other => Err(Error::Metadata {
             reason: format!(
                 "source codec {other:?} cannot be classified as lossless or lossy, so its compression history cannot be recorded"
@@ -39,14 +33,10 @@ pub(crate) fn lossy_method_for_compression(
     }
 }
 
-/// Whether pixels stored with `compression` can only be kept by a
-/// compressed-domain route, so decoding them is a re-encode the
-/// `pixel_reencode` policy governs. General-purpose lossless coding is not,
-/// nor are PNG and BMP files, which are lossless and have no DICOM transfer
-/// syntax to keep them in; a codec this crate does not know is treated as an
-/// image codec.
-pub(crate) fn is_image_codec(compression: Compression) -> bool {
-    !matches!(
+/// Storage without image coding, with general-purpose lossless coding, or as
+/// a whole PNG or BMP file.
+fn is_general_purpose_lossless(compression: Compression) -> bool {
+    matches!(
         compression,
         Compression::None
             | Compression::Lzw
@@ -56,6 +46,16 @@ pub(crate) fn is_image_codec(compression: Compression) -> bool {
             | Compression::Png
             | Compression::Bmp
     )
+}
+
+/// Whether pixels stored with `compression` can only be kept by a
+/// compressed-domain route, so decoding them is a re-encode the
+/// `pixel_reencode` policy governs. General-purpose lossless coding is not,
+/// nor are PNG and BMP files, which are lossless and have no DICOM transfer
+/// syntax to keep them in; a codec this crate does not know is treated as an
+/// image codec.
+pub(crate) fn is_image_codec(compression: Compression) -> bool {
+    !is_general_purpose_lossless(compression)
 }
 
 pub(crate) fn method_for_lossy_transfer_syntax(uid: &str) -> Option<&'static str> {
