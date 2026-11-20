@@ -1174,23 +1174,12 @@ fn bulk_uri_form(uri: &str) -> Result<(), &'static str> {
     if uri.starts_with("//") {
         return Err("is a network-path reference, which is not one of the absolute URI, absolute-path and relative-path forms");
     }
-    let scheme_end = uri.find(':').filter(|colon| {
-        let candidate = &uri[..*colon];
-        !candidate.contains('/')
-            && candidate
-                .chars()
-                .next()
-                .is_some_and(|first| first.is_ascii_alphabetic())
-    });
-    match scheme_end {
-        Some(colon) => {
-            let scheme = uri[..colon].to_ascii_lowercase();
-            if (scheme == "http" || scheme == "https") && uri[colon + 1..].starts_with("//") {
-                Ok(())
-            } else {
-                Err("names a scheme other than an http or https absolute URI")
-            }
+    if let Some((scheme, rest)) = crate::dicomweb::split_scheme(uri) {
+        if !(scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
+            || !rest.starts_with("//")
+        {
+            return Err("names a scheme other than an http or https absolute URI");
         }
-        None => Ok(()),
     }
+    Ok(())
 }

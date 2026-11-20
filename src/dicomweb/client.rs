@@ -384,7 +384,7 @@ impl Client {
     /// 10.4.1.1.5.1) and retrieved as the Required multipart/related;
     /// type="application/octet-stream" (Table 10.4.4-1).
     pub(crate) fn fetch_bulkdata(&self, base: Option<&str>, uri: &str) -> Result<Vec<u8>, String> {
-        let url = if uri.contains("://") {
+        let url = if super::url::split_scheme(uri).is_some() {
             Url::parse(uri)?.server_reference()
         } else {
             let base = base.ok_or_else(|| {
@@ -455,6 +455,25 @@ mod tests {
     use crate::dicomweb::response::expect_status;
     use crate::dicomweb::tests::mock::{MockResponse, MockServer};
     use crate::dicomweb::url::Url;
+
+    #[test]
+    fn fetches_relative_bulkdata_with_a_url_in_its_query() {
+        let server = MockServer::start(|request| {
+            if request.target == "/studies/bulk?source=https://archive.example/studies" {
+                MockResponse::new(200, "application/octet-stream", "pixels")
+            } else {
+                MockResponse::status(404)
+            }
+        });
+        let client = Client::new(&DicomWebHttpOptions::default()).unwrap();
+        let bytes = client
+            .fetch_bulkdata(
+                Some(&server.url("/studies/metadata")),
+                "bulk?source=https://archive.example/studies",
+            )
+            .unwrap();
+        assert_eq!(bytes, b"pixels");
+    }
 
     #[test]
     fn report_does_not_repeat_untrusted_response_or_transport_text() {

@@ -84,6 +84,21 @@ fn a_conforming_minimal_document_passes_the_json_model() {
 }
 
 #[test]
+fn a_relative_bulk_data_uri_can_contain_a_url_in_its_query() {
+    let text = document(&format!(
+        r#"{SOP},"7FE00010":{{"vr":"OB","BulkDataURI":"bulk?source=https://archive.example/studies"}}"#
+    ));
+    let checks = checks_of(
+        &text,
+        Source::Metadata,
+        &DicomJsonOptions::default(),
+        &BTreeMap::new(),
+    );
+    let model = check(&checks, JSON_MODEL);
+    assert_eq!(model.status, ValidationStatus::Passed, "{}", model.message);
+}
+
+#[test]
 fn each_annex_f_violation_fails_the_json_model_check() {
     for (members, reason) in [
         (

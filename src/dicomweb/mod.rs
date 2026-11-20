@@ -45,7 +45,7 @@ use client::{Exchange, Request};
 use report::Verdict;
 pub use report::{DicomWebCheck, DicomWebExchange, DicomWebReport, DicomWebStatus};
 use response::sec;
-pub(crate) use url::Url;
+pub(crate) use url::{split_scheme, Url};
 
 use crate::{
     Error, OptionalConformance, ValidationCheck, ValidationOptions, ValidationReport, DICOM_EDITION,
