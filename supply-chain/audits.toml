@@ -6,3 +6,45 @@ who = "Codex-assisted source review"
 criteria = "safe-to-deploy"
 delta = "0.7.0 -> 1.0.0"
 notes = "Reviewed the published registry delta, focusing on SIMD capability tokens, exported dispatch macros, generated operation boundaries, and slice/array conversions. The new unsafe dispatch calls require genuine same-crate proof tokens and derive target features from the same fixed backend mapping; caller expressions are bound outside unsafe blocks. SIMD traits remain sealed. The existing POD cast helpers retain compile-time size/alignment checks, slice conversions remain checked, and all 42 vector/mask lane counts are unchanged. New generated operations use numeric SIMD storage and the existing checked cast boundary; no new raw-pointer operations, build script, dependency, filesystem, network, process, or environment access was introduced. Existing kernel unit tests passed on aarch64 macOS (6) and x86_64 Linux (11); the kernel documentation example and three compile-fail tests passed on both. This is a source security review of the delta, not exhaustive numerical verification or a formal proof."
+
+[[audits.jiff]]
+who = "Codex-assisted source review"
+criteria = "safe-to-deploy"
+version = "0.2.46"
+notes = "Reviewed the published library and its unsafe and ambient-I/O boundaries. The formatting buffer limits capacity to its length counter, reserves before writing, bounds digit and padding writes, and exposes only initialized UTF-8. TimeZone constructs tagged pointers from aligned static or Arc-backed values, clears tag bits before dereference, and balances Arc references on clone and drop. Named database lookups use the inventory of configured zone files. The system clock also reads operator-controlled TZ/TZDIR and system files; these settings must be trusted. Reviewed the Windows output structure and failure sentinel, Android fixed libc symbols and synchronous property callback, and the fixed Emscripten Intl query. There is no build script. All 530 library tests with static and serde passed on macOS using upstream test fixtures and snapshots from the published revision. Other OS bindings were reviewed in source, not executed."
+
+[[audits.jiff-core]]
+who = "Codex-assisted source review"
+criteria = "safe-to-deploy"
+version = "0.1.8"
+notes = "Reviewed the published calendar primitives, TZif and POSIX parsing, and fixed-string storage. ArrayStr has private storage and accepts only complete UTF-8 strings. Its constructor bounds capacity to u8, append checks byte length before copying, and the unchecked UTF-8 view covers only initialized bytes. TZif section sizes use checked multiplication/addition and are split against the input before decoding. There is no build script or direct network, process or filesystem access. All 132 packaged library tests passed locally."
+
+[[audits.jiff-static]]
+who = "Codex-assisted source review"
+criteria = "safe-to-deploy"
+version = "0.2.46"
+notes = "Reviewed both procedural macros and their generated expressions. include reads a path literal supplied at compilation and parses its contents as TZif. get uses an entry in the bundled database. Both emit typed literals and static data. The generated unsafe copy acts on a TimeZone created by __internal_from_tzif with static storage, meeting the documented precondition in Jiff 0.2.46. No build script, command execution or network access. Compiled both macros and verified the resulting Kathmandu offsets."
+
+[[audits.jiff-tzdb]]
+who = "Codex-assisted source review"
+criteria = "safe-to-deploy"
+version = "0.1.10"
+notes = "Reviewed the no_std lookup code, generated name/range table and embedded database. There is no build script, runtime filesystem access, native code or dependency. Checked that all 598 case-insensitive names are unique and sorted, all offsets are bounded, and every referenced record parses with the independent Python TZif reader. Checked winter and summer offsets for UTC, New York and Kathmandu. The sorting regression test passed."
+
+[[audits.jiff-tzdb-platform]]
+who = "Codex-assisted source review"
+criteria = "safe-to-deploy"
+version = "0.1.3"
+notes = "The published no_std library re-exports jiff_tzdb and declares it as its only dependency. Reviewed the manifest and entire library source. There is no build script, unsafe block, runtime code or I/O. The data dependency is reviewed separately."
+
+[[audits.libz-sys]]
+who = "Codex-assisted source review"
+criteria = "safe-to-deploy"
+delta = "1.1.31 -> 1.1.33"
+notes = "Reviewed the published source delta to bundled zlib 1.4. The Rust FFI, build script, dependencies and zlib-ng sources are unchanged. Reviewed the gzwrite buffer reuse and stalled-write paths, gzread delivery and seek bounds, deflate pending space and copy cleanup, inflate window reset and header limits, lookup tables and platform offset definitions. The default native Windows z_off_t is a C long; alternate large-file builds depend on matching C ABI settings. Compiled the bundled C sources with ASan and UBSan on macOS and verified deflate/inflate and gzip file round trips."
+
+[[audits.rustix]]
+who = "Codex-assisted source review"
+criteria = "safe-to-deploy"
+delta = "1.1.4 -> 1.1.6"
+notes = "Reviewed the published delta across the libc and Linux raw syscall backends. All six extended-attribute reads distinguish an empty destination from initialized bytes. Size-query entry points pass a null pointer and zero length. Ancillary decoding clamps each header to remaining storage, checks the payload length and handles whole descriptors and unaligned credentials. Checked architecture-specific UID/GID syscall selection, socket timeout conversion, descriptor ownership and ABI checks. The build script removes its own compiler probe in OUT_DIR. The renamed low-level runtime module retains its unsafe API boundary. All 29 packaged library tests with fs, net, process, thread and time passed on macOS; other target-specific changes were source-reviewed."
