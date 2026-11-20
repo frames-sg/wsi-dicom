@@ -2,6 +2,7 @@
 //! resolution of the references servers return (BulkDataURI, Location).
 
 use std::fmt;
+use std::net::Ipv6Addr;
 
 use dicom_core::dictionary::{DataDictionary, DataDictionaryEntry};
 use dicom_core::Tag;
@@ -14,8 +15,7 @@ use crate::validation::disclosure::{shown, withheld, Nesting};
 pub(crate) struct Url {
     /// Lowercase `http` or `https`.
     scheme: String,
-    /// Lowercase host, with a port when one is written.
-    authority: String,
+    authority: Authority,
     /// The path, starting with `/` (or empty).
     path: String,
     query: Option<String>,
@@ -76,9 +76,11 @@ impl Url {
         if authority.is_empty() {
             return Err(format!("URL {:?} has no host", shown()));
         }
+        let authority = Authority::parse(authority)
+            .ok_or_else(|| format!("URL {:?} has an invalid host or port", shown()))?;
         Ok(Self {
             scheme,
-            authority: authority.to_ascii_lowercase(),
+            authority,
             path: path.to_string(),
             query,
             server_reference: false,
@@ -97,21 +99,13 @@ impl Url {
 
     /// The host, without port or IPv6 brackets.
     pub(crate) fn host(&self) -> &str {
-        let authority = self.authority.as_str();
-        if let Some(rest) = authority.strip_prefix('[') {
-            return rest.split(']').next().unwrap_or(rest);
-        }
-        authority.split(':').next().unwrap_or(authority)
+        self.authority.host.trim_matches(['[', ']'])
     }
 
     fn port(&self) -> u16 {
-        let explicit = match self.authority.rfind(':') {
-            Some(colon) if !self.authority[colon..].contains(']') => {
-                self.authority[colon + 1..].parse().ok()
-            }
-            _ => None,
-        };
-        explicit.unwrap_or(if self.is_https() { 443 } else { 80 })
+        self.authority
+            .port
+            .unwrap_or(if self.is_https() { 443 } else { 80 })
     }
 
     /// RFC 6454 origin: scheme, host and port.
@@ -204,7 +198,7 @@ impl Url {
 
     /// Resolves an RFC 3986 URI-reference against this URL (RFC 3986 5.2.2).
     pub(crate) fn resolve(&self, reference: &str) -> Result<Url, String> {
-        if reference.contains("://") {
+        if split_scheme(reference).is_some() {
             return Url::parse(reference).map(Url::server_reference);
         }
         if reference.starts_with("//") {
@@ -235,6 +229,59 @@ impl Url {
             query,
             server_reference: true,
         })
+    }
+}
+
+/// Only a colon before the first path, query or fragment delimiter can introduce a scheme.
+pub(crate) fn split_scheme(reference: &str) -> Option<(&str, &str)> {
+    reference
+        .split_once(':')
+        .filter(|(prefix, _)| !prefix.contains(['/', '?', '#']))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Authority {
+    host: String,
+    port: Option<u16>,
+}
+
+impl Authority {
+    fn parse(text: &str) -> Option<Self> {
+        let (host, suffix) = if let Some(bracketed) = text.strip_prefix('[') {
+            let (literal, suffix) = bracketed.split_once(']')?;
+            (format!("[{}]", literal.parse::<Ipv6Addr>().ok()?), suffix)
+        } else {
+            let (name, suffix) = text.split_at(text.find(':').unwrap_or(text.len()));
+            // The HTTP transport rejects percent escapes in registered names.
+            if name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=".contains(&b))
+            {
+                return None;
+            }
+            (name.to_ascii_lowercase(), suffix)
+        };
+        let port = if matches!(suffix, "" | ":") {
+            None
+        } else {
+            let digits = suffix.strip_prefix(':')?;
+            if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+            Some(digits.parse().ok()?)
+        };
+        Some(Self { host, port })
+    }
+}
+
+impl fmt::Display for Authority {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.host)?;
+        if let Some(port) = self.port {
+            write!(f, ":{port}")?;
+        }
+        Ok(())
     }
 }
 
@@ -359,6 +406,17 @@ mod tests {
             "ftp://example.org/",
             "example.org/dicomweb",
             "https://exa mple.org/",
+            "https://:443/dicomweb",
+            "https://example.org:not-a-port/dicomweb",
+            "https://example.org:443:444/dicomweb",
+            "https://[::1/dicomweb",
+            "https://[]:443/dicomweb",
+            "https://[::1]extra/dicomweb",
+            "https://[example.org]:443/dicomweb",
+            "https://example.org:+443/dicomweb",
+            "https://[::1]:65536/dicomweb",
+            "https://example{org}/dicomweb",
+            "https://%65xample.org/dicomweb",
         ] {
             assert!(Url::parse(text).is_err(), "{text}");
         }
@@ -396,6 +454,10 @@ mod tests {
             ),
             ("/other/x?y=1", "https://example.org:443/other/x?y=1"),
             ("../../a", "https://example.org:443/dicomweb/a"),
+            (
+                "?source=https://archive.example/studies",
+                "https://example.org:443/dicomweb/studies/1.2/metadata?source=https://archive.example/studies",
+            ),
             ("http://elsewhere/x", "http://elsewhere/x"),
             ("//cdn.example.org/x", "https://cdn.example.org/x"),
         ] {
@@ -407,11 +469,18 @@ mod tests {
     fn origins_compare_scheme_host_and_default_port() {
         let base = Url::parse("https://example.org/dicomweb").unwrap();
         assert!(base.same_origin(&Url::parse("https://EXAMPLE.org:443/x").unwrap()));
+        let empty_port = Url::parse("https://example.org:/x").unwrap();
+        assert!(base.same_origin(&empty_port));
+        assert_eq!(empty_port.to_string(), "https://example.org/x");
         assert!(!base.same_origin(&Url::parse("http://example.org/x").unwrap()));
         assert!(!base.same_origin(&Url::parse("https://example.org:8443/x").unwrap()));
         assert!(!base.same_origin(&Url::parse("https://evil.example/x").unwrap()));
         let local = Url::parse("http://127.0.0.1:8080/").unwrap();
         assert!(local.is_loopback() && !base.is_loopback());
+        let ipv6 = Url::parse("https://[0:0:0:0:0:0:0:1]/").unwrap();
+        assert!(ipv6.is_loopback());
+        assert!(ipv6.same_origin(&Url::parse("https://[::1]:443/x").unwrap()));
+        assert!(!ipv6.same_origin(&Url::parse("https://[::1]:8443/x").unwrap()));
         assert_eq!(
             base.join("/studies", Some("limit=1")).target(),
             "/dicomweb/studies?limit=1"
