@@ -217,6 +217,18 @@ class DependencyTopologyTests(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertIsNone(locked_git_commit(source))
 
+    def test_root_and_fuzz_use_the_same_chrono_free_dicom_core(self):
+        sources = []
+        for path in ("Cargo.lock", "fuzz/Cargo.lock"):
+            with self.subTest(path=path):
+                packages = load_toml(path)["package"]
+                self.assertNotIn("chrono", {package["name"] for package in packages})
+                core = [p["source"] for p in packages if p["name"] == "dicom-core"]
+                self.assertEqual(len(core), 1)
+                self.assertTrue(core[0].startswith("git+https://github.com/frames-sg/dicom-rs?rev="))
+                sources.append(core[0])
+        self.assertEqual(sources[0], sources[1])
+
     def test_lockfiles_match_the_manifest_j2k_family(self):
         minimum_version = dependency_version(load_toml("Cargo.toml"), "j2k")
         minimum_wsi_version = dependency_version(load_toml("Cargo.toml"), "wsi-rs")
