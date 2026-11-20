@@ -97,6 +97,8 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # main branch that wsi-rs main names; remove together with that patch once
 # they are on crates.io.
 allow-git = [
+    "https://github.com/frames-sg/dicom-rs",
+    "https://github.com/frames-sg/wsi-dicom-annotations",
     "https://github.com/frames-sg/j2k",
     "https://github.com/frames-sg/jxr",
     "https://github.com/frames-sg/wsi-rs",
